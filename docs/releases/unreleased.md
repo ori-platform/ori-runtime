@@ -172,12 +172,17 @@ candidate or release is cut.
   available or there is no current anchor epoch, `reference_device_mismatch`
   when the epoch's recorded reference names another device, and
   `reference_already_recorded` for a different reference without `--force`,
-  with `runtime_store_unavailable` (including a registration that cannot be
-  read), `state_store_locked` and `cancelled` as operational outcomes. The
-  bridge relays a success only when it carries exactly the contract's five
-  fields for the submitted reference; anything else is exit 1,
-  `internal_error`. The socket is the only path by which a reference is
-  recorded. The runtime seals a
+  with `runtime_store_unavailable` (including a registration read its storage
+  cannot serve; any other fault in that read is `internal_error`),
+  `state_store_locked` and `cancelled` as operational outcomes. The bridge
+  relays a success only when it is exactly the contract's result for the
+  request submitted: the five fields, a runtime device ID, an anchor epoch
+  digest, the submitted reference, `replaced` true only under `--force`, and a
+  registration status a commissioning reports; `evidence reconcile-tier-c`
+  likewise requires every result member bound to its request. Anything else
+  is exit 1, `internal_error`, and the socket answers a malformed internal
+  answer the same way rather than normalising it. The socket is the only path
+  by which a reference is recorded. The runtime seals a
   registration under the recorded reference and keeps a durable confirmation
   obligation holding its exact bytes: a courier `queued`
   retires only the handoff copy, and the obligation re-offers the identical

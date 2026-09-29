@@ -3017,7 +3017,7 @@ class OriRuntime:
             "device_id": anchor.device_id,
             "anchor_epoch_id": anchor.anchor_epoch_id,
             "commissioning_reference": request.reference,
-            "replaced": bool(answer["replaced"]),
+            "replaced": answer["replaced"],
             "registration_status": status.value,
         }
 

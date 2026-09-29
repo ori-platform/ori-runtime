@@ -511,3 +511,79 @@ async def test_operator_socket_sequence(
 def test_every_notice_sequence_exists_in_the_corpus() -> None:
     names = {seq["name"] for seq in CORPUS["sequences"]}
     assert NOTICE_SEQUENCES <= names
+
+
+#: Commissioned feedback reconciles first; the operator's identical request is
+#: answered with that record, which carries no operator.
+FEEDBACK_THEN_OPERATOR = {
+    "name": "an identical operator request after commissioned feedback answers its record",
+    "steps": [
+        {
+            "event": "reply",
+            "mono_ms": 40001000,
+            "wall_ms": 1787000001000,
+            "path": "remote",
+            "authenticated": True,
+            "commit": "ok",
+            "decision": "yes",
+            "expect": {},
+        },
+        {"event": "crash", "expect": {}},
+        {"event": "restart", "expect": {"state": "dispatch_not_proven"}},
+        {
+            "event": "reconcile",
+            "source": "commissioned_feedback",
+            "outcome": "executed",
+            "zone": "zone-feeder-a",
+            "mapping_proves": True,
+            "authenticated": True,
+            "expect": {"state": "reconciled_executed"},
+        },
+        {
+            "event": "reconcile",
+            "source": "operator_local",
+            "caller": {
+                "credentials": "peer",
+                "uid": 1001,
+                "account": "installer",
+                "login_uid": 1001,
+            },
+            "proposal_id": "AB12CD34",
+            "device_id": "energy-monitor-ikeja-01",
+            "zone_id": "zone-feeder-a",
+            "outcome": "executed",
+            "reason": "actuator_position_observed",
+            "expect": {
+                "result": "already_recorded",
+                "state": "reconciled_executed",
+                "reconciliations": 1,
+                "reconciliation": {
+                    "proposal_id": "AB12CD34",
+                    "device_id": "energy-monitor-ikeja-01",
+                    "zone_id": "zone-feeder-a",
+                    "decision_state": "reconciled_executed",
+                    "reason": "actuator_position_observed",
+                    "note": None,
+                    "operator": {"uid": None, "account": None, "login_uid": None},
+                    "entry_point": "commissioned_feedback",
+                },
+            },
+        },
+    ],
+}
+
+
+async def test_an_identical_repeat_of_a_feedback_reconciliation_is_relayed(
+    tmp_path: Path, monkeypatch: Any, caplog: Any
+) -> None:
+    """The bridge and the socket relay the earlier record, not this caller's."""
+    replay = Replay(tmp_path, dict(CORPUS["proposal"]), monkeypatch)
+    transport = SocketTransport(monkeypatch)
+    replay.operator_transport = transport
+    try:
+        unrepresented = await _bounded_run(replay, FEEDBACK_THEN_OPERATOR, caplog)
+    finally:
+        transport.close()
+        if replay.store is not None and replay.store._conn is not None:
+            await replay.crash()
+    assert unrepresented == []

@@ -41,11 +41,13 @@ from ori.network.events import StoredReading
 from ori.operator_socket import (
     COMMISSION_ERRORS,
     COMMISSION_OPERATION,
-    COMMISSION_RESULT_FIELDS,
     RECONCILE_ERRORS,
     SOCKET_NAME,
     SYSTEM_RUNTIME_DIRECTORY,
+    MalformedAnswerError,
     OperatorRequestError,
+    check_commission_result,
+    check_reconcile_result,
     install_root_for_prefix,
     parse_request,
     peer_credentials,
@@ -1589,32 +1591,29 @@ async def _submit_to_operator(
 
 
 def _commission_bound(request: dict[str, Any]) -> Callable[[dict[str, Any]], bool]:
-    """Exactly the contract's fields, for the reference submitted."""
+    """Exactly the contract's result, for the reference and `force` submitted."""
 
     def bound(result: dict[str, Any]) -> bool:
-        return (
-            set(result) == COMMISSION_RESULT_FIELDS
-            and result["commissioning_reference"] == request["reference"]
-            and isinstance(result["replaced"], bool)
-            and (request["force"] or not result["replaced"])
-            and all(
-                isinstance(value, str)
-                for name, value in result.items()
-                if name != "replaced"
+        try:
+            check_commission_result(
+                result, reference=request["reference"], force=request["force"]
             )
-        )
+        except MalformedAnswerError:
+            return False
+        return True
 
     return bound
 
 
 def _reconcile_bound(request: dict[str, Any]) -> Callable[[dict[str, Any]], bool]:
-    """The proposal, device and zone submitted."""
+    """Exactly the contract's result, for the reconciliation submitted."""
 
     def bound(result: dict[str, Any]) -> bool:
-        return all(
-            name in result and result[name] == request[name]
-            for name in ("proposal_id", "device_id", "zone_id")
-        )
+        try:
+            check_reconcile_result(result, request)
+        except MalformedAnswerError:
+            return False
+        return True
 
     return bound
 
@@ -1630,8 +1629,14 @@ def _relayed_answer(
     except OperatorRequestError:
         raise RuntimeError("the runtime's answer is not one JSON object") from None
     result = answer.get("result")
-    if answer.get("ok") is True and isinstance(result, dict):
-        if not bound(result):
+    if answer.get("ok") is True:
+        if not (
+            set(answer) == {"schema_version", "ok", "result"}
+            and type(answer["schema_version"]) is int
+            and answer["schema_version"] == 1
+            and isinstance(result, dict)
+            and bound(result)
+        ):
             raise RuntimeError(
                 f"the runtime's success is not {expected} to this request"
             )

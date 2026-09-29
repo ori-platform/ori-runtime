@@ -30,13 +30,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
-from ori.reasoning.tier_c_admission import RECONCILE_REASONS
+from ori.reasoning.tier_c_admission import (
+    FEEDBACK_ENTRY_POINT,
+    RECONCILE_REASONS,
+    RECONCILED_EXECUTED,
+    RECONCILED_NOT_EXECUTED,
+)
 from ori.runtime_health_socket import (
     _remove_socket_file,
     _socket_has_a_listener,
     _socket_identity,
 )
-from ori.security.evidence.registration import is_digest
+from ori.security.evidence.registration import RegistrationStatus, is_digest
 from ori.utils.path_utils import shown
 
 logger = logging.getLogger(__name__)
@@ -102,6 +107,35 @@ COMMISSION_RESULT_FIELDS = frozenset(
         "registration_status",
     }
 )
+#: The registration statuses a commissioning success reports. A reference is
+#: recorded only while evidence is enabled, so never `disabled`.
+COMMISSION_STATUSES = frozenset(
+    status.value
+    for status in RegistrationStatus
+    if status is not RegistrationStatus.DISABLED
+)
+#: The members of a `reconcile_tier_c` success result; the list is closed.
+RECONCILE_RESULT_FIELDS: Final = frozenset(
+    {
+        "proposal_id",
+        "device_id",
+        "zone_id",
+        "decision_state",
+        "reason",
+        "note",
+        "operator",
+        "entry_point",
+        "recorded_at_ms",
+        "already_recorded",
+    }
+)
+RECONCILE_OPERATOR_FIELDS: Final = frozenset({"uid", "account", "login_uid"})
+_DECISION_FOR_OUTCOME: Final = {
+    "executed": RECONCILED_EXECUTED,
+    "not-executed": RECONCILED_NOT_EXECUTED,
+}
+#: A runtime device ID: runtime-config/v2 `device.id`, `^\S+$`.
+_DEVICE_ID = re.compile(r"\S+")
 
 _UID_TEXT = re.compile(rb"[1-9][0-9]{0,9}\n?")
 # Linux's SO_PEERPIDFD (6.5 and later); Python names it only on recent builds.
@@ -285,6 +319,106 @@ def validate_reconcile_request(request: Mapping[str, Any]) -> ReconcileRequest:
         reason=request["reason"],
         note=note,
     )
+
+
+# ─── answers ──────────────────────────────────────────────────────────────────
+
+
+class MalformedAnswerError(RuntimeError):
+    """A success that is not exactly the contract's result for its request."""
+
+
+def _is_text(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _is_uid(value: object) -> bool:
+    return type(value) is int and 0 <= value <= MAX_UID
+
+
+def _require(holds: bool, what: str) -> None:
+    if not holds:
+        raise MalformedAnswerError(f"the success result's {what}")
+
+
+def check_commission_result(
+    result: Mapping[str, Any], *, reference: str, force: bool
+) -> None:
+    """Exactly the contract's five fields, for this reference and `force`."""
+    _require(set(result) == COMMISSION_RESULT_FIELDS, "members are not the contract's")
+    device_id = result["device_id"]
+    _require(
+        _is_text(device_id) and _DEVICE_ID.fullmatch(device_id) is not None,
+        "device_id is not a device ID",
+    )
+    _require(is_digest(result["anchor_epoch_id"]), "anchor_epoch_id is not a digest")
+    _require(
+        result["commissioning_reference"] == reference,
+        "commissioning_reference is not the one submitted",
+    )
+    replaced = result["replaced"]
+    _require(isinstance(replaced, bool), "replaced is not a boolean")
+    _require(force or not replaced, "replaced is true without force")
+    _require(
+        isinstance(result["registration_status"], str)
+        and result["registration_status"] in COMMISSION_STATUSES,
+        "registration_status is not one a commissioning reports",
+    )
+
+
+def check_reconcile_result(
+    result: Mapping[str, Any], request: Mapping[str, Any]
+) -> None:
+    """Exactly the contract's result, for the reconciliation *request* submitted."""
+    _require(set(result) == RECONCILE_RESULT_FIELDS, "members are not the contract's")
+    for name in ("proposal_id", "device_id", "zone_id", "reason", "note"):
+        _require(result[name] == request[name], f"{name} is not the one submitted")
+    _require(
+        _DEVICE_ID.fullmatch(result["device_id"]) is not None,
+        "device_id is not a device ID",
+    )
+    _require(
+        result["decision_state"] == _DECISION_FOR_OUTCOME.get(request["outcome"]),
+        "decision_state is not the outcome submitted",
+    )
+    already = result["already_recorded"]
+    _require(isinstance(already, bool), "already_recorded is not a boolean")
+    # A new record is this socket's; an identical repeat answers the earlier
+    # record, which commissioned feedback may have written with no operator.
+    entry_point = result["entry_point"]
+    _require(
+        entry_point == ENTRY_POINT
+        or (already is True and entry_point == FEEDBACK_ENTRY_POINT),
+        "entry_point is not one that recorded this reconciliation",
+    )
+    operator = result["operator"]
+    _require(
+        isinstance(operator, dict) and set(operator) == RECONCILE_OPERATOR_FIELDS,
+        "operator members are not the contract's",
+    )
+    if entry_point == FEEDBACK_ENTRY_POINT:
+        _require(
+            all(value is None for value in operator.values()),
+            "operator is not null for commissioned feedback",
+        )
+    else:
+        _require(_is_uid(operator["uid"]), "operator uid is not a user ID")
+        _require(
+            operator["account"] is None or _is_text(operator["account"]),
+            "operator account is not text or null",
+        )
+        _require(
+            operator["login_uid"] is None or _is_uid(operator["login_uid"]),
+            "operator login_uid is not a user ID or null",
+        )
+    recorded = result["recorded_at_ms"]
+    _require(type(recorded) is int and recorded >= 0, "recorded_at_ms is not a time")
 
 
 # ─── peer credentials ─────────────────────────────────────────────────────────
@@ -805,29 +939,35 @@ class OperatorSocketServer:
         except (sqlite3.Error, OSError) as exc:
             return _store_unavailable(exc)
         if isinstance(request, CommissionRequest):
-            return self._commissioned(peer, answer)
+            return self._commissioned(request, peer, answer)
         return self._reconciled(request, peer, answer)
 
     def _commissioned(
-        self, peer: PeerCredentials, answer: Mapping[str, Any]
+        self,
+        request: CommissionRequest,
+        peer: PeerCredentials,
+        answer: Mapping[str, Any],
     ) -> dict[str, Any]:
-        if not answer.get("ok"):
-            code = str(answer.get("error", ""))
-            if code not in COMMISSION_ERRORS:
-                raise RuntimeError(f"the runtime answered an unknown refusal {code!r}")
+        if answer.get("ok") is False:
+            code = answer.get("error")
+            if set(answer) != {"ok", "error"} or not (
+                isinstance(code, str) and code in COMMISSION_ERRORS
+            ):
+                raise MalformedAnswerError(
+                    f"the runtime answered an unknown refusal {code!r}"
+                )
             logger.info(
                 "[operator-socket] commissioning reference from uid %s refused: %s",
                 peer.uid,
                 code,
             )
             return _error(code, "nothing was recorded")
-        result = {
-            "device_id": str(answer["device_id"]),
-            "anchor_epoch_id": str(answer["anchor_epoch_id"]),
-            "commissioning_reference": str(answer["commissioning_reference"]),
-            "replaced": bool(answer["replaced"]),
-            "registration_status": str(answer["registration_status"]),
-        }
+        if set(answer) != COMMISSION_RESULT_FIELDS | {"ok"} or answer["ok"] is not True:
+            raise MalformedAnswerError("the commissioning answer is not the contract's")
+        result = {name: answer[name] for name in COMMISSION_RESULT_FIELDS}
+        check_commission_result(
+            result, reference=request.reference, force=request.force
+        )
         logger.warning(
             "[operator-socket] commissioning reference %s for epoch %s by uid %s "
             "(login %s)",
@@ -844,10 +984,14 @@ class OperatorSocketServer:
         peer: PeerCredentials,
         answer: Mapping[str, Any],
     ) -> dict[str, Any]:
-        if not answer.get("ok"):
-            code = str(answer.get("error", ""))
-            if code not in RECONCILE_ERRORS:
-                raise RuntimeError(f"the store answered an unknown refusal {code!r}")
+        if answer.get("ok") is False:
+            code = answer.get("error")
+            if set(answer) != {"ok", "error"} or not (
+                isinstance(code, str) and code in RECONCILE_ERRORS
+            ):
+                raise MalformedAnswerError(
+                    f"the store answered an unknown refusal {code!r}"
+                )
             logger.info(
                 "[operator-socket] reconcile of %s by uid %s refused: %s",
                 request.proposal_id,
@@ -855,8 +999,32 @@ class OperatorSocketServer:
                 code,
             )
             return _error(code, "nothing was recorded")
+        if (
+            set(answer) != {"ok", "record", "already_recorded"}
+            or answer["ok"] is not True
+        ):
+            raise MalformedAnswerError(
+                "the reconciliation answer is not the contract's"
+            )
         record = answer["record"]
-        already = bool(answer.get("already_recorded"))
+        result = {
+            "proposal_id": record["proposal_id"],
+            "device_id": record["device_id"],
+            "zone_id": record["zone_id"],
+            "decision_state": record["decision_state"],
+            "reason": record["reason"],
+            "note": record["note"],
+            "operator": {
+                "uid": record["principal_uid"],
+                "account": record["principal_account"],
+                "login_uid": record["principal_login_uid"],
+            },
+            "entry_point": record["entry_point"],
+            "recorded_at_ms": record["recorded_at_ms"],
+            "already_recorded": answer["already_recorded"],
+        }
+        check_reconcile_result(result, request.as_request())
+        already = result["already_recorded"]
         logger.warning(
             "[operator-socket] proposal %s reconciled %s by uid %s (login %s)%s",
             request.proposal_id,
@@ -865,26 +1033,7 @@ class OperatorSocketServer:
             peer.login_uid,
             " (already recorded)" if already else "",
         )
-        return {
-            "schema_version": 1,
-            "ok": True,
-            "result": {
-                "proposal_id": record["proposal_id"],
-                "device_id": record["device_id"],
-                "zone_id": record["zone_id"],
-                "decision_state": record["decision_state"],
-                "reason": record["reason"],
-                "note": record["note"],
-                "operator": {
-                    "uid": record["principal_uid"],
-                    "account": record["principal_account"],
-                    "login_uid": record["principal_login_uid"],
-                },
-                "entry_point": record["entry_point"],
-                "recorded_at_ms": record["recorded_at_ms"],
-                "already_recorded": already,
-            },
-        }
+        return {"schema_version": 1, "ok": True, "result": result}
 
 
 def _remove_own_socket(path: Path, provisional: tuple[int, int, int] | None) -> None:

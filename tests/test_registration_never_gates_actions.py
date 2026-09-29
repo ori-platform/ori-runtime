@@ -499,7 +499,9 @@ _SCOPED_READERS: dict[str, set[str]] = {
     },
     "operator_socket.py": {
         "<assign:COMMISSION_RESULT_FIELDS>",
+        "<assign:COMMISSION_STATUSES>",
         "validate_commission_request",
+        "check_commission_result",
         "_commissioned",
         "<import>",
     },

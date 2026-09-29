@@ -28,6 +28,7 @@ from typing import Any
 
 import pytest
 
+from ori import cli_bridge
 from ori import operator_socket as op
 from ori.config import Config, ConfigValidationError
 from ori.operator_socket import CommissionRequest, OperatorSocketServer
@@ -825,30 +826,51 @@ _BOUND_RESULT = {
 }
 
 
+_UNBOUND_RESULTS: list[tuple[str, dict[str, Any]]] = [
+    ("a lie", {"lie": True}),
+    ("empty", {}),
+    (
+        "another reference",
+        {**_BOUND_RESULT, "commissioning_reference": OTHER_REFERENCE},
+    ),
+    ("replaced as a string", {**_BOUND_RESULT, "replaced": "false"}),
+    ("replaced as an integer", {**_BOUND_RESULT, "replaced": 0}),
+    ("replaced without force", {**_BOUND_RESULT, "replaced": True}),
+    ("an extra field", {**_BOUND_RESULT, "extra": 1}),
+    (
+        "a missing field",
+        {k: v for k, v in _BOUND_RESULT.items() if k != "registration_status"},
+    ),
+    ("a device that is not text", {**_BOUND_RESULT, "device_id": 7}),
+    ("an empty device", {**_BOUND_RESULT, "device_id": ""}),
+    ("a device with a space", {**_BOUND_RESULT, "device_id": "bench 01"}),
+    ("a device with a newline", {**_BOUND_RESULT, "device_id": "bench-01\n"}),
+    ("a device with a lone surrogate", {**_BOUND_RESULT, "device_id": "bench-\ud800"}),
+    ("an uppercase epoch", {**_BOUND_RESULT, "anchor_epoch_id": "sha256:" + "E" * 64}),
+    ("a short epoch", {**_BOUND_RESULT, "anchor_epoch_id": "sha256:" + "e" * 63}),
+    ("a long epoch", {**_BOUND_RESULT, "anchor_epoch_id": "sha256:" + "e" * 65}),
+    ("an epoch without its prefix", {**_BOUND_RESULT, "anchor_epoch_id": "e" * 64}),
+    (
+        "an epoch with a trailing newline",
+        {**_BOUND_RESULT, "anchor_epoch_id": "sha256:" + "e" * 64 + "\n"},
+    ),
+    (
+        "an epoch that is not hex",
+        {**_BOUND_RESULT, "anchor_epoch_id": "sha256:" + "g" * 64},
+    ),
+    ("an epoch null", {**_BOUND_RESULT, "anchor_epoch_id": None}),
+    ("an arbitrary status", {**_BOUND_RESULT, "registration_status": "refused"}),
+    ("the disabled status", {**_BOUND_RESULT, "registration_status": "disabled"}),
+    ("a status in another case", {**_BOUND_RESULT, "registration_status": "Confirmed"}),
+    ("a status as a list", {**_BOUND_RESULT, "registration_status": ["confirmed"]}),
+    ("a status null", {**_BOUND_RESULT, "registration_status": None}),
+]
+
+
 @pytest.mark.parametrize(
     "result",
-    [
-        {"lie": True},
-        {},
-        {**_BOUND_RESULT, "commissioning_reference": OTHER_REFERENCE},
-        {**_BOUND_RESULT, "replaced": "false"},
-        {**_BOUND_RESULT, "replaced": 0},
-        {**_BOUND_RESULT, "replaced": True},
-        {**_BOUND_RESULT, "extra": 1},
-        {k: v for k, v in _BOUND_RESULT.items() if k != "registration_status"},
-        {**_BOUND_RESULT, "device_id": 7},
-    ],
-    ids=[
-        "a lie",
-        "empty",
-        "another reference",
-        "replaced as a string",
-        "replaced as an integer",
-        "replaced without force",
-        "an extra field",
-        "a missing field",
-        "a device that is not text",
-    ],
+    [row for _, row in _UNBOUND_RESULTS],
+    ids=[name for name, _ in _UNBOUND_RESULTS],
 )
 async def test_a_success_not_bound_to_the_request_is_not_a_success(site, result):
     """A peer answering ok for something else is an unexpected fault, exit 1."""
@@ -873,15 +895,17 @@ async def test_a_success_not_bound_to_the_request_is_not_a_success(site, result)
     assert (run.rc, run.payload["error"]["code"]) == (1, "internal_error")
 
 
-async def test_the_bound_success_is_relayed(site):
+@pytest.mark.parametrize(
+    "status", ["pending_authorisation", "pending_confirmation", "confirmed"]
+)
+async def test_the_bound_success_is_relayed(site, status):
     """The same fake peer, answering the five fields for this reference, succeeds."""
+    bound = {**_BOUND_RESULT, "registration_status": status}
 
     async def answer(reader: Any, writer: Any) -> None:
         await reader.readline()
         writer.write(
-            json.dumps(
-                {"schema_version": 1, "ok": True, "result": _BOUND_RESULT}
-            ).encode()
+            json.dumps({"schema_version": 1, "ok": True, "result": bound}).encode()
             + b"\n"
         )
         await writer.drain()
@@ -894,7 +918,123 @@ async def test_the_bound_success_is_relayed(site):
     finally:
         server.close()
         await server.wait_closed()
-    assert (run.rc, run.payload["result"]) == (0, _BOUND_RESULT)
+    assert (run.rc, run.payload["result"]) == (0, bound)
+
+
+@pytest.mark.parametrize(
+    "result",
+    [row for _, row in _UNBOUND_RESULTS],
+    ids=[name for name, _ in _UNBOUND_RESULTS],
+)
+def test_the_commission_bound_refuses_without_raising(result):
+    """Every unbound row is a refusal of the bound itself, never a crash past it."""
+    request = {
+        "operation": "evidence_commission",
+        "reference": REFERENCE,
+        "force": False,
+    }
+    assert cli_bridge._commission_bound(request)(result) is False
+
+
+@pytest.mark.parametrize("replaced", [False, True])
+async def test_a_forced_success_is_relayed_whether_or_not_it_replaced(site, replaced):
+    """`--force` admits a replacement; it does not require one."""
+    bound = {**_BOUND_RESULT, "replaced": replaced}
+
+    async def answer(reader: Any, writer: Any) -> None:
+        await reader.readline()
+        writer.write(
+            json.dumps({"schema_version": 1, "ok": True, "result": bound}).encode()
+            + b"\n"
+        )
+        await writer.drain()
+        writer.close()
+
+    site.socket.parent.mkdir(parents=True, exist_ok=True)
+    server = await asyncio.start_unix_server(answer, path=str(site.socket))
+    try:
+        run = await site.bridge(*_commission(REFERENCE, "--force"))
+    finally:
+        server.close()
+        await server.wait_closed()
+    assert (run.rc, run.payload["result"]) == (0, bound)
+
+
+_HANDLER_ANSWER = {"ok": True, **_BOUND_RESULT}
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        {**_HANDLER_ANSWER, "replaced": 0},
+        {**_HANDLER_ANSWER, "replaced": "no"},
+        {**_HANDLER_ANSWER, "device_id": 7},
+        {**_HANDLER_ANSWER, "device_id": ""},
+        {**_HANDLER_ANSWER, "anchor_epoch_id": "sha256:" + "E" * 64},
+        {**_HANDLER_ANSWER, "anchor_epoch_id": "sha256:" + "e" * 63},
+        {**_HANDLER_ANSWER, "registration_status": "refused"},
+        {**_HANDLER_ANSWER, "registration_status": "disabled"},
+        {**_HANDLER_ANSWER, "commissioning_reference": OTHER_REFERENCE},
+        {**_HANDLER_ANSWER, "replaced": True},
+        {**_HANDLER_ANSWER, "extra": 1},
+        {k: v for k, v in _HANDLER_ANSWER.items() if k != "replaced"},
+        {**_HANDLER_ANSWER, "ok": 1},
+        {"ok": False, "error": 7},
+        {"ok": False, "error": "cancelled", "detail": "x"},
+        {"ok": 0, "error": "cancelled"},
+    ],
+    ids=[
+        "replaced as an integer",
+        "replaced as a string",
+        "a device that is not text",
+        "an empty device",
+        "an uppercase epoch",
+        "a short epoch",
+        "an arbitrary status",
+        "the disabled status",
+        "another reference",
+        "replaced without force",
+        "an extra member",
+        "a missing member",
+        "ok as an integer",
+        "a refusal code that is not text",
+        "a refusal with an extra member",
+        "a refusal with ok as an integer",
+    ],
+)
+async def test_the_socket_never_normalises_a_malformed_answer(site, answer):
+    """The runtime's own server answers `internal_error`, never a coerced success."""
+    await site.start_runtime()
+    assert site.runtime is not None
+
+    async def malformed(*_a: Any) -> Any:
+        return answer
+
+    site.runtime._commission_from_operator = malformed  # type: ignore[method-assign]
+    assert site.server is not None
+    await site.server.close()
+    await site.serve()
+    reply = await _send(site.socket, _request())
+    assert reply["ok"] is False and "result" not in reply, reply
+    assert reply["error"]["code"] == "internal_error", reply
+    run = await site.bridge(*_commission())
+    assert (run.rc, run.payload["error"]["code"]) == (1, "internal_error")
+
+
+async def test_the_socket_answers_a_well_formed_handler_answer(site):
+    """The builder's positive control: the same answer, well formed, succeeds."""
+    await site.start_runtime()
+    assert site.runtime is not None
+
+    async def well_formed(*_a: Any) -> Any:
+        return _HANDLER_ANSWER
+
+    site.runtime._commission_from_operator = well_formed  # type: ignore[method-assign]
+    assert site.server is not None
+    await site.server.close()
+    await site.serve()
+    reply = await _send(site.socket, _request())
+    assert reply == {"schema_version": 1, "ok": True, "result": _BOUND_RESULT}
 
 
 async def test_an_answer_the_runtime_does_not_define_is_internal(site):

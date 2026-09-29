@@ -101,6 +101,9 @@ ADMITTED_STATES: Final[frozenset[str]] = frozenset(
 RECONCILE_REASONS: Final[frozenset[str]] = frozenset(
     {"site_inspection", "instrument_measurement", "actuator_position_observed"}
 )
+#: The entry point of a reconciliation commissioned feedback records, with no
+#: operator principal.
+FEEDBACK_ENTRY_POINT: Final = "commissioned_feedback"
 
 # ── The proposal's lifetime ───────────────────────────────────────────────────
 # Held in `approval_bounds`, which config and the skill loader import at load.
