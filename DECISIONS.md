@@ -210,7 +210,8 @@ Rules:
 - `bypass_llm: true` remains exclusively reserved for Tier D safety-critical
   triggers.
 - Physical Tier B triggers must declare either `requires_approval: true` or
-  `reasoning_policy: post_action`.
+  `reasoning_policy: post_action`, never both; a trigger declaring both is
+  refused at skill load.
 - `reasoning_policy: post_action` is valid only for Tier B triggers.
 - With `post_action`, the runtime dispatches deterministic Tier B default
   actions before invoking local or gateway reasoning.

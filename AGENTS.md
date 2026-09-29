@@ -207,8 +207,8 @@ actions:
 - `bypass_llm: true` MUST be paired with `action_tier: D`. Never one without
   the other.
 - Physical Tier B triggers MUST declare either `requires_approval: true` or
-  `reasoning_policy: post_action`. Tier B immediate execution never uses
-  `bypass_llm: true`.
+  `reasoning_policy: post_action`, never both. Tier B immediate execution
+  never uses `bypass_llm: true`.
 - Tier C triggers MUST declare `safe_default_action`.
 - Tier C approval replies are scoped by default. Operators reply
   `YES-<proposal_id>` or `NO-<proposal_id>`; bare remote `YES`/`NO` is legacy

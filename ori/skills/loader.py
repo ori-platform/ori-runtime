@@ -1745,6 +1745,14 @@ class SkillLoader:
                     "reserved for Tier B soft physical triggers."
                 )
 
+            if reasoning_policy == "post_action" and requires_approval:
+                raise SkillValidationError(
+                    f"Skill '{skill_name}' trigger '{name}' declares both "
+                    "requires_approval=true and reasoning_policy=post_action. "
+                    "requires_approval waits for an operator before acting; "
+                    "post_action acts and explains afterwards. Declare one."
+                )
+
             safe_default_action = raw.get("safe_default_action", "log_to_dashboard")
 
             # Tier C must always have a fallback — do not allow it to be blank

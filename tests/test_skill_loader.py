@@ -1022,6 +1022,126 @@ class TestValidation:
         ):
             loader.load_one(skill_dir)
 
+    @staticmethod
+    def _tier_b_policy_skill(
+        skill_dir: Path, trigger_fields: dict, available: list | None = None
+    ) -> None:
+        trigger = {
+            "name": "over_threshold",
+            "condition": "value > 5",
+            "action_tier": "B",
+            **trigger_fields,
+        }
+        _write_skill_yaml_mapping(
+            skill_dir,
+            {
+                "name": "tier-b-policy",
+                "version": "0.1.0",
+                "author": "test",
+                "signature": "bundled",
+                "sensors_required": [{"type": "current_clamp"}],
+                "triggers": [trigger],
+                "actions": {
+                    "available": available
+                    or [
+                        {"name": "coap_command", "tier": "B"},
+                        {"name": "alert_whatsapp", "tier": "A"},
+                    ],
+                    "defaults": {"over_threshold": ["coap_command", "alert_whatsapp"]},
+                },
+            },
+        )
+
+    @pytest.mark.parametrize(
+        "requires_approval",
+        [True, "true", "True", "yes", 1, "false", "no"],
+        ids=repr,
+    )
+    def test_requires_approval_with_post_action_is_refused(
+        self, tmp_path, requires_approval
+    ):
+        skill_dir = tmp_path / "both"
+        self._tier_b_policy_skill(
+            skill_dir,
+            {
+                "requires_approval": requires_approval,
+                "reasoning_policy": "post_action",
+            },
+        )
+        with pytest.raises(
+            SkillValidationError,
+            match="declares both requires_approval=true and reasoning_policy=post_action",
+        ):
+            _first_party_loader().load_one(skill_dir)
+
+    def test_requires_approval_with_post_action_refused_without_physical_default(
+        self, tmp_path
+    ):
+        skill_dir = tmp_path / "both-informational"
+        _write_skill_yaml_mapping(
+            skill_dir,
+            {
+                "name": "tier-b-informational",
+                "version": "0.1.0",
+                "author": "test",
+                "signature": "bundled",
+                "sensors_required": [{"type": "current_clamp"}],
+                "triggers": [
+                    {
+                        "name": "over_threshold",
+                        "condition": "value > 5",
+                        "action_tier": "B",
+                        "requires_approval": True,
+                        "reasoning_policy": "post_action",
+                    }
+                ],
+                "actions": {
+                    "available": [{"name": "alert_whatsapp", "tier": "A"}],
+                    "defaults": {"over_threshold": ["alert_whatsapp"]},
+                },
+            },
+        )
+        with pytest.raises(SkillValidationError, match="declares both"):
+            _first_party_loader().load_one(skill_dir)
+
+    @pytest.mark.parametrize(
+        "trigger_fields",
+        [
+            {"requires_approval": True},
+            {"reasoning_policy": "post_action"},
+            {"requires_approval": False, "reasoning_policy": "post_action"},
+            {"requires_approval": None, "reasoning_policy": "post_action"},
+            {"requires_approval": 0, "reasoning_policy": "post_action"},
+        ],
+        ids=repr,
+    )
+    def test_either_policy_alone_loads(self, tmp_path, trigger_fields):
+        skill_dir = tmp_path / "one"
+        self._tier_b_policy_skill(skill_dir, trigger_fields)
+        skill = _first_party_loader().load_one(skill_dir)
+        trigger = skill.triggers[0]
+        assert not (
+            trigger.requires_approval and trigger.reasoning_policy == "post_action"
+        )
+
+    def test_padded_post_action_with_requires_approval_is_refused(self, tmp_path):
+        skill_dir = tmp_path / "padded"
+        self._tier_b_policy_skill(
+            skill_dir,
+            {"requires_approval": True, "reasoning_policy": "  post_action "},
+        )
+        with pytest.raises(SkillValidationError, match="declares both"):
+            _first_party_loader().load_one(skill_dir)
+
+    def test_mixed_case_post_action_with_requires_approval_is_refused(self, tmp_path):
+        skill_dir = tmp_path / "mixed-case"
+        self._tier_b_policy_skill(
+            skill_dir,
+            {"requires_approval": True, "reasoning_policy": "Post_Action"},
+        )
+        with pytest.raises(SkillValidationError, match="invalid reasoning_policy"):
+            _first_party_loader().load_one(skill_dir)
+
     def test_tier_c_without_safe_default_raises(self, tmp_path):
         yaml_content = """\
             name: c-skill

@@ -517,6 +517,13 @@ candidate or release is cut.
 
 ## Fixed
 
+- A Tier B trigger declaring both `requires_approval: true` and
+  `reasoning_policy: post_action` is refused at skill load with a named error;
+  either one alone still loads. The two were accepted together, and after an
+  operator answered NO the post-action path read the safe default's success as
+  the Tier B act, so the enrichment and the Tier A alert described an act that
+  never ran. The elevator refuses to dispatch anything for such a trigger if one
+  reaches it by any other route.
 - A request carrying a JSON integer longer than the interpreter's
   string-conversion limit is refused as malformed by the firmware MQTT
   operator socket (`invalid_request`) and the operator socket

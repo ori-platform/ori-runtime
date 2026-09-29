@@ -1677,6 +1677,51 @@ class TestReasonAndDispatch:
         finally:
             await store.close()
 
+    @pytest.mark.parametrize(
+        "source", ["trigger", "rule_result", "skill_trigger_only", "skill_config"]
+    )
+    async def test_tier_b_post_action_with_approval_dispatches_nothing(self, source):
+        skill = _tier_b_post_action_skill()
+        event = _event(value=5.0)
+        if source == "trigger":
+            skill.triggers[0]["requires_approval"] = True
+        elif source == "rule_result":
+            event.context["__rule_result"] = RuleResult(
+                matched=True,
+                rule_name="soft_switch",
+                action_tier="B",
+                reasoning_policy="post_action",
+                requires_approval=True,
+            )
+        elif source == "skill_trigger_only":
+            skill.triggers[0]["requires_approval"] = True
+            event.context["__rule_result"] = RuleResult(
+                matched=True,
+                rule_name="soft_switch",
+                action_tier="B",
+                reasoning_policy="post_action",
+                requires_approval=False,
+            )
+        else:
+            skill.config["requires_approval"] = True
+            event.context["__rule_result"] = RuleResult(
+                matched=True,
+                rule_name="undeclared_trigger",
+                action_tier="B",
+                reasoning_policy="post_action",
+                requires_approval=False,
+            )
+        local_llm = AsyncMock()
+        dispatcher = AsyncMock()
+        store = _mock_state_store(avg=4.0, history=[4.0, 4.1])
+        elevator = IntelligenceElevator(local_llm=local_llm)
+
+        await elevator.reason_and_dispatch(event, skill, store, dispatcher)
+
+        dispatcher.dispatch.assert_not_called()
+        local_llm.reason.assert_not_called()
+        store.log_reasoning.assert_not_called()
+
     async def test_tier_b_post_action_notification_failure_does_not_taint_action(
         self, tmp_path
     ):
