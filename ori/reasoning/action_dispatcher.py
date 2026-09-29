@@ -3617,12 +3617,27 @@ class ActionDispatcher:
                         action,
                         proposal_id,
                     )
-                    approved = False
                     refused_late = True
 
             # True only where the safe default is dispatched below.
             safe_default_used = False
-            if approved:
+            if refused_late:
+                # The operator approved; the act did not run. `approved` records
+                # the authority given, `executed` what happened.
+                action_taken = "refused_late_approval"
+                executed = False
+                progress.acted = ActionResult(
+                    action_name=action,
+                    tier=tier,
+                    executed=False,
+                    approved=True,
+                    action_taken=action_taken,
+                    timestamp=now_ms(),
+                    operator_response=operator_response,
+                    proposal_id=proposal_id,
+                    safe_default_used=safe_default_used,
+                )
+            elif approved:
                 inner = await self._execute_immediately(action, tier, context)
                 action_taken = inner.action_taken
                 executed = inner.executed
@@ -3631,20 +3646,6 @@ class ActionDispatcher:
                     tier=tier,
                     executed=executed,
                     approved=True,
-                    action_taken=action_taken,
-                    timestamp=now_ms(),
-                    operator_response=operator_response,
-                    proposal_id=proposal_id,
-                    safe_default_used=safe_default_used,
-                )
-            elif refused_late:
-                action_taken = "refused_late_approval"
-                executed = False
-                progress.acted = ActionResult(
-                    action_name=action,
-                    tier=tier,
-                    executed=False,
-                    approved=False,
                     action_taken=action_taken,
                     timestamp=now_ms(),
                     operator_response=operator_response,

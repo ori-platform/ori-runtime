@@ -519,10 +519,17 @@ candidate or release is cut.
 
 - An approval refused because a higher authority took the resource while the
   operator decided (`refused_late_approval`, on the host-state Tier C and
-  approval-required Tier B workflow) runs no safe default, and is no longer
-  recorded as having used one: `safe_default_used` is false on the returned
-  result, the action log row and the Tier C decision record. A NO, an invalid
-  reply or an unanswered request still records the safe default it ran.
+  approval-required Tier B workflow) is recorded as what happened: the
+  operator approved and the act did not run. The returned result, the action
+  log row and the Tier C decision record carry `approved` true, `executed`
+  false, `operator_decision` `approved` and `safe_default_used` false, where
+  they carried a rejection that ran a safe default. `approved` records the
+  authority given, not execution, as the governed path already records
+  `dispatch_refused_contention`. A Tier C late refusal is now attested under
+  its `tier_c_approval` licence with `executed` false rather than refused
+  attestation for want of one. A NO, an invalid reply, a v1 offline token or an
+  unanswered request still records a rejection and the safe default it ran,
+  and a late refusal still spends no cooldown.
 - A request carrying a JSON integer longer than the interpreter's
   string-conversion limit is refused as malformed by the firmware MQTT
   operator socket (`invalid_request`) and the operator socket

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 import time
 from typing import Any
@@ -15,9 +16,15 @@ import pytest
 
 from ori.network.events import OriEvent, ReasoningResult, SensorReading
 from ori.reasoning.action_dispatcher import ActionDispatcher
-from ori.reasoning.dispatch_plan import resource_identity
-from ori.reasoning.elevator import SkillContext
+from ori.reasoning.dispatch_plan import (
+    DispatchOutcome,
+    PlannedAction,
+    consumes_cooldown,
+    resource_identity,
+)
+from ori.reasoning.elevator import SkillContext, _record_planned_outcome
 from ori.reasoning.resource_gate import Contributor, ResourceGate
+from ori.security.evidence.first_party import FirstPartyEvidenceAttestor
 from ori.state.store import StateStore
 
 PROPOSAL = "P0000001"
@@ -53,12 +60,16 @@ def _event() -> OriEvent:
 
 
 class _Harness:
-    def __init__(self, store: StateStore) -> None:
+    def __init__(
+        self, store: StateStore, *, evidence_attestor: Any = None, **config: Any
+    ) -> None:
         self.store = store
         self.gate = ResourceGate()
         self.ran: list[str] = []
         self.dispatcher = ActionDispatcher(
-            state_store=store, config={"operator_contact": "+2348000000000"}
+            state_store=store,
+            evidence_attestor=evidence_attestor,
+            config={"operator_contact": "+2348000000000", **config},
         )
         self.dispatcher.bind_resource_gate(self.gate)
 
@@ -92,10 +103,26 @@ class _Harness:
             ),
         )
 
-    async def run(self, listen: Any, *, timeout: int = 5, tier: str = "C") -> Any:
+    async def run(
+        self,
+        listen: Any,
+        *,
+        timeout: int = 5,
+        tier: str = "C",
+        local_console: bool = False,
+    ) -> Any:
+        listener = (
+            "_listen_for_local_console_response"
+            if local_console
+            else "_listen_for_response"
+        )
         with (
-            patch.object(self.dispatcher, "_tier_c_comms_available", return_value=True),
-            patch.object(self.dispatcher, "_listen_for_response", new=listen),
+            patch.object(
+                self.dispatcher,
+                "_tier_c_comms_available",
+                return_value=not local_console,
+            ),
+            patch.object(self.dispatcher, listener, new=listen),
             patch(
                 "ori.reasoning.action_dispatcher._generate_proposal_id",
                 return_value=PROPOSAL,
@@ -134,10 +161,10 @@ class _Harness:
         ]
 
 
-async def _harness(tmp_path: Any) -> _Harness:
+async def _harness(tmp_path: Any, **kwargs: Any) -> _Harness:
     store = StateStore(str(tmp_path / "s.db"))
     await store.open()
-    return _Harness(store)
+    return _Harness(store, **kwargs)
 
 
 class TestALateRefusalUsesNoSafeDefault:
@@ -157,14 +184,23 @@ class TestALateRefusalUsesNoSafeDefault:
             await h.store.close()
         assert outcome.tier == tier
         assert outcome.action_taken == "refused_late_approval"
+        assert outcome.approved is True
         assert outcome.executed is False
         assert outcome.safe_default_used is False
         assert h.ran == []
         assert len(decisions) == 1
-        assert decisions[0]["safe_default_used"] is False
-        assert decisions[0]["action_executed"] is False
-        assert decisions[0]["action_taken"] == "refused_late_approval"
-        assert [row["safe_default_used"] for row in actions] == [False]
+        decision = decisions[0]
+        assert decision["operator_decision"] == "approved"
+        assert decision["operator_response"] == f"YES-{PROPOSAL}"
+        assert decision["safe_default_used"] is False
+        assert decision["action_executed"] is False
+        assert decision["action_taken"] == "refused_late_approval"
+        assert decision["final_action_result"]["approved"] is True
+        assert decision["final_action_result"]["executed"] is False
+        assert [
+            (r["approved"], r["executed"], r["action_taken"], r["safe_default_used"])
+            for r in actions
+        ] == [(True, False, "refused_late_approval", False)]
 
     async def test_a_no_records_the_safe_default(self, tmp_path):
         h = await _harness(tmp_path)
@@ -296,8 +332,128 @@ class TestALateRefusalUsesNoSafeDefault:
             await h.store.close()
         assert outcome.action_taken == "refused_late_approval"
         assert outcome.operator_response != "approval_error"
+        assert outcome.approved is True and outcome.executed is False
         assert outcome.safe_default_used is False
         assert h.ran == []
-        assert [(r["action_taken"], r["safe_default_used"]) for r in actions] == [
-            ("refused_late_approval", False)
-        ]
+        assert [
+            (r["approved"], r["executed"], r["action_taken"], r["safe_default_used"])
+            for r in actions
+        ] == [(True, False, "refused_late_approval", False)]
+
+    async def test_a_no_on_a_displaced_proposal_is_a_rejection(self, tmp_path):
+        h = await _harness(tmp_path)
+
+        async def listen(**_k: Any) -> str:
+            await h.displace()
+            return f"NO-{PROPOSAL}"
+
+        try:
+            outcome = await h.run(listen)
+            decisions = await h.decision_rows()
+        finally:
+            await h.store.close()
+        assert outcome.approved is False
+        assert outcome.safe_default_used is True
+        assert h.ran == ["log_to_dashboard"]
+        assert [
+            (r["operator_decision"], r["safe_default_used"]) for r in decisions
+        ] == [("rejected", True)]
+
+    async def test_a_v1_token_on_a_displaced_proposal_is_still_a_rejection(
+        self, tmp_path
+    ):
+        # A v1 token approves no Tier C action, so there is no approval for the
+        # displacement to refuse late.
+        h = await _harness(tmp_path, local_console_enabled=True)
+
+        async def listen(**_k: Any) -> str:
+            await h.displace()
+            return "TOKEN:abc"
+
+        try:
+            outcome = await h.run(listen, local_console=True)
+            decisions = await h.decision_rows()
+            actions = await h.action_rows()
+        finally:
+            await h.store.close()
+        assert outcome.approved is False
+        assert outcome.action_taken != "refused_late_approval"
+        assert outcome.safe_default_used is True
+        assert outcome.operator_response == (
+            "LOCAL:TOKEN_REJECTED:v1_token_is_not_approval"
+        )
+        assert h.ran == ["log_to_dashboard"]
+        assert [
+            (r["operator_decision"], r["safe_default_used"]) for r in decisions
+        ] == [("rejected", True)]
+        assert [r["approved"] for r in actions] == [False]
+
+    async def test_a_late_refusal_is_a_refused_plan_that_spends_no_cooldown(
+        self, tmp_path
+    ):
+        h = await _harness(tmp_path)
+
+        async def listen(**_k: Any) -> str:
+            await h.displace()
+            return f"YES-{PROPOSAL}"
+
+        try:
+            outcome = await h.run(listen)
+        finally:
+            await h.store.close()
+        planned = PlannedAction(
+            action="terminate_process",
+            dispatch_tier="C",
+            identity=None,
+            tier_d_granted=False,
+        )
+        _record_planned_outcome(planned, outcome)
+        assert planned.outcome == DispatchOutcome.FULLY_REFUSED
+        assert planned.refusal == "late_approval"
+        assert consumes_cooldown(planned.outcome) is False
+
+
+class TestALateRefusalIsAttestedAsApprovedAndNotExecuted:
+    async def test_the_sealed_row_carries_the_approval_and_no_act(self, tmp_path):
+        attestor = FirstPartyEvidenceAttestor(
+            db_path=str(tmp_path / "evidence.db"),
+            key_path=str(tmp_path / "evidence.key"),
+            device_secret="install-secret-for-late-refusal-tests",
+            device_id="dev-01",
+        )
+        assert await attestor.start()
+        h = await _harness(tmp_path, evidence_attestor=attestor)
+
+        async def listen(**_k: Any) -> str:
+            await h.displace()
+            return f"YES-{PROPOSAL}"
+
+        try:
+            outcome = await h.run(listen)
+            actions = await h.action_rows()
+        finally:
+            await h.store.close()
+            attestor.close()
+        assert outcome.approved is True and outcome.executed is False
+        [row] = actions
+        assert row["attestation_status"] == "signed"
+        conn = sqlite3.connect(str(tmp_path / "evidence.db"))
+        try:
+            payloads = [
+                json.loads(raw)
+                for (raw,) in conn.execute(
+                    "SELECT payload_json FROM evidence_chain WHERE event_type = ?",
+                    (attestor.action_event_type,),
+                )
+            ]
+        finally:
+            conn.close()
+        assert len(payloads) == 1
+        payload = payloads[0]
+        assert payload["authority"] == {
+            "kind": "tier_c_approval",
+            "proposal_id": PROPOSAL,
+        }
+        assert payload["approved"] is True
+        assert payload["executed"] is False
+        assert payload["action_taken"] == "refused_late_approval"
