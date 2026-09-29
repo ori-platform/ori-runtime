@@ -186,10 +186,14 @@ class Site:
             directory=self.root / "run",
             reconcile=_no_reconcile,
             commission=commission,
-            operator_uid=lambda: self.operator_uid(),
+            operator_uid=self.current_operator_uid,
             grant=lambda _d, _s, _u: None,
         )
         await self.server.start()
+
+    def current_operator_uid(self) -> int | None:
+        """The operator uid as the test holds it now, so a test may change it after start."""
+        return self.operator_uid()
 
     def override_registration(self, **fields: Any) -> None:
         """The attestor's own registration health, with *fields* changed."""
