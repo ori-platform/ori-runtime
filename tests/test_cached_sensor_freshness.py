@@ -17,7 +17,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, AsyncIterator, Callable
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -366,7 +366,6 @@ MQTT_FAMILY = [
     pytest.param(_lorawan, id="lorawan"),
     pytest.param(_zigbee, id="zigbee"),
     pytest.param(_perception, id="mqtt_perception"),
-    pytest.param(_victron, id="victron"),
 ]
 ALL_CACHED = [
     *MQTT_FAMILY,
@@ -722,3 +721,167 @@ async def test_the_health_stale_flag_uses_the_same_silence_bound(poll_ms: int) -
         snapshot = await runtime._build_health_snapshot()
     stale = {s["id"]: s["stale"] for s in snapshot["sensors"]}
     assert stale == {"inside": False, "past": True}
+
+
+# ── Victron is excluded from the bound ───────────────────────────────────────
+
+
+def _mqtt_family_classes() -> set[type]:
+    from ori.hal.mqtt_base import MqttCachedAdapter
+
+    found: set[type] = set()
+    pending = [MqttCachedAdapter]
+    while pending:
+        for sub in pending.pop().__subclasses__():
+            found.add(sub)
+            pending.append(sub)
+    return found
+
+
+def test_only_victron_is_excluded_from_the_silence_bound() -> None:
+    excluded = {c for c in _mqtt_family_classes() if not c.SILENCE_BOUNDED}
+    assert excluded == {VictronAdapter}, (
+        "an MQTT adapter left the silence bound; this guard sees only subclasses "
+        "of MqttCachedAdapter, not a read() that skips _require_fresh"
+    )
+
+
+async def test_a_silent_victron_source_is_still_served(clock: _Clock) -> None:
+    async with _running(_victron) as source:
+        await source.send(84.5)
+        clock.advance_ms(10 * BOUND_MS)
+        assert _value(await source.adapter.read(SENSOR)) == 84.5
+
+
+async def test_a_victron_retained_replay_is_still_cached(clock: _Clock) -> None:
+    async with _running(_victron) as source:
+        await source.replay(84.5)
+        assert _value(await source.adapter.read(SENSOR)) == 84.5
+
+
+class _WallClock:
+    def __init__(self, clock: _Clock) -> None:
+        self._clock = clock
+
+    def __call__(self) -> int:
+        return int(self._clock.now * 1000) + 1_700_000_000_000
+
+
+async def _watch(runtime: OriRuntime) -> None:
+    """Run the staleness watch for a few passes."""
+    runtime._shutdown_event.clear()
+    task = asyncio.create_task(
+        runtime._sensor_staleness_loop(alert_sender=AsyncMock(), check_interval_s=0.001)
+    )
+    await asyncio.sleep(0.02)
+    runtime._shutdown_event.set()
+    await task
+
+
+def _alerting(
+    harness: _Harness, monkeypatch: pytest.MonkeyPatch, clock: _Clock
+) -> AsyncMock:
+    import ori.runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "now_ms", _WallClock(clock))
+    monkeypatch.setattr(runtime_module, "STALE_SENSOR_MIN_CHECK_INTERVAL_S", 0.001)
+    runtime = harness.runtime
+    runtime._operator_contact = "+2340000000000"
+    runtime._sensor_poll_interval_ms = {SENSOR: POLL_MS}
+    runtime._stale_sensor_active = set()
+    sent = AsyncMock(return_value=True)
+    runtime._send_or_queue_alert = sent  # type: ignore[method-assign]
+    return sent
+
+
+async def test_a_silent_victron_source_raises_no_stale_alert(
+    clock: _Clock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with _runtime(tmp_path) as harness, _running(_victron) as source:
+        sent = _alerting(harness, monkeypatch, clock)
+        await source.send(84.5)
+        for _ in range(10):
+            clock.advance_ms(BOUND_MS)
+            await _poll(harness, source.adapter)
+            await _watch(harness.runtime)
+        assert len(harness.observed) == 10
+        sent.assert_not_awaited()
+
+
+# ── Alert and log volume under silence ───────────────────────────────────────
+
+
+async def test_a_long_silence_alerts_once_and_again_after_recovery(
+    clock: _Clock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with _runtime(tmp_path) as harness, _running(_mqtt) as source:
+        sent = _alerting(harness, monkeypatch, clock)
+        await source.send(12.0)
+        await _poll(harness, source.adapter)
+        for _ in range(20):
+            clock.advance_ms(POLL_MS)
+            await _poll(harness, source.adapter)
+            await _watch(harness.runtime)
+        assert sent.await_count == 1
+
+        await source.send(12.0)
+        await _poll(harness, source.adapter)
+        await _watch(harness.runtime)
+        assert sent.await_count == 1, "recovery raised a second silence alert"
+
+        for _ in range(20):
+            clock.advance_ms(POLL_MS)
+            await _poll(harness, source.adapter)
+            await _watch(harness.runtime)
+        assert sent.await_count == 2
+
+
+def _read_failures(caplog: pytest.LogCaptureFixture, level: int) -> int:
+    return sum(
+        1
+        for r in caplog.records
+        if r.levelno == level and "read failed" in r.getMessage()
+    )
+
+
+async def test_a_long_silence_logs_one_read_warning_per_interval(
+    clock: _Clock, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    caplog.set_level(logging.DEBUG, logger="ori.runtime")
+    async with _runtime(tmp_path) as harness, _running(_mqtt) as source:
+        await source.send(12.0)
+        await _poll(harness, source.adapter)
+        clock.advance_ms(BOUND_MS + 1)
+        for _ in range(30):
+            await _poll(harness, source.adapter)
+        assert _read_failures(caplog, logging.WARNING) == 1
+        assert _read_failures(caplog, logging.DEBUG) == 29
+
+        await source.send(12.0)
+        await _poll(harness, source.adapter)
+        clock.advance_ms(BOUND_MS + 1)
+        await _poll(harness, source.adapter)
+        assert _read_failures(caplog, logging.WARNING) == 2
+
+
+async def test_the_read_warning_interval_is_what_limits_the_log(
+    clock: _Clock,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import logging
+
+    import ori.runtime as runtime_module
+
+    monkeypatch.setattr(runtime_module, "READ_FAILURE_LOG_INTERVAL_S", 0.0)
+    caplog.set_level(logging.DEBUG, logger="ori.runtime")
+    async with _runtime(tmp_path) as harness, _running(_mqtt) as source:
+        await source.send(12.0)
+        await _poll(harness, source.adapter)
+        clock.advance_ms(BOUND_MS + 1)
+        for _ in range(5):
+            await _poll(harness, source.adapter)
+        assert _read_failures(caplog, logging.WARNING) == 5

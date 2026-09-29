@@ -316,6 +316,8 @@ CAPABILITY_POSTURE_UPDATE_INTERVAL_S = 30.0
 DEVICE_POLICY_REFRESH_DEFAULT_S = 21600.0
 DEVICE_POLICY_TRANSIENT_AUDIT_SUPPRESS_MS = 900_000
 STALE_SENSOR_MIN_CHECK_INTERVAL_S = 1.0
+# A sensor failing every poll logs one WARNING per this interval, the rest DEBUG.
+READ_FAILURE_LOG_INTERVAL_S = 60.0
 
 # How many consecutive refused measurement windows mark a sensor degraded. One
 # refusal is a transient the poll cadence will retry; a run of them means the
@@ -504,6 +506,7 @@ class OriRuntime:
         self._sensor_poll_interval_ms: dict[str, int] = {}
         self._sensor_last_seen_ms: dict[str, int] = {}
         self._stale_sensor_active: set[str] = set()
+        self._read_failure_logged_at: dict[str, float] = {}
         # A refused measurement window is not a failed read. The sensor is
         # present and answering; what it returned was not a measurement.
         self._measurement_refusals: dict[str, int] = {}
@@ -1540,6 +1543,7 @@ class OriRuntime:
         self._sensor_poll_interval_ms = {}
         self._sensor_last_seen_ms = {}
         self._stale_sensor_active = set()
+        self._read_failure_logged_at = {}
         self._measurement_refusals = {}
         self._measurement_valid_streak = {}
         self._measurement_refusal_reason = {}
@@ -4175,6 +4179,11 @@ class OriRuntime:
                 # then fail on every poll before any skill evaluated it.
                 refuse_unusable_reading(reading)
                 self._sensor_last_seen_ms[sensor_cfg.id] = now_ms()
+                if (
+                    self._read_failure_logged_at.pop(str(sensor_cfg.id), None)
+                    is not None
+                ):
+                    logger.info("[sensor] %s read recovered", sensor_cfg.id)
                 await self._note_measurement_accepted(str(sensor_cfg.id))
                 if sensor_cfg.id in self._stale_sensor_active:
                     self._stale_sensor_active.discard(sensor_cfg.id)
@@ -4219,7 +4228,7 @@ class OriRuntime:
                 if self._status_indicator is not None:
                     _sync_power_state_from_reading(self._status_indicator, reading)
             except AdapterReadError as exc:
-                logger.warning("[sensor] %s read failed: %s", sensor_cfg.id, exc)
+                self._log_read_failure(str(sensor_cfg.id), exc)
                 if isinstance(exc, MeasurementRefusedError):
                     await self._note_measurement_refusal(
                         sensor_id=str(sensor_cfg.id),
@@ -4233,6 +4242,16 @@ class OriRuntime:
             except Exception:
                 logger.exception("[sensor] unexpected error polling %s", sensor_cfg.id)
             await asyncio.sleep(sensor_cfg.poll_interval_ms / 1000)
+
+    def _log_read_failure(self, sensor_id: str, exc: AdapterReadError) -> None:
+        """Log a failed read at WARNING once per interval per sensor, otherwise DEBUG."""
+        now = asyncio.get_running_loop().time()
+        last = self._read_failure_logged_at.get(sensor_id)
+        if last is None or now - last >= READ_FAILURE_LOG_INTERVAL_S:
+            self._read_failure_logged_at[sensor_id] = now
+            logger.warning("[sensor] %s read failed: %s", sensor_id, exc)
+        else:
+            logger.debug("[sensor] %s read failed: %s", sensor_id, exc)
 
     async def _sensor_staleness_loop(
         self,

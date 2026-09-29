@@ -7,7 +7,7 @@ import json
 import logging
 import math
 import ssl
-from typing import Any, Iterable
+from typing import Any, ClassVar, Iterable
 
 from ori.hal.base import (
     DEFAULT_POLL_INTERVAL_MS,
@@ -222,6 +222,11 @@ for _canonical, _aliases in _TLS_ALIASES.items():
 
 class MqttCachedAdapter(BaseAdapter):
     """Reusable base for MQTT adapters that subscribe and cache latest values."""
+
+    # Reads past the silence bound are refused and retained replays ignored.
+    # False only for a producer that publishes on change with no keepalive this
+    # adapter sends: silence then cannot be told from a steady value.
+    SILENCE_BOUNDED: ClassVar[bool] = True
 
     def __init__(self) -> None:
         self._connected = False
@@ -485,7 +490,7 @@ class MqttCachedAdapter(BaseAdapter):
         try:
             async for message in self._client.messages:
                 topic = str(message.topic)
-                if getattr(message, "retain", False):
+                if self.SILENCE_BOUNDED and getattr(message, "retain", False):
                     # A retained message is replayed on subscribe with no age
                     # the receiver can know; only a live delivery is a reading.
                     logger.info(
@@ -552,6 +557,8 @@ class MqttCachedAdapter(BaseAdapter):
         should back off from: counted there, a gap would keep reads refused for
         the recovery timeout after the source resumed, and Tier D blind with it.
         """
+        if not self.SILENCE_BOUNDED:
+            return
         refuse_stale_cache(
             self._arrived_at.get(topic), self._poll_interval_ms, self.adapter_name
         )
