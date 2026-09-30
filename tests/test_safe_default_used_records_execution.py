@@ -458,7 +458,7 @@ class TestNoProposalWasCreated:
             attestor.close()
         operator = dispatcher._alert_sender  # type: ignore[attr-defined]
         assert outcome.action_taken == "proposal_not_committed"
-        # Attempted, and claimed nowhere, whatever the executor returned.
+        # Attempted, with no positive claim of its outcome in any record.
         assert journal == ["act:log_to_dashboard"]
         assert outcome.executed is False and outcome.safe_default_used is False
         assert [(a["executed"], a["safe_default_used"]) for a in actions] == [

@@ -550,11 +550,13 @@ candidate or release is cut.
   written: the result and its action log row report the end, the safe default
   and the CRITICAL notification are attempted, and no safe-default intent
   exists. Where the store could not commit the proposal row, the result and
-  its action log row carry `executed` and `safe_default_used` false whatever
-  the safe default did, since the contract forbids claiming it executed; an
-  unresolved-outcome refusal, whose store is working, records whether it did. One window is still open: a host-state workflow that fails after its
-  result is recorded and before its decision record is queued returns that
-  result with no decision record.
+  its action log row record the failed proposal and make no positive claim
+  about the safe default: `safe_default_used` is false there because the
+  contract forbids claiming it executed, not because it did not run, and its
+  outcome is unproven. An unresolved-outcome refusal, whose store is working,
+  records whether the safe default executed. One window is still open: a
+  host-state workflow that fails after its result is recorded and before its
+  decision record is queued returns that result with no decision record.
 - A cached sensor no longer serves a value whose arrival is older than its
   silence bound. The generic MQTT and MQTT perception adapters and the HTTP and
   CoAP pollers served their last value on every read for as long as their

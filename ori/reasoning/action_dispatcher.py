@@ -2432,8 +2432,8 @@ class ActionDispatcher:
             )
             # No proposal was created, so no decision record exists for it
             # either: only the result and its action log row report the end.
-            # A proposal the store could not commit claims no safe default: the
-            # attempt is made and never reported as executed.
+            # A proposal the store could not commit makes no positive claim about
+            # its safe default: the attempt is made and its outcome is unproven.
             return resolved(
                 executed=False,
                 approved=None,
