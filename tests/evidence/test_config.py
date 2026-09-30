@@ -196,7 +196,8 @@ class TestAttestorConstruction:
         """
         from ori.runtime import _load_authority_keys
 
-        assert _load_authority_keys() == {}
+        shipped = _load_authority_keys()
+        assert shipped.keys == {} and not shipped.refused
 
 
 class TestConfigLoadWiresTheEvidenceParser:

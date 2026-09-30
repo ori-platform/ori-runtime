@@ -2151,15 +2151,22 @@ _REVIEWED_PUBLIC_KEY = re.compile(r"[0-9a-f]{64}")
 
 
 def _registry_review_findings(text: str) -> list[str]:
-    """What stops a registry document shipping; empty when it may ship."""
+    """What stops a registry document shipping; empty when it may ship.
+
+    The original text always goes through the release loader's own strict
+    parse. A plain decode collapses a repeated member name to its last value,
+    so a review of the decoded document alone would pass text the runtime
+    refuses.
+    """
     from ori.security.evidence.authority_keys import (
         AuthorityKeyError,
-        parse_authority_key_registry,
+        parse_authority_key_registry_text,
+        refuse_published_test_keys,
     )
 
     try:
         document = json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):
         return ["not JSON"]
     if not isinstance(document, dict) or set(document) != {"schema", "keys"}:
         return ["document members are not exactly schema and keys"]
@@ -2185,11 +2192,10 @@ def _registry_review_findings(text: str) -> list[str]:
             findings.append(f"{label}: unreviewed purpose")
         if key["status"] not in REVIEWED_REGISTRY_STATUSES:
             findings.append(f"{label}: unreviewed status")
-    if not findings:
-        try:
-            parse_authority_key_registry(document)
-        except AuthorityKeyError as exc:
-            findings.append(f"the loader refuses it ({exc.rule})")
+    try:
+        refuse_published_test_keys(parse_authority_key_registry_text(text))
+    except AuthorityKeyError as exc:
+        findings.append(f"the release loader refuses it ({exc.rule})")
     return findings
 
 
@@ -2249,6 +2255,73 @@ def test_a_registry_carrying_deployment_identity_does_not_ship(mutate):
     document = _reviewable_registry()
     mutate(document)
     assert _registry_review_findings(json.dumps(document))
+
+
+@pytest.mark.parametrize(
+    "old,new",
+    [
+        ('"status": "active"', '"status": "revoked", "status": "active"'),
+        ('"purpose": "', '"purpose": "evidence_device", "purpose": "'),
+        ('"keys": [', '"keys": [], "keys": ['),
+        ('"schema": ', '"schema": "ori.other.v1", "schema": '),
+    ],
+    ids=["key_status", "key_purpose", "document_keys", "document_schema"],
+)
+def test_a_registry_repeating_a_member_does_not_ship(old, new):
+    """The audit reads the text the runtime reads, repeated members included."""
+    text = json.dumps(_reviewable_registry()).replace(old, new, 1)
+    assert text.count(new) == 1
+    assert _registry_review_findings(text)
+
+
+def test_a_registry_holding_a_published_test_key_does_not_ship():
+    from ori.security.evidence.authority_keys import derive_key_id
+    from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
+
+    document = _reviewable_registry()
+    published = sorted(PUBLISHED_TEST_KEYS)[0]
+    document["keys"][0]["public_key_hex"] = published.hex()
+    document["keys"][0]["key_id"] = derive_key_id(published)
+    assert _registry_review_findings(json.dumps(document))
+
+
+def test_the_audit_never_passes_what_the_runtime_refuses(tmp_path, monkeypatch):
+    """Differential over the contract corpus and the hostile cases: passing review implies loading."""
+    from importlib import resources
+
+    from ori.runtime import _load_authority_keys
+
+    corpus = json.loads(
+        (
+            REPO_ROOT
+            / "tests"
+            / "vectors"
+            / "evidence_exchange"
+            / "authority-key-registry-v2.json"
+        ).read_text(encoding="utf-8")
+    )
+    texts = [json.dumps(case["document"]) for case in corpus["registries"]]
+    reviewable = json.dumps(_reviewable_registry())
+    texts += [
+        reviewable,
+        reviewable.replace(
+            '"status": "active"', '"status": "revoked", "status": "active"', 1
+        ),
+    ]
+    original = resources.files
+    monkeypatch.setattr(
+        resources,
+        "files",
+        lambda package: tmp_path if package == "ori.security" else original(package),
+    )
+    passed = 0
+    for text in texts:
+        (tmp_path / "evidence-authority-keys.json").write_text(text, encoding="utf-8")
+        loaded = _load_authority_keys()
+        if not _registry_review_findings(text):
+            passed += 1
+            assert loaded.keys and not loaded.refused, text
+    assert passed, "no case passed review, so the differential checked nothing"
 
 
 def test_the_source_tree_registry_and_the_wheel_agree(built_wheel):

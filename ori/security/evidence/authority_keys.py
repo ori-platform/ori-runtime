@@ -35,7 +35,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
 
@@ -43,6 +43,9 @@ PURPOSE_RECEIPT = "evidence_authority_receipt"
 PURPOSE_EPOCH = "evidence_authority_epoch"
 PURPOSE_DISPOSITION = "evidence_authority_disposition"
 AUTHORITY_PURPOSES = frozenset({PURPOSE_RECEIPT, PURPOSE_EPOCH, PURPOSE_DISPOSITION})
+# The purposes this release has a verifier for. Disposition keys are accepted
+# in a registry but verify nothing until a disposition verifier is installed.
+VERIFIED_PURPOSES = frozenset({PURPOSE_RECEIPT, PURPOSE_EPOCH})
 
 REGISTRY_SCHEMA = "ori.evidence_authority_keys.v1"
 
@@ -114,6 +117,23 @@ class AuthorityKey:
     @property
     def verifies(self) -> bool:
         return self.status in _VERIFYING_STATUSES
+
+
+@dataclass(frozen=True)
+class ReleaseAuthorityKeys:
+    """What the release shipped: its keys, and whether a present registry was refused."""
+
+    keys: dict[tuple[str, str], AuthorityKey]
+    refused: bool = False
+
+
+def verifying_purposes(registry: Mapping[tuple[str, str], Any]) -> frozenset[str]:
+    """The purposes holding at least one key that verifies."""
+    return frozenset(
+        purpose
+        for (purpose, _key_id), key in registry.items()
+        if isinstance(key, AuthorityKey) and key.verifies
+    )
 
 
 def derive_key_id(public_key: bytes) -> str:
@@ -297,6 +317,13 @@ def load_authority_key_registry(
         raise AuthorityKeyError(
             RULE_UNREADABLE, "the authority key registry cannot be read"
         ) from exc
+    return parse_authority_key_registry_text(text)
+
+
+def parse_authority_key_registry_text(
+    text: str,
+) -> dict[tuple[str, str], AuthorityKey]:
+    """Decode registry JSON strictly, refusing repeated member names, and hold it to the contract."""
     try:
         document = json.loads(text, object_pairs_hook=_reject_repeated_members)
     except AuthorityKeyError:
@@ -317,7 +344,13 @@ def load_release_authority_key_registry(
     about who signed, so a release trusting one would accept forged artifacts
     from anyone holding a clone.
     """
-    registry = load_authority_key_registry(path)
+    return refuse_published_test_keys(load_authority_key_registry(path))
+
+
+def refuse_published_test_keys(
+    registry: dict[tuple[str, str], AuthorityKey],
+) -> dict[tuple[str, str], AuthorityKey]:
+    """Return *registry* unless it holds a key whose private seed is published."""
     for key in registry.values():
         if bytes.fromhex(key.public_key_hex) in PUBLISHED_TEST_KEYS:
             raise AuthorityKeyError(

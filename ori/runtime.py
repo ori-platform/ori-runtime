@@ -164,7 +164,9 @@ from ori.security.commissioning.profiles import (
     load_shipped_profile_set,
 )
 from ori.security.evidence.authority_keys import (
+    VERIFIED_PURPOSES,
     AuthorityKeyError,
+    ReleaseAuthorityKeys,
     load_release_authority_key_registry,
 )
 from ori.security.evidence.chain import SCHEMA_VERSION as EVIDENCE_SCHEMA_VERSION
@@ -6707,19 +6709,23 @@ def _build_evidence_attestor(config: Config) -> FirstPartyEvidenceAttestor | Non
             f"environment variable ({evidence.device_secret_env}) is empty; "
             "provision a random install secret (not just the device serial)"
         )
+    shipped = _load_authority_keys()
     return FirstPartyEvidenceAttestor(
         db_path=evidence.db_path,
         key_path=evidence.key_path,
         device_secret=secret,
         device_id=config.device.id,
         custody_keys=_custody_key_registry(config),
-        authority_keys=_load_authority_keys(),
+        authority_keys=shipped.keys,
+        authority_keys_refused=shipped.refused,
     )
 
 
 #: Closed vocabulary for `evidence.posture_problems` in runtime health.
 EVIDENCE_POSTURE_SIGNING_UNAVAILABLE = "signing_unavailable"
 EVIDENCE_POSTURE_AUTHORITY_KEYS_MISSING = "authority_keys_missing"
+EVIDENCE_POSTURE_AUTHORITY_KEYS_REFUSED = "authority_keys_refused"
+EVIDENCE_POSTURE_AUTHORITY_KEYS_INCOMPLETE = "authority_keys_incomplete"
 EVIDENCE_POSTURE_CUSTODY_UNCONFIGURED = "custody_unconfigured"
 
 
@@ -6729,8 +6735,10 @@ def _evidence_posture_problems(
     """What stops evidence trust being established, from local, knowable facts.
 
     The ledger and device key opened, the signed release shipped an
-    authority-key registry, and custody can be verified when a gateway carries
-    evidence. Each missing piece is reported, never used to refuse startup:
+    authority-key registry that was accepted and holds a verifying key for
+    every purpose this release verifies, and custody can be verified when a
+    gateway carries evidence. Each missing piece is reported, never used to
+    refuse startup:
     evidence records what happened and must not decide whether the runtime may
     run. With any of these missing, ingest refuses what it cannot verify and
     health says why.
@@ -6738,14 +6746,19 @@ def _evidence_posture_problems(
     problems: list[str] = []
     if not attestor.available:
         problems.append(EVIDENCE_POSTURE_SIGNING_UNAVAILABLE)
-    if attestor.authority_key_count == 0:
+    held = attestor.verifying_authority_purposes
+    if attestor.authority_keys_refused:
+        problems.append(EVIDENCE_POSTURE_AUTHORITY_KEYS_REFUSED)
+    elif not held:
         problems.append(EVIDENCE_POSTURE_AUTHORITY_KEYS_MISSING)
+    elif not VERIFIED_PURPOSES <= held:
+        problems.append(EVIDENCE_POSTURE_AUTHORITY_KEYS_INCOMPLETE)
     if bool(config.gateway.enabled) and not attestor.custody_configured:
         problems.append(EVIDENCE_POSTURE_CUSTODY_UNCONFIGURED)
     return problems
 
 
-def _load_authority_keys() -> dict:
+def _load_authority_keys() -> ReleaseAuthorityKeys:
     """Resolve the authority key registry from the signed release.
 
     Packaged inside the wheel, so it is covered by the release signature and
@@ -6757,26 +6770,26 @@ def _load_authority_keys() -> dict:
 
     A release that ships none yields an empty registry, so inbound authority
     artifacts are refused as unknown-key rather than accepted unverified. A
-    registry that is present but refused is never read in part: it also yields
-    an empty registry, which stops evidence verification and reports
-    `authority_keys_missing`, and never stops the runtime, because Tier D is
+    registry that is present but refused is never read in part: it yields no
+    keys and is marked refused, which stops evidence verification and reports
+    `authority_keys_refused`, and never stops the runtime, because Tier D is
     never gated on evidence.
     """
     resource = resources.files("ori.security").joinpath("evidence-authority-keys.json")
     try:
         with resources.as_file(resource) as path:
             if not path.exists():
-                return {}
-            return load_release_authority_key_registry(path)
+                return ReleaseAuthorityKeys(keys={})
+            return ReleaseAuthorityKeys(keys=load_release_authority_key_registry(path))
     except (FileNotFoundError, ModuleNotFoundError):
-        return {}
+        return ReleaseAuthorityKeys(keys={})
     except AuthorityKeyError as exc:
         logger.error(
             "[evidence] the release's authority keys are refused (%s); "
             "no authority artifact will verify",
             exc.rule,
         )
-        return {}
+        return ReleaseAuthorityKeys(keys={}, refused=True)
 
 
 def _envelope_secrets(config: Config) -> tuple[str, ...]:

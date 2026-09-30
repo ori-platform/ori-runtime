@@ -244,7 +244,9 @@ def test_a_shipped_conforming_registry_is_loaded(shipped):
         ],
     }
     shipped.write_text(json.dumps(document), encoding="utf-8")
-    assert {purpose for purpose, _ in _load_authority_keys()} == {
+    loaded = _load_authority_keys()
+    assert not loaded.refused
+    assert {purpose for purpose, _ in loaded.keys} == {
         PURPOSE_RECEIPT,
         PURPOSE_EPOCH,
         PURPOSE_DISPOSITION,
@@ -264,7 +266,9 @@ def test_a_shipped_refused_registry_stops_verification_not_the_runtime(
 
     shipped.write_text(json.dumps(REGISTRIES[name]["document"]), encoding="utf-8")
     with caplog.at_level(logging.ERROR, logger="ori.runtime"):
-        assert _load_authority_keys() == {}
+        loaded = _load_authority_keys()
+    assert loaded.keys == {}
+    assert loaded.refused
     assert any(
         "authority keys are refused" in record.getMessage() for record in caplog.records
     )
@@ -274,4 +278,6 @@ def test_an_absent_registry_still_fails_closed(shipped):
     from ori.runtime import _load_authority_keys
 
     assert not shipped.exists()
-    assert _load_authority_keys() == {}
+    loaded = _load_authority_keys()
+    assert loaded.keys == {}
+    assert not loaded.refused

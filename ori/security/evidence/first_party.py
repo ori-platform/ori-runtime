@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any
 
 from ori.security.evidence.anchor import RuntimeAnchor, derive_runtime_anchor
+from ori.security.evidence.authority_keys import verifying_purposes
 from ori.security.evidence.bound import (
     BoundIngestService,
     BoundOutboundQueue,
@@ -93,6 +94,7 @@ class FirstPartyEvidenceAttestor:
         device_id: str,
         custody_keys: CustodyKeyRegistry | None = None,
         authority_keys: dict[tuple[str, str], Any] | None = None,
+        authority_keys_refused: bool = False,
         disposition_verifier: DispositionVerifier | None = None,
     ) -> None:
         self._db_path = str(db_path)
@@ -105,6 +107,7 @@ class FirstPartyEvidenceAttestor:
         self._anchor: RuntimeAnchor | None = None
         self._custody_keys = custody_keys
         self._authority_keys = dict(authority_keys or {})
+        self._authority_keys_refused = bool(authority_keys_refused)
         # The seam a disposition verifier drops into once its contract exists;
         # the ingest service installs one that verifies nothing when None.
         self._disposition_verifier = disposition_verifier
@@ -165,9 +168,14 @@ class FirstPartyEvidenceAttestor:
         return self._ingest
 
     @property
-    def authority_key_count(self) -> int:
-        """Authority keys the signed release shipped; zero means no receipt can verify."""
-        return len(self._authority_keys)
+    def authority_keys_refused(self) -> bool:
+        """Whether the release shipped a registry that was refused and read as none."""
+        return self._authority_keys_refused
+
+    @property
+    def verifying_authority_purposes(self) -> frozenset[str]:
+        """The authority purposes this attestor holds a verifying key for."""
+        return verifying_purposes(self._authority_keys)
 
     @property
     def custody_configured(self) -> bool:
