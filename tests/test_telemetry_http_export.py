@@ -31,7 +31,8 @@ GOLDEN_BODY = (
 
 
 def _event(value: float = 1250.0) -> OriEvent:
-    return OriEvent.from_reading(
+    """A reading as the runtime publishes it, typed by its sensor type."""
+    event = OriEvent.from_reading(
         SensorReading(
             sensor_id="phone-main-power",
             sensor_type="usb_power",
@@ -44,6 +45,8 @@ def _event(value: float = 1250.0) -> OriEvent:
         ),
         device_id="phone-01",
     )
+    event.event_type = "sensor.usb_power"
+    return event
 
 
 def _config(**overrides) -> TelemetryExportConfig:

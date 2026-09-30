@@ -53,6 +53,7 @@ except ImportError:
     _HTTPX_AVAILABLE = False
 
 SCHEMA_VERSION = "runtime.telemetry.v1"
+BATCH_EVENT_TYPE = "sensor.reading"
 
 # TERMINAL_REFUSALS and the rule that reads an answer live in delivery.py, so
 # the same bytes reach the same verdict here and in the Android payload. They
@@ -202,7 +203,7 @@ class HttpTelemetryExporter:
 
     async def handle_event(self, event: OriEvent) -> None:
         """Queue one event without blocking EventBus delivery."""
-        if event.event_type != "sensor.reading" or event.reading is None:
+        if not _is_published_reading(event):
             return
         if self.export_suspended:
             self._refused_events += 1
@@ -671,11 +672,27 @@ async def _single_chunk(content: bytes) -> AsyncIterator[bytes]:
     yield content
 
 
+def _is_published_reading(event: OriEvent) -> bool:
+    """A reading event: canonical ``sensor.reading`` or typed ``sensor.<sensor_type>``.
+
+    ``OriEvent.from_reading`` builds the canonical type and the runtime's
+    producers retype it by sensor type before publishing; both are the same
+    reading. Any other type carrying a reading, including a ``sensor.`` type
+    that names a different sensor type, is not exported.
+    """
+    reading = event.reading
+    return reading is not None and event.event_type in {
+        BATCH_EVENT_TYPE,
+        f"sensor.{reading.sensor_type}",
+    }
+
+
 def _serialize_event(event: OriEvent) -> dict[str, Any]:
     reading = event.reading
     return {
         "event_id": event.event_id,
-        "event_type": event.event_type,
+        # The batch admits one event type; the bus type is not the wire's.
+        "event_type": BATCH_EVENT_TYPE,
         "device_id": event.device_id,
         "sensor_id": event.sensor_id,
         "timestamp": event.timestamp,

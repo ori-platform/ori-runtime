@@ -523,6 +523,15 @@ candidate or release is cut.
 
 ## Fixed
 
+- HTTP telemetry export sends the readings the runtime publishes. The poll loop
+  and the firmware telemetry subscriber publish a reading as
+  `sensor.<sensor_type>`, and the exporter admitted only `sensor.reading`, so a
+  device with `telemetry_export` enabled queued no reading unless its sensor
+  type happened to be `reading`. The exporter now takes an event that carries a
+  reading under the canonical `sensor.reading` or under `sensor.<its
+  sensor_type>`, ignores every other event, and still writes `event_type:
+  "sensor.reading"` in the batch, the one event type `runtime-telemetry/v2`
+  admits. Producers and skill subscriptions are unchanged.
 - `safe_default_used` is true only when the safe default executed, as
   `events/v1` defines it. The host-state approval workflow, its failure path,
   and the governed Tier C rejection, expiry, expired-approval and contention
