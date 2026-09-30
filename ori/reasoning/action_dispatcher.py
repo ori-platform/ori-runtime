@@ -2432,12 +2432,14 @@ class ActionDispatcher:
             )
             # No proposal was created, so no decision record exists for it
             # either: only the result and its action log row report the end.
+            # A proposal the store could not commit claims no safe default: the
+            # attempt is made and never reported as executed.
             return resolved(
                 executed=False,
                 approved=None,
                 action_taken=taken,
                 operator_response=None,
-                safe_default_used=inner.executed,
+                safe_default_used=inner.executed if creation == "blocked" else False,
             )
 
         # 2. Ask the operator.

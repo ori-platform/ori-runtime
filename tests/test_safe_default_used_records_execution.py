@@ -456,15 +456,17 @@ class TestNoProposalWasCreated:
         finally:
             await store.close()
             attestor.close()
-        ran = end == "executed"
         operator = dispatcher._alert_sender  # type: ignore[attr-defined]
         assert outcome.action_taken == "proposal_not_committed"
+        # Attempted, and claimed nowhere, whatever the executor returned.
         assert journal == ["act:log_to_dashboard"]
+        assert outcome.executed is False and outcome.safe_default_used is False
+        assert [(a["executed"], a["safe_default_used"]) for a in actions] == [
+            (False, False)
+        ]
         assert proposals == [] and intents == []
         assert decisions == []
         assert sealed == 0
-        assert outcome.safe_default_used is ran
-        assert [a["safe_default_used"] for a in actions] == [ran]
         assert any(
             r.levelno == logging.CRITICAL
             and "nothing is claimed durable" in r.getMessage()
