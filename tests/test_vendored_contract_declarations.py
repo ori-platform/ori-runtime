@@ -6,10 +6,15 @@ A manifest's `contract_version` is the version this runtime says it conforms to.
 A corpus whose own `contract` or `vector_set` names another version cannot be
 checked against that claim, so the two are held together here.
 
-The version a file belongs to follows `scripts/refresh-evidence-vectors.sh`: a
-`<stem>-v<N>.json` file belongs to version N, an untokened file to the
-contract's original version, and a set claims the newest file it holds. A
-manifest with no `contract_version` claims the original version.
+Versions follow the selection rule in `scripts/refresh-evidence-vectors.sh`: per
+stem, the newest `<stem>-v<N>.json` at or below the claim, else the untokened
+`<stem>.json`, so one file per stem is vendored. A tokened file stands at N. An
+untokened file stands at its directory's original version -- whatever version
+opened that vectors directory -- and for every later one until a tokened
+sibling replaces it, so it declares that original version: at or below the
+claim, and the same for every untokened file in the set. The claim must be the
+highest version the set shows, by token or by declaration. A manifest with no
+`contract_version` claims v1.
 """
 
 from __future__ import annotations
@@ -120,9 +125,9 @@ def _claim(manifest: dict[str, Any]) -> int | None:
     return int(match["version"]) if match else None
 
 
-def _file_version(name: str) -> int:
+def _stem_and_token(name: str) -> tuple[str, int | None]:
     match = _TOKEN.match(name)
-    return int(match["version"]) if match else ORIGINAL_VERSION
+    return (match["stem"], int(match["version"])) if match else (name[:-5], None)
 
 
 def _declared_version(value: Any) -> int | None:
@@ -187,17 +192,24 @@ def contract_violations(root: Path) -> list[str]:
                 f"{set_name}: files {names} differ from the manifest's "
                 f"{sorted(manifest.get('files', {}))}"
             )
-        versions = [_file_version(name) for name in names]
-        if not versions or max(versions) != claim:
-            problems.append(
-                f"{set_name}: claims {contract}/v{claim} but its newest file is "
-                f"v{max(versions, default=0)}"
-            )
+        by_stem: dict[str, list[str]] = {}
+        for name in names:
+            by_stem.setdefault(_stem_and_token(name)[0], []).append(name)
+        for stem, siblings in sorted(by_stem.items()):
+            if len(siblings) > 1:
+                problems.append(
+                    f"{set_name}: {siblings} are one stem {stem!r}; the selection "
+                    "vendors a single file per stem"
+                )
+        shown: list[int] = []
+        originals: dict[int, list[str]] = {}
         for name in names:
             key = (set_name, name)
             seen.add(key)
-            version = _file_version(name)
+            token = _stem_and_token(name)[1]
             label = f"{set_name}/{name}"
+            if token is not None:
+                shown.append(token)
             doc = json.loads((directory / name).read_text())
             if not isinstance(doc, dict):
                 problems.append(f"{label}: not a JSON object")
@@ -224,6 +236,7 @@ def contract_violations(root: Path) -> list[str]:
                 continue
             # Citations are read after the own declaration, which is checked here.
             cited_from: dict[str, int] = {}
+            declared: dict[str, int | None] = {}
             for member in OWN_MEMBERS:
                 if member not in doc:
                     continue
@@ -233,32 +246,58 @@ def contract_violations(root: Path) -> list[str]:
                     problems.append(f"{label}: {member} {value!r} names no contract")
                     continue
                 cited_from[member] = own.end("version")
-                if (own["name"], int(own["version"])) != (contract, version):
-                    problems.append(
-                        f"{label}: {member} {value!r} is not {contract}/v{version}"
-                    )
+                declared[member] = int(own["version"])
+                if own["name"] != contract:
+                    problems.append(f"{label}: {member} {value!r} is not {contract}")
             if "contract_version" in doc:
-                if _declared_version(doc["contract_version"]) != version:
+                declared["contract_version"] = _declared_version(
+                    doc["contract_version"]
+                )
+            if len(set(declared.values())) > 1:
+                problems.append(f"{label}: its declarations disagree: {declared}")
+                continue
+            version = next(iter(declared.values()), None)
+            if version is None or version < 1:
+                problems.append(f"{label}: declares an unreadable version {declared}")
+                continue
+            if token is not None and version != token:
+                problems.append(
+                    f"{label}: declares {contract}/v{version}, not v{token}"
+                )
+            elif token is None:
+                if version > claim:
                     problems.append(
-                        f"{label}: contract_version {doc['contract_version']!r} "
-                        f"is not v{version}"
+                        f"{label}: declares {contract}/v{version}, above the "
+                        f"claimed v{claim}"
                     )
+                shown.append(version)
+                originals.setdefault(version, []).append(name)
             for member in CITING_MEMBERS:
                 value = doc.get(member)
                 if not isinstance(value, str):
                     continue
                 for cited in _CITED.finditer(value, cited_from.get(member, 0)):
-                    name, cited_version = cited["name"], int(cited["version"])
-                    if name == contract and cited_version != version:
+                    other, cited_version = cited["name"], int(cited["version"])
+                    if other == contract and cited_version != version:
                         problems.append(
-                            f"{label}: {member} cites {name}/v{cited_version} "
+                            f"{label}: {member} cites {other}/v{cited_version} "
                             f"in a v{version} corpus"
                         )
-                    elif name in claims and cited_version > claims[name]:
+                    elif other in claims and cited_version > claims[other]:
                         problems.append(
-                            f"{label}: {member} cites {name}/v{cited_version}, "
-                            f"above the v{claims[name]} this runtime vendors"
+                            f"{label}: {member} cites {other}/v{cited_version}, "
+                            f"above the v{claims[other]} this runtime vendors"
                         )
+        if len(originals) > 1:
+            problems.append(
+                f"{set_name}: untokened files declare different original versions "
+                f"{dict(sorted(originals.items()))}; a directory opens at one version"
+            )
+        if max(shown, default=ORIGINAL_VERSION) != claim:
+            problems.append(
+                f"{set_name}: claims {contract}/v{claim} but the highest version "
+                f"its files show is v{max(shown, default=ORIGINAL_VERSION)}"
+            )
 
     for key in sorted(known - seen):
         problems.append(f"{key}: listed as exempt but not vendored")
@@ -313,6 +352,11 @@ MUTATIONS = {
         "contract",
         "safety-profile/v2",
     ),
+    "tokened corpus alone names a version other than its token": (
+        "offline_tokens/signing-domain-v2.json",
+        "contract",
+        "offline-tokens/v1 signature domain",
+    ),
     "corpus names another contract": (
         "offline_tokens/signing-domain-v2.json",
         "contract",
@@ -366,3 +410,98 @@ def test_each_mutation_of_a_declaration_or_claim_is_refused(
     assert not contract_violations(root)
     _set_member(root / relative, member, value)
     assert contract_violations(root), mutation
+
+
+_TIER_B = "skills-package/v3 — Tier B execution policy"
+
+
+def _with_untokened_v3_set(root: Path, files: dict[str, dict[str, Any]]) -> None:
+    """A set opened at v3 without tokens, as ori-specs' skills-package vectors are."""
+    directory = root / "skills_package"
+    directory.mkdir()
+    for name, doc in files.items():
+        (directory / name).write_text(json.dumps(doc))
+    manifest = {
+        "source_repository": SPECS_REPOSITORY,
+        "source_path": "skills-package/vectors",
+        "source_commit": "0" * 40,
+        "contract_version": "v3",
+        "files": {name: "0" * 64 for name in files},
+    }
+    (directory / "MANIFEST.json").write_text(json.dumps(manifest))
+
+
+def test_an_untokened_set_opened_above_v1_declares_its_opening_version(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "vectors"
+    shutil.copytree(VECTORS, root)
+    _with_untokened_v3_set(
+        root,
+        {
+            "tier-b-policy.json": {"contract": _TIER_B, "cases": []},
+            "tier-authority.json": {"contract": "skills-package/v3 — tier authority"},
+        },
+    )
+    assert not contract_violations(root)
+
+
+UNTOKENED_MUTATIONS: dict[str, tuple[dict[str, dict[str, Any]], str]] = {
+    "declares above the claim": (
+        {"tier-b-policy.json": {"contract": "skills-package/v4 — Tier B"}},
+        "above the claimed v3",
+    ),
+    "declares another contract": (
+        {"tier-b-policy.json": {"contract": "skills-registry/v3 — Tier B"}},
+        "is not skills-package",
+    ),
+    "carried beside a tokened sibling": (
+        {
+            "tier-b-policy.json": {"contract": _TIER_B},
+            "tier-b-policy-v3.json": {"contract": _TIER_B},
+        },
+        "one stem 'tier-b-policy'",
+    ),
+    "two tokened files of one stem": (
+        {
+            "tier-b-policy.json": {"contract": _TIER_B},
+            "tier-authority-v2.json": {"contract": "skills-package/v2 — tier"},
+            "tier-authority-v3.json": {"contract": "skills-package/v3 — tier"},
+        },
+        "one stem 'tier-authority'",
+    ),
+    "untokened files disagree on the opening version": (
+        {
+            "tier-b-policy.json": {"contract": _TIER_B},
+            "tier-authority.json": {"contract": "skills-package/v2 — tier authority"},
+        },
+        "different original versions",
+    ),
+    "declares below a claim nothing else shows": (
+        {"tier-b-policy.json": {"contract": "skills-package/v2 — Tier B"}},
+        "the highest version its files show is v2",
+    ),
+    "declares a version below v1": (
+        {
+            "tier-b-policy-v3.json": {"contract": _TIER_B},
+            "tier-authority.json": {"contract_version": 0},
+        },
+        "declares an unreadable version",
+    ),
+    "contract and contract_version disagree": (
+        {"tier-b-policy.json": {"contract": _TIER_B, "contract_version": "v2"}},
+        "its declarations disagree",
+    ),
+}
+
+
+@pytest.mark.parametrize("mutation", sorted(UNTOKENED_MUTATIONS))
+def test_each_untokened_misdeclaration_is_refused(
+    mutation: str, tmp_path: Path
+) -> None:
+    root = tmp_path / "vectors"
+    shutil.copytree(VECTORS, root)
+    files, expected = UNTOKENED_MUTATIONS[mutation]
+    _with_untokened_v3_set(root, files)
+    problems = contract_violations(root)
+    assert any(expected in problem for problem in problems), problems
