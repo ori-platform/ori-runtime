@@ -430,8 +430,9 @@ _TIER_B = "skills-package/v3 — Tier B execution policy"
 
 
 def _with_untokened_v3_set(root: Path, files: dict[str, dict[str, Any]]) -> None:
-    """A set opened at v3 without tokens, as ori-specs' skills-package vectors are."""
+    """A set opened at v3 without tokens, standing in for the vendored skills-package set."""
     directory = root / "skills_package"
+    shutil.rmtree(directory, ignore_errors=True)
     directory.mkdir()
     for name, doc in files.items():
         (directory / name).write_text(json.dumps(doc))
