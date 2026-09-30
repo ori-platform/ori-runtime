@@ -91,6 +91,10 @@ def _coerce_value(value: Any) -> float:
 class LoraWanAdapter(MqttCachedAdapter):
     """LoRaWAN sensor adapter via MQTT uplink brokers (TTN/ChirpStack)."""
 
+    # Uplinks are duty-cycled, commonly minutes apart and beyond the largest
+    # silence bound, so silence between them is not staleness.
+    SILENCE_BOUNDED = False
+
     def __init__(self) -> None:
         super().__init__()
         self._sensor_type: str = ""
@@ -185,32 +189,33 @@ class LoraWanAdapter(MqttCachedAdapter):
             if cached is None:
                 raise AdapterReadError("LoraWanAdapter: no MQTT data cached yet")
 
-            value, timestamp_ms, raw_payload = cached
-            quality = 1.0
-            payload = raw_payload
-            if isinstance(raw_payload, dict):
-                payload = raw_payload.get("payload", raw_payload)
-                quality = _clamp_quality(float(raw_payload.get("quality", 1.0)))
-                ts = raw_payload.get("timestamp_ms")
-                if isinstance(ts, (int, float)):
-                    timestamp_ms = int(ts)
+        self._require_fresh(self._topic)
+        value, timestamp_ms, raw_payload = cached
+        quality = 1.0
+        payload = raw_payload
+        if isinstance(raw_payload, dict):
+            payload = raw_payload.get("payload", raw_payload)
+            quality = _clamp_quality(float(raw_payload.get("quality", 1.0)))
+            ts = raw_payload.get("timestamp_ms")
+            if isinstance(ts, (int, float)):
+                timestamp_ms = int(ts)
 
-            return SensorReading(
-                sensor_id=sensor_id,
-                sensor_type=self._sensor_type,
-                value=float(value),
-                unit=self._unit,
-                timestamp=timestamp_ms,
-                quality=quality,
-                metadata={
-                    "source": "lorawan",
-                    "topic": self._topic,
-                    "value_path": self._value_path,
-                    "broker_host": self._broker_host,
-                    "port": self._port,
-                    "raw_payload": payload,
-                },
-            )
+        return SensorReading(
+            sensor_id=sensor_id,
+            sensor_type=self._sensor_type,
+            value=float(value),
+            unit=self._unit,
+            timestamp=timestamp_ms,
+            quality=quality,
+            metadata={
+                "source": "lorawan",
+                "topic": self._topic,
+                "value_path": self._value_path,
+                "broker_host": self._broker_host,
+                "port": self._port,
+                "raw_payload": payload,
+            },
+        )
 
     @staticmethod
     def _parse_payload(payload: Any) -> dict[str, Any]:

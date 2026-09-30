@@ -517,6 +517,59 @@ candidate or release is cut.
 
 ## Fixed
 
+- A cached sensor no longer serves a value whose arrival is older than its
+  silence bound. The generic MQTT and MQTT perception adapters and the HTTP and
+  CoAP pollers served their last value on every read for as long as their
+  listener or poll loop lived, so the runtime counted each read as live, the
+  staleness watch never fired, and the safety registry judged an unchanging
+  value as fresh. Each now records the receiver's monotonic arrival time of the
+  value it caches and refuses a read once that arrival is older than the
+  sensor's silence bound -- two poll intervals, never under 200 ms, the same
+  bound the staleness watch uses -- so the safety registry never observes a
+  value from them whose arrival at the receiver is older than the silence bound
+  (2 x the sensor's poll interval, at least 200 ms). A value within the bound
+  is still served. A producer timestamp and a wall-clock step do not change the
+  age, a reconnect does not refresh an old value, and an MQTT message the
+  broker replays from its retained store on subscribe is not cached, because
+  its age cannot be known: a sensor's first reading after connect is the next
+  live publish, not the broker's stored copy. The refusal is not counted by the
+  circuit breaker: counted there, a gap in the source would hold reads refused
+  for the breaker's recovery timeout after the source resumed. The bound is the
+  receiver-observed arrival age under the supported posture: QoS 0
+  subscriptions, and a broker that does not queue QoS 0 for an offline client.
+  It is not a general MQTT freshness guarantee. With `mqtt.clean_session:
+  false` and a broker that queues QoS 0, a message buffered while the runtime
+  was offline is timed from its delivery; that boundary is uncovered and
+  tracked separately, as is a value an OPC UA server or other upstream cache
+  serves from its own store. The Victron, LoRaWAN and Zigbee adapters are
+  excluded and keep their earlier read behaviour: their producers publish on
+  change or are duty-cycled -- Venus OS republishes a steady value only on a
+  keepalive the adapter does not send, LoRaWAN uplinks are commonly minutes
+  apart, and a Zigbee device may report a steady value only hourly -- so
+  silence between messages does not show that a value is stale, and the poll
+  interval is not the producer's reporting cadence. Their cached value is
+  served however old it is, and a retained replay is cached, until a keepalive
+  or reporting guarantee bounds freshness per protocol.
+- A sensor whose reads keep failing no longer logs a WARNING on every poll. The
+  first failed read, and one per minute while the failures last, log at WARNING
+  and the rest at DEBUG; a successful read logs the recovery at INFO. The
+  stale-sensor alert was already sent once when a sensor falls silent and again
+  only after it has recovered.
+- A Tier B trigger declaring both `requires_approval: true` and
+  `reasoning_policy: post_action` is refused at skill load with a named error;
+  either one alone still loads. The two were accepted together, and after an
+  operator answered NO the post-action path read the safe default's success as
+  the Tier B act, so the enrichment and the Tier A alert described an act that
+  never ran. The elevator refuses to dispatch anything for such a trigger if one
+  reaches it by any other route.
+- A trigger's `requires_approval` must be a YAML boolean. A string, number,
+  null, list or mapping is refused at skill load with the value and its type;
+  `"false"` was read as true. `requires_approval` on an `actions.available`
+  entry is refused at skill load: nothing read it there, so a skill that
+  declared it on its Tier B action with `reasoning_policy: post_action` on the
+  trigger ran that action without approval. Approval is declared on the
+  trigger. `requires_approval_for_soft_actions` is removed from
+  `ori.yaml.example`; the runtime never read it.
 - An approval refused because a higher authority took the resource while the
   operator decided (`refused_late_approval`, on the host-state Tier C and
   approval-required Tier B workflow) is recorded as what happened: the

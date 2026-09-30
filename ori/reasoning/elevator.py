@@ -1186,6 +1186,13 @@ class IntelligenceElevator:
         rule_result: Any,
     ) -> None:
         """Execute Tier B action first, then enrich audit/operator text."""
+        if self._post_action_requires_approval(skill, rule_result):
+            logger.error(
+                "IntelligenceElevator: trigger=%r declares both requires_approval "
+                "and reasoning_policy=post_action; refusing dispatch",
+                getattr(rule_result, "rule_name", ""),
+            )
+            return
         correlation_id = self._ensure_correlation_id(event)
         immediate_result = ReasoningResult(
             text="Action executed. Explanation pending.",
@@ -1300,6 +1307,23 @@ class IntelligenceElevator:
                 trigger_name=event.sensor_id,
                 device_id=event.device_id,
             )
+
+    @staticmethod
+    def _post_action_requires_approval(skill: Any, rule_result: Any) -> bool:
+        """Return True when anything the dispatcher reads would route to approval."""
+        if bool(getattr(rule_result, "requires_approval", False)):
+            return True
+        trigger_name = getattr(rule_result, "rule_name", None)
+        for trigger in getattr(skill, "triggers", None) or []:
+            if isinstance(trigger, dict):
+                if trigger.get("name") == trigger_name:
+                    return bool(trigger.get("requires_approval", False))
+            elif getattr(trigger, "name", None) == trigger_name:
+                return bool(getattr(trigger, "requires_approval", False))
+        config = getattr(skill, "config", None)
+        if isinstance(config, dict):
+            return bool(config.get("requires_approval", False))
+        return False
 
     async def _post_action_enrichment_result(
         self,

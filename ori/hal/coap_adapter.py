@@ -17,6 +17,8 @@ from ori.hal.base import (
     AdapterTimeoutError,
     BaseAdapter,
     HardwareCircuitBreaker,
+    cache_arrival,
+    refuse_stale_cache,
 )
 from ori.network.events import SensorReading
 from ori.utils.path_utils import shown
@@ -77,6 +79,7 @@ class CoapAdapter(BaseAdapter):
         self._timeout_s: float = _DEFAULT_TIMEOUT_S
         self._allowed_hosts: set[str] = set()
         self._cached_reading: SensorReading | None = None
+        self._cached_arrival: float | None = None
         self._poll_task: asyncio.Task[None] | None = None
         self._breaker: HardwareCircuitBreaker | None = None
         self._context: Any = None
@@ -160,6 +163,10 @@ class CoapAdapter(BaseAdapter):
             raise AdapterReadError(
                 "CoapAdapter: no data available yet (polling in progress)"
             )
+        # A failed poll keeps the last value; its age decides whether it is served.
+        refuse_stale_cache(
+            self._cached_arrival, self._poll_interval_ms, self.adapter_name
+        )
         reading = self._cached_reading
         if reading.sensor_id == sensor_id:
             return reading
@@ -248,6 +255,7 @@ class CoapAdapter(BaseAdapter):
 
             payload = self._decode_payload(response.payload)
             value = self._extract(payload, self._json_path)
+            self._cached_arrival = cache_arrival()
             self._cached_reading = SensorReading(
                 sensor_id=self._sensor_id or self._sensor_type,
                 sensor_type=self._sensor_type,

@@ -33,6 +33,13 @@ CALIBRATION_SCHEMAS: dict[str, dict] = {}
 class VictronAdapter(MqttCachedAdapter):
     """Victron VenusOS MQTT adapter (subscribe + cache)."""
 
+    # Venus OS publishes on change and republishes a steady value only on a
+    # keepalive, which this adapter does not send, so a steady value would read
+    # as silence.
+    # Excluded from the silence bound until the keepalive is implemented and
+    # verified on a GX device.
+    SILENCE_BOUNDED = False
+
     def __init__(self) -> None:
         super().__init__()
         self._sensor_type: str = ""
@@ -87,24 +94,25 @@ class VictronAdapter(MqttCachedAdapter):
                     "VictronAdapter: no MQTT data cached yet for "
                     f"sensor_type='{self._sensor_type}'"
                 )
-            value, timestamp_ms, raw_payload = cached
+        self._require_fresh(topic)
+        value, timestamp_ms, raw_payload = cached
 
-            return SensorReading(
-                sensor_id=sensor_id,
-                sensor_type=self._sensor_type,
-                value=value,
-                unit=unit,
-                timestamp=timestamp_ms,
-                quality=1.0,
-                metadata={
-                    "source": "victron",
-                    "broker_host": self._broker_host,
-                    "port": self._port,
-                    "portal_id": self._portal_id,
-                    "topic": topic,
-                    "raw_payload": raw_payload,
-                },
-            )
+        return SensorReading(
+            sensor_id=sensor_id,
+            sensor_type=self._sensor_type,
+            value=value,
+            unit=unit,
+            timestamp=timestamp_ms,
+            quality=1.0,
+            metadata={
+                "source": "victron",
+                "broker_host": self._broker_host,
+                "port": self._port,
+                "portal_id": self._portal_id,
+                "topic": topic,
+                "raw_payload": raw_payload,
+            },
+        )
 
     def _topic_for_sensor(self, sensor_type: str) -> str:
         suffix, _unit = _SENSOR_MAP[sensor_type]
