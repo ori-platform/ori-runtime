@@ -1783,7 +1783,7 @@ class ActionDispatcher:
             timestamp=now_ms(),
             operator_response="approval_error",
             proposal_id=proposal_id,
-            safe_default_used=True,
+            safe_default_used=executed,
         )
 
     # ── Governed Tier C approval (tier-c-approval/v1) ─────────────────────────
@@ -2658,7 +2658,7 @@ class ActionDispatcher:
                 if safe is not None
                 else safe_default_action,
                 operator_response=operator_response,
-                safe_default_used=True,
+                safe_default_used=bool(safe is not None and safe.executed),
             )
             operator_decision = (
                 "rejected"
@@ -2836,7 +2836,7 @@ class ActionDispatcher:
                 "approval_expired_undispatched"
                 if recorded
                 else "approval_expired_undispatched_unrecorded",
-                safe is not None,
+                bool(safe is not None and safe.executed),
             )
         if (
             gate_token is not None
@@ -2870,7 +2870,7 @@ class ActionDispatcher:
                 "dispatch_refused_contention"
                 if recorded
                 else "dispatch_refused_contention_unrecorded",
-                safe is not None,
+                bool(safe is not None and safe.executed),
             )
 
         # The act. The marker lands beside it, never ahead of it.
@@ -3620,7 +3620,7 @@ class ActionDispatcher:
                     )
                     refused_late = True
 
-            # True only where the safe default is dispatched below.
+            # True only where the safe default below executed.
             safe_default_used = False
             if refused_late:
                 # The operator approved; the act did not run. `approved` records
@@ -3655,12 +3655,12 @@ class ActionDispatcher:
                 )
             else:
                 # NO, None, or timeout → safe default
-                safe_default_used = True
                 inner = await self._execute_immediately(
                     safe_default_action, tier, context
                 )
                 action_taken = inner.action_taken
                 executed = inner.executed
+                safe_default_used = inner.executed
                 progress.acted = ActionResult(
                     action_name=action,
                     tier=tier,

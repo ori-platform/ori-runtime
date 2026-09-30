@@ -523,6 +523,14 @@ candidate or release is cut.
 
 ## Fixed
 
+- `safe_default_used` is true only when the safe default executed, as
+  `events/v1` defines it. The host-state approval workflow, its failure path,
+  and the governed Tier C rejection, expiry, expired-approval and contention
+  paths set it when the safe default was attempted, including when its
+  executor raised or reported failure, and a governed record set it when the
+  proposal's one safe-default attempt had already been made elsewhere. The
+  returned result, the action log row and the Tier C decision record now carry
+  whether the executor succeeded; what the dispatcher executes is unchanged.
 - A cached sensor no longer serves a value whose arrival is older than its
   silence bound. The generic MQTT and MQTT perception adapters and the HTTP and
   CoAP pollers served their last value on every read for as long as their
