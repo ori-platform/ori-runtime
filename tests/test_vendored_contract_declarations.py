@@ -97,6 +97,7 @@ DECLARATION_DEFECTS = {
             "v1.md. The defect is upstream on ori-specs main; correcting it "
             "moves the digest v2.md pins."
         ),
+        "tracking": "ori-specs#248",
     },
     ("operator_socket", "tier-c-reconcile.json"): {
         "declares": (
@@ -108,6 +109,7 @@ DECLARATION_DEFECTS = {
             "operator-socket/vectors. ori-specs main declares operator-socket/v1 "
             "for it; re-vendoring the set removes this entry."
         ),
+        "tracking": "the runtime's operator-socket/v2 claim re-vendors this set",
     },
 }
 
@@ -275,8 +277,8 @@ def test_every_exemption_carries_a_reason() -> None:
     for key, reason in UNDECLARED.items():
         assert reason.strip(), f"{key}: no reason"
     for key, entry in DECLARATION_DEFECTS.items():
-        assert set(entry) == {"declares", "reason"}, key
-        assert entry["declares"].strip() and entry["reason"].strip(), key
+        assert set(entry) == {"declares", "reason", "tracking"}, key
+        assert all(entry[field].strip() for field in entry), key
 
 
 def _set_member(path: Path, member: str, value: Any) -> None:
