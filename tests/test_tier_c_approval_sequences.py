@@ -188,6 +188,7 @@ class Replay:
         self.phase = "init"
         self.in_recovery = False
         self.log_records: list[str] = []
+        self.safe_default_attempts = 0
         self.alert_attempts: list[str] = []
         self.alert_retry_unrepresented = False
         self.path = str(tmp_path / "s.db")
@@ -349,6 +350,7 @@ class Replay:
 
         async def log_to_dashboard(_action: str, ctx: Any) -> bool:
             # The durable log of the safe default names its proposal.
+            self.safe_default_attempts += 1
             self.log_records.append(str(ctx.event.context.get("proposal_id", "")))
             return True
 
@@ -594,9 +596,11 @@ async def _check(
     if "proposal_sent" in expect:
         assert (main in replay.proposed) is bool(expect["proposal_sent"]), step
     if "safe_default_attempted" in expect:
-        assert (
-            main in replay.results and replay.results[main].safe_default_used
-        ) is bool(expect["safe_default_attempted"]), step
+        # Observed at the executor: `safe_default_used` records execution, and
+        # a path that may not claim it attempts the safe default all the same.
+        assert (replay.safe_default_attempts > 0) is bool(
+            expect["safe_default_attempted"]
+        ), step
     if "safe_default_recorded" in expect:
         assert (await replay.intents(main) > 0) is bool(
             expect["safe_default_recorded"]
