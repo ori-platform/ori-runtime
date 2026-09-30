@@ -163,7 +163,10 @@ from ori.security.commissioning.profiles import (
     ProfileSetError,
     load_shipped_profile_set,
 )
-from ori.security.evidence.authority_keys import load_authority_key_registry
+from ori.security.evidence.authority_keys import (
+    AuthorityKeyError,
+    load_release_authority_key_registry,
+)
 from ori.security.evidence.chain import SCHEMA_VERSION as EVIDENCE_SCHEMA_VERSION
 from ori.security.evidence.custody_keys import (
     CustodyKeyRegistry,
@@ -6752,18 +6755,27 @@ def _load_authority_keys() -> dict:
     could make arbitrary receipts and epoch confirmations trusted, which is the
     entire property this registry exists to provide.
 
-    A release that ships none yields an empty registry, so inbound receipts and
-    epoch confirmations are refused as unknown-key rather than accepted
-    unverified. A registry that is present but unreadable is fatal, because that
-    is a deployment claiming a verification it cannot perform.
+    A release that ships none yields an empty registry, so inbound authority
+    artifacts are refused as unknown-key rather than accepted unverified. A
+    registry that is present but refused is never read in part: it also yields
+    an empty registry, which stops evidence verification and reports
+    `authority_keys_missing`, and never stops the runtime, because Tier D is
+    never gated on evidence.
     """
     resource = resources.files("ori.security").joinpath("evidence-authority-keys.json")
     try:
         with resources.as_file(resource) as path:
             if not path.exists():
                 return {}
-            return load_authority_key_registry(path)
+            return load_release_authority_key_registry(path)
     except (FileNotFoundError, ModuleNotFoundError):
+        return {}
+    except AuthorityKeyError as exc:
+        logger.error(
+            "[evidence] the release's authority keys are refused (%s); "
+            "no authority artifact will verify",
+            exc.rule,
+        )
         return {}
 
 

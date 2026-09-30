@@ -435,6 +435,14 @@ VECTOR_CONSUMERS = {
         "evidence/test_registration.py"
         "::test_the_registration_carries_exactly_the_contract_field_set",
     ),
+    ("evidence_exchange", "authority-key-registry-v2"): (
+        "evidence/test_authority_key_registry_vectors.py"
+        "::test_every_corpus_registry_is_decided_for_its_own_rule",
+        "evidence/test_authority_key_registry_vectors.py"
+        "::test_every_corpus_public_key_is_decided_for_its_own_clause",
+        "evidence/test_authority_key_registry_vectors.py"
+        "::test_every_corpus_selection_is_decided_by_purpose_and_key_id",
+    ),
     ("evidence_exchange", "checkpoint"): (
         "evidence/test_delivery_ledger.py"
         "::test_the_checkpoint_reproduces_the_contract_vector_byte_for_byte",
@@ -536,19 +544,6 @@ VECTOR_CONSUMERS = {
 #: tracked, because naming a repository says who is answerable rather than that
 #: the work is done.
 VECTOR_EXEMPTIONS = {
-    ("evidence_exchange", "authority-key-registry-v2"): {
-        "owner": "the runtime",
-        "status": "proof_pending",
-        "tracking": "ori-runtime#442",
-        "reason": (
-            "The release-shipped authority key registry. The runtime's registry "
-            "loader predates this corpus and accepts registries it refuses: an "
-            "underived or non-lowercase key_id, a non-canonical, off-curve or "
-            "small-order key, a key under two purposes, and zero or two active "
-            "keys for a purpose. Vendored so the drift check covers the bytes "
-            "the loader must meet when it is brought to the contract."
-        ),
-    },
     ("evidence_exchange", "routing-projection-v2"): {
         "owner": "the site gateway",
         "status": "proof_pending",

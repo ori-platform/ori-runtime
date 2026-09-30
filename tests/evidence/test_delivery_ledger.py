@@ -857,8 +857,8 @@ RECEIVED_BEHIND_A_SEAM = {"evidence-disposition-v2.json"}
 COURIER_PROJECTIONS = {"routing-projection-v2.json"}
 
 # Not an artifact: the authority key registry a release ships and the runtime
-# loads to verify what the authority signs. The loader does not yet meet this
-# corpus; the exemption in `test_exchange_graph.py` records where that is owed.
+# loads to verify what the authority signs, replayed through that loader in
+# `test_authority_key_registry_vectors.py`.
 LOADED_FROM_THE_RELEASE = {"authority-key-registry-v2.json"}
 
 

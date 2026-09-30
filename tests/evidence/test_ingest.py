@@ -27,7 +27,9 @@ from ori.security.evidence.authority_keys import (
     REGISTRY_SCHEMA,
     STATUS_REVOKED,
     STATUS_VERIFY_ONLY,
+    AuthorityKey,
     AuthorityKeyError,
+    derive_key_id,
     load_authority_key_registry,
     select_verifying_key,
 )
@@ -95,36 +97,48 @@ def public_hex(seed_hex: str) -> str:
 
 
 @pytest.fixture
-def registry(tmp_path):
-    """A release-shipped registry holding both authority purposes."""
+def registry():
+    """The receipt and epoch keys the v1 artifact vectors are signed under.
+
+    Those vectors name their keys `auth-receipt-1` and `auth-epoch-1`, which no
+    registry conforming to the contract can hold, since a registry's `key_id` is
+    derived from its key. So the registry the verifiers are driven with here is
+    constructed rather than loaded; the loader is held to its own corpus in
+    `test_authority_key_registry_vectors.py`.
+    """
     receipt_seed = vector("delivery-receipt")["authority_receipt_seed_hex"]
     epoch_seed = vector("epoch-confirmation")["signing_key_seed_hex"]
-    path = tmp_path / "authority-keys.json"
-    path.write_text(
-        json.dumps(
-            {
-                "schema": REGISTRY_SCHEMA,
-                "keys": [
-                    {
-                        "key_id": case("delivery-receipt", "valid")["artifact"][
-                            "key_id"
-                        ],
-                        "public_key_hex": public_hex(receipt_seed),
-                        "purpose": PURPOSE_RECEIPT,
-                        "status": "active",
-                    },
-                    {
-                        "key_id": case("epoch-confirmation", "valid")["artifact"][
-                            "key_id"
-                        ],
-                        "public_key_hex": public_hex(epoch_seed),
-                        "purpose": PURPOSE_EPOCH,
-                        "status": "active",
-                    },
-                ],
-            }
-        )
-    )
+    receipt_key_id = case("delivery-receipt", "valid")["artifact"]["key_id"]
+    epoch_key_id = case("epoch-confirmation", "valid")["artifact"]["key_id"]
+    return {
+        (PURPOSE_RECEIPT, receipt_key_id): AuthorityKey(
+            key_id=receipt_key_id,
+            public_key_hex=public_hex(receipt_seed),
+            purpose=PURPOSE_RECEIPT,
+            status="active",
+        ),
+        (PURPOSE_EPOCH, epoch_key_id): AuthorityKey(
+            key_id=epoch_key_id,
+            public_key_hex=public_hex(epoch_seed),
+            purpose=PURPOSE_EPOCH,
+            status="active",
+        ),
+    }
+
+
+def _key_entry(status: str = "active") -> dict[str, str]:
+    raw = Ed25519PrivateKey.generate().public_key().public_bytes_raw()
+    return {
+        "key_id": derive_key_id(raw),
+        "public_key_hex": raw.hex(),
+        "purpose": PURPOSE_RECEIPT,
+        "status": status,
+    }
+
+
+def _loaded(tmp_path, *entries: dict[str, str]) -> dict:
+    path = tmp_path / "keys.json"
+    path.write_text(json.dumps({"schema": REGISTRY_SCHEMA, "keys": list(entries)}))
     return load_authority_key_registry(path)
 
 
@@ -149,51 +163,19 @@ def test_an_unknown_key_is_distinguished_from_a_misplaced_one(registry):
         select_verifying_key(registry, PURPOSE_RECEIPT, "never-issued")
 
 
-@pytest.mark.parametrize("status", [STATUS_REVOKED])
-def test_a_revoked_key_verifies_nothing(tmp_path, status):
+def test_a_revoked_key_verifies_nothing(tmp_path):
     """A retired key that still verified would make rotation cosmetic."""
-    path = tmp_path / "keys.json"
-    path.write_text(
-        json.dumps(
-            {
-                "schema": REGISTRY_SCHEMA,
-                "keys": [
-                    {
-                        "key_id": "old",
-                        "public_key_hex": "aa" * 32,
-                        "purpose": PURPOSE_RECEIPT,
-                        "status": status,
-                    }
-                ],
-            }
-        )
-    )
-    loaded = load_authority_key_registry(path)
+    revoked = _key_entry(STATUS_REVOKED)
+    loaded = _loaded(tmp_path, _key_entry(), revoked)
     with pytest.raises(AuthorityKeyError, match="verifies nothing"):
-        select_verifying_key(loaded, PURPOSE_RECEIPT, "old")
+        select_verifying_key(loaded, PURPOSE_RECEIPT, revoked["key_id"])
 
 
 def test_a_verify_only_key_still_verifies(tmp_path):
     """Rotation keeps artifacts signed before it verifiable."""
-    path = tmp_path / "keys.json"
-    path.write_text(
-        json.dumps(
-            {
-                "schema": REGISTRY_SCHEMA,
-                "keys": [
-                    {
-                        "key_id": "outgoing",
-                        "public_key_hex": "bb" * 32,
-                        "purpose": PURPOSE_RECEIPT,
-                        "status": STATUS_VERIFY_ONLY,
-                    }
-                ],
-            }
-        )
-    )
-    assert select_verifying_key(
-        load_authority_key_registry(path), PURPOSE_RECEIPT, "outgoing"
-    )
+    outgoing = _key_entry(STATUS_VERIFY_ONLY)
+    loaded = _loaded(tmp_path, _key_entry(), outgoing)
+    assert select_verifying_key(loaded, PURPOSE_RECEIPT, outgoing["key_id"])
 
 
 @pytest.mark.parametrize(
@@ -206,22 +188,12 @@ def test_a_verify_only_key_still_verifies(tmp_path):
             "does not govern",
         ),
         (lambda r: r["keys"][0].__setitem__("status", "probationary"), "status"),
-        (lambda r: r["keys"][0].__setitem__("public_key_hex", "aa"), "32"),
+        (lambda r: r["keys"][0].__setitem__("public_key_hex", "aa"), "64 lowercase"),
         (lambda r: r.__setitem__("extra", True), "fields are wrong"),
     ],
 )
 def test_a_malformed_registry_is_refused(tmp_path, mutate, expected):
-    raw = {
-        "schema": REGISTRY_SCHEMA,
-        "keys": [
-            {
-                "key_id": "k1",
-                "public_key_hex": "cc" * 32,
-                "purpose": PURPOSE_RECEIPT,
-                "status": "active",
-            }
-        ],
-    }
+    raw = {"schema": REGISTRY_SCHEMA, "keys": [_key_entry()]}
     mutate(raw)
     path = tmp_path / "keys.json"
     path.write_text(json.dumps(raw))

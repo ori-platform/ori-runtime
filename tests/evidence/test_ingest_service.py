@@ -21,6 +21,7 @@ from ori.security.evidence.authority_keys import (
     PURPOSE_EPOCH,
     PURPOSE_RECEIPT,
     REGISTRY_SCHEMA,
+    derive_key_id,
     load_authority_key_registry,
 )
 from ori.security.evidence.canonical import canonical_json
@@ -70,6 +71,10 @@ def _pub(seed: bytes) -> str:
     )
 
 
+RECEIPT_KEY_ID = derive_key_id(bytes.fromhex(_pub(RECEIPT_SEED)))
+EPOCH_KEY_ID = derive_key_id(bytes.fromhex(_pub(EPOCH_SEED)))
+
+
 def _sign(artifact: dict, domain: bytes, seed: bytes) -> dict:
     body = {k: v for k, v in artifact.items() if k != "signature"}
     key = Ed25519PrivateKey.from_private_bytes(seed)
@@ -106,13 +111,13 @@ def rig(tmp_path):
                 "schema": REGISTRY_SCHEMA,
                 "keys": [
                     {
-                        "key_id": "auth-receipt-1",
+                        "key_id": RECEIPT_KEY_ID,
                         "public_key_hex": _pub(RECEIPT_SEED),
                         "purpose": PURPOSE_RECEIPT,
                         "status": "active",
                     },
                     {
-                        "key_id": "auth-epoch-1",
+                        "key_id": EPOCH_KEY_ID,
                         "public_key_hex": _pub(EPOCH_SEED),
                         "purpose": PURPOSE_EPOCH,
                         "status": "active",
@@ -152,7 +157,7 @@ def _seal(chain, ledger, n: int):
 
 
 def _receipt(
-    ledger, from_seq: int, to_seq: int, seed=RECEIPT_SEED, key_id="auth-receipt-1"
+    ledger, from_seq: int, to_seq: int, seed=RECEIPT_SEED, key_id=RECEIPT_KEY_ID
 ):
     digests = ledger.envelope_digests(from_seq, to_seq)
     raw = b"".join(
@@ -174,9 +179,7 @@ def _receipt(
     )
 
 
-def _confirmation(
-    pubkey_hex: str, seed=EPOCH_SEED, key_id="auth-epoch-1", device=DEVICE
-):
+def _confirmation(pubkey_hex: str, seed=EPOCH_SEED, key_id=EPOCH_KEY_ID, device=DEVICE):
     return _sign(
         {
             "v": 1,
@@ -269,7 +272,7 @@ def test_a_verified_receipt_marks_its_range_delivered(rig):
             True,
         ),
         (lambda a: a.__setitem__("to_seq", 99), REJECT_UNKNOWN_SEQUENCE, True),
-        (lambda a: a.__setitem__("key_id", "auth-epoch-1"), REJECT_WRONG_PURPOSE, True),
+        (lambda a: a.__setitem__("key_id", EPOCH_KEY_ID), REJECT_WRONG_PURPOSE, True),
     ],
 )
 def test_an_unverified_receipt_changes_nothing(rig, corrupt, expected, resign):
@@ -458,7 +461,7 @@ def test_a_confirmation_for_the_current_epoch_with_nothing_sealed_is_refused(rig
             REJECT_BINDING_MISMATCH,
         ),
         (lambda a, k: a.__setitem__("pubkey_hex", "11" * 32), REJECT_BINDING_MISMATCH),
-        (lambda a, k: a.__setitem__("key_id", "auth-receipt-1"), REJECT_WRONG_PURPOSE),
+        (lambda a, k: a.__setitem__("key_id", RECEIPT_KEY_ID), REJECT_WRONG_PURPOSE),
     ],
 )
 def test_an_unverified_confirmation_leaves_the_epoch_unset(rig, corrupt, expected):

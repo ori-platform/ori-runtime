@@ -875,6 +875,24 @@ candidate or release is cut.
 
 ## Security
 
+- The evidence authority key registry a release ships is held to
+  `evidence-exchange/v2`. Every member must be a string, both hexadecimal
+  members lowercase, and each `key_id` is recomputed from its public key rather
+  than taken on trust. A public key must decode as a canonical Ed25519 point
+  under RFC 8032 section 5.1.3 and must not be of small order, decided by
+  curve arithmetic; a registry holding one key under two purposes, or a purpose
+  with no `active` key or more than one, is refused; and one refused key refuses
+  the whole registry. The disposition purpose is accepted, so a release may ship
+  its key before the disposition verifier is installed. A revoked key now
+  rejects an artifact as `retired_key` rather than `unknown_key`. A shipped
+  registry the loader refuses, or one holding a key whose seed this repository
+  publishes, is logged at error and read as no registry: evidence verification
+  stops and health reports `authority_keys_missing`, and the runtime still
+  starts, where a present but unreadable registry previously failed startup.
+  The registry is package data at `ori/security/evidence-authority-keys.json`;
+  no release ships one yet, so every authority artifact is still refused
+  `unknown_key`. The contract's corpus is replayed in full through the loader.
+
 - A trust anchor whose private key this repository publishes is refused, at
   every deployment profile. This repository commits Ed25519 seeds as test
   material, and three verification paths across two trust boundaries accepted a

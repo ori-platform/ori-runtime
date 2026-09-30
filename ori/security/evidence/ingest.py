@@ -33,6 +33,8 @@ from typing import Any, Mapping
 from ori.security.evidence.authority_keys import (
     PURPOSE_EPOCH,
     PURPOSE_RECEIPT,
+    SELECT_RETIRED_KEY,
+    SELECT_WRONG_PURPOSE,
     AuthorityKey,
     AuthorityKeyError,
     select_verifying_key,
@@ -218,8 +220,10 @@ def _select(
         # Named at each branch rather than computed into a variable, so every
         # call site states its reason literally and can be checked statically.
         # A reason assembled at runtime is one nothing can audit.
-        if "is held for" in str(exc):
+        if exc.rule == SELECT_WRONG_PURPOSE:
             raise IngestRejectedError(REJECT_WRONG_PURPOSE, str(exc)) from exc
+        if exc.rule == SELECT_RETIRED_KEY:
+            raise IngestRejectedError(REJECT_RETIRED_KEY, str(exc)) from exc
         raise IngestRejectedError(REJECT_UNKNOWN_KEY, str(exc)) from exc
 
 

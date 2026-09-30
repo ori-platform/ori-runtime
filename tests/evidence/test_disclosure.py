@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import ast
 import io
+import json
 import logging
 import os
 import pathlib
@@ -254,6 +255,11 @@ REVIEWED_OPERATOR_MESSAGES = frozenset(
         "degraded, and Tier C/D actions are unaffected",
         "[evidence] evidence trust is not established (%s); "
         "receipts and custody will be refused until it is",
+        # Reviewed: a refusal rule from the loader's closed vocabulary, never
+        # the exception text, and a statement about this device's behaviour.
+        # Names no key, holder, path or party.
+        "[evidence] the release's authority keys are refused (%s); "
+        "no authority artifact will verify",
         # Reviewed: says only that this device's own high-water mark was not
         # advanced, and that it will retry. Nothing about who receives a
         # checkpoint, or that anyone does.
@@ -2116,3 +2122,173 @@ def test_every_denylist_backed_check_is_sanitised():
         "these checks read the private denylist but do not route findings "
         f"through _opaque(): {sorted(unsanitised)}"
     )
+
+
+# --------------------------------------------------------------------------
+# 9. The authority key registry a release ships
+# --------------------------------------------------------------------------
+#
+# The registry travels in the wheel to every device, so it is published the
+# moment a release is. It may carry public keys and the contract's own tokens,
+# and nothing else: no deployment identity, no site, no endpoint, no holder.
+# The vocabulary is written out here rather than imported from the loader, so
+# a loader that widened what it accepts fails this review instead of widening
+# it silently.
+
+SHIPPED_REGISTRY = "ori/security/evidence-authority-keys.json"
+REVIEWED_REGISTRY_SCHEMA = "ori.evidence_authority_keys.v1"
+REVIEWED_REGISTRY_PURPOSES = frozenset(
+    {
+        "evidence_authority_receipt",
+        "evidence_authority_epoch",
+        "evidence_authority_disposition",
+    }
+)
+REVIEWED_REGISTRY_STATUSES = frozenset({"active", "verify_only", "revoked"})
+_REVIEWED_KEY_MEMBERS = {"key_id", "public_key_hex", "purpose", "status"}
+_REVIEWED_KEY_ID = re.compile(r"sha256:[0-9a-f]{64}")
+_REVIEWED_PUBLIC_KEY = re.compile(r"[0-9a-f]{64}")
+
+
+def _registry_review_findings(text: str) -> list[str]:
+    """What stops a registry document shipping; empty when it may ship."""
+    from ori.security.evidence.authority_keys import (
+        AuthorityKeyError,
+        parse_authority_key_registry,
+    )
+
+    try:
+        document = json.loads(text)
+    except ValueError:
+        return ["not JSON"]
+    if not isinstance(document, dict) or set(document) != {"schema", "keys"}:
+        return ["document members are not exactly schema and keys"]
+    findings: list[str] = []
+    if document["schema"] != REVIEWED_REGISTRY_SCHEMA:
+        findings.append("unreviewed schema")
+    keys = document["keys"] if isinstance(document["keys"], list) else []
+    if not keys:
+        findings.append("no keys")
+    for index, key in enumerate(keys):
+        label = f"key #{index + 1}"
+        if not isinstance(key, dict) or set(key) != _REVIEWED_KEY_MEMBERS:
+            findings.append(f"{label}: members are not the four reviewed ones")
+            continue
+        key_id, public_key = key["key_id"], key["public_key_hex"]
+        if not isinstance(key_id, str) or not _REVIEWED_KEY_ID.fullmatch(key_id):
+            findings.append(f"{label}: key_id is not a derived key identifier")
+        if not isinstance(public_key, str) or not _REVIEWED_PUBLIC_KEY.fullmatch(
+            public_key
+        ):
+            findings.append(f"{label}: public_key_hex is not a public key")
+        if key["purpose"] not in REVIEWED_REGISTRY_PURPOSES:
+            findings.append(f"{label}: unreviewed purpose")
+        if key["status"] not in REVIEWED_REGISTRY_STATUSES:
+            findings.append(f"{label}: unreviewed status")
+    if not findings:
+        try:
+            parse_authority_key_registry(document)
+        except AuthorityKeyError as exc:
+            findings.append(f"the loader refuses it ({exc.rule})")
+    return findings
+
+
+def _reviewable_registry() -> dict:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from ori.security.evidence.authority_keys import derive_key_id
+
+    keys = []
+    for purpose in sorted(REVIEWED_REGISTRY_PURPOSES):
+        raw = Ed25519PrivateKey.generate().public_key().public_bytes_raw()
+        keys.append(
+            {
+                "key_id": derive_key_id(raw),
+                "public_key_hex": raw.hex(),
+                "purpose": purpose,
+                "status": "active",
+            }
+        )
+    return {"schema": REVIEWED_REGISTRY_SCHEMA, "keys": keys}
+
+
+def test_a_registry_of_public_keys_and_contract_tokens_passes_review():
+    assert _registry_review_findings(json.dumps(_reviewable_registry())) == []
+
+
+@pytest.mark.parametrize(
+    "member,value",
+    [
+        ("purpose", "evidence_device"),
+        ("purpose", "commissioning_authority"),
+        ("purpose", "gateway_custody"),
+        ("purpose", "site_operator"),
+        ("status", "retired"),
+        ("status", "probationary"),
+        ("status", "ACTIVE"),
+    ],
+)
+def test_an_unknown_purpose_or_status_does_not_ship(member, value):
+    document = _reviewable_registry()
+    document["keys"][0][member] = value
+    findings = _registry_review_findings(json.dumps(document))
+    assert f"key #1: unreviewed {member}" in findings
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda d: d["keys"][0].__setitem__("site", "ikeja-office"),
+        lambda d: d.__setitem__("issuer", "ops@example.invalid"),
+        lambda d: d["keys"][0].__setitem__("key_id", "ikeja-receipt-key"),
+        lambda d: d["keys"][0].__setitem__("public_key_hex", "energy-monitor-01"),
+    ],
+    ids=["key_member", "document_member", "key_id", "public_key"],
+)
+def test_a_registry_carrying_deployment_identity_does_not_ship(mutate):
+    document = _reviewable_registry()
+    mutate(document)
+    assert _registry_review_findings(json.dumps(document))
+
+
+def test_the_source_tree_registry_and_the_wheel_agree(built_wheel):
+    """What the source tree ships is what the wheel carries, and it passes review."""
+    source = REPO_ROOT / SHIPPED_REGISTRY
+    with zipfile.ZipFile(built_wheel) as archive:
+        carried = SHIPPED_REGISTRY in archive.namelist()
+        text = archive.read(SHIPPED_REGISTRY).decode("utf-8") if carried else None
+    assert carried == source.exists()
+    if text is not None:
+        assert _registry_review_findings(text) == []
+
+
+def test_a_built_wheel_carries_a_shipped_registry(tmp_path):
+    """Package data, proven on a wheel built from a tree that holds a registry.
+
+    No release registry exists yet, so the tree is a copy with a generated one
+    placed where the runtime reads it.
+    """
+    import shutil
+    import sys
+
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    for name in ("pyproject.toml", "README.md", "LICENSE"):
+        shutil.copy2(REPO_ROOT / name, tree / name)
+    ignore = shutil.ignore_patterns("__pycache__", "*.pyc")
+    shutil.copytree(REPO_ROOT / "ori", tree / "ori", ignore=ignore)
+    shutil.copytree(REPO_ROOT / "skills", tree / "skills", ignore=ignore)
+    registry = json.dumps(_reviewable_registry()).encode("utf-8")
+    (tree / SHIPPED_REGISTRY).write_bytes(registry)
+
+    out = tmp_path / "dist"
+    result = subprocess.run(
+        [sys.executable, "-m", "build", "--wheel", "--outdir", str(out), str(tree)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"wheel build unavailable: {result.stderr.strip()[-200:]}")
+    (wheel,) = sorted(out.glob("*.whl"))
+    with zipfile.ZipFile(wheel) as archive:
+        assert archive.read(SHIPPED_REGISTRY) == registry

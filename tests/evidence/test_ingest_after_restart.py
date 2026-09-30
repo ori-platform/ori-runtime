@@ -22,6 +22,7 @@ from ori.security.evidence.authority_keys import (
     PURPOSE_EPOCH,
     PURPOSE_RECEIPT,
     REGISTRY_SCHEMA,
+    derive_key_id,
     load_authority_key_registry,
 )
 from ori.security.evidence.canonical import canonical_json
@@ -53,6 +54,10 @@ RECEIPT_DOMAIN = b"ori.evidence_delivery_receipt.v1\x00"
 def _pub(seed: bytes) -> str:
     key = Ed25519PrivateKey.from_private_bytes(seed)
     return key.public_key().public_bytes_raw().hex()
+
+
+RECEIPT_KEY_ID = derive_key_id(bytes.fromhex(_pub(RECEIPT_SEED)))
+EPOCH_KEY_ID = derive_key_id(bytes.fromhex(_pub(EPOCH_SEED)))
 
 
 def _sign(artifact: dict, domain: bytes, seed: bytes) -> dict:
@@ -90,13 +95,13 @@ class Site:
                     "schema": REGISTRY_SCHEMA,
                     "keys": [
                         {
-                            "key_id": "auth-receipt-1",
+                            "key_id": RECEIPT_KEY_ID,
                             "public_key_hex": _pub(RECEIPT_SEED),
                             "purpose": PURPOSE_RECEIPT,
                             "status": "active",
                         },
                         {
-                            "key_id": "auth-epoch-1",
+                            "key_id": EPOCH_KEY_ID,
                             "public_key_hex": _pub(EPOCH_SEED),
                             "purpose": PURPOSE_EPOCH,
                             "status": "active",
@@ -171,7 +176,7 @@ class Site:
                 "to_seq": to_seq,
                 "range_digest": "sha256:" + hashlib.sha256(raw).hexdigest(),
                 "accepted_at_ms": accepted_at_ms,
-                "key_id": "auth-receipt-1",
+                "key_id": RECEIPT_KEY_ID,
             },
             RECEIPT_DOMAIN,
             RECEIPT_SEED,

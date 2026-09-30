@@ -6032,6 +6032,64 @@ class TestEvidencePostureNeverGatesStartup:
         assert health["status"] == "degraded"
         assert health.get("critical") is not True
 
+    async def test_a_refused_shipped_registry_does_not_stop_the_runtime(
+        self, minimal_config, monkeypatch, tmp_path
+    ):
+        """A registry the release ships and the loader refuses stops evidence, not start."""
+        from importlib import resources
+
+        _patch_external(monkeypatch)
+        _treat_scratch_skills_as_packaged(monkeypatch)
+        monkeypatch.setenv("ORI_EVIDENCE_DEVICE_SECRET", "install-secret-for-test")
+        corpus = json.loads(
+            (
+                Path(__file__).parent
+                / "vectors"
+                / "evidence_exchange"
+                / "authority-key-registry-v2.json"
+            ).read_text(encoding="utf-8")
+        )
+        refused = next(
+            c for c in corpus["registries"] if c["name"] == "two_active_keys"
+        )
+        shipped = tmp_path / "package"
+        shipped.mkdir()
+        (shipped / "evidence-authority-keys.json").write_text(
+            json.dumps(refused["document"]), encoding="utf-8"
+        )
+        original_files = resources.files
+        monkeypatch.setattr(
+            resources,
+            "files",
+            lambda package: (
+                shipped if package == "ori.security" else original_files(package)
+            ),
+        )
+        config = Config.load(str(minimal_config))
+        config.device.deployment_profile = "production"
+        config.reasoning.default_tier = "rule"
+        config.reasoning.local_model = ""
+        config.reasoning.model_path = ""
+        config.evidence.enabled = True
+        config.evidence.db_path = str(tmp_path / "evidence.db")
+        config.evidence.key_path = str(tmp_path / "evidence.key")
+        monkeypatch.setattr("ori.runtime.Config.load", lambda _path: config)
+        runtime = OriRuntime(config_path=str(minimal_config))
+        observed: dict[str, Any] = {}
+
+        async def _observe_then_stop():
+            await _until_started(runtime)
+            observed["dispatcher"] = runtime._dispatcher
+            observed["health"] = await runtime._build_health_snapshot()
+            await runtime.stop()
+
+        await asyncio.gather(runtime.start(), _observe_then_stop())
+
+        assert observed["dispatcher"] is not None, "the action path did not come up"
+        health = observed["health"]
+        assert health["evidence"]["posture_problems"] == ["authority_keys_missing"]
+        assert health["status"] == "degraded"
+
     async def test_a_runtime_with_evidence_trust_reports_no_posture_problems(
         self, minimal_config, monkeypatch, tmp_path
     ):
