@@ -531,6 +531,27 @@ candidate or release is cut.
   proposal's one safe-default attempt had already been made elsewhere. The
   returned result, the action log row and the Tier C decision record now carry
   whether the executor succeeded; what the dispatcher executes is unchanged.
+  Two cases now record `false` where they recorded `true`: a safe default the
+  operator's alert preferences suppressed, and a record whose proposal's
+  safe-default intent had already been attempted, since that record's call
+  did not execute it.
+- Every contract-permitted writer of a Tier C end that no operator decided now
+  leaves a Tier C decision-log record, written after the safe default through
+  the same ordered writer as every other decision record, carrying the result's
+  `executed` and `safe_default_used`. `operator_decision` names the end:
+  `approval_error` when the host-state approval workflow fails before its
+  result is recorded, and `refused_uncommissioned`,
+  `refused_recovery_incomplete` or `refused_policy` when a physical Tier C
+  action is refused before any proposal exists. These paths wrote only the
+  action log row. Where no proposal was created -- the store could not commit
+  the proposal row (`proposal_not_committed`), or an unresolved outcome on the
+  same zone refused its creation (`refused_outcome_uncertain`) --
+  tier-c-approval/v1 permits no proposal or evidence record, and none is
+  written: the result and its action log row report the end, the safe default
+  and the CRITICAL notification are attempted, and no safe-default intent
+  exists. One window is still open: a host-state workflow that fails after its
+  result is recorded and before its decision record is queued returns that
+  result with no decision record.
 - A cached sensor no longer serves a value whose arrival is older than its
   silence bound. The generic MQTT and MQTT perception adapters and the HTTP and
   CoAP pollers served their last value on every read for as long as their

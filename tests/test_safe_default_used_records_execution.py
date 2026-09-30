@@ -10,6 +10,8 @@ the Tier C decision record and the action_log row.
 from __future__ import annotations
 
 import asyncio
+import logging
+import sqlite3
 import time
 from typing import Any
 from unittest.mock import patch
@@ -21,6 +23,7 @@ from ori.reasoning import tier_c_admission as adm
 from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.reasoning.elevator import SkillContext
 from ori.reasoning.tier_c_admission import TierCAuthorityFacts
+from ori.security.evidence.first_party import FirstPartyEvidenceAttestor
 from ori.state.store import StateStore
 from ori.utils.time_utils import now_ms
 
@@ -64,6 +67,18 @@ async def _rows(store: StateStore, action: str) -> tuple[list[dict], list[dict]]
     decisions = await store.get_tier_c_decision_log()
     actions = [r for r in await store.get_action_log() if r["action_name"] == action]
     return decisions, actions
+
+
+def _decided(decisions: list[dict]) -> list[tuple[str, bool, bool, str]]:
+    return [
+        (
+            d["operator_decision"],
+            d["safe_default_used"],
+            d["action_executed"],
+            d["action_taken"],
+        )
+        for d in decisions
+    ]
 
 
 # ── The host-state approval workflow ─────────────────────────────────────────
@@ -160,7 +175,7 @@ class TestTheHostStateWorkflow:
         try:
             with patch.object(dispatcher, "_run_approval_workflow", new=broken):
                 outcome = await _host_dispatch(dispatcher, store)
-            _decisions, actions = await _rows(store, "terminate_process")
+            decisions, actions = await _rows(store, "terminate_process")
         finally:
             await store.close()
         ran = end == "executed"
@@ -169,6 +184,9 @@ class TestTheHostStateWorkflow:
         assert outcome.executed is ran
         assert outcome.safe_default_used is ran
         assert [a["safe_default_used"] for a in actions] == [ran]
+        assert _decided(decisions) == [
+            ("approval_error", ran, ran, outcome.action_taken)
+        ]
 
 
 # ── The governed workflow for a physical Tier C act ──────────────────────────
@@ -209,10 +227,13 @@ class _Operator:
     def __init__(self, reply: str | None) -> None:
         self.reply = reply
         self.proposals: list[str] = []
+        self.notices: list[str] = []
 
     async def send(self, *, alert: Any, to_number: str) -> bool:
         if alert.intent.value == "tier_c_approval":
             self.proposals.append(str(alert.template_variables[3]))
+        else:
+            self.notices.append(alert.sms_body)
         return True
 
     async def listen_for_response(
@@ -233,11 +254,13 @@ def _governed(
     *,
     reply: str | None = "NO",
     facts: TierCAuthorityFacts | None = None,
+    evidence_attestor: Any = None,
 ) -> ActionDispatcher:
     held = facts
     dispatcher = ActionDispatcher(
         state_store=store,
         alert_sender=_Operator(reply),
+        evidence_attestor=evidence_attestor,
         config={"operator_contact": "+2348000000000", "relay_enabled": True},
         authority_facts=lambda zone_id=None: held,
     )
@@ -291,11 +314,14 @@ class TestGovernedRefusalsBeforeAProposal:
         try:
             dispatcher = _governed(store, journal, end, facts=None)
             outcome = await _propose(dispatcher, store)
-            _d, actions = await _rows(store, "trip_relay")
+            decisions, actions = await _rows(store, "trip_relay")
         finally:
             await store.close()
         ran = end == "executed"
         assert outcome.action_taken == "refused_uncommissioned"
+        assert _decided(decisions) == [
+            ("refused_uncommissioned", ran, False, "refused_uncommissioned")
+        ]
         assert journal == ["act:log_to_dashboard"]
         assert outcome.safe_default_used is ran
         assert [a["safe_default_used"] for a in actions] == [ran]
@@ -308,11 +334,14 @@ class TestGovernedRefusalsBeforeAProposal:
             dispatcher = _governed(store, journal, end, facts=_facts())
             dispatcher.mark_tier_c_recovery_failed("store_unreadable")
             outcome = await _propose(dispatcher, store)
-            _d, actions = await _rows(store, "trip_relay")
+            decisions, actions = await _rows(store, "trip_relay")
         finally:
             await store.close()
         ran = end == "executed"
         assert outcome.action_taken == "refused_recovery_incomplete"
+        assert _decided(decisions) == [
+            ("refused_recovery_incomplete", ran, False, "refused_recovery_incomplete")
+        ]
         assert "act:trip_relay" not in journal
         assert outcome.safe_default_used is ran
         assert [a["safe_default_used"] for a in actions] == [ran]
@@ -333,34 +362,167 @@ class TestGovernedRefusalsBeforeAProposal:
                     30,
                     None,
                 )
-        finally:
-            await store.close()
-        assert outcome.action_taken == "refused_policy"
-        assert journal == ["act:log_to_dashboard"]
-        assert outcome.safe_default_used is (end == "executed")
-
-    @pytest.mark.parametrize("end", SAFE_DEFAULT_ENDS)
-    async def test_a_proposal_the_store_did_not_commit(
-        self, tmp_path: Any, end: str
-    ) -> None:
-        store = await _open(tmp_path)
-        journal: list[str] = []
-
-        async def refuse(**_k: Any) -> str:
-            return "store_unavailable"
-
-        store.create_tier_c_proposal = refuse  # type: ignore[method-assign]
-        try:
-            dispatcher = _governed(store, journal, end, facts=_facts())
-            outcome = await _propose(dispatcher, store)
-            _d, actions = await _rows(store, "trip_relay")
+            await dispatcher.drain_records(timeout=5)
+            decisions = await store.get_tier_c_decision_log()
         finally:
             await store.close()
         ran = end == "executed"
-        assert outcome.action_taken == "proposal_not_committed"
+        assert outcome.action_taken == "refused_policy"
         assert journal == ["act:log_to_dashboard"]
         assert outcome.safe_default_used is ran
+        assert _decided(decisions) == [("refused_policy", ran, False, "refused_policy")]
+
+
+class TestNoProposalWasCreated:
+    """No proposal row, so no intent, no decision-log record and no evidence."""
+
+    async def _attestor(self, tmp_path: Any) -> FirstPartyEvidenceAttestor:
+        attestor = FirstPartyEvidenceAttestor(
+            db_path=str(tmp_path / "evidence.db"),
+            key_path=str(tmp_path / "evidence.key"),
+            device_secret="install-secret-for-safe-default-tests",
+            device_id=DEVICE,
+        )
+        assert await attestor.start()
+        return attestor
+
+    def _sealed(self, tmp_path: Any, attestor: FirstPartyEvidenceAttestor) -> int:
+        conn = sqlite3.connect(str(tmp_path / "evidence.db"))
+        try:
+            (count,) = conn.execute(
+                "SELECT COUNT(*) FROM evidence_chain WHERE event_type = ?",
+                (attestor.action_event_type,),
+            ).fetchone()
+        finally:
+            conn.close()
+        return int(count)
+
+    async def _uncertain(self, store: StateStore) -> None:
+        """An earlier approval of the same outcome on the same zone, unresolved."""
+        assert (
+            await store.create_tier_c_proposal(
+                proposal_id="P1",
+                device_id=DEVICE,
+                action="trip_relay",
+                target="relay-gpio-26",
+                zone_id=ZONE,
+                outcome="open_protected_circuit",
+                safe_default_action="log_to_dashboard",
+                binding_digest="sha256:" + "b" * 64,
+                authority_json="{}",
+                created_at_ms=now_ms(),
+                expires_at_ms=now_ms() + 300_000,
+            )
+            == "committed"
+        )
+        assert (
+            await store.admit_tier_c_approval(
+                "P1",
+                binding_digest="sha256:" + "b" * 64,
+                authority_json="{}",
+                reservation_ceiling=64,
+            )
+            == "committed"
+        )
+        await store.advance_tier_c_proposal(
+            "P1", adm.DISPATCH_STARTED, from_states=(adm.APPROVED_PENDING_DISPATCH,)
+        )
+        await store.advance_tier_c_proposal(
+            "P1", adm.DISPATCH_OUTCOME_UNKNOWN, from_states=(adm.DISPATCH_STARTED,)
+        )
+
+    @pytest.mark.parametrize("end", SAFE_DEFAULT_ENDS)
+    async def test_a_proposal_row_the_store_could_not_commit(
+        self, tmp_path: Any, end: str, caplog: Any
+    ) -> None:
+        store = await _open(tmp_path)
+        attestor = await self._attestor(tmp_path)
+        journal: list[str] = []
+
+        async def refuse(**_k: Any) -> str:
+            raise sqlite3.OperationalError("disk I/O error")
+
+        store.create_tier_c_proposal = refuse  # type: ignore[method-assign]
+        try:
+            dispatcher = _governed(
+                store, journal, end, facts=_facts(), evidence_attestor=attestor
+            )
+            with caplog.at_level(logging.CRITICAL):
+                outcome = await _propose(dispatcher, store)
+            decisions, actions = await _rows(store, "trip_relay")
+            proposals = await store.get_tier_c_proposals()
+            intents = await store.get_tier_c_safe_default_intents()
+            sealed = self._sealed(tmp_path, attestor)
+        finally:
+            await store.close()
+            attestor.close()
+        ran = end == "executed"
+        operator = dispatcher._alert_sender  # type: ignore[attr-defined]
+        assert outcome.action_taken == "proposal_not_committed"
+        assert journal == ["act:log_to_dashboard"]
+        assert proposals == [] and intents == []
+        assert decisions == []
+        assert sealed == 0
+        assert outcome.safe_default_used is ran
         assert [a["safe_default_used"] for a in actions] == [ran]
+        assert any(
+            r.levelno == logging.CRITICAL
+            and "nothing is claimed durable" in r.getMessage()
+            for r in caplog.records
+        )
+        assert operator.proposals == []
+        assert any("proposal could not be recorded" in n for n in operator.notices)
+
+    @pytest.mark.parametrize("held", ["durably", "live"])
+    @pytest.mark.parametrize("end", SAFE_DEFAULT_ENDS)
+    async def test_a_proposal_refused_for_an_unresolved_outcome(
+        self, tmp_path: Any, end: str, held: str, caplog: Any
+    ) -> None:
+        store = await _open(tmp_path)
+        attestor = await self._attestor(tmp_path)
+        journal: list[str] = []
+        try:
+            if held == "durably":
+                await self._uncertain(store)
+            dispatcher = _governed(
+                store, journal, end, facts=_facts(), evidence_attestor=attestor
+            )
+            with (
+                patch.object(
+                    dispatcher,
+                    "tier_c_outcome_held_live",
+                    return_value=held == "live",
+                ),
+                caplog.at_level(logging.CRITICAL),
+            ):
+                outcome = await _propose(dispatcher, store)
+            decisions, actions = await _rows(store, "trip_relay")
+            proposals = [
+                (r["proposal_id"], r["decision_state"])
+                for r in await store.get_tier_c_proposals()
+            ]
+            intents = await store.get_tier_c_safe_default_intents()
+            sealed = self._sealed(tmp_path, attestor)
+        finally:
+            await store.close()
+            attestor.close()
+        ran = end == "executed"
+        operator = dispatcher._alert_sender  # type: ignore[attr-defined]
+        assert outcome.action_taken == "refused_outcome_uncertain"
+        assert journal == ["act:log_to_dashboard"]
+        assert proposals == (
+            [("P1", adm.DISPATCH_OUTCOME_UNKNOWN)] if held == "durably" else []
+        )
+        assert intents == [] and decisions == []
+        assert sealed == 0
+        assert outcome.safe_default_used is ran
+        assert [a["safe_default_used"] for a in actions] == [ran]
+        assert any(
+            r.levelno == logging.CRITICAL and "unresolved outcome" in r.getMessage()
+            for r in caplog.records
+        )
+        assert operator.proposals == []
+        assert any("an earlier outcome is unresolved" in n for n in operator.notices)
 
 
 class TestGovernedRejectionAndExpiry:

@@ -402,6 +402,8 @@ class _ApprovalProgress:
     def __init__(self) -> None:
         self.proposal_id: str | None = None
         self.acted: ActionResult | None = None
+        self.started_at_ms: int | None = None
+        self.approval_receipt: AlertSendReceipt | None = None
 
 
 def _storable_reply(reply: object) -> str | None:
@@ -1745,13 +1747,78 @@ class ActionDispatcher:
             )
             if progress.acted is not None:
                 return progress.acted
-            return await self._resolve_failed_approval(
+            resolved = await self._resolve_failed_approval(
                 action,
                 tier,
                 context,
                 self._vet_safe_default(safe_default_action),
                 progress.proposal_id,
             )
+            self._defer_tier_c_decision(
+                store=self._resolve_state_store(context),
+                context=context,
+                result=result,
+                action=action,
+                action_result=resolved,
+                operator_decision="approval_error",
+                approval_started_at=progress.started_at_ms,
+                approval_timeout_seconds=approval_timeout_seconds,
+                safe_default_action=self._vet_safe_default(safe_default_action),
+                approval_receipt=progress.approval_receipt,
+            )
+            return resolved
+
+    def _defer_tier_c_decision(
+        self,
+        *,
+        store: Any,
+        context: SkillContext,
+        result: ReasoningResult,
+        action: str,
+        action_result: ActionResult,
+        operator_decision: str,
+        approval_started_at: int | None,
+        approval_timeout_seconds: int,
+        safe_default_action: str,
+        approval_receipt: AlertSendReceipt | None = None,
+    ) -> None:
+        """Queue the decision-log record of a Tier C end no operator decided."""
+        channel = str(self._config.get("primary_alert_channel", "sms"))
+        completed_at = now_ms()
+        started_at = (
+            completed_at if approval_started_at is None else approval_started_at
+        )
+        receipt = approval_receipt or AlertSendReceipt.refused(
+            channel=channel, error="approval_not_submitted"
+        )
+        self._defer_record(
+            lambda: self._log_tier_c_decision(
+                store=store,
+                context=context,
+                result=result,
+                action=action,
+                action_result=action_result,
+                operator_decision=operator_decision,
+                approval_started_at=started_at,
+                completed_at=completed_at,
+                approval_timeout_seconds=approval_timeout_seconds,
+                safe_default_action=safe_default_action,
+                safe_default_used=bool(action_result.safe_default_used),
+                approval_receipt=receipt,
+                escalation_receipt=AlertSendReceipt.refused(
+                    channel=channel, error="escalation_not_required"
+                ),
+                inbound_response=None,
+                durable=True,
+            ),
+            label=(
+                f"tier_c_decision action={action} "
+                f"proposal_id={action_result.proposal_id or '-'} "
+                f"decision={operator_decision}"
+            ),
+            report=True,
+            on_lost=self._note_decision_lost,
+        )
 
     async def _resolve_failed_approval(
         self,
@@ -2115,7 +2182,7 @@ class ActionDispatcher:
             inner = await self._execute_immediately(
                 safe_default_action, ActionTier.INFORMATIONAL, context
             )
-            return ActionResult(
+            refusal = ActionResult(
                 action_name=action,
                 tier=tier,
                 executed=False,
@@ -2125,6 +2192,18 @@ class ActionDispatcher:
                 operator_response=None,
                 safe_default_used=inner.executed,
             )
+            self._defer_tier_c_decision(
+                store=store,
+                context=context,
+                result=result,
+                action=action,
+                action_result=refusal,
+                operator_decision="refused_uncommissioned",
+                approval_started_at=None,
+                approval_timeout_seconds=int(approval_timeout_seconds),
+                safe_default_action=safe_default_action,
+            )
+            return refusal
         snapshot_now, binding_digest = authority
         if self._tier_c_recovery_failed:
             # The previous process's proposals were never read: a new proposal
@@ -2144,7 +2223,7 @@ class ActionDispatcher:
                 "no Tier C proposal can be raised: the runtime could not settle the "
                 "previous process's proposals at start",
             )
-            return ActionResult(
+            refusal = ActionResult(
                 action_name=action,
                 tier=tier,
                 executed=False,
@@ -2154,6 +2233,18 @@ class ActionDispatcher:
                 operator_response=None,
                 safe_default_used=inner.executed,
             )
+            self._defer_tier_c_decision(
+                store=store,
+                context=context,
+                result=result,
+                action=action,
+                action_result=refusal,
+                operator_decision="refused_recovery_incomplete",
+                approval_started_at=None,
+                approval_timeout_seconds=int(approval_timeout_seconds),
+                safe_default_action=safe_default_action,
+            )
+            return refusal
         if not self.permits_relay_action(tier):
             # The deployment or the device policy withholds Tier C relay use.
             # Dispatch refused this already by class; this layer fails closed
@@ -2166,7 +2257,7 @@ class ActionDispatcher:
             inner = await self._execute_immediately(
                 safe_default_action, ActionTier.INFORMATIONAL, context
             )
-            return ActionResult(
+            refusal = ActionResult(
                 action_name=action,
                 tier=tier,
                 executed=False,
@@ -2176,6 +2267,18 @@ class ActionDispatcher:
                 operator_response=None,
                 safe_default_used=inner.executed,
             )
+            self._defer_tier_c_decision(
+                store=store,
+                context=context,
+                result=result,
+                action=action,
+                action_result=refusal,
+                operator_decision="refused_policy",
+                approval_started_at=None,
+                approval_timeout_seconds=int(approval_timeout_seconds),
+                safe_default_action=safe_default_action,
+            )
+            return refusal
         if not safe_default_admitted(safe_default_action):
             logger.error(
                 "ActionDispatcher: %r cannot stand as a Tier C safe default; the "
@@ -2327,6 +2430,8 @@ class ActionDispatcher:
             inner = await self._execute_immediately(
                 safe_default_action, ActionTier.INFORMATIONAL, context
             )
+            # No proposal was created, so no decision record exists for it
+            # either: only the result and its action log row report the end.
             return resolved(
                 executed=False,
                 approved=None,
@@ -3301,6 +3406,7 @@ class ActionDispatcher:
         safe_default_action = self._vet_safe_default(safe_default_action)
 
         approval_started_at = now_ms()
+        progress.started_at_ms = approval_started_at
         proposal_id = _generate_proposal_id()
         progress.proposal_id = proposal_id
         if self._log_approval_workflow:
@@ -3370,6 +3476,7 @@ class ActionDispatcher:
                     channel=str(self._config.get("primary_alert_channel", "sms")),
                     error="sender_raised",
                 )
+        progress.approval_receipt = approval_receipt
 
         # Wait for response
         operator_response: str | None = None
