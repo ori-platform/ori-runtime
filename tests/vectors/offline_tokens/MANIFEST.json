@@ -2,6 +2,7 @@
   "source_repository": "ori-platform/ori-specs",
   "source_path": "offline-tokens/vectors",
   "source_commit": "06ba18e5923907e72a0bd82306747c1c4aa4af61",
+  "contract_version": "v2",
   "note": "Vendored copies of the normative vectors. The runtime must produce and accept the bytes they describe, so they are its conformance fixtures. Digests detect a local edit; the source commit is the provenance trail.",
   "files": {
     "tier-c-binding-v2.json": "66a5b5571ed688040390276de07ff3984016608eb2d2e8e8426bb28fd4b2b48d",
