@@ -159,6 +159,9 @@ def contract_violations(root: Path) -> list[str]:
             )
     for name in sorted(set(NOT_SPECS_CORPORA) & set(sets)):
         problems.append(f"{name}: vendored from ori-specs but in NOT_SPECS_CORPORA")
+    present = {p.name for p in root.iterdir() if p.is_dir()}
+    for name in sorted(set(NOT_SPECS_CORPORA) - present):
+        problems.append(f"{name}: listed in NOT_SPECS_CORPORA but not vendored")
 
     claims: dict[str, int] = {}
     for set_name, manifest in sets.items():
@@ -410,6 +413,17 @@ def test_each_mutation_of_a_declaration_or_claim_is_refused(
     assert not contract_violations(root)
     _set_member(root / relative, member, value)
     assert contract_violations(root), mutation
+
+
+@pytest.mark.parametrize("excluded", sorted(NOT_SPECS_CORPORA))
+def test_an_exclusion_whose_directory_is_gone_is_refused(
+    excluded: str, tmp_path: Path
+) -> None:
+    root = tmp_path / "vectors"
+    shutil.copytree(VECTORS, root)
+    shutil.rmtree(root / excluded)
+    problems = contract_violations(root)
+    assert f"{excluded}: listed in NOT_SPECS_CORPORA but not vendored" in problems
 
 
 _TIER_B = "skills-package/v3 — Tier B execution policy"
