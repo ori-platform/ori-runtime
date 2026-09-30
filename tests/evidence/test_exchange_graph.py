@@ -177,13 +177,16 @@ REQUIRED_SCHEMA: dict[str, dict[str, set[str]]] = {
             "artifact",
         },
     },
-    "epoch-confirmation": {
+    "epoch-confirmation-v2": {
         "top": {
             "artifact",
             "domain_ascii",
             "key_purpose",
             "signing_key_seed_hex",
             "signing_key_public_hex",
+            "key_id",
+            "key_id_note",
+            "authority_key_registry",
             "cases",
         },
         "case": {
@@ -237,7 +240,7 @@ REQUIRED_SCHEMA: dict[str, dict[str, set[str]]] = {
             "artifact",
         },
     },
-    "delivery-receipt": {
+    "delivery-receipt-v2": {
         "top": {
             "artifact",
             "domain_ascii",
@@ -247,6 +250,9 @@ REQUIRED_SCHEMA: dict[str, dict[str, set[str]]] = {
             "authority_receipt_seed_hex",
             "epoch_authority_seed_hex",
             "rejection_integrity_note",
+            "key_id",
+            "key_id_note",
+            "authority_key_registry",
             "cases",
         },
         "case": {
@@ -324,7 +330,7 @@ def test_the_rejection_integrity_note_survives() -> None:
     has happened once already.
     """
     doc = json.loads(
-        (VECTORS / "evidence_exchange" / "delivery-receipt.json").read_text()
+        (VECTORS / "evidence_exchange" / "delivery-receipt-v2.json").read_text()
     )
     note = doc.get("rejection_integrity_note", "")
     assert "re-signs every case" in note, (
@@ -460,14 +466,18 @@ VECTOR_CONSUMERS = {
         "evidence/test_delivery_ledger.py"
         "::test_the_envelope_reproduces_the_contract_vector_byte_for_byte",
     ),
-    ("evidence_exchange", "delivery-receipt"): (
+    ("evidence_exchange", "delivery-receipt-v2"): (
         "evidence/test_ingest.py::test_the_valid_receipt_verifies",
         "evidence/test_ingest.py::test_a_receipt_signed_with_the_epoch_key_is_refused",
         "evidence/test_ingest.py::test_a_non_contiguous_receipt_is_refused",
+        "evidence/test_ingest.py::test_every_authority_artifact_case_replays_end_to_end",
+        "evidence/test_ingest.py"
+        "::test_the_embedded_registry_holds_the_keys_the_corpora_sign_under",
     ),
-    ("evidence_exchange", "epoch-confirmation"): (
+    ("evidence_exchange", "epoch-confirmation-v2"): (
         "evidence/test_ingest.py::test_the_valid_epoch_confirmation_verifies",
         "evidence/test_ingest.py::test_a_confirmation_signed_with_the_receipt_key_is_refused",
+        "evidence/test_ingest.py::test_every_authority_artifact_case_replays_end_to_end",
     ),
     ("evidence_exchange", "evidence-disposition-v2"): (
         "evidence/test_disposition_vectors.py::test_anchor_cases",

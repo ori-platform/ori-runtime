@@ -1,5 +1,6 @@
 {
   "artifact": "delivery_receipt",
+  "contract": "evidence-exchange/v2",
   "domain_ascii": "ori.evidence_delivery_receipt.v1",
   "domain_note": "Authenticated bytes are the ASCII domain, one NUL byte, then the canonical payload with signature or mac removed.",
   "canonicalisation": "json.dumps(obj, sort_keys=True, separators=(',',':'), ensure_ascii=False).encode('utf-8')",
@@ -8,6 +9,7 @@
   "key_purpose": "evidence_authority_receipt",
   "signing_key_seed_hex": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
   "signing_key_public_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
+  "key_id": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
   "authority_receipt_seed_hex": "606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f",
   "epoch_authority_seed_hex": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
   "key_naming_note": "signing_key_seed_hex and authority_receipt_seed_hex are the same key: the receipt authority's. Both names are published because the first is this corpus's convention for whichever key signs the artifact, and the second names its purpose. A previous revision had them differ, so signing_key_seed_hex named a key that did not sign the valid case -- a trap for anyone following the convention.",
@@ -16,13 +18,31 @@
   "valid_range_chain_row_digests": [
     "sha256:34ca36496d75a259e5324e9ce9feddc9e3642897ad7a62fa9f2402b8499d5c53"
   ],
+  "key_id_note": "Every key_id is sha256: and the lowercase hexadecimal SHA-256 of the signing key's 32 raw public-key bytes, as the authority key registry derives it. authority_key_registry holds the file's published keys as a registry a conforming runtime loads, and each case is selected against it by (key_purpose, key_id).",
+  "authority_key_registry": {
+    "schema": "ori.evidence_authority_keys.v1",
+    "keys": [
+      {
+        "key_id": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+        "public_key_hex": "174553b456dddfc6908ecab1c101fe6ab21e2baa0617795b7d43a63482993fd5",
+        "purpose": "evidence_authority_receipt",
+        "status": "active"
+      },
+      {
+        "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+        "public_key_hex": "2543b92ff1095511476adc8369db6ddc933665a11978dda1404ee1066ca9559d",
+        "purpose": "evidence_authority_epoch",
+        "status": "active"
+      }
+    ]
+  },
   "cases": [
     {
       "name": "valid",
       "authenticator": "valid",
       "expected": "accept",
       "note": "Canonical bytes, range digest and signature independently reproduce under the receipt key.",
-      "canonical_hex": "7b2261636365707465645f61745f6d73223a313738373030303030313030302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c2266726f6d5f736571223a31322c226b65795f6964223a22617574682d726563656970742d31222c2272616e67655f646967657374223a227368613235363a34353536656161643633373464663930306264333461353537313732343832396135666137623138313665393739656532616161616238643138306239616232222c22746f5f736571223a31322c2276223a317d",
+      "canonical_hex": "7b2261636365707465645f61745f6d73223a313738373030303030313030302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c2266726f6d5f736571223a31322c226b65795f6964223a227368613235363a36383839346435386631386632633334643439656232663462313130653034326364306633313530613464633339323433643766363362643539386330373833222c2272616e67655f646967657374223a227368613235363a34353536656161643633373464663930306264333461353537313732343832396135666137623138313665393739656532616161616238643138306239616232222c22746f5f736571223a31322c2276223a317d",
       "artifact": {
         "v": 1,
         "device_id": "energy-monitor-ikeja-01",
@@ -30,8 +50,8 @@
         "to_seq": 12,
         "range_digest": "sha256:4556eaad6374df900bd34a5571724829a5fa7b1816e979ee2aaaab8d180b9ab2",
         "accepted_at_ms": 1787000001000,
-        "key_id": "auth-receipt-1",
-        "signature": "ed25519:K4oyX2I5waCnP2ks8nmc9fJv1ukoKCWa9gqFd6Ngf9Q1LhdEB1ecce3pwvtb7lKIXX7TpHRTHNKC/D0VNR+tBA=="
+        "key_id": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+        "signature": "ed25519:1iRfndPYvkTD+q6OLba4d3f7/yzU+gto1my6U5tnkTEuzbGTdFZuCNElL23pscu6+qHII+exE1cTbqLYPfTjAw=="
       }
     },
     {
@@ -39,7 +59,7 @@
       "authenticator": "valid",
       "expected": "reject",
       "note": "Identical content to the valid case, signed with the epoch authority's key. Purpose separation is the rule under test: an epoch key cannot receipt a range.",
-      "canonical_hex": "7b2261636365707465645f61745f6d73223a313738373030303030313030302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c2266726f6d5f736571223a31322c226b65795f6964223a22617574682d726563656970742d31222c2272616e67655f646967657374223a227368613235363a34353536656161643633373464663930306264333461353537313732343832396135666137623138313665393739656532616161616238643138306239616232222c22746f5f736571223a31322c2276223a317d",
+      "canonical_hex": "7b2261636365707465645f61745f6d73223a313738373030303030313030302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c2266726f6d5f736571223a31322c226b65795f6964223a227368613235363a36383839346435386631386632633334643439656232663462313130653034326364306633313530613464633339323433643766363362643539386330373833222c2272616e67655f646967657374223a227368613235363a34353536656161643633373464663930306264333461353537313732343832396135666137623138313665393739656532616161616238643138306239616232222c22746f5f736571223a31322c2276223a317d",
       "artifact": {
         "v": 1,
         "device_id": "energy-monitor-ikeja-01",
@@ -47,8 +67,8 @@
         "to_seq": 12,
         "range_digest": "sha256:4556eaad6374df900bd34a5571724829a5fa7b1816e979ee2aaaab8d180b9ab2",
         "accepted_at_ms": 1787000001000,
-        "key_id": "auth-receipt-1",
-        "signature": "ed25519:/45ndwmnyuYbiaVwyA84t6za+XsbqHtl6mQ5D2kzZCZSXWrZpu88UC994uGGTUQMuEpYBZBLXRD3RII0UqbmCA=="
+        "key_id": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+        "signature": "ed25519:/NQu8ioPqMcGBi4D2TBswkp8UYcnxhURzOkeMnAt3tUE76zTR43VC2thygnGvu+kZvNbUxAINMLKB90K7j2LBg=="
       }
     },
     {
@@ -56,7 +76,7 @@
       "authenticator": "valid",
       "expected": "reject",
       "note": "Correctly signed by the receipt key, claiming 9 to 12 while the range digest covers only 12. A receipt must not span a local_seq the authority did not accept.",
-      "canonical_hex": "7b2261636365707465645f61745f6d73223a313738373030303030313030302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c2266726f6d5f736571223a392c226b65795f6964223a22617574682d726563656970742d31222c2272616e67655f646967657374223a227368613235363a34353536656161643633373464663930306264333461353537313732343832396135666137623138313665393739656532616161616238643138306239616232222c22746f5f736571223a31322c2276223a317d",
+      "canonical_hex": "7b2261636365707465645f61745f6d73223a313738373030303030313030302c226465766963655f6964223a22656e657267792d6d6f6e69746f722d696b656a612d3031222c2266726f6d5f736571223a392c226b65795f6964223a227368613235363a36383839346435386631386632633334643439656232663462313130653034326364306633313530613464633339323433643766363362643539386330373833222c2272616e67655f646967657374223a227368613235363a34353536656161643633373464663930306264333461353537313732343832396135666137623138313665393739656532616161616238643138306239616232222c22746f5f736571223a31322c2276223a317d",
       "artifact": {
         "v": 1,
         "device_id": "energy-monitor-ikeja-01",
@@ -64,8 +84,8 @@
         "to_seq": 12,
         "range_digest": "sha256:4556eaad6374df900bd34a5571724829a5fa7b1816e979ee2aaaab8d180b9ab2",
         "accepted_at_ms": 1787000001000,
-        "key_id": "auth-receipt-1",
-        "signature": "ed25519:AgZo1aPwrcj69bwHI7aeSF/VkXY5mLPDgq06xfVP+sRtJ9kTHdcCwKxHZHcLPSnxOAVcq/pwkyGv2uulGK2FCg=="
+        "key_id": "sha256:68894d58f18f2c34d49eb2f4b110e042cd0f3150a4dc39243d7f63bd598c0783",
+        "signature": "ed25519:yhCT0qhOtlFFzrdbe+6OtXuv23pdtk0DCaAjoSUm+yf5ydqcJwGdplNbH/cNETH6tFuBytIhQfnD5tENm1dfBg=="
       }
     }
   ]

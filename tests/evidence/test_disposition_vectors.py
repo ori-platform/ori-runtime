@@ -24,6 +24,12 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from ori.security.evidence import first_party
+from ori.security.evidence.authority_keys import (
+    PURPOSE_DISPOSITION,
+    AuthorityKeyError,
+    parse_authority_key_registry,
+    select_verifying_key,
+)
 from ori.security.evidence.canonical import canonical_json
 from ori.security.evidence.registration import reoffer_due
 
@@ -219,3 +225,55 @@ def test_each_accepted_dispositions_signature_covers_those_bytes(case) -> None:
         base64.b64decode(encoded, validate=True),
         VECTOR["domain_ascii"].encode("ascii") + b"\x00" + canonical_json(unsigned),
     )
+
+
+def _disposition_registry() -> dict:
+    """The corpus registry as a release registry document, through the contract loader."""
+    return parse_authority_key_registry(
+        {
+            "schema": "ori.evidence_authority_keys.v1",
+            "keys": [
+                {
+                    "key_id": key_id,
+                    "public_key_hex": entry["public_key_hex"],
+                    "purpose": entry["purpose"],
+                    "status": entry["status"],
+                }
+                for key_id, entry in VECTOR["registry"].items()
+            ],
+        }
+    )
+
+
+_SELECTION_REASONS = {"unknown_key", "wrong_purpose", "retired_key"}
+_KEY_LEVEL_CASES = [
+    c
+    for c in VECTOR["wire_cases"]
+    if c["expected"] == "accept" or c["reject_reason"] in _SELECTION_REASONS
+]
+
+
+def test_every_selection_refusal_is_exercised() -> None:
+    reasons = {c["reject_reason"] for c in _KEY_LEVEL_CASES}
+    assert _SELECTION_REASONS <= reasons
+
+
+@pytest.mark.parametrize("case", _KEY_LEVEL_CASES, ids=_ids(_KEY_LEVEL_CASES))
+def test_each_disposition_key_is_selected_by_purpose_and_key_id(case) -> None:
+    """The corpus registry loads, and selection alone decides the key-level outcome."""
+    registry = _disposition_registry()
+    key_id = case["artifact"]["key_id"]
+    if case["expected"] == "accept":
+        selected = select_verifying_key(registry, PURPOSE_DISPOSITION, key_id)
+        public = Ed25519PublicKey.from_public_bytes(
+            bytes.fromhex(selected.public_key_hex)
+        )
+        unsigned = {k: v for k, v in case["artifact"].items() if k != "signature"}
+        public.verify(
+            base64.b64decode(case["artifact"]["signature"].split(":", 1)[1]),
+            VECTOR["domain_ascii"].encode("ascii") + b"\x00" + canonical_json(unsigned),
+        )
+        return
+    with pytest.raises(AuthorityKeyError) as refused:
+        select_verifying_key(registry, PURPOSE_DISPOSITION, key_id)
+    assert refused.value.rule == case["reject_reason"]

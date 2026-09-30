@@ -333,12 +333,18 @@ candidate or release is cut.
   records the version as `contract_version`. The runtime claims
   `evidence-exchange/v2` (with its receiver-state corpus), `evidence/v3`
   (its chain-row corpus is `chain-row-v3.json`, vendored under
-  `tests/vectors/evidence`), `runtime-evidence-anchor/v2` and
-  `commissioned-safety-binding/v2`, each pinned at ori-specs `06ba18e`; the
-  gateway-api, safety-profile and sensor-configuration sets are unchanged and
-  keep their pins. The disposition corpus is held to for its re-offer
-  schedule, its overdue bound and its canonical bytes; the courier's routing
-  projection is vendored for the drift check and owned by the gateway.
+  `tests/vectors/evidence`) and `runtime-evidence-anchor/v2`, pinned together
+  at ori-specs `013be1b`, and `commissioned-safety-binding/v2` at `06ba18e`;
+  the gateway-api, safety-profile and sensor-configuration sets keep their
+  pins. The delivery-receipt and epoch-confirmation corpora are their `-v2`
+  files, whose key ids derive from the signing keys: each case is replayed end
+  to end against the authority key registry the corpus embeds, loaded through
+  the conforming loader, selected by `(purpose, key_id)` and verified under the
+  selected key. The disposition corpus is held to for its re-offer schedule,
+  its overdue bound and its canonical bytes, and its registry of derived ids
+  and `revoked` status loads through the same loader, which selects each wire
+  case's key or refuses it for the reason the corpus names; the courier's
+  routing projection is vendored for the drift check and owned by the gateway.
 
 - Three action-registry entries that governed physical actions with no executor
   behind them — `emergency_cutoff`, `open_safety_circuit` and

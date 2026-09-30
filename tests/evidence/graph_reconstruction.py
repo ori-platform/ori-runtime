@@ -176,7 +176,7 @@ def reconstruct() -> tuple[int, list[str]]:
 
     # ---- 3. epoch confirmation, checkpoint, envelopes all name the same epoch ---
     for name, expect_epoch in (
-        ("epoch-confirmation.json", True),
+        ("epoch-confirmation-v2.json", True),
         ("checkpoint.json", True),
     ):
         doc = load(name)
@@ -243,7 +243,7 @@ def reconstruct() -> tuple[int, list[str]]:
         ok()
 
     # ---- 6. receipt range_digest over raw 32-byte row digests -------------------
-    rc_doc = load("delivery-receipt.json")
+    rc_doc = load("delivery-receipt-v2.json")
     rc_valid = next(c for c in rc_doc["cases"] if c["expected"] == "accept")["artifact"]
     if not verify_sig(
         pubkey(rc_doc["signing_key_public_hex"]), rc_doc["domain_ascii"], rc_valid
@@ -260,10 +260,10 @@ def reconstruct() -> tuple[int, list[str]]:
     for name in (
         "anchor-registration-v2.json",
         "commissioning-authorization.json",
-        "epoch-confirmation.json",
+        "epoch-confirmation-v2.json",
         "checkpoint.json",
         "delivery-envelope.json",
-        "delivery-receipt.json",
+        "delivery-receipt-v2.json",
     ):
         doc = load(name)
         candidates = []

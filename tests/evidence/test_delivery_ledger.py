@@ -836,8 +836,8 @@ RUNTIME_PRODUCER_OUTSTANDING: set[str] = set()
 
 # Received by the runtime and verified on ingest, step 4.
 STEP_FOUR_INGEST_VECTORS = {
-    "delivery-receipt.json",
-    "epoch-confirmation.json",
+    "delivery-receipt-v2.json",
+    "epoch-confirmation-v2.json",
     "custody-acknowledgement.json",
 }
 
@@ -1380,7 +1380,7 @@ def test_the_cross_purpose_receipt_is_signed_by_the_epoch_key():
     A receipt naming the receipt key id but signed by the epoch authority is
     what purpose separation exists to refuse.
     """
-    vector = exchange("delivery-receipt.json")
+    vector = exchange("delivery-receipt-v2.json")
     case = next(c for c in vector["cases"] if c["name"] == "signed_with_epoch_key")
     artifact = case["artifact"]
     valid = next(c for c in vector["cases"] if c["name"] == "valid")["artifact"]
