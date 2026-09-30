@@ -1,0 +1,560 @@
+{
+  "contract": "skills-package/v3 — Tier B execution policy",
+  "phase": "package_admission",
+  "note": "The three rules of the Tier B execution policy: requires_approval: true and reasoning_policy: post_action are never declared together, requires_approval is a trigger field and is refused on an actions.available entry, and requires_approval where present is a boolean. Each refused case names its `rule`: `one_policy`, `trigger_only` or `boolean`. The accepted cases are the alternatives an author has: approval alone, post_action alone, and post_action beside requires_approval: false.",
+  "refusal_note": "`error` is the class a conforming loader raises. `must_name` lists identifiers the message must contain: the field, and the trigger or action carrying it.",
+  "isolation_note": "Each manifest is valid in every respect except the one the case names. The boolean cases use a Tier B trigger whose defaults are informational, so replacing the value with either boolean leaves a valid package: with a physical default, false would leave the trigger with no policy and true beside post_action would break the first rule, and a loader could refuse for that instead.",
+  "value_note": "Manifests are the parsed mapping, so a string here is a quoted scalar in skill.yaml. A package writes true or false, unquoted.",
+  "v2_note": "Apart from the defect each case names, every manifest is a valid skills-package/v2 package, so a loader enforcing v2 together with these three rules consumes this file unchanged.",
+  "action_registry": {
+    "alert_sms": "A",
+    "log_to_dashboard": "A",
+    "terminate_process": "B"
+  },
+  "action_registry_note": "Minimum tiers for the actions these cases name, as in tier-authority.json. terminate_process is a host action at a soft floor, which makes a Tier B trigger defaulting to it a physical Tier B trigger.",
+  "cases": [
+    {
+      "name": "requires_approval_alone_accepted",
+      "manifest": {
+        "name": "example-skill",
+        "version": "1.0.0",
+        "author": "example",
+        "triggers": [
+          {
+            "name": "runaway",
+            "action_tier": "B",
+            "requires_approval": true
+          }
+        ],
+        "actions": {
+          "available": [
+            {
+              "name": "terminate_process",
+              "tier": "B"
+            },
+            {
+              "name": "alert_sms",
+              "tier": "A"
+            }
+          ],
+          "defaults": {
+            "runaway": [
+              "terminate_process",
+              "alert_sms"
+            ]
+          }
+        }
+      },
+      "registry": "action_registry",
+      "expect": "accepted",
+      "why": "Approval is one of the two policies a physical Tier B trigger may choose: the operator is asked before the action runs."
+    },
+    {
+      "name": "post_action_alone_accepted",
+      "manifest": {
+        "name": "example-skill",
+        "version": "1.0.0",
+        "author": "example",
+        "triggers": [
+          {
+            "name": "runaway",
+            "action_tier": "B",
+            "reasoning_policy": "post_action"
+          }
+        ],
+        "actions": {
+          "available": [
+            {
+              "name": "terminate_process",
+              "tier": "B"
+            },
+            {
+              "name": "alert_sms",
+              "tier": "A"
+            }
+          ],
+          "defaults": {
+            "runaway": [
+              "terminate_process",
+              "alert_sms"
+            ]
+          }
+        }
+      },
+      "registry": "action_registry",
+      "expect": "accepted",
+      "why": "post_action is the other policy: the action runs and the explanation follows. The Tier A default is the operator's follow-up."
+    },
+    {
+      "name": "post_action_with_requires_approval_false_accepted",
+      "manifest": {
+        "name": "example-skill",
+        "version": "1.0.0",
+        "author": "example",
+        "triggers": [
+          {
+            "name": "runaway",
+            "action_tier": "B",
+            "requires_approval": false,
+            "reasoning_policy": "post_action"
+          }
+        ],
+        "actions": {
+          "available": [
+            {
+              "name": "terminate_process",
+              "tier": "B"
+            },
+            {
+              "name": "alert_sms",
+              "tier": "A"
+            }
+          ],
+          "defaults": {
+            "runaway": [
+              "terminate_process",
+              "alert_sms"
+            ]
+          }
+        }
+      },
+      "registry": "action_registry",
+      "expect": "accepted",
+      "why": "requires_approval: false declares no approval, so the trigger declares one policy. The mutual exclusion is on the boolean true, not on the field's presence."
+    },
+    {
+      "name": "requires_approval_with_post_action_refused",
+      "manifest": {
+        "name": "example-skill",
+        "version": "1.0.0",
+        "author": "example",
+        "triggers": [
+          {
+            "name": "runaway",
+            "action_tier": "B",
+            "requires_approval": true,
+            "reasoning_policy": "post_action"
+          }
+        ],
+        "actions": {
+          "available": [
+            {
+              "name": "terminate_process",
+              "tier": "B"
+            },
+            {
+              "name": "alert_sms",
+              "tier": "A"
+            }
+          ],
+          "defaults": {
+            "runaway": [
+              "terminate_process",
+              "alert_sms"
+            ]
+          }
+        }
+      },
+      "registry": "action_registry",
+      "expect": "refused",
+      "rule": "one_policy",
+      "error": "SkillValidationError",
+      "must_name": [
+        "runaway",
+        "requires_approval",
+        "post_action"
+      ],
+      "why": "Approval waits for an operator before acting; post_action acts and explains afterwards. Accepting both leaves the loader to choose which one the author meant, and the two choices differ in whether a person is asked before a physical act."
+    },
+    {
+      "name": "requires_approval_with_post_action_without_physical_default_refused",
+      "manifest": {
+        "name": "example-skill",
+        "version": "1.0.0",
+        "author": "example",
+        "triggers": [
+          {
+            "name": "runaway",
+            "action_tier": "B",
+            "requires_approval": true,
+            "reasoning_policy": "post_action"
+          }
+        ],
+        "actions": {
+          "available": [
+            {
+              "name": "alert_sms",
+              "tier": "A"
+            }
+          ],
+          "defaults": {
+            "runaway": [
+              "alert_sms"
+            ]
+          }
+        }
+      },
+      "registry": "action_registry",
+      "expect": "refused",
+      "rule": "one_policy",
+      "error": "SkillValidationError",
+      "must_name": [
+        "runaway",
+        "requires_approval",
+        "post_action"
+      ],
+      "why": "The declaration is contradictory whatever the defaults are. A loader that checks the pair only while enforcing the physical Tier B policy accepts this case and has not implemented the rule."
+    },
+    {
+      "name": "requires_approval_true_on_action_entry_refused",
+      "manifest": {
+        "name": "example-skill",
+        "version": "1.0.0",
+        "author": "example",
+        "triggers": [
+          {
+            "name": "runaway",
+            "action_tier": "B",
+            "reasoning_policy": "post_action"
+          }
+        ],
+        "actions": {
+          "available": [
+            {
+              "name": "terminate_process",
+              "tier": "B",
+              "requires_approval": true
+            },
+            {
+              "name": "alert_sms",
+              "tier": "A"
+            }
+          ],
+          "defaults": {
+            "runaway": [
+              "terminate_process",
+              "alert_sms"
+            ]
+          }
+        }
+      },
+      "registry": "action_registry",
+      "expect": "refused",
+      "rule": "trigger_only",
+      "error": "SkillValidationError",
+      "must_name": [
+        "terminate_process",
+        "requires_approval",
+        "actions.available"
+      ],
+      "why": "Approval is decided per trigger. An action entry declaring it reads as though this action waits for an operator, while the trigger's post_action policy runs it at once."
+    },
+    {
+      "name": "requires_approval_false_on_action_entry_refused",
+      "manifest": {
+        "name": "example-skill",
+        "version": "1.0.0",
+        "author": "example",
+        "triggers": [
+          {
+            "name": "runaway",
+            "action_tier": "B",
+            "reasoning_policy": "post_action"
+          }
+        ],
+        "actions": {
+          "available": [
+            {
+              "name": "terminate_process",
+              "tier": "B"
+            },
+            {
+              "name": "alert_sms",
+              "tier": "A",
+              "requires_approval": false
+            }
+          ],
+          "defaults": {
+            "runaway": [
+              "terminate_process",
+              "alert_sms"
+            ]
+          }
+        }
+      },
+      "registry": "action_registry",
+      "expect": "refused",
+      "rule": "trigger_only",
+      "error": "SkillValidationError",
+      "must_name": [
+        "alert_sms",
+        "requires_approval",
+        "actions.available"
+      ],
+      "why": "The refusal is of the member's presence, not its value: false on an action entry is a declaration nobody reads, and an implementation that refuses only true has not implemented the rule."
+    },
+    {
+      "name": "requires_approval_string_true_refused",
+      "manifest": {
+        "name": "example-skill",
+        "version": "1.0.0",
+        "author": "example",
+        "triggers": [
+          {
+            "name": "runaway",
+            "action_tier": "B",
+            "requires_approval": "true"
+          }
+        ],
+        "actions": {
+          "available": [
+            {
+              "name": "alert_sms",
+              "tier": "A"
+            }
+          ],
+          "defaults": {
+            "runaway": [
+              "alert_sms"
+            ]
+          }
+        }
+      },
+      "registry": "action_registry",
+      "expect": "refused",
+      "rule": "boolean",
+      "error": "SkillValidationError",
+      "must_name": [
+        "runaway",
+        "requires_approval"
+      ],
+      "why": "A quoted \"true\" is a string. Coercing it would make approval depend on how a loader reads text, and the next case shows where that goes."
+    },
+    {
+      "name": "requires_approval_string_false_refused",
+      "manifest": {
+        "name": "example-skill",
+        "version": "1.0.0",
+        "author": "example",
+        "triggers": [
+          {
+            "name": "runaway",
+            "action_tier": "B",
+            "requires_approval": "false"
+          }
+        ],
+        "actions": {
+          "available": [
+            {
+              "name": "alert_sms",
+              "tier": "A"
+            }
+          ],
+          "defaults": {
+            "runaway": [
+              "alert_sms"
+            ]
+          }
+        }
+      },
+      "registry": "action_registry",
+      "expect": "refused",
+      "rule": "boolean",
+      "error": "SkillValidationError",
+      "must_name": [
+        "runaway",
+        "requires_approval"
+      ],
+      "why": "A quoted \"false\" is a non-empty string, which a truthiness test reads as true: the author wrote false and would get approval, or the reverse under another coercion."
+    },
+    {
+      "name": "requires_approval_number_one_refused",
+      "manifest": {
+        "name": "example-skill",
+        "version": "1.0.0",
+        "author": "example",
+        "triggers": [
+          {
+            "name": "runaway",
+            "action_tier": "B",
+            "requires_approval": 1
+          }
+        ],
+        "actions": {
+          "available": [
+            {
+              "name": "alert_sms",
+              "tier": "A"
+            }
+          ],
+          "defaults": {
+            "runaway": [
+              "alert_sms"
+            ]
+          }
+        }
+      },
+      "registry": "action_registry",
+      "expect": "refused",
+      "rule": "boolean",
+      "error": "SkillValidationError",
+      "must_name": [
+        "runaway",
+        "requires_approval"
+      ],
+      "why": "1 is a number. A loader that accepts it because it compares equal to true has let the type decide nothing."
+    },
+    {
+      "name": "requires_approval_number_zero_refused",
+      "manifest": {
+        "name": "example-skill",
+        "version": "1.0.0",
+        "author": "example",
+        "triggers": [
+          {
+            "name": "runaway",
+            "action_tier": "B",
+            "requires_approval": 0
+          }
+        ],
+        "actions": {
+          "available": [
+            {
+              "name": "alert_sms",
+              "tier": "A"
+            }
+          ],
+          "defaults": {
+            "runaway": [
+              "alert_sms"
+            ]
+          }
+        }
+      },
+      "registry": "action_registry",
+      "expect": "refused",
+      "rule": "boolean",
+      "error": "SkillValidationError",
+      "must_name": [
+        "runaway",
+        "requires_approval"
+      ],
+      "why": "0 is a number, and accepting it as false has the same defect as accepting 1 as true."
+    },
+    {
+      "name": "requires_approval_null_refused",
+      "manifest": {
+        "name": "example-skill",
+        "version": "1.0.0",
+        "author": "example",
+        "triggers": [
+          {
+            "name": "runaway",
+            "action_tier": "B",
+            "requires_approval": null
+          }
+        ],
+        "actions": {
+          "available": [
+            {
+              "name": "alert_sms",
+              "tier": "A"
+            }
+          ],
+          "defaults": {
+            "runaway": [
+              "alert_sms"
+            ]
+          }
+        }
+      },
+      "registry": "action_registry",
+      "expect": "refused",
+      "rule": "boolean",
+      "error": "SkillValidationError",
+      "must_name": [
+        "runaway",
+        "requires_approval"
+      ],
+      "why": "An explicit null is not an absent member. Treating it as the default false accepts a declaration that states no choice."
+    },
+    {
+      "name": "requires_approval_list_refused",
+      "manifest": {
+        "name": "example-skill",
+        "version": "1.0.0",
+        "author": "example",
+        "triggers": [
+          {
+            "name": "runaway",
+            "action_tier": "B",
+            "requires_approval": [
+              true
+            ]
+          }
+        ],
+        "actions": {
+          "available": [
+            {
+              "name": "alert_sms",
+              "tier": "A"
+            }
+          ],
+          "defaults": {
+            "runaway": [
+              "alert_sms"
+            ]
+          }
+        }
+      },
+      "registry": "action_registry",
+      "expect": "refused",
+      "rule": "boolean",
+      "error": "SkillValidationError",
+      "must_name": [
+        "runaway",
+        "requires_approval"
+      ],
+      "why": "A sequence holding a boolean is still a sequence."
+    },
+    {
+      "name": "requires_approval_mapping_refused",
+      "manifest": {
+        "name": "example-skill",
+        "version": "1.0.0",
+        "author": "example",
+        "triggers": [
+          {
+            "name": "runaway",
+            "action_tier": "B",
+            "requires_approval": {
+              "value": true
+            }
+          }
+        ],
+        "actions": {
+          "available": [
+            {
+              "name": "alert_sms",
+              "tier": "A"
+            }
+          ],
+          "defaults": {
+            "runaway": [
+              "alert_sms"
+            ]
+          }
+        }
+      },
+      "registry": "action_registry",
+      "expect": "refused",
+      "rule": "boolean",
+      "error": "SkillValidationError",
+      "must_name": [
+        "runaway",
+        "requires_approval"
+      ],
+      "why": "A mapping holding a boolean is still a mapping."
+    }
+  ]
+}

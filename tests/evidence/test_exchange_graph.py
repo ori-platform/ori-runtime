@@ -539,6 +539,11 @@ VECTOR_CONSUMERS = {
         "test_sensor_config_schema.py"
         "::test_calibration_conforms_to_the_vendored_contract_vectors",
     ),
+    ("skills_package", "tier-b-policy"): (
+        "test_skills_package_tier_b_vectors.py::test_tier_b_policy_case",
+        "test_skills_package_tier_b_vectors.py"
+        "::test_every_case_is_driven_and_every_rule_is_exercised",
+    ),
     ("sensor_configuration", "protocol-definition"): (
         "test_sensor_config_schema.py"
         "::test_protocol_definition_conforms_to_the_vendored_contract_vectors",

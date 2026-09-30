@@ -1,0 +1,10 @@
+{
+  "source_repository": "ori-platform/ori-specs",
+  "source_path": "skills-package/vectors",
+  "source_commit": "1e94ec060c8a3086c9215e9dfab7f986dc360fd1",
+  "contract_version": "v3",
+  "note": "Vendored copies of the normative vectors. The runtime must produce and accept the bytes they describe, so they are its conformance fixtures. Digests detect a local edit; the source commit is the provenance trail.",
+  "files": {
+    "tier-b-policy.json": "258bb3e3d4962ba99fc48118fa5c37e17787f8f637ffc86867398c913f90b207"
+  }
+}
