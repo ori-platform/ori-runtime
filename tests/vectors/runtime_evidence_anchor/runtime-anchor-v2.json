@@ -1,8 +1,8 @@
 {
-  "vector_set": "runtime-evidence-anchor/v1",
-  "contract": "ori-specs runtime-evidence-anchor/v1.md",
+  "vector_set": "runtime-evidence-anchor/v2",
+  "contract": "ori-specs runtime-evidence-anchor/v2.md",
   "purpose": "Cross-language agreement on how a runtime derives the identifiers it seals evidence under. An implementation passes when it reproduces key_id, capability_hash and anchor_epoch_id for every case. refused_profiles are refused before derivation; migrations state what an artifact_purposes change keeps and what it does not.",
-  "canonicalisation": "evidence-exchange/v1.md canonical encoding",
+  "canonicalisation": "evidence-exchange/v2.md canonical encoding",
   "warning": "Published test keys. They must never sign anything real.",
   "cases": [
     {

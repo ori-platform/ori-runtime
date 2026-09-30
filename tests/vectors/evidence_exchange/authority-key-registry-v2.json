@@ -1,0 +1,1567 @@
+{
+  "vector_set": "evidence-exchange/v2 authority key registry",
+  "contract": "evidence-exchange/v2 authority key registry",
+  "purpose": "Cross-language agreement on the release-shipped authority key registry: which documents a runtime accepts, which public-key encodings it refuses, and which key a (purpose, key_id) selects. A refused registry names the one rule it breaks; the rule names are this corpus's, and a refused registry stops evidence verification whichever rule refused it.",
+  "warning": "Published test keys. A release must never trust them, and their seeds must never sign anything real.",
+  "key_id": "sha256: and the lowercase hexadecimal SHA-256 of the 32 raw public-key bytes",
+  "seed_derivation": "seed_hex is the SHA-256 of the UTF-8 label 'ori-specs evidence-exchange/v2 authority key registry test key <n>'; public_key_hex is its RFC 8032 Ed25519 public key",
+  "test_keys": [
+    {
+      "name": "test key 0",
+      "seed_hex": "47fa554a2876d8b1fcc00653d1b419cfdcddd38a924c9b0a56570be338b53971",
+      "public_key_hex": "e90b7e078a84eff6d17341885b82919c9f3637225d79b3ce1e341325f90dadbc"
+    },
+    {
+      "name": "test key 3",
+      "seed_hex": "5a87d95a762569f22c62c06d2578614b7d2fda3d15beb43393e16f826e6a5099",
+      "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309"
+    },
+    {
+      "name": "test key 4",
+      "seed_hex": "f145bd24c5ab39dbc387353af37be45379eb35029904c90d0992a565a809e771",
+      "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931"
+    },
+    {
+      "name": "test key 6",
+      "seed_hex": "99ae7fc11294be7a56e8373617cb5403f618117a3164746cfd14751b9adc5e80",
+      "public_key_hex": "4789d0cde6ee8f5a639c2a405a162f9de7126481f822764aaceb0b62834db149"
+    },
+    {
+      "name": "test key 7",
+      "seed_hex": "d933c350f8f59b8e35b870622983040df7bb6ee3930190a84886c47d40d93566",
+      "public_key_hex": "e4aa04a3d07a8b93bbefef23affc74f944b1e7b3ae39df53ea5674f276c69935"
+    },
+    {
+      "name": "test key 9",
+      "seed_hex": "5262fa718ddbed1da840c842ae62bc0acfb0401bff9f1c57dfc4ef9421e68bcf",
+      "public_key_hex": "0c347defa91272b3d561b364154e2c1398b84ef6a63ff7d8d15d0ec1ac4b4608"
+    }
+  ],
+  "registries": [
+    {
+      "name": "receipt_and_epoch",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "accepted": true
+      },
+      "why": "One active key for each of the two purposes a release carries today."
+    },
+    {
+      "name": "receipt_only",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "accepted": true
+      },
+      "why": "A registry need not hold every purpose; the one it holds has one active key."
+    },
+    {
+      "name": "all_three_purposes",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:00b5fc378c5011cd468d5c917ff5c717314644f35245602ad9e056fab52453e2",
+            "public_key_hex": "4789d0cde6ee8f5a639c2a405a162f9de7126481f822764aaceb0b62834db149",
+            "purpose": "evidence_authority_disposition",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "accepted": true
+      },
+      "why": "The disposition purpose is in the vocabulary."
+    },
+    {
+      "name": "rotation",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:00b5fc378c5011cd468d5c917ff5c717314644f35245602ad9e056fab52453e2",
+            "public_key_hex": "4789d0cde6ee8f5a639c2a405a162f9de7126481f822764aaceb0b62834db149",
+            "purpose": "evidence_authority_receipt",
+            "status": "verify_only"
+          },
+          {
+            "key_id": "sha256:d146030803b3e6432a0a9a79439e9de95c72d47ac5c38c436b1231e6b3062de7",
+            "public_key_hex": "e4aa04a3d07a8b93bbefef23affc74f944b1e7b3ae39df53ea5674f276c69935",
+            "purpose": "evidence_authority_receipt",
+            "status": "revoked"
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "accepted": true
+      },
+      "why": "An active key, its verify_only predecessor and a revoked one under one purpose."
+    },
+    {
+      "name": "sign_bit_set",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:538d87935234dbfecf45af91e431e8b3e4a7b4dcfc6cdf369ae1e7c44285b5d5",
+            "public_key_hex": "e90b7e078a84eff6d17341885b82919c9f3637225d79b3ce1e341325f90dadbc",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "accepted": true
+      },
+      "why": "A canonical key whose byte 31 has bit 7 set is not refused: bit 255 is the sign of x."
+    },
+    {
+      "name": "extra_document_member",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          }
+        ],
+        "comment": "x"
+      },
+      "expected": {
+        "refused": "members"
+      },
+      "why": "The document carries exactly schema and keys."
+    },
+    {
+      "name": "missing_keys",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1"
+      },
+      "expected": {
+        "refused": "members"
+      },
+      "why": "keys is required."
+    },
+    {
+      "name": "extra_key_member",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+            "purpose": "evidence_authority_receipt",
+            "status": "active",
+            "not_before": "0"
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "refused": "members"
+      },
+      "why": "Each key carries exactly its four members."
+    },
+    {
+      "name": "missing_key_member",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch"
+          }
+        ]
+      },
+      "expected": {
+        "refused": "members"
+      },
+      "why": "status is required."
+    },
+    {
+      "name": "keys_not_an_array",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": {
+          "0": {
+            "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          }
+        }
+      },
+      "expected": {
+        "refused": "members"
+      },
+      "why": "keys is an array."
+    },
+    {
+      "name": "key_not_an_object",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          },
+          "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        ]
+      },
+      "expected": {
+        "refused": "members"
+      },
+      "why": "Each key is an object."
+    },
+    {
+      "name": "member_not_a_string",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+            "purpose": "evidence_authority_receipt",
+            "status": 1
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "refused": "members"
+      },
+      "why": "Each member is a string."
+    },
+    {
+      "name": "document_not_an_object",
+      "document": [
+        {
+          "schema": "ori.evidence_authority_keys.v1",
+          "keys": [
+            {
+              "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+              "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+              "purpose": "evidence_authority_receipt",
+              "status": "active"
+            },
+            {
+              "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+              "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+              "purpose": "evidence_authority_epoch",
+              "status": "active"
+            }
+          ]
+        }
+      ],
+      "expected": {
+        "refused": "members"
+      },
+      "why": "The document is an object."
+    },
+    {
+      "name": "other_schema",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v2",
+        "keys": [
+          {
+            "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "refused": "schema"
+      },
+      "why": "The schema is exact."
+    },
+    {
+      "name": "empty_keys",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": []
+      },
+      "expected": {
+        "refused": "empty"
+      },
+      "why": "keys is non-empty."
+    },
+    {
+      "name": "key_id_uppercase",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:38E7DDBE49CC3319E3C017DE040C1B235401202B83FE75B3D3E9B6941CCA0398",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "refused": "key_id_encoding"
+      },
+      "why": "key_id hex is lowercase."
+    },
+    {
+      "name": "key_id_without_prefix",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "refused": "key_id_encoding"
+      },
+      "why": "key_id begins sha256:."
+    },
+    {
+      "name": "key_id_uppercase_prefix",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "SHA256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "refused": "key_id_encoding"
+      },
+      "why": "The prefix is lowercase."
+    },
+    {
+      "name": "key_id_short",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca039",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "refused": "key_id_encoding"
+      },
+      "why": "64 digits."
+    },
+    {
+      "name": "public_key_uppercase",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+            "public_key_hex": "8AF0B4CFBD6BB8B34E491A99E3B8D0D5026B0C16AFC1873E59BDC3124F110309",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "refused": "public_key_encoding"
+      },
+      "why": "public_key_hex is lowercase; the key_id derives from the same bytes."
+    },
+    {
+      "name": "public_key_short",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f1103",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "refused": "public_key_encoding"
+      },
+      "why": "32 bytes."
+    },
+    {
+      "name": "public_key_long",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f11030900",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "refused": "public_key_encoding"
+      },
+      "why": "32 bytes."
+    },
+    {
+      "name": "public_key_not_hex",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+            "public_key_hex": "0xf0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "refused": "public_key_encoding"
+      },
+      "why": "Hexadecimal digits only."
+    },
+    {
+      "name": "key_id_not_derived",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:4829d882d04046475c01b585c054b296f2c6cc130c9a1859013b554588b1fd8c",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "refused": "key_id_mismatch"
+      },
+      "why": "The key_id derives from another key."
+    },
+    {
+      "name": "identity_key",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:01d0fabd251fcbbe2b93b4b927b26ad2a1a99077152e45ded1e678afa45dbec5",
+            "public_key_hex": "0100000000000000000000000000000000000000000000000000000000000000",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "refused": "refused_key"
+      },
+      "why": "The identity is a small-order point."
+    },
+    {
+      "name": "order_8_key",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:5204010488ca3338ed6c56bb34a9e26cbc3602857b8d5ec720144dc8fa2b95ca",
+            "public_key_hex": "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "refused": "refused_key"
+      },
+      "why": "A point of order 8, bit 255 set."
+    },
+    {
+      "name": "non_canonical_key",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:0b2ed8db235e6601cf3879d4f79e7018f2f1c4b3dfd1d05546bad3ec38d51d0f",
+            "public_key_hex": "efffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "refused": "refused_key"
+      },
+      "why": "y = p + 2 is a non-canonical encoding."
+    },
+    {
+      "name": "device_purpose",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+            "purpose": "evidence_device",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "refused": "purpose"
+      },
+      "why": "evidence_device is not release-rooted."
+    },
+    {
+      "name": "purpose_case",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+            "purpose": "Evidence_Authority_Receipt",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "refused": "purpose"
+      },
+      "why": "Purposes are exact."
+    },
+    {
+      "name": "retired_status",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:00b5fc378c5011cd468d5c917ff5c717314644f35245602ad9e056fab52453e2",
+            "public_key_hex": "4789d0cde6ee8f5a639c2a405a162f9de7126481f822764aaceb0b62834db149",
+            "purpose": "evidence_authority_receipt",
+            "status": "retired"
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "refused": "status"
+      },
+      "why": "The registry's retired key is revoked."
+    },
+    {
+      "name": "status_case",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:00b5fc378c5011cd468d5c917ff5c717314644f35245602ad9e056fab52453e2",
+            "public_key_hex": "4789d0cde6ee8f5a639c2a405a162f9de7126481f822764aaceb0b62834db149",
+            "purpose": "evidence_authority_receipt",
+            "status": "Verify_only"
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "refused": "status"
+      },
+      "why": "Statuses are exact."
+    },
+    {
+      "name": "duplicate_key",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+            "purpose": "evidence_authority_receipt",
+            "status": "verify_only"
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "refused": "duplicate"
+      },
+      "why": "One (purpose, key_id) twice."
+    },
+    {
+      "name": "key_under_two_purposes",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "refused": "cross_purpose"
+      },
+      "why": "One key_id under two purposes."
+    },
+    {
+      "name": "no_active_key",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+            "purpose": "evidence_authority_receipt",
+            "status": "verify_only"
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "refused": "active_count"
+      },
+      "why": "The receipt purpose has no active key."
+    },
+    {
+      "name": "only_revoked",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+            "purpose": "evidence_authority_receipt",
+            "status": "revoked"
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "refused": "active_count"
+      },
+      "why": "A purpose present with only a revoked key has no active key."
+    },
+    {
+      "name": "two_active_keys",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+            "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:00b5fc378c5011cd468d5c917ff5c717314644f35245602ad9e056fab52453e2",
+            "public_key_hex": "4789d0cde6ee8f5a639c2a405a162f9de7126481f822764aaceb0b62834db149",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "refused": "active_count"
+      },
+      "why": "Two active keys for one purpose."
+    },
+    {
+      "name": "off_curve_key",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:5778f985db754c6628691f56fadae50c65fddbe8eb2e93039633fefa05d45e31",
+            "public_key_hex": "0200000000000000000000000000000000000000000000000000000000000000",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "refused": "refused_key"
+      },
+      "why": "No curve point has this y; the whole registry is refused beside a valid key."
+    },
+    {
+      "name": "invalid_sign_key",
+      "document": {
+        "schema": "ori.evidence_authority_keys.v1",
+        "keys": [
+          {
+            "key_id": "sha256:05e33a7a25dc39ab258dacfea5a955d0d3742731d8f1c42c427bf98ca9c75ccc",
+            "public_key_hex": "0100000000000000000000000000000000000000000000000000000000000080",
+            "purpose": "evidence_authority_receipt",
+            "status": "active"
+          },
+          {
+            "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+            "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+            "purpose": "evidence_authority_epoch",
+            "status": "active"
+          }
+        ]
+      },
+      "expected": {
+        "refused": "refused_key"
+      },
+      "why": "The identity's y with bit 255 set: x is 0, so the sign bit is invalid."
+    }
+  ],
+  "public_keys": [
+    {
+      "public_key_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "expected": "refused",
+      "clause": "small_order",
+      "why": "a point of small order"
+    },
+    {
+      "public_key_hex": "0000000000000000000000000000000000000000000000000000000000000080",
+      "expected": "refused",
+      "clause": "small_order",
+      "why": "a point of small order, bit 255 set"
+    },
+    {
+      "public_key_hex": "0100000000000000000000000000000000000000000000000000000000000000",
+      "expected": "refused",
+      "clause": "small_order",
+      "why": "a point of small order"
+    },
+    {
+      "public_key_hex": "0100000000000000000000000000000000000000000000000000000000000080",
+      "expected": "refused",
+      "clause": "invalid_sign",
+      "why": "x is 0 for this y, so bit 255 set is an invalid sign encoding"
+    },
+    {
+      "public_key_hex": "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+      "expected": "refused",
+      "clause": "small_order",
+      "why": "a point of small order"
+    },
+    {
+      "public_key_hex": "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+      "expected": "refused",
+      "clause": "small_order",
+      "why": "a point of small order, bit 255 set"
+    },
+    {
+      "public_key_hex": "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+      "expected": "refused",
+      "clause": "small_order",
+      "why": "a point of small order"
+    },
+    {
+      "public_key_hex": "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+      "expected": "refused",
+      "clause": "small_order",
+      "why": "a point of small order, bit 255 set"
+    },
+    {
+      "public_key_hex": "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "small_order",
+      "why": "a point of small order"
+    },
+    {
+      "public_key_hex": "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "invalid_sign",
+      "why": "x is 0 for this y, so bit 255 set is an invalid sign encoding"
+    },
+    {
+      "public_key_hex": "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 0"
+    },
+    {
+      "public_key_hex": "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 0, bit 255 set"
+    },
+    {
+      "public_key_hex": "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 1"
+    },
+    {
+      "public_key_hex": "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 1, bit 255 set"
+    },
+    {
+      "public_key_hex": "efffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 2"
+    },
+    {
+      "public_key_hex": "efffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 2, bit 255 set"
+    },
+    {
+      "public_key_hex": "f0ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 3"
+    },
+    {
+      "public_key_hex": "f0ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 3, bit 255 set"
+    },
+    {
+      "public_key_hex": "f1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 4"
+    },
+    {
+      "public_key_hex": "f1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 4, bit 255 set"
+    },
+    {
+      "public_key_hex": "f2ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 5"
+    },
+    {
+      "public_key_hex": "f2ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 5, bit 255 set"
+    },
+    {
+      "public_key_hex": "f3ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 6"
+    },
+    {
+      "public_key_hex": "f3ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 6, bit 255 set"
+    },
+    {
+      "public_key_hex": "f4ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 7"
+    },
+    {
+      "public_key_hex": "f4ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 7, bit 255 set"
+    },
+    {
+      "public_key_hex": "f5ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 8"
+    },
+    {
+      "public_key_hex": "f5ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 8, bit 255 set"
+    },
+    {
+      "public_key_hex": "f6ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 9"
+    },
+    {
+      "public_key_hex": "f6ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 9, bit 255 set"
+    },
+    {
+      "public_key_hex": "f7ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 10"
+    },
+    {
+      "public_key_hex": "f7ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 10, bit 255 set"
+    },
+    {
+      "public_key_hex": "f8ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 11"
+    },
+    {
+      "public_key_hex": "f8ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 11, bit 255 set"
+    },
+    {
+      "public_key_hex": "f9ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 12"
+    },
+    {
+      "public_key_hex": "f9ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 12, bit 255 set"
+    },
+    {
+      "public_key_hex": "faffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 13"
+    },
+    {
+      "public_key_hex": "faffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 13, bit 255 set"
+    },
+    {
+      "public_key_hex": "fbffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 14"
+    },
+    {
+      "public_key_hex": "fbffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 14, bit 255 set"
+    },
+    {
+      "public_key_hex": "fcffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 15"
+    },
+    {
+      "public_key_hex": "fcffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 15, bit 255 set"
+    },
+    {
+      "public_key_hex": "fdffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 16"
+    },
+    {
+      "public_key_hex": "fdffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 16, bit 255 set"
+    },
+    {
+      "public_key_hex": "feffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 17"
+    },
+    {
+      "public_key_hex": "feffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 17, bit 255 set"
+    },
+    {
+      "public_key_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 18"
+    },
+    {
+      "public_key_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 18, bit 255 set"
+    },
+    {
+      "public_key_hex": "0200000000000000000000000000000000000000000000000000000000000000",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y"
+    },
+    {
+      "public_key_hex": "0200000000000000000000000000000000000000000000000000000000000080",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y, bit 255 set"
+    },
+    {
+      "public_key_hex": "0700000000000000000000000000000000000000000000000000000000000000",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y"
+    },
+    {
+      "public_key_hex": "0700000000000000000000000000000000000000000000000000000000000080",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y, bit 255 set"
+    },
+    {
+      "public_key_hex": "0800000000000000000000000000000000000000000000000000000000000000",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y"
+    },
+    {
+      "public_key_hex": "0800000000000000000000000000000000000000000000000000000000000080",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y, bit 255 set"
+    },
+    {
+      "public_key_hex": "0b00000000000000000000000000000000000000000000000000000000000000",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y"
+    },
+    {
+      "public_key_hex": "0b00000000000000000000000000000000000000000000000000000000000080",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y, bit 255 set"
+    },
+    {
+      "public_key_hex": "27e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y"
+    },
+    {
+      "public_key_hex": "27e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y, bit 255 set"
+    },
+    {
+      "public_key_hex": "c6176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y"
+    },
+    {
+      "public_key_hex": "c6176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y, bit 255 set"
+    },
+    {
+      "public_key_hex": "ebffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y"
+    },
+    {
+      "public_key_hex": "ebffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y, bit 255 set"
+    },
+    {
+      "public_key_hex": "24e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y"
+    },
+    {
+      "public_key_hex": "24e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y, bit 255 set"
+    },
+    {
+      "public_key_hex": "29e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y"
+    },
+    {
+      "public_key_hex": "29e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y, bit 255 set"
+    },
+    {
+      "public_key_hex": "c4176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y"
+    },
+    {
+      "public_key_hex": "c4176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y, bit 255 set"
+    },
+    {
+      "public_key_hex": "c9176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y"
+    },
+    {
+      "public_key_hex": "c9176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y, bit 255 set"
+    },
+    {
+      "public_key_hex": "0300000000000000000000000000000000000000000000000000000000000000",
+      "expected": "accepted",
+      "clause": null,
+      "why": "a valid point beside a refused encoding"
+    },
+    {
+      "public_key_hex": "0300000000000000000000000000000000000000000000000000000000000080",
+      "expected": "accepted",
+      "clause": null,
+      "why": "a valid point beside a refused encoding, bit 255 set"
+    },
+    {
+      "public_key_hex": "25e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+      "expected": "accepted",
+      "clause": null,
+      "why": "a valid point beside a refused encoding"
+    },
+    {
+      "public_key_hex": "25e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+      "expected": "accepted",
+      "clause": null,
+      "why": "a valid point beside a refused encoding, bit 255 set"
+    },
+    {
+      "public_key_hex": "28e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+      "expected": "accepted",
+      "clause": null,
+      "why": "a valid point beside a refused encoding"
+    },
+    {
+      "public_key_hex": "28e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+      "expected": "accepted",
+      "clause": null,
+      "why": "a valid point beside a refused encoding, bit 255 set"
+    },
+    {
+      "public_key_hex": "c5176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+      "expected": "accepted",
+      "clause": null,
+      "why": "a valid point beside a refused encoding"
+    },
+    {
+      "public_key_hex": "c5176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+      "expected": "accepted",
+      "clause": null,
+      "why": "a valid point beside a refused encoding, bit 255 set"
+    },
+    {
+      "public_key_hex": "c8176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+      "expected": "accepted",
+      "clause": null,
+      "why": "a valid point beside a refused encoding"
+    },
+    {
+      "public_key_hex": "c8176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+      "expected": "accepted",
+      "clause": null,
+      "why": "a valid point beside a refused encoding, bit 255 set"
+    },
+    {
+      "public_key_hex": "eaffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "accepted",
+      "clause": null,
+      "why": "a valid point beside a refused encoding"
+    },
+    {
+      "public_key_hex": "eaffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "accepted",
+      "clause": null,
+      "why": "a valid point beside a refused encoding, bit 255 set"
+    },
+    {
+      "public_key_hex": "e90b7e078a84eff6d17341885b82919c9f3637225d79b3ce1e341325f90dadbc",
+      "expected": "accepted",
+      "clause": null,
+      "why": "published test key 0, bit 255 set"
+    },
+    {
+      "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+      "expected": "accepted",
+      "clause": null,
+      "why": "published test key 3"
+    },
+    {
+      "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+      "expected": "accepted",
+      "clause": null,
+      "why": "published test key 4"
+    },
+    {
+      "public_key_hex": "4789d0cde6ee8f5a639c2a405a162f9de7126481f822764aaceb0b62834db149",
+      "expected": "accepted",
+      "clause": null,
+      "why": "published test key 6"
+    },
+    {
+      "public_key_hex": "e4aa04a3d07a8b93bbefef23affc74f944b1e7b3ae39df53ea5674f276c69935",
+      "expected": "accepted",
+      "clause": null,
+      "why": "published test key 7"
+    },
+    {
+      "public_key_hex": "0c347defa91272b3d561b364154e2c1398b84ef6a63ff7d8d15d0ec1ac4b4608",
+      "expected": "accepted",
+      "clause": null,
+      "why": "published test key 9"
+    }
+  ],
+  "selections": [
+    {
+      "name": "active_selected",
+      "registry": "rotation",
+      "purpose": "evidence_authority_receipt",
+      "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+      "expected": {
+        "selected": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398"
+      },
+      "why": "The active key verifies."
+    },
+    {
+      "name": "verify_only_selected",
+      "registry": "rotation",
+      "purpose": "evidence_authority_receipt",
+      "key_id": "sha256:00b5fc378c5011cd468d5c917ff5c717314644f35245602ad9e056fab52453e2",
+      "expected": {
+        "selected": "sha256:00b5fc378c5011cd468d5c917ff5c717314644f35245602ad9e056fab52453e2"
+      },
+      "why": "A verify_only key verifies what it signed before the rotation."
+    },
+    {
+      "name": "revoked_refused",
+      "registry": "rotation",
+      "purpose": "evidence_authority_receipt",
+      "key_id": "sha256:d146030803b3e6432a0a9a79439e9de95c72d47ac5c38c436b1231e6b3062de7",
+      "expected": {
+        "refused": "retired_key"
+      },
+      "why": "A revoked key verifies nothing."
+    },
+    {
+      "name": "unknown_refused",
+      "registry": "rotation",
+      "purpose": "evidence_authority_receipt",
+      "key_id": "sha256:4829d882d04046475c01b585c054b296f2c6cc130c9a1859013b554588b1fd8c",
+      "expected": {
+        "refused": "unknown_key"
+      },
+      "why": "The registry holds the key for no purpose."
+    },
+    {
+      "name": "other_purpose_refused",
+      "registry": "rotation",
+      "purpose": "evidence_authority_receipt",
+      "key_id": "sha256:5d94a9c14ca8243db26bb1c1a4ff1baad9cc6a7fffea5617ecf564cdc8a45368",
+      "expected": {
+        "refused": "wrong_purpose"
+      },
+      "why": "The epoch key named for a receipt."
+    },
+    {
+      "name": "absent_purpose_refused",
+      "registry": "receipt_and_epoch",
+      "purpose": "evidence_authority_disposition",
+      "key_id": "sha256:38e7ddbe49cc3319e3c017de040c1b235401202b83fe75b3d3e9b6941cca0398",
+      "expected": {
+        "refused": "wrong_purpose"
+      },
+      "why": "The receipt key named for a disposition, in a registry without that purpose."
+    },
+    {
+      "name": "absent_purpose_unknown",
+      "registry": "receipt_and_epoch",
+      "purpose": "evidence_authority_disposition",
+      "key_id": "sha256:00b5fc378c5011cd468d5c917ff5c717314644f35245602ad9e056fab52453e2",
+      "expected": {
+        "refused": "unknown_key"
+      },
+      "why": "A registry without the disposition purpose holds no key for it."
+    },
+    {
+      "name": "disposition_selected",
+      "registry": "all_three_purposes",
+      "purpose": "evidence_authority_disposition",
+      "key_id": "sha256:00b5fc378c5011cd468d5c917ff5c717314644f35245602ad9e056fab52453e2",
+      "expected": {
+        "selected": "sha256:00b5fc378c5011cd468d5c917ff5c717314644f35245602ad9e056fab52453e2"
+      },
+      "why": "The disposition purpose selects its own key."
+    }
+  ]
+}

@@ -1,5 +1,5 @@
 {
-  "contract": "evidence-exchange/v1 stable routing projection across versions",
+  "contract": "evidence-exchange/v2 stable routing projection across versions",
   "note": "Each case is an artifact as a courier sees it and whether its routing projection is present. The projection is decided by the routing fields alone: a declared version, or fields a later version adds, never change it. Anchor registrations, delivery envelopes and checkpoints also carry `anchor_epoch_id`, which a courier reads only to apply an authenticated stop projection. A case given as `artifact_json` is the raw text a courier decodes, used where a member is named twice; a routing member is read by its exact name, so a name differing only in case is absent. Evidence dispositions carry the same projection.",
   "cases": [
     {"name": "a v1 delivery envelope", "artifact_type": "delivery_envelope", "artifact": {"v": 1, "device_id": "site-a-edge-01", "local_seq": 7, "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a"}, "routable": true},

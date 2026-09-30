@@ -536,6 +536,19 @@ VECTOR_CONSUMERS = {
 #: tracked, because naming a repository says who is answerable rather than that
 #: the work is done.
 VECTOR_EXEMPTIONS = {
+    ("evidence_exchange", "authority-key-registry-v2"): {
+        "owner": "the runtime",
+        "status": "proof_pending",
+        "tracking": "ori-runtime#442",
+        "reason": (
+            "The release-shipped authority key registry. The runtime's registry "
+            "loader predates this corpus and accepts registries it refuses: an "
+            "underived or non-lowercase key_id, a non-canonical, off-curve or "
+            "small-order key, a key under two purposes, and zero or two active "
+            "keys for a purpose. Vendored so the drift check covers the bytes "
+            "the loader must meet when it is brought to the contract."
+        ),
+    },
     ("evidence_exchange", "routing-projection-v2"): {
         "owner": "the site gateway",
         "status": "proof_pending",

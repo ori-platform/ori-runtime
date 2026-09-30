@@ -856,6 +856,11 @@ RECEIVED_BEHIND_A_SEAM = {"evidence-disposition-v2.json"}
 # runtime produces what is routed and routes nothing.
 COURIER_PROJECTIONS = {"routing-projection-v2.json"}
 
+# Not an artifact: the authority key registry a release ships and the runtime
+# loads to verify what the authority signs. The loader does not yet meet this
+# corpus; the exemption in `test_exchange_graph.py` records where that is owed.
+LOADED_FROM_THE_RELEASE = {"authority-key-registry-v2.json"}
+
 
 def test_every_exchange_vector_is_claimed_by_an_owner():
     present = {p.name for p in EXCHANGE.glob("*.json")} - {"MANIFEST.json"}
@@ -866,6 +871,7 @@ def test_every_exchange_vector_is_claimed_by_an_owner():
         | NOT_RUNTIME_ARTIFACTS
         | RECEIVED_BEHIND_A_SEAM
         | COURIER_PROJECTIONS
+        | LOADED_FROM_THE_RELEASE
     )
     assert present == claimed, (
         f"an exchange vector has no recorded owner: {sorted(present ^ claimed)}"
@@ -881,6 +887,7 @@ def test_the_owner_sets_do_not_overlap():
         NOT_RUNTIME_ARTIFACTS,
         RECEIVED_BEHIND_A_SEAM,
         COURIER_PROJECTIONS,
+        LOADED_FROM_THE_RELEASE,
     ]
     seen: set[str] = set()
     for group in sets:
