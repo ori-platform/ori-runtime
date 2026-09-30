@@ -555,6 +555,21 @@ candidate or release is cut.
   and the rest at DEBUG; a successful read logs the recovery at INFO. The
   stale-sensor alert was already sent once when a sensor falls silent and again
   only after it has recovered.
+- A Tier B trigger declaring both `requires_approval: true` and
+  `reasoning_policy: post_action` is refused at skill load with a named error;
+  either one alone still loads. The two were accepted together, and after an
+  operator answered NO the post-action path read the safe default's success as
+  the Tier B act, so the enrichment and the Tier A alert described an act that
+  never ran. The elevator refuses to dispatch anything for such a trigger if one
+  reaches it by any other route.
+- A trigger's `requires_approval` must be a YAML boolean. A string, number,
+  null, list or mapping is refused at skill load with the value and its type;
+  `"false"` was read as true. `requires_approval` on an `actions.available`
+  entry is refused at skill load: nothing read it there, so a skill that
+  declared it on its Tier B action with `reasoning_policy: post_action` on the
+  trigger ran that action without approval. Approval is declared on the
+  trigger. `requires_approval_for_soft_actions` is removed from
+  `ori.yaml.example`; the runtime never read it.
 - An approval refused because a higher authority took the resource while the
   operator decided (`refused_late_approval`, on the host-state Tier C and
   approval-required Tier B workflow) is recorded as what happened: the

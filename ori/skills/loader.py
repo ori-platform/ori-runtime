@@ -1527,6 +1527,13 @@ class SkillLoader:
             if not isinstance(entry, dict):
                 continue
             action_name = entry.get("name")
+            if "requires_approval" in entry:
+                raise SkillValidationError(
+                    f"Skill {skill_name!r}: action {action_name!r} declares "
+                    "requires_approval in actions.available, where the runtime "
+                    "does not read it. Approval is decided per trigger: declare "
+                    "requires_approval on the trigger that defaults to this action."
+                )
             declared = str(entry.get("tier") or "").upper()
             if not isinstance(action_name, str):
                 continue
@@ -1705,7 +1712,14 @@ class SkillLoader:
                 )
 
             bypass_llm = bool(raw.get("bypass_llm", False))
-            requires_approval = bool(raw.get("requires_approval", False))
+            requires_approval = raw.get("requires_approval", False)
+            if not isinstance(requires_approval, bool):
+                raise SkillValidationError(
+                    f"Skill '{skill_name}' trigger '{name}' has "
+                    f"requires_approval={requires_approval!r} of type "
+                    f"{type(requires_approval).__name__}; it must be a YAML "
+                    "boolean, true or false, unquoted."
+                )
             reasoning_policy = str(raw.get("reasoning_policy") or "").strip()
             escalate_to = str(raw.get("escalate_to", "local_slm")).strip().lower()
             if escalate_to not in {"rule", "local_slm", "gateway"}:
@@ -1743,6 +1757,14 @@ class SkillLoader:
                     f"Skill '{skill_name}' trigger '{name}' sets "
                     "reasoning_policy=post_action but is not Tier B. post_action is "
                     "reserved for Tier B soft physical triggers."
+                )
+
+            if reasoning_policy == "post_action" and requires_approval:
+                raise SkillValidationError(
+                    f"Skill '{skill_name}' trigger '{name}' declares both "
+                    "requires_approval=true and reasoning_policy=post_action. "
+                    "requires_approval waits for an operator before acting; "
+                    "post_action acts and explains afterwards. Declare one."
                 )
 
             safe_default_action = raw.get("safe_default_action", "log_to_dashboard")

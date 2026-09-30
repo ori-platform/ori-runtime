@@ -185,7 +185,6 @@ class TestLoadExample:
     def test_skill_config_fields(self):
         cfg = Config.load(EXAMPLE_YAML)
         skill_cfg = cfg.skills[0].config
-        assert skill_cfg["requires_approval_for_soft_actions"] is False
         assert skill_cfg["approval_timeout_seconds"] == 300
         assert skill_cfg["safe_default_action"] == "log_to_dashboard"
 

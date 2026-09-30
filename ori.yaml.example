@@ -279,7 +279,6 @@ skills:
     config:
       energy_cost_naira: 225         # N/kWh — update with current rate
       owner_name: "Ikeja Office"
-      requires_approval_for_soft_actions: false
       approval_timeout_seconds: 300
       safe_default_action: log_to_dashboard
       # secondary_contact_number: "${SECONDARY_WHATSAPP}"
