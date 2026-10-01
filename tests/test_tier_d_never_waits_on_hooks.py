@@ -13,6 +13,7 @@ plan reaches, a notification, never a proven physical trip.
 from __future__ import annotations
 
 import asyncio
+import gc
 import shutil
 import threading
 import time
@@ -555,7 +556,7 @@ def _stall(kind: str, release: threading.Event) -> Any:
 
     def hook(_context: Any) -> None:
         if kind == "event":
-            release.wait()
+            release.wait(3.0)
         elif kind == "sleep":
             deadline = time.monotonic() + 3.0
             while not release.is_set() and time.monotonic() < deadline:
@@ -577,6 +578,13 @@ class TestAStalledHookRunsOffTheLoop:
         trigger, sensor_type, value = _TIER_D_READINGS[name]
         normal = 5.0 if name == "energy-anomaly-detector" else 60.0
         release = threading.Event()
+        if kind == "cpu":
+            # A CPU-bound hook shares the interpreter lock, which the loop gets
+            # back at every switch interval. A collection of the whole suite's
+            # heap, run from whichever thread allocates, pauses both alike and
+            # is not what this measures.
+            gc.collect()
+            gc.disable()
         async with _site(tmp_path) as site:
             bus, (skill,) = _register(site, [name])
             skill.hooks.pre_trigger_eval = _stall(kind, release)
@@ -600,6 +608,7 @@ class TestAStalledHookRunsOffTheLoop:
                 assert fired[0][1] - produced[0] < _TRIP_BOUND_S
             finally:
                 release.set()
+                gc.enable()
 
     async def test_readings_past_a_stuck_hook_are_skipped_not_queued(
         self, tmp_path: Path
