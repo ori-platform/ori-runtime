@@ -66,7 +66,7 @@ _DECISION_HISTORY_WINDOW_LIMIT = 10
 class SkillContext:
     """Lightweight context bundle threaded through the reasoning pipeline."""
 
-    skill: Any  # Skill instance (loader.py step 14)
+    skill: Any  # Skill instance from ori/skills/loader.py
     event: OriEvent
     state_store: Any  # StateStore
     trigger_name: str = ""

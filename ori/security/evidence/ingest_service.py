@@ -191,10 +191,11 @@ class EvidenceIngestService:
     def accept_disposition(self, artifact: object) -> IngestOutcome:
         """Apply a verified evidence disposition, in the contract's order.
 
-        The verifier is the seam for steps 1 to 3; the one installed on this
-        release verifies nothing, so every disposition is refused and nothing
-        changes. Steps 4 to 6 are decided here and in the ledger, and a refusal
-        at any step changes nothing.
+        The verifier checks the artifact's shape, key and signature; the one
+        installed on this release verifies nothing, so every disposition is
+        refused and nothing changes. Whether it names this device, an artifact
+        this device sealed, and an effect not already in force is decided here
+        and in the ledger, and any refusal changes nothing.
         """
         try:
             verified = self._disposition_verifier.verify_disposition(artifact)

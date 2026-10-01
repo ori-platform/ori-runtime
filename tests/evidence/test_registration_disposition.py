@@ -4,9 +4,10 @@
 """Evidence dispositions at the runtime, per `evidence-exchange/v1`.
 
 The wire verifier is not yet shipped, so these drive the seam it drops into:
-`accept_disposition`, fed a `VerifiedDisposition` that steps 1 to 3 would
-produce. Steps 4 to 6 and every effect are the runtime's own and are what is
-tested. Dispositions are bound as the contract emits them: identity scope from
+`accept_disposition`, fed a `VerifiedDisposition` whose shape, key and
+signature a verifier would have checked. The device, the binding to a sealed
+artifact, whether the effect is already in force, and every effect are the
+runtime's own and are what is tested. Dispositions are bound as the contract emits them: identity scope from
 a checkpoint or an envelope, artifact scope from any sealed artifact, and
 `retained_pending` only from an anchor registration.
 """
@@ -63,7 +64,7 @@ SCOPE = {
 
 
 class _Verifier:
-    """Stands in for the wire verifier: returns what steps 1 to 3 would."""
+    """Stands in for the wire verifier: returns what a signature check would."""
 
     def __init__(self) -> None:
         self.next: VerifiedDisposition | None = None
@@ -444,7 +445,7 @@ async def test_a_disposition_on_an_earlier_epoch_reaches_as_far_as_its_scope(
 
 
 # --------------------------------------------------------------------------
-# Verification steps 4 to 6: dispositions that change nothing
+# Local checks: dispositions that change nothing
 # --------------------------------------------------------------------------
 
 

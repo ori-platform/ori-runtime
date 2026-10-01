@@ -1337,7 +1337,7 @@ class EvidenceDeliveryLedger:
     def _apply_verified_disposition(
         self, disposition: VerifiedDisposition, *, at_ms: int
     ) -> str:
-        """Verification steps 4 to 6 and the effect, in one transaction.
+        """The checks local state decides, and the effect, in one transaction.
 
         Not a public boundary: it trusts the signature it is told was checked.
         It checks everything local state can decide -- the device, that the
@@ -1724,7 +1724,7 @@ class EvidenceDeliveryLedger:
 
         # The outer columns are what a reader queries; the envelope is what was
         # signed. A row whose columns describe a different event than its bytes
-        # is what rules 5 to 10 of the chain contract exist to catch.
+        # is what the chain contract's row-consistency rules exist to catch.
         for field, column in (
             ("sequence_num", "seq"),
             ("prev_event_hash", "prev_event_hash"),
