@@ -248,9 +248,10 @@ Ori is designed for [physical actuation trust](PRINCIPLES.md). The safety archit
   writes, which is what tells a reader whether its evidence can be verified;
   `available` says whether this device can sign at all.
 
-  The device produces and locally retains verifiable evidence. Delivery is not
-  built, so the count of unacknowledged envelopes only rises — which is the
-  honest signal that this half is incomplete rather than idle. This is runtime
+  The device produces and locally retains verifiable evidence, carries it
+  through a configured gateway to the evidence authority, and verifies the
+  authority's delivery receipts under the receipt key the release ships. The
+  count of unacknowledged envelopes measures custody, not receipt. This is runtime
   action evidence; device-origin telemetry attestation is the firmware/Layer 1
   contract.
 
@@ -489,14 +490,16 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting, supported versions, 
 - High-authority action evidence is implemented behind `evidence.enabled`:
   Tier C/D dispatch records are signed into the runtime's own local evidence
   chain, reconciled after restart, and surfaced through runtime health and
-  gateway heartbeat evidence. Delivery is not built: the device retains its
-  evidence locally, and nothing yet consumes it. Device-origin telemetry is now consumed by the
+  gateway heartbeat evidence. The gateway carries it to the evidence authority,
+  and the device verifies the receipts that come back; the round trip is
+  proven live with Tier D actions, while an approved Tier C action's round trip
+  is host-tested only. Device-origin telemetry is now consumed by the
   runtime verification gate: firmware signs readings at the physical edge, the
   runtime verifies and trust-grades them, and the runtime's own evidence chain
   verifies the shared golden bytes/signatures without owning firmware
   canonicalization.
 - Safety invariants (tier guards, the runtime action registry, strict skill validation, skill provenance) are CI-enforced on every PR.
-- Public runtime contracts used by companion repos are the MQTT gateway/export contracts and the typed `ori.integration` rule-evaluation boundary — unchanged from v1.0.0. The runtime health payload is also read by companion repos and is versioned separately: `2.4.x` serves `ori-specs/runtime-health/v1`, and the next release serves `v2`, which removes the evidence artifact version, a field that no longer has a source now that the private artifact is retired.
+- Public runtime contracts used by companion repos are the MQTT gateway/export contracts and the typed `ori.integration` rule-evaluation boundary — unchanged from v1.0.0. The runtime health payload is also read by companion repos and is versioned separately: `2.4.x` serves `ori-specs/runtime-health/v1`, and `2.5.0` serves `v3`, which, like `v2`, omits the evidence artifact version, a field that no longer has a source now that the private artifact is retired.
 - Recommended use today: pilots, PoCs, controlled deployments, product provisioning, and downstream demo/API integration.
 - Upgrading from `2.3.x` and scripting the Linux installer? `2.4.0` makes
   `--scope` explicit, prints a human summary unless `--json` is passed, and

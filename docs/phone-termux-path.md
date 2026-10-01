@@ -343,7 +343,8 @@ configured telemetry endpoint. The runtime should export:
 - baseline summaries and derived anomaly features;
 - device health and sync status.
 
-The first runtime implementation exports real `sensor.reading` events. Alert,
+The runtime exports the sensor readings it publishes, whatever their typed
+event name, as `sensor.reading` batch entries. Alert,
 baseline, and health sync remain provisioning-service follow-up work. Telemetry
 export is observational only; failed uploads must not affect local trigger
 evaluation, Tier D semantics, or operator alerts.
