@@ -11,8 +11,9 @@ because at that moment the Tier D action does not exist to take it.
 
 So admission has two phases. The first is event-wide: evaluate every registered
 skill exhaustively and assemble the full set of matched triggers across all of
-them, before any action is dispatched and before any reasoning task is
-scheduled. The second is resource admission, which
+them, before any reasoning task is scheduled. Tier D triggers are decided
+first, without reading history, and attempted before the rest are evaluated.
+The second is resource admission, which
 :mod:`ori.reasoning.resource_gate` decides.
 
 ``docs/DISPATCH_PLAN.md`` is the contract this module implements.
@@ -24,7 +25,7 @@ import asyncio
 import logging
 from collections import OrderedDict
 from dataclasses import replace
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from ori.network.events import OriEvent, ReasoningResult
 from ori.reasoning.dispatch_plan import (
@@ -47,6 +48,8 @@ logger = logging.getLogger(__name__)
 # performs the event-wide evaluation and the rest return. The window only has to
 # outlive the fan-out of a single event.
 _CLAIM_WINDOW = 512
+#: A skill whose Tier D triggers were evaluated, and the evaluation of the rest.
+_PendingSkill = tuple[Any, OriEvent, Callable[[], Awaitable[list[Any]]]]
 
 
 class DispatchCoordinator:
@@ -172,10 +175,18 @@ class DispatchCoordinator:
                 return
 
     async def dispatch_event(self, event: OriEvent) -> None:
-        """Phase 1 discovery, then Tier D, then everything else."""
-        discovered = await self._discover(event)
-        if not discovered:
-            return
+        """Phase 1 discovery, then Tier D, then everything else.
+
+        Tier D conditions read the reading in hand only, so they are decided
+        and attempted before the store is asked for any other trigger's
+        history; the rest of the discovery set is evaluated after.
+        """
+        immediate, pending = await self._discover_tier_d(event)
+        rest: list[TriggerPlan] | None = None
+        if not immediate:
+            rest = await self._discover_rest(pending)
+            if not rest:
+                return
 
         # One arbitration scope for the event. A Tier D act that completes
         # inside it keeps foreclosing lower authority on its resource until the
@@ -186,7 +197,7 @@ class DispatchCoordinator:
         scheduled: list[asyncio.Task[Any]] = []
         plans: list[TriggerPlan] = []
         try:
-            plans = self._hold_in_flight(discovered)
+            plans = self._hold_in_flight(immediate)
             # Phase 2 — a Tier D match anywhere in the discovery set is
             # attempted before any reasoning task is scheduled anywhere in it.
             # The attempts start together, in plan order, so an executor that
@@ -200,6 +211,9 @@ class DispatchCoordinator:
                     if plan.grants_tier_d
                 )
             )
+            if rest is None:
+                rest = await self._discover_rest(pending)
+            plans += self._hold_in_flight(rest)
 
             # Phase 3 — the rest of each plan, through the reasoning path.
             for plan in plans:
@@ -298,31 +312,45 @@ class DispatchCoordinator:
         sensor_type = str(getattr(reading, "sensor_type", "") or "")
         return sensor_type in declared
 
-    async def _discover(self, event: OriEvent) -> list[TriggerPlan]:
-        """Every trigger that matched, across every skill eligible for this event."""
+    async def _discover_tier_d(
+        self, event: OriEvent
+    ) -> tuple[list[TriggerPlan], list[_PendingSkill]]:
+        """Every Tier D match across the eligible skills, and what remains to evaluate."""
         plans: list[TriggerPlan] = []
+        pending: list[_PendingSkill] = []
+        if self._elevator is None:
+            return plans, pending
         for skill in self._skills:
             if not self._eligible(skill, event):
                 continue
             try:
-                matches = await self._matches_for(event, skill)
+                matches, rest = await self._elevator.evaluate_tier_d_first(
+                    event, skill, self._state_store
+                )
             except Exception:
                 logger.exception(
                     "DispatchCoordinator: evaluation failed for skill=%r",
                     getattr(skill, "name", "?"),
                 )
                 continue
-            for rule_result in matches:
-                plans.append(self._plan_for(skill, rule_result, event))
-        return plans
+            plans.extend(self._plan_for(skill, match, event) for match in matches)
+            pending.append((skill, event, rest))
+        return plans, pending
 
-    async def _matches_for(self, event: OriEvent, skill: Any) -> list[Any]:
-        if self._elevator is None:
-            return []
-        matches, _ = await self._elevator.evaluate_matches_with_hooks(
-            event, skill, self._state_store
-        )
-        return list(matches)
+    async def _discover_rest(self, pending: list[_PendingSkill]) -> list[TriggerPlan]:
+        """Every other match, across the skills Tier D discovery evaluated."""
+        plans: list[TriggerPlan] = []
+        for skill, event, rest in pending:
+            try:
+                matches = await rest()
+            except Exception:
+                logger.exception(
+                    "DispatchCoordinator: evaluation failed for skill=%r",
+                    getattr(skill, "name", "?"),
+                )
+                continue
+            plans.extend(self._plan_for(skill, match, event) for match in matches)
+        return plans
 
     def _plan_for(self, skill: Any, rule_result: Any, event: OriEvent) -> TriggerPlan:
 

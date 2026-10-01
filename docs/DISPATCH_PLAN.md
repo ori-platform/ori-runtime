@@ -275,12 +275,16 @@ So admission has two phases, and the first is **event-wide**:
 
 1. **Discovery barrier.** For one event, evaluate every registered skill
    exhaustively and assemble the full set of matched triggers across all of
-   them, before any action is dispatched and before any reasoning task is
-   scheduled. A Tier D match anywhere in that set is attempted before any
+   them, before any reasoning task is scheduled. A Tier D match anywhere in that set is attempted before any
    reasoning task is scheduled anywhere in it, and forecloses lower-authority
    state changes **on the resources it licenses** — not on unrelated ones. The
    barrier exists so that a Tier D match is *known* before lower-tier work
    starts; the resource gate decides what that knowledge forecloses.
+   Tier D conditions read the reading in hand only, so they are decided, and
+   their acts attempted, before the store is asked for any other trigger's
+   history; the remaining triggers are collected after that, inside the same
+   event scope and still before any reasoning is scheduled. A store slow to
+   answer a history read therefore delays lower-tier discovery, never a trip.
 2. **Resource admission.** Then admit actions against the gate below.
 
 Without phase 1, "Tier D is attempted first" is true only within a skill, which

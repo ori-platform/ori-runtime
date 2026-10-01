@@ -3,12 +3,14 @@
 
 import asyncio
 import datetime
+import functools
 import hashlib
 import json
 import logging
 import math
 import os
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Concatenate, Optional, ParamSpec, TypeVar
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -1138,6 +1140,8 @@ HISTORY_ADMISSION_CEILING = 1024
 #: the writer. A write still in flight then has the writer's own grace, the
 #: store's busy timeout, so a close under a held lock takes several seconds.
 HISTORY_DRAIN_S = 2.0
+#: Threads serving reads; each opens its own short-lived connection.
+_READ_WORKERS = 4
 
 
 class StateStore:
@@ -1173,6 +1177,13 @@ class StateStore:
         # order, so every row at or below it was committed before it was read.
         self._history_frontier = 0
         self._history_writer = self._new_history_writer()
+        # The store's own threads. On the loop's default executor, anything
+        # else that blocks a thread there -- a gateway route, a library call --
+        # would queue an approval commit or a history read behind it. Writes
+        # are serialised by the write lock, so one thread serves them, and a
+        # flood of reads cannot take it.
+        self._write_executor: ThreadPoolExecutor | None = None
+        self._read_executor: ThreadPoolExecutor | None = None
 
     # ─── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -1181,9 +1192,9 @@ class StateStore:
         async with self._lifecycle_lock:
             if self._conn is not None:
                 return
-            conn = await asyncio.to_thread(self._open_sync)
+            conn = await self._on_writer(self._open_sync)
             if not self._read_only:
-                self._history_frontier = await asyncio.to_thread(
+                self._history_frontier = await self._on_writer(
                     self._history_sequence_sync, conn
                 )
             if self._history_writer.closed:
@@ -1254,7 +1265,12 @@ class StateStore:
                 conn = self._conn
                 self._conn = None
             if conn is not None:
-                await asyncio.to_thread(conn.close)
+                await self._on_writer(conn.close)
+            # A read still in flight finishes on its own thread; nothing waits.
+            for executor in (self._write_executor, self._read_executor):
+                if executor is not None:
+                    executor.shutdown(wait=False)
+            self._write_executor = self._read_executor = None
 
     def _migrate_sync(self, conn: sqlite3.Connection) -> None:
         conn.executescript(_CORE_DDL)
@@ -1921,7 +1937,7 @@ class StateStore:
         if self._read_only:
             raise PermissionError("this store was opened read-only")
         async with self._write_lock:
-            return await asyncio.to_thread(fn, *args, **kwargs)
+            return await self._on_writer(fn, *args, **kwargs)
 
     async def _run_read(
         self,
@@ -1942,7 +1958,25 @@ class StateStore:
         def call_with_conn() -> _T:
             return self._run_read_with_conn(fn, *args, **kwargs)
 
-        return await asyncio.to_thread(call_with_conn)
+        if self._read_executor is None:
+            self._read_executor = ThreadPoolExecutor(
+                max_workers=_READ_WORKERS, thread_name_prefix="ori-store-read"
+            )
+        return await asyncio.get_running_loop().run_in_executor(
+            self._read_executor, call_with_conn
+        )
+
+    async def _on_writer(
+        self, fn: Callable[_P, _T], *args: _P.args, **kwargs: _P.kwargs
+    ) -> _T:
+        """Run *fn* on the store's write thread, never the loop's default pool."""
+        if self._write_executor is None:
+            self._write_executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="ori-store-write"
+            )
+        return await asyncio.get_running_loop().run_in_executor(
+            self._write_executor, functools.partial(fn, *args, **kwargs)
+        )
 
     def _run_read_on_primary_conn(
         self,

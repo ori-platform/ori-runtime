@@ -82,6 +82,13 @@ class _RecordingIngest(BoundIngestService):
         self.calls.append((ARTIFACT_EPOCH, artifact))
         return self._outcome
 
+    async def accept_async(self, artifact_type: str, artifact: object) -> IngestOutcome:
+        return {
+            "custody": self.accept_custody,
+            "receipt": self.accept_receipt,
+            "epoch": self.accept_epoch_confirmation,
+        }[artifact_type](artifact)
+
 
 def _authenticator() -> GatewayMessageAuthenticator:
     return GatewayMessageAuthenticator(
@@ -997,6 +1004,9 @@ class _FixtureIngest(BoundIngestService):
 
     def accept_custody(self, artifact: object) -> IngestOutcome:
         return IngestOutcome(artifact=ARTIFACT_CUSTODY, state="accepted")
+
+    async def accept_async(self, artifact_type: str, artifact: object) -> IngestOutcome:
+        return self.accept_custody(artifact)
 
 
 def _fixture_router() -> EvidenceInboundRouter:

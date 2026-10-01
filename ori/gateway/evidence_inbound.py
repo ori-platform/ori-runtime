@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_url
+from ori.gateway.route_io import RouteIO
 from ori.security.evidence.bound import BoundIngestService
 from ori.security.evidence.canonical import canonical_json
 from ori.security.evidence.ingest_service import IngestOutcome
@@ -52,6 +53,10 @@ EVIDENCE_INBOUND_ACK_TOPIC_TEMPLATE = "ori/{device_id}/evidence/inbound/ack"
 
 _RECONNECT_MIN_S = 5.0
 _RECONNECT_MAX_S = 300.0
+#: Inbound messages being routed at once. Past it a message is left without
+#: its MQTT acknowledgement, so the broker keeps it for this session, and the
+#: route reconnects once the backlog clears so the broker redelivers it.
+INBOUND_IN_FLIGHT_BOUND = 16
 
 #: Distinct from every other runtime-gateway message type, so an envelope
 #: authenticating another exchange cannot be replayed onto this one.
@@ -65,6 +70,11 @@ ARTIFACT_CUSTODY = "custody_acknowledgement"
 ARTIFACT_RECEIPT = "delivery_receipt"
 ARTIFACT_EPOCH = "epoch_confirmation"
 ARTIFACT_TYPES = frozenset({ARTIFACT_CUSTODY, ARTIFACT_RECEIPT, ARTIFACT_EPOCH})
+_INGEST_KIND = {
+    ARTIFACT_CUSTODY: "custody",
+    ARTIFACT_RECEIPT: "receipt",
+    ARTIFACT_EPOCH: "epoch",
+}
 
 #: Transport vocabulary, kept disjoint from the contract's rejection reasons.
 REFUSE_UNPARSEABLE = "unparseable"
@@ -141,10 +151,38 @@ class EvidenceInboundRouter:
         A transport refusal produces none: it is not a statement about an
         artifact, and answering an unauthenticated message with a signed reply
         would hand anything on the site network a signing oracle.
+
+        Blocks the calling thread on the evidence worker; the subscriber uses
+        :meth:`route`, which holds no thread while it waits.
         """
+        admitted = self._admit(payload)
+        if isinstance(admitted, InboundRefusal):
+            return Routed(admitted)
+        artifact_type, artifact, ingest = admitted
+        if artifact_type == ARTIFACT_CUSTODY:
+            outcome = ingest.accept_custody(artifact)
+        elif artifact_type == ARTIFACT_RECEIPT:
+            outcome = ingest.accept_receipt(artifact)
+        else:
+            outcome = ingest.accept_epoch_confirmation(artifact)
+        return Routed(outcome, self._acknowledgement(artifact_type, artifact, outcome))
+
+    async def route(self, payload: bytes | str | dict[str, Any]) -> Routed:
+        """:meth:`handle_payload`, awaiting the evidence worker on the event loop."""
+        admitted = self._admit(payload)
+        if isinstance(admitted, InboundRefusal):
+            return Routed(admitted)
+        artifact_type, artifact, ingest = admitted
+        outcome = await ingest.accept_async(_INGEST_KIND[artifact_type], artifact)
+        return Routed(outcome, self._acknowledgement(artifact_type, artifact, outcome))
+
+    def _admit(
+        self, payload: bytes | str | dict[str, Any]
+    ) -> InboundRefusal | tuple[str, dict[str, Any], BoundIngestService]:
+        """The message's artifact and where it goes, or the transport refusal."""
         decoded = _decode(payload)
         if isinstance(decoded, InboundRefusal):
-            return Routed(decoded)
+            return decoded
 
         if self._message_auth is not None:
             try:
@@ -154,43 +192,30 @@ class EvidenceInboundRouter:
                     expected_device_id=self._device_id,
                 )
             except GatewayMessageAuthError as exc:
-                return Routed(InboundRefusal(REFUSE_ENVELOPE_UNAUTHENTICATED, str(exc)))
+                return InboundRefusal(REFUSE_ENVELOPE_UNAUTHENTICATED, str(exc))
 
         artifact_type = str(decoded.get("artifact_type", "") or "")
         if artifact_type not in ARTIFACT_TYPES:
-            return Routed(
-                InboundRefusal(
-                    REFUSE_UNKNOWN_ARTIFACT_TYPE,
-                    f"artifact_type {artifact_type!r} is not one this route accepts",
-                )
+            return InboundRefusal(
+                REFUSE_UNKNOWN_ARTIFACT_TYPE,
+                f"artifact_type {artifact_type!r} is not one this route accepts",
             )
 
         artifact = decoded.get("artifact")
         if not isinstance(artifact, dict):
-            return Routed(
-                InboundRefusal(
-                    REFUSE_MISSING_ARTIFACT,
-                    f"the {artifact_type} carries no artifact object",
-                )
+            return InboundRefusal(
+                REFUSE_MISSING_ARTIFACT,
+                f"the {artifact_type} carries no artifact object",
             )
 
         # Reported after the message is understood, so an operator reads "a real
         # artifact arrived with nowhere to go" rather than "malformed".
         if self._ingest is None:
-            return Routed(
-                InboundRefusal(
-                    REFUSE_INGEST_UNAVAILABLE,
-                    "evidence ingest is not available on this runtime",
-                )
+            return InboundRefusal(
+                REFUSE_INGEST_UNAVAILABLE,
+                "evidence ingest is not available on this runtime",
             )
-
-        if artifact_type == ARTIFACT_CUSTODY:
-            outcome = self._ingest.accept_custody(artifact)
-        elif artifact_type == ARTIFACT_RECEIPT:
-            outcome = self._ingest.accept_receipt(artifact)
-        else:
-            outcome = self._ingest.accept_epoch_confirmation(artifact)
-        return Routed(outcome, self._acknowledgement(artifact_type, artifact, outcome))
+        return artifact_type, artifact, self._ingest
 
     def _acknowledgement(
         self, artifact_type: str, artifact: dict[str, Any], outcome: IngestOutcome
@@ -240,9 +265,11 @@ def _decode(
 class MqttEvidenceInboundSubscriber:
     """Persistent MQTT subscription feeding the inbound evidence route.
 
-    Routing runs in a worker thread. It blocks -- `BoundIngestService` waits on
-    the evidence worker -- so the event loop would stall behind a SQLite write,
-    and paho's network thread would stall the MQTT keepalive behind one.
+    Routing awaits the evidence worker from the event loop and holds no thread
+    while it waits: a blocked thread per message would let a stalled evidence
+    store take every thread a shared executor has. Client calls run on this
+    route's own thread. A message past the in-flight bound is left unacknowledged,
+    and the broker redelivers it once the route reconnects.
     """
 
     def __init__(
@@ -264,10 +291,21 @@ class MqttEvidenceInboundSubscriber:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._connected = False
         self._lost: asyncio.Event | None = None
+        self._io = RouteIO("ori-evidence-in")
+        self._in_flight = 0
+        self._shed = 0
+        self._manual_ack = False
+        self._redelivery_owed = False
+        self._redeliver: asyncio.Event | None = None
 
     @property
     def topic(self) -> str:
         return self._router.topic
+
+    @property
+    def shed_count(self) -> int:
+        """Messages left unacknowledged at the in-flight bound."""
+        return self._shed
 
     async def serve_until(self, shutdown_event: asyncio.Event) -> None:
         """Connect, subscribe, and serve until *shutdown_event* fires.
@@ -279,10 +317,18 @@ class MqttEvidenceInboundSubscriber:
         """
         self._loop = asyncio.get_running_loop()
         self._lost = asyncio.Event()
+        self._redeliver = asyncio.Event()
         delay = _RECONNECT_MIN_S
+        try:
+            await self._serve(shutdown_event, delay)
+        finally:
+            self._io.shutdown()
+
+    async def _serve(self, shutdown_event: asyncio.Event, delay: float) -> None:
         while not shutdown_event.is_set():
+            redeliver = False
             try:
-                await self._connect_and_serve(shutdown_event)
+                redeliver = await self._connect_and_serve(shutdown_event)
                 delay = _RECONNECT_MIN_S
             except asyncio.CancelledError:
                 raise
@@ -297,6 +343,8 @@ class MqttEvidenceInboundSubscriber:
                 await self.close()
             if shutdown_event.is_set():
                 return
+            if redeliver:
+                continue
             try:
                 await asyncio.wait_for(shutdown_event.wait(), timeout=delay)
                 return
@@ -313,12 +361,21 @@ class MqttEvidenceInboundSubscriber:
         """
         return self._connected
 
-    async def _connect_and_serve(self, shutdown_event: asyncio.Event) -> None:
+    async def _connect_and_serve(self, shutdown_event: asyncio.Event) -> bool:
+        """Serve one session; True when it ended to have the broker redeliver."""
         lost = self._lost
-        assert lost is not None
+        redeliver = self._redeliver
+        assert lost is not None and redeliver is not None
         lost.clear()
+        redeliver.clear()
         client = self._client_factory(client_id=f"ori-evidence-in-{self._device_id}")
         self._client = client
+        # Acknowledged once routed, never on arrival: a message the route had
+        # no room for stays with the broker rather than being taken and lost.
+        manual_ack_set = getattr(client, "manual_ack_set", None)
+        self._manual_ack = callable(manual_ack_set)
+        if callable(manual_ack_set):
+            manual_ack_set(True)
         client.on_connect = self._on_connect
         client.on_subscribe = self._on_subscribe
         client.on_disconnect = self._on_disconnect
@@ -328,20 +385,27 @@ class MqttEvidenceInboundSubscriber:
         if username:
             client.username_pw_set(username, password)
         apply_tls_context(client, self._broker)
-        await asyncio.to_thread(
+        await self._io.run(
             client.connect,
             self._broker.host,
             int(self._broker.port),
             60,
         )
-        await asyncio.to_thread(client.loop_start)
+        await self._io.run(client.loop_start)
         # Either end of the route can fail: the broker may refuse the
         # subscription, or drop a session it had granted. Both must reconnect
         # rather than leave a task parked on a route that no longer carries
         # anything.
-        await _wait_first(shutdown_event, lost)
-        if not shutdown_event.is_set():
-            raise ConnectionError("subscription lost")
+        await _wait_first(shutdown_event, lost, redeliver)
+        if shutdown_event.is_set():
+            return False
+        if redeliver.is_set() and not lost.is_set():
+            logger.info(
+                "[evidence-inbound] reconnecting so the broker redelivers the "
+                "messages left unacknowledged"
+            )
+            return True
+        raise ConnectionError("subscription lost")
 
     async def close(self) -> None:
         """Stop the paho network loop and disconnect cleanly."""
@@ -351,11 +415,11 @@ class MqttEvidenceInboundSubscriber:
         if client is None:
             return
         try:
-            await asyncio.to_thread(client.loop_stop)
+            await self._io.run(client.loop_stop)
         except Exception:
             logger.warning("[evidence-inbound] failed to stop MQTT loop")
         try:
-            await asyncio.to_thread(client.disconnect)
+            await self._io.run(client.disconnect)
         except Exception:
             logger.warning("[evidence-inbound] failed to disconnect cleanly")
 
@@ -433,7 +497,7 @@ class MqttEvidenceInboundSubscriber:
             return
         loop.call_soon_threadsafe(lost.set)
 
-    def _on_message(self, _client: Any, _userdata: Any, message: Any) -> None:
+    def _on_message(self, client: Any, _userdata: Any, message: Any) -> None:
         loop = self._loop
         if loop is None:
             logger.warning(
@@ -441,11 +505,51 @@ class MqttEvidenceInboundSubscriber:
             )
             return
         payload = getattr(message, "payload", b"") or b""
-        future = asyncio.run_coroutine_threadsafe(self._route(payload), loop)
+        future = asyncio.run_coroutine_threadsafe(
+            self._route(
+                client,
+                payload,
+                getattr(message, "mid", None),
+                getattr(message, "qos", 0),
+            ),
+            loop,
+        )
         future.add_done_callback(_log_future_failure)
 
-    async def _route(self, payload: bytes) -> None:
-        routed = await asyncio.to_thread(self._router.handle_payload, payload)
+    async def _route(self, client: Any, payload: bytes, mid: Any, qos: Any) -> None:
+        # Runs on the event loop, so the check and the count are one step.
+        if self._in_flight >= INBOUND_IN_FLIGHT_BOUND:
+            if not self._redelivery_owed:
+                logger.warning(
+                    "[evidence-inbound] %d messages in flight; further messages are "
+                    "left with the broker until they clear",
+                    self._in_flight,
+                )
+            self._shed += 1
+            self._redelivery_owed = True
+            return
+        self._in_flight += 1
+        try:
+            await self._route_admitted(payload)
+            await self._acknowledge(client, mid, qos)
+        finally:
+            self._in_flight -= 1
+            if self._redelivery_owed and self._in_flight == 0:
+                self._redelivery_owed = False
+                if self._redeliver is not None:
+                    self._redeliver.set()
+
+    async def _acknowledge(self, client: Any, mid: Any, qos: Any) -> None:
+        """Release the message at the broker once it has been routed."""
+        if not self._manual_ack or mid is None:
+            return
+        try:
+            await self._io.run(client.ack, mid, qos)
+        except Exception:
+            logger.warning("[evidence-inbound] failed to acknowledge a message")
+
+    async def _route_admitted(self, payload: bytes) -> None:
+        routed = await self._router.route(payload)
         _log_result(routed.outcome)
         if routed.acknowledgement is None:
             return
@@ -457,7 +561,7 @@ class MqttEvidenceInboundSubscriber:
             )
             return
         try:
-            await asyncio.to_thread(
+            await self._io.run(
                 client.publish,
                 self._router.ack_topic,
                 json.dumps(routed.acknowledgement).encode(),

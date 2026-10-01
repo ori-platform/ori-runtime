@@ -24,7 +24,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ori.network.events import OriEvent, ReasoningResult, history_as_of
@@ -40,6 +40,8 @@ from ori.reasoning.escalation_policy import (
 )
 from ori.reasoning.rule_engine import (
     RESERVED_CONTEXT_NAMES,
+    RULES_OTHER,
+    RULES_TIER_D,
     RuleEngine,
     RuleEngineSafetyError,
     RuleResult,
@@ -513,7 +515,53 @@ class IntelligenceElevator:
         which tier fired, so a Tier D trip declared below a Tier A notice on the
         same condition never reached dispatch.
         """
+        ctx, hook_ctx = await self._condition_context(event, skill, state_store)
+        matches = await self._rule_engine.evaluate_all(
+            event,
+            getattr(skill, "triggers", []),
+            context=ctx,
+            state_store=state_store,
+            scope=str(getattr(skill, "name", "") or ""),
+        )
+        return matches, hook_ctx
+
+    async def evaluate_tier_d_first(
+        self, event: OriEvent, skill: Any, state_store: Any
+    ) -> tuple[list[RuleResult], Callable[[], Awaitable[list[RuleResult]]]]:
+        """The Tier D matches of *skill* now, and the rest when awaited.
+
+        Hooks run once, for both. The Tier D matches are decided without any
+        history read, so a store that is slow to answer another trigger's
+        history cannot hold a trip.
+        """
+        ctx, _hook_ctx = await self._condition_context(event, skill, state_store)
         rules = getattr(skill, "triggers", [])
+        scope = str(getattr(skill, "name", "") or "")
+        tier_d = await self._rule_engine.evaluate_all(
+            event,
+            rules,
+            context=ctx,
+            state_store=state_store,
+            scope=scope,
+            select=RULES_TIER_D,
+        )
+
+        async def rest() -> list[RuleResult]:
+            return await self._rule_engine.evaluate_all(
+                event,
+                rules,
+                context=ctx,
+                state_store=state_store,
+                scope=scope,
+                select=RULES_OTHER,
+            )
+
+        return tier_d, rest
+
+    async def _condition_context(
+        self, event: OriEvent, skill: Any, state_store: Any
+    ) -> tuple[dict[str, Any], Any]:
+        """Skill configuration and hook output, as the conditions see them."""
         ctx: dict[str, Any] = {}
         if hasattr(skill, "config") and isinstance(skill.config, dict):
             ctx.update(_without_reserved_names(skill.config, skill))
@@ -538,15 +586,7 @@ class IntelligenceElevator:
                     "IntelligenceElevator: pre_trigger_eval hook failed for %r",
                     getattr(skill, "name", "unknown"),
                 )
-
-        matches = await self._rule_engine.evaluate_all(
-            event,
-            rules,
-            context=ctx,
-            state_store=state_store,
-            scope=str(getattr(skill, "name", "") or ""),
-        )
-        return matches, hook_ctx
+        return ctx, hook_ctx
 
     async def _evaluate_rules_with_hooks(
         self, event: OriEvent, skill: Any, state_store: Any
