@@ -1480,6 +1480,10 @@ class TestTheInFlightSlots:
                         None,
                         SimpleNamespace(payload=_MALFORMED_RECEIPT, mid=mid, qos=1),
                     )
+                    # A network thread waits on its socket between messages
+                    # and gives the interpreter up there; a bare spin would
+                    # measure GIL contention instead of admission.
+                    time.sleep(0)
 
             with patch.object(asyncio, "run_coroutine_threadsafe", counted):
                 ran = site.acts.ran["trip_relay"]
