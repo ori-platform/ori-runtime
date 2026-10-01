@@ -1,0 +1,39 @@
+# Every commit a pull request carries must be signed and verified by GitHub.
+# Branch protection holds that rule at merge time; this reports it as a named
+# check on every push, lists each offending commit, and fails closed when the
+# commit list cannot be read in full.
+name: Signed commits
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  signed:
+    name: Signed commits
+    runs-on: ubuntu-latest
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Test the check
+        run: python3 scripts/test_check_signed_commits.py
+
+      - name: Check every commit's signature
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/check_signed_commits.py --repo "$REPO" --pr "$PR_NUMBER" --head-sha "$HEAD_SHA"
