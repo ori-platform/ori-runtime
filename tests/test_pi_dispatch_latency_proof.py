@@ -18,5 +18,6 @@ async def test_the_proof_runs_and_reports_every_bound(tmp_path: Path) -> None:
         first = report["tier_d"][name]["first_act_latency"]
         assert first["n"] == 3 and first["missed"] == 0
         assert first["max_ms"] < proof.BOUND_S * 1000
+    assert set(report["tier_c_decisions"]) == {"executed"}, report["tier_c_decisions"]
     approvals = report["approved_tier_c_reply_to_act"]
     assert approvals["missed"] == 0 and approvals["max_ms"] < proof.BOUND_S * 1000

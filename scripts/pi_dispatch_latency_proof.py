@@ -69,6 +69,8 @@ DEVICE = "latency-proof"
 BOUND_S = 0.25
 #: How long the whole notice set of a dangerous reading is waited for.
 NOTICE_WINDOW_S = 8.0
+#: How long one approval round may take, the proposal's own lifetime.
+APPROVAL_WINDOW_S = 30.0
 #: The skill, its Tier D trigger, a normal reading and a dangerous one.
 CASES = {
     "energy-anomaly-detector": ("dangerous_overcurrent", "current_clamp", 5.0, 30.0),
@@ -106,6 +108,13 @@ def _disk(directory: Path, stop: threading.Event) -> None:
                 if stop.is_set():
                     break
     path.unlink(missing_ok=True)
+
+
+def _count(values: Any) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for value in values:
+        counts[value] = counts.get(value, 0) + 1
+    return counts
 
 
 def _summary(values: list[float]) -> dict[str, Any]:
@@ -177,7 +186,9 @@ class _Phone:
         while not self.proposals:
             await asyncio.sleep(0.001)
         self.replied_at.append(time.monotonic())
-        return f"YES-{self.proposals.pop()}"
+        # Oldest first: each proposal is answered, never one skipped for a
+        # newer one.
+        return f"YES-{self.proposals.pop(0)}"
 
 
 class _Isolator:
@@ -346,6 +357,7 @@ async def _prove(data: Path, readings: int, notice_readings: int = 3) -> dict[st
     first: dict[str, list[float]] = {name: [] for name in CASES}
     every: dict[str, dict[str, list[float]]] = {name: {} for name in CASES}
     approvals: list[float] = []
+    decisions: list[dict[str, Any]] = []
     try:
         # Tier D, both stores locked: a normal reading, then a dangerous one.
         state_lock = sqlite3.connect(str(data / "state.db"), isolation_level=None)
@@ -388,6 +400,10 @@ async def _prove(data: Path, readings: int, notice_readings: int = 3) -> dict[st
             state_lock.execute("COMMIT")
             state_lock.close()
         # Tier C, the state store free: from the operator's YES to the act.
+        # Each round is one proposal: it waits for the previous one's event to
+        # settle, so an isolation request never joins a proposal still open.
+        # The phase starts straight after the unlock, with whatever the locked
+        # phase left queued for the store.
         for _ in range(max(1, readings // 4)):
             fired = acts.setdefault("isolate", [])
             before = len(fired)
@@ -395,7 +411,7 @@ async def _prove(data: Path, readings: int, notice_readings: int = 3) -> dict[st
             await asyncio.to_thread(
                 publish, _event("proof-isolation", "isolation_request", 1.0)
             )
-            deadline = time.monotonic() + 10.0
+            deadline = time.monotonic() + APPROVAL_WINDOW_S
             while len(fired) <= before and time.monotonic() < deadline:
                 await asyncio.sleep(0.001)
             approvals.append(
@@ -403,7 +419,8 @@ async def _prove(data: Path, readings: int, notice_readings: int = 3) -> dict[st
                 if len(fired) > before and len(phone.replied_at) > replies
                 else math.inf
             )
-            await asyncio.sleep(0.2)
+            await coordinator.drain(timeout=APPROVAL_WINDOW_S)
+        decisions = await store.get_tier_c_proposals()
     finally:
         flooding.set()
         evidence_lock.execute("COMMIT")
@@ -428,10 +445,13 @@ async def _prove(data: Path, readings: int, notice_readings: int = 3) -> dict[st
             for name in CASES
         },
         "approved_tier_c_reply_to_act": _summary(approvals),
+        "tier_c_decisions": _count(str(d.get("decision_state", "")) for d in decisions),
     }
-    report["pass"] = all(
-        v < BOUND_S for values in first.values() for v in values
-    ) and all(v < BOUND_S for v in approvals)
+    report["pass"] = (
+        all(v < BOUND_S for values in first.values() for v in values)
+        and all(v < BOUND_S for v in approvals)
+        and all(str(d.get("decision_state", "")) == "executed" for d in decisions)
+    )
     return report
 
 
