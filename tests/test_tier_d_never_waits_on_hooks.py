@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -25,7 +26,6 @@ from ori.reasoning.rule_engine import RULES_ALL, RuleEngine, evaluate_condition_
 from ori.skills.loader import (
     SkillLoader,
     SkillValidationError,
-    _hook_supplied_names,
 )
 from tests.test_dispatch_never_waits_on_delivery import (
     _MALFORMED_RECEIPT,
@@ -173,6 +173,77 @@ class TestAHookCannotHoldATrip:
                 site.release()
 
 
+def _publish_from_sensor_thread(
+    bus: EventBus, loop: asyncio.AbstractEventLoop, event: OriEvent
+) -> float:
+    """Publish as a sensor does: from its own thread, timed on its own clock."""
+    produced = time.monotonic()
+    asyncio.run_coroutine_threadsafe(bus.publish(event), loop)
+    return produced
+
+
+#: A normal reading, then a critical one: the skill whose hook the first
+#: reading runs, and the Tier D trigger the second must reach.
+_FOLLOWED_BY_CRITICAL = {
+    "battery-lifecycle-observer": (
+        ("battery-lifecycle-observer", "growatt_battery_soc", 60.0),
+        ("battery_emergency_cutoff", "growatt_battery_soc", 3.0),
+    ),
+    "energy-anomaly-detector": (
+        ("energy-anomaly-detector", "current_clamp", 5.0),
+        ("dangerous_overcurrent", "current_clamp", 30.0),
+    ),
+    "prosumer-then-overcurrent": (
+        ("prosumer-energy-advisor", "power", 900.0),
+        ("dangerous_overcurrent", "current_clamp", 30.0),
+    ),
+}
+
+
+class TestAShippedHookCannotHoldTheNextTrip:
+    @pytest.mark.parametrize("case", sorted(_FOLLOWED_BY_CRITICAL))
+    async def test_a_critical_reading_after_a_normal_one_with_the_store_locked(
+        self, case: str, tmp_path: Path
+    ) -> None:
+        """The shipped hooks, not stubs, run for the first reading with the
+        state store held; the critical reading that follows from the sensor's
+        own thread is tripped within the bound of that thread's clock."""
+        (first_skill, first_type, first_value), (trigger, crit_type, crit_value) = (
+            _FOLLOWED_BY_CRITICAL[case]
+        )
+        names = sorted(
+            {first_skill, "battery-lifecycle-observer", "energy-anomaly-detector"}
+        )
+        async with _site(tmp_path) as site:
+            bus, _skills = _register(site, names)
+            for n in range(3):
+                await site.store.append_history(_reading(crit_type, 5.0 + n))
+            site.lock("state.db")
+            loop = asyncio.get_running_loop()
+            fired = site.acts.by_trigger.setdefault(trigger, [])
+            produced: list[float] = []
+
+            def sensor() -> None:
+                _publish_from_sensor_thread(
+                    bus, loop, _reading(first_type, first_value)
+                )
+                time.sleep(0.3)
+                produced.append(
+                    _publish_from_sensor_thread(
+                        bus, loop, _reading(crit_type, crit_value)
+                    )
+                )
+
+            thread = threading.Thread(target=sensor)
+            thread.start()
+            await asyncio.to_thread(thread.join, 5.0)
+            await _until(lambda: bool(fired), 10.0)
+            assert fired, f"{trigger} did not fire: {site.acts.by_trigger}"
+            latency = fired[0][1] - produced[0]
+            assert latency < _TRIP_BOUND_S, latency
+            site.release()
+
+
 class TestTheRuntimeDecidesTierDWithoutAHook:
     async def test_the_tier_d_context_carries_no_hook_output(
         self, tmp_path: Path
@@ -212,24 +283,32 @@ class TestTheLoaderRefusesATierDConditionAHookDecides:
         )
         loader = SkillLoader()
         loader._is_core_bundled_skill = lambda _path: True  # type: ignore[method-assign]
-        with pytest.raises(SkillValidationError, match="only a hook supplies"):
+        with pytest.raises(SkillValidationError, match="is_soc_sensor"):
             loader.load_one(skill_dir)
 
     def test_a_configured_name_the_hook_also_copies_is_allowed(self) -> None:
-        names = _hook_supplied_names(_SKILLS / "energy-anomaly-detector" / "hooks.py")
-        assert "dangerous_overcurrent_threshold" in names
         loaded = {s.name for s in SkillLoader().load_all(str(_SKILLS))}
         assert {"energy-anomaly-detector", "battery-lifecycle-observer"} <= loaded
 
-    def test_every_hook_write_form_is_seen(self, tmp_path: Path) -> None:
-        hooks = tmp_path / "hooks.py"
-        hooks.write_text(
-            "def pre_trigger_eval(context):\n"
-            "    context.derived['a'] = 1\n"
-            "    context.derived.update({'b': 2}, c=3)\n"
-            "    context.derived.setdefault('d', 4)\n"
+    @pytest.mark.parametrize("value", ["20", "true", ".nan", ".inf", "[1]"])
+    def test_a_configured_tier_d_input_must_be_a_finite_number(
+        self, value: str, tmp_path: Path
+    ) -> None:
+        skill_dir = tmp_path / "energy-anomaly-detector"
+        shutil.copytree(_SKILLS / "energy-anomaly-detector", skill_dir)
+        manifest = skill_dir / "skill.yaml"
+        text = manifest.read_text()
+        assert "  dangerous_overcurrent_threshold: 20.0\n" in text
+        manifest.write_text(
+            text.replace(
+                "  dangerous_overcurrent_threshold: 20.0\n",
+                f"  dangerous_overcurrent_threshold: {value if value != '20' else repr('20')}\n",
+            )
         )
-        assert _hook_supplied_names(hooks) == {"a", "b", "c", "d"}
+        loader = SkillLoader()
+        loader._is_core_bundled_skill = lambda _path: True  # type: ignore[method-assign]
+        with pytest.raises(SkillValidationError, match="not a finite number"):
+            loader.load_one(skill_dir)
 
     def test_every_shipped_tier_d_condition_names_only_the_reading_or_config(
         self,
@@ -265,7 +344,7 @@ class TestTheLoaderRefusesATierDConditionAHookDecides:
         )
         loader = SkillLoader()
         loader._is_core_bundled_skill = lambda _path: True  # type: ignore[method-assign]
-        with pytest.raises(SkillValidationError, match="nothing supplies them"):
+        with pytest.raises(SkillValidationError, match="gas_limit_nobody_sets"):
             loader.load_one(skill_dir)
 
     def test_only_the_skills_own_configuration_is_allowed(self, tmp_path: Path) -> None:
@@ -359,6 +438,16 @@ class TestTheRewrittenBatteryConditionTripsAsBefore:
         assert old != trigger.condition
         soc_types = {"growatt_battery_soc", "victron_battery_soc", "battery_percent"}
         types = {str(s["type"]) for s in skill.sensors_required} | soc_types
+        # The hook strips the type before comparing; the condition does not.
+        # A padded or recased type is not one the skill subscribes to, so it
+        # never reaches either form.
+        from ori.reasoning.dispatch_coordinator import DispatchCoordinator
+
+        for sensor_type in sorted(types):
+            for variant in (f" {sensor_type}", f"{sensor_type} ", sensor_type.upper()):
+                assert not DispatchCoordinator._eligible(
+                    skill, _reading(variant, 3.0)
+                ), variant
         for sensor_type in sorted(types):
             for value in (0.0, 4.9, 5.0, 5.1, 50.0):
                 base = {
@@ -366,7 +455,10 @@ class TestTheRewrittenBatteryConditionTripsAsBefore:
                     "value": value,
                     "sensor_type": sensor_type,
                 }
-                with_hook = {**base, "is_soc_sensor": int(sensor_type in soc_types)}
+                with_hook = {
+                    **base,
+                    "is_soc_sensor": int(sensor_type.strip() in soc_types),
+                }
                 assert evaluate_condition_safely(
                     trigger.condition, base
                 ) == evaluate_condition_safely(old, with_hook), (sensor_type, value)
@@ -402,3 +494,51 @@ class TestTheOvercurrentThresholdIsTheConfiguredOne:
             hooked["dangerous_overcurrent_threshold"]
             == skill.config["dangerous_overcurrent_threshold"]
         )
+
+
+class TestAHookWriteNeverJoinsTheWritersTransaction:
+    async def test_a_hook_commit_cannot_land_inside_a_writer_transaction(
+        self, tmp_path: Path
+    ) -> None:
+        """A writer transaction, as an approval commit is, that rolls back.
+
+        A hook writing skill state while it is open must neither commit the
+        writer's half-done work nor wait out the store's busy timeout.
+        """
+        import sqlite3
+
+        from ori.state.store import HOOK_BUSY_TIMEOUT_S, StateStore
+
+        store = StateStore(db_path=str(tmp_path / "state.db"))
+        await store.open()
+        opened = threading.Event()
+        finish = threading.Event()
+
+        def half_done(_value: str) -> None:
+            conn = store._conn
+            assert conn is not None
+            conn.execute(
+                "INSERT INTO skill_state (skill_name, key, value, updated_at) "
+                "VALUES ('writer', 'approval', 'half-done', 0)"
+            )
+            opened.set()
+            finish.wait(5.0)
+            conn.rollback()
+
+        try:
+            writer = asyncio.create_task(store._run_write(half_done, "x"))
+            await asyncio.to_thread(opened.wait, 5.0)
+            started = time.monotonic()
+            with pytest.raises(sqlite3.OperationalError):
+                store.hooks_set_skill_state("battery-lifecycle-observer", "k", "v")
+            assert time.monotonic() - started < HOOK_BUSY_TIMEOUT_S + 0.2
+            finish.set()
+            await writer
+            with sqlite3.connect(str(tmp_path / "state.db")) as reader:
+                left = reader.execute(
+                    "SELECT value FROM skill_state WHERE skill_name = 'writer'"
+                ).fetchall()
+            assert left == [], "a hook commit landed inside the writer's transaction"
+        finally:
+            finish.set()
+            await store.close()

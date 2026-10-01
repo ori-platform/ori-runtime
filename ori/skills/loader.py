@@ -27,6 +27,7 @@ import binascii
 import errno
 import importlib.util
 import logging
+import math
 import os
 import re
 import stat
@@ -90,78 +91,44 @@ def _refuse_history_in_tier_d_condition(
             )
 
 
-def _hook_supplied_names(hooks_path: Path) -> frozenset[str]:
-    """Names a skill's hooks write into ``derived``, read from the source.
-
-    Read, never imported: a statically named key is what this sees, and a
-    key built at run time is not. The rule engine evaluates Tier D without
-    any hook output, so a name this misses is refused there instead.
-    """
-    try:
-        tree = ast.parse(hooks_path.read_text(encoding="utf-8"))
-    except (OSError, SyntaxError, UnicodeDecodeError):
-        return frozenset()
-    names: set[str] = set()
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Subscript)
-            and isinstance(node.value, ast.Attribute)
-            and node.value.attr == "derived"
-            and isinstance(node.slice, ast.Constant)
-            and isinstance(node.slice.value, str)
-        ):
-            names.add(node.slice.value)
-        elif (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr in {"update", "setdefault"}
-            and isinstance(node.func.value, ast.Attribute)
-            and node.func.value.attr == "derived"
-        ):
-            for arg in node.args:
-                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-                    names.add(arg.value)
-                elif isinstance(arg, ast.Dict):
-                    names.update(
-                        k.value
-                        for k in arg.keys
-                        if isinstance(k, ast.Constant) and isinstance(k.value, str)
-                    )
-            names.update(k.arg for k in node.keywords if k.arg)
-    return frozenset(names)
-
-
 def _refuse_unresolved_names_in_tier_d_condition(
     skill_name: str,
     trigger_name: str,
     condition: str,
-    config_keys: frozenset[str],
-    hook_names: frozenset[str],
+    config: dict[str, Any],
 ) -> None:
     """A Tier D condition may name only the reading and the skill's own configuration.
 
-    That is all the rule engine gives a Tier D condition, before any hook
-    runs; a name outside it never resolves, so the trigger could never fire.
+    An allowlist, not a search for what a hook might write: that is all the
+    rule engine gives a Tier D condition, before any hook runs. A configured
+    value it names must be a finite number, since nothing coerces it.
     """
     try:
         tree = ast.parse(condition, mode="eval")
     except SyntaxError:
         return
     named = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
-    unresolved = sorted(named - RESERVED_CONTEXT_NAMES - config_keys - {"history"})
-    if not unresolved:
-        return
-    hook_only = sorted(set(unresolved) & hook_names)
-    supplied = (
-        f"{hook_only} only a hook supplies" if hook_only else "nothing supplies them"
-    )
-    raise SkillValidationError(
-        f"Skill '{skill_name}' trigger '{trigger_name}' is Tier D and its "
-        f"condition names {unresolved}, which neither the reading nor the "
-        f"skill's configuration supplies ({supplied}). A Tier D condition is "
-        "decided from the reading and the skill's configuration before any hook "
-        "runs, so a hook can neither delay nor decide it."
-    )
+    unresolved = sorted(named - RESERVED_CONTEXT_NAMES - set(config) - {"history"})
+    if unresolved:
+        raise SkillValidationError(
+            f"Skill '{skill_name}' trigger '{trigger_name}' is Tier D and its "
+            f"condition names {unresolved}, which neither the reading nor the "
+            "skill's configuration supplies. A Tier D condition is decided from "
+            "the reading and the skill's configuration before any hook runs, so "
+            "a hook can neither delay nor decide it."
+        )
+    for name in sorted(named & set(config)):
+        value = config[name]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+        ):
+            raise SkillValidationError(
+                f"Skill '{skill_name}' trigger '{trigger_name}' is Tier D and its "
+                f"condition reads config {name!r} = {value!r}, which is not a "
+                "finite number; a Tier D input is compared as configured."
+            )
 
 
 _TRIGGER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
@@ -973,20 +940,14 @@ class SkillLoader:
             raw.get("config") or {},
             raw.get("name", "<unknown>"),
         )
-        hooks_path = skill_dir / "hooks.py"
-        hook_names = (
-            _hook_supplied_names(hooks_path) if hooks_path.is_file() else frozenset()
-        )
         config = raw.get("config")
-        config_keys = frozenset(config) if isinstance(config, dict) else frozenset()
         for trigger in triggers:
             if trigger.action_tier == "D":
                 _refuse_unresolved_names_in_tier_d_condition(
                     raw.get("name", "<unknown>"),
                     trigger.name,
                     trigger.condition,
-                    config_keys,
-                    hook_names,
+                    config if isinstance(config, dict) else {},
                 )
         self._verify_community_signature(raw, skill_dir)
         if load_hooks:

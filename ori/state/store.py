@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import contextlib
 import datetime
 import functools
 import hashlib
@@ -10,6 +11,8 @@ import logging
 import math
 import os
 import sqlite3
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Concatenate, Optional, ParamSpec, TypeVar
@@ -1142,6 +1145,12 @@ HISTORY_ADMISSION_CEILING = 1024
 HISTORY_DRAIN_S = 2.0
 #: Threads serving reads; each opens its own short-lived connection.
 _READ_WORKERS = 4
+#: How long a skill hook's store call waits on a lock. Hooks run on the event
+#: loop, so this is how long a hook can hold it; past it the call fails.
+HOOK_BUSY_TIMEOUT_S = 0.05
+#: After a hook's store call meets a lock, how long further hook calls fail at
+#: once rather than each waiting out the timeout again.
+HOOK_BUSY_BACKOFF_S = 1.0
 
 
 class StateStore:
@@ -1185,6 +1194,10 @@ class StateStore:
         self._write_executor: ThreadPoolExecutor | None = None
         self._read_executor: ThreadPoolExecutor | None = None
         self._read_admission: asyncio.Semaphore | None = None
+        # Skill hooks' own connection: never the writer's, short busy timeout.
+        self._hook_conn: sqlite3.Connection | None = None
+        self._hook_lock = threading.Lock()
+        self._hook_busy_until = 0.0
 
     # ─── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -1273,6 +1286,10 @@ class StateStore:
                     executor.shutdown(wait=False)
             self._write_executor = self._read_executor = None
             self._read_admission = None
+            with self._hook_lock:
+                hook_conn, self._hook_conn = self._hook_conn, None
+            if hook_conn is not None:
+                hook_conn.close()
 
     def _migrate_sync(self, conn: sqlite3.Connection) -> None:
         conn.executescript(_CORE_DDL)
@@ -2029,6 +2046,50 @@ class StateStore:
         conn.row_factory = sqlite3.Row
         return conn
 
+    def _run_hook(
+        self,
+        fn: Callable[Concatenate[sqlite3.Connection, _P], _T],
+        *args: _P.args,
+        **kwargs: _P.kwargs,
+    ) -> _T:
+        """Run a skill hook's store call on the hooks' own connection.
+
+        Hooks run synchronously on the event loop, so a call here must not wait
+        out the store's ordinary busy timeout, and must never touch the
+        writer's connection, whose transactions it would otherwise commit in
+        the middle of. A locked store fails the call within
+        ``HOOK_BUSY_TIMEOUT_S``, and the calls after it fail at once for
+        ``HOOK_BUSY_BACKOFF_S``.
+        """
+        if self._db_path == ":memory:" or self._read_only:
+            conn, close_when_done = self._open_read_conn_sync()
+            try:
+                return fn(conn, *args, **kwargs)
+            finally:
+                if close_when_done:
+                    conn.close()
+        with self._hook_lock:
+            if time.monotonic() < self._hook_busy_until:
+                raise sqlite3.OperationalError(
+                    "database is locked; hook store access is deferred"
+                )
+            if self._hook_conn is None:
+                conn = sqlite3.connect(
+                    self._db_path,
+                    timeout=HOOK_BUSY_TIMEOUT_S,
+                    check_same_thread=False,
+                )
+                conn.row_factory = sqlite3.Row
+                self._hook_conn = conn
+            try:
+                return fn(self._hook_conn, *args, **kwargs)
+            except sqlite3.OperationalError as exc:
+                if "locked" in str(exc) or "busy" in str(exc):
+                    self._hook_busy_until = time.monotonic() + HOOK_BUSY_BACKOFF_S
+                with contextlib.suppress(sqlite3.Error):
+                    self._hook_conn.rollback()
+                raise
+
     def _open_read_conn_sync(self) -> tuple[sqlite3.Connection, bool]:
         """Open a short-lived read connection safe for concurrent executor threads."""
         if self._db_path == ":memory:":
@@ -2286,9 +2347,7 @@ class StateStore:
         self, sensor_id: str, limit: int = 100, *, frontier: int | None = None
     ) -> list[StoredReading]:
         """Stable sync facade for hook history lookups."""
-        return self._run_read_with_conn(
-            self._get_history_sync, sensor_id, limit, frontier
-        )
+        return self._run_hook(self._get_history_sync, sensor_id, limit, frontier)
 
     def _get_history_sync(
         self,
@@ -2320,7 +2379,7 @@ class StateStore:
         self, sensor_id: str, n: int, *, frontier: int | None = None
     ) -> Optional[float]:
         """Stable sync facade for hook rolling-N average lookups."""
-        return self._run_read_with_conn(self._avg_last_n_sync, sensor_id, n, frontier)
+        return self._run_hook(self._avg_last_n_sync, sensor_id, n, frontier)
 
     def _avg_last_n_sync(
         self,
@@ -2356,9 +2415,7 @@ class StateStore:
         self, sensor_id: str, hours: int, *, frontier: int | None = None
     ) -> Optional[float]:
         """Stable sync facade for hook average-over-hours lookups."""
-        return self._run_read_with_conn(
-            self._avg_last_hours_sync, sensor_id, hours, frontier
-        )
+        return self._run_hook(self._avg_last_hours_sync, sensor_id, hours, frontier)
 
     def _avg_last_hours_sync(
         self,
@@ -2446,7 +2503,7 @@ class StateStore:
         min_weeks: int = 3,
     ) -> dict[str, Any]:
         """Stable sync facade for hook site-local baseline lookups."""
-        return self._run_read_with_conn(
+        return self._run_hook(
             self._time_of_week_baseline_sync,
             sensor_id,
             reference_timestamp_ms,
@@ -7978,7 +8035,7 @@ class StateStore:
 
     def hooks_get_skill_state(self, skill_name: str, key: str) -> Optional[str]:
         """Stable sync facade for hook skill-state reads."""
-        return self._run_read_with_conn(self._get_skill_state_sync, skill_name, key)
+        return self._run_hook(self._get_skill_state_sync, skill_name, key)
 
     def _get_skill_state_sync(
         self, conn: sqlite3.Connection, skill_name: str, key: str
@@ -7996,12 +8053,18 @@ class StateStore:
         await self._run_write(self._set_skill_state_sync, skill_name, key, value)
 
     def hooks_set_skill_state(self, skill_name: str, key: str, value: str) -> None:
-        """Stable sync facade for hook skill-state writes."""
-        self._set_skill_state_sync(skill_name, key, value)
+        """Stable sync facade for hook skill-state writes, on the hooks' connection."""
+        self._run_hook(self._set_skill_state_on, skill_name, key, value)
 
     def _set_skill_state_sync(self, skill_name: str, key: str, value: str) -> None:
         assert self._conn is not None
-        self._conn.execute(
+        self._set_skill_state_on(self._conn, skill_name, key, value)
+
+    @staticmethod
+    def _set_skill_state_on(
+        conn: sqlite3.Connection, skill_name: str, key: str, value: str
+    ) -> None:
+        conn.execute(
             """
             INSERT INTO skill_state (skill_name, key, value, updated_at)
             VALUES (?, ?, ?, ?)
@@ -8011,7 +8074,7 @@ class StateStore:
             """,
             (skill_name, key, value, now_ms()),
         )
-        self._conn.commit()
+        conn.commit()
 
 
 TRIP_JOURNAL_COLUMNS = (
