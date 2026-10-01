@@ -10,7 +10,7 @@ name = "ori-runtime-mobile"
 path = "src/main.rs"
 
 [dependencies]
-base64 = "0.22"
+base64 = "0.23"
 ed25519-dalek = "2.1"
 hex = "0.4"
 hmac = "0.12"
