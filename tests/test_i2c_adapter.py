@@ -2544,7 +2544,7 @@ class TestWindowIntegrity:
 
 
 class TestSharedBusReferenceAccounting:
-    """ori-platform/ori-runtime#512.
+    """References on the shared bus are counted, not flagged.
 
     The adapter tracked whether it held a reference on the shared `busio.I2C`
     with a boolean while the cache counted references. The two disagreed the

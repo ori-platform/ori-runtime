@@ -9,8 +9,8 @@ been taken so far while the connect's worker goes on taking more, and the
 adapter ends up believing it is connected while holding resources nobody else
 believes are in use.
 
-ori-platform/ori-runtime#501 fixed that in `I2CAdapter` with a per-adapter lock
-and counter. #513 moved the rule to `BaseAdapter`, because copying a counter
+A per-adapter lock and counter prevent that, and the rule lives in
+`BaseAdapter` rather than in each adapter, because copying a counter
 into six files multiplies the surface that has to stay correct and gives each
 adapter its own chance to get it subtly wrong. These tests drive the guarantee
 against each adapter rather than one representative, so an adapter that stops

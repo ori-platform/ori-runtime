@@ -242,7 +242,7 @@ def test_the_worst_case_is_always_an_under_report() -> None:
     """The direction matters more than the magnitude.
 
     A reading below the truth is a Tier D threshold reached later than it
-    should be, or not at all. #398 puts it plainly: a spurious trip is safe and
+    should be, or not at all. Put plainly: a spurious trip is safe and
     annoying, a missed trip is a fire. Every frequency error this file measures
     is worse downward than upward, so the bounds above are not symmetric and
     must not be quoted as though they were.
@@ -820,7 +820,7 @@ async def test_repeated_writes_are_idempotent(tmp_path) -> None:
     await store.close()
 
 
-# ─── Persistent measurement loss escalates (ori-platform/ori-runtime#510) ──────
+# ─── Persistent measurement loss escalates ──────────────────────────────────
 
 
 class _EscalationHarness:

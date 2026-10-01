@@ -304,9 +304,8 @@ class TestTheGeneratedSourceIsAdmittedBeforeItIsRead:
     """The install path reads a document it did not write, like the loader does.
 
     It read the whole file and measured it afterwards, which bounds nothing,
-    and it followed a symlink and would have blocked on a FIFO. Found while
-    closing ori-platform/ori-runtime#520 for the runtime loader; the same hole
-    in the entry point that *installs* `ori.yaml` is fixed with the same
+    and it followed a symlink and would have blocked on a FIFO. The runtime
+    loader bounds its file admission; the same hole in the entry point that *installs* `ori.yaml` is fixed with the same
     admission, under this module's own deliberately tighter cap.
     """
 

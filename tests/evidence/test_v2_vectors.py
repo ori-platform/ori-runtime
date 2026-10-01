@@ -3,8 +3,8 @@
 
 """Reconstruct every `ori-specs/evidence/v2` vector from its documented inputs.
 
-These are the runtime's conformance fixtures for issue #326. The runtime is
-becoming a second producer of the evidence chain format, and the contract's
+These are the runtime's conformance fixtures. The runtime is
+a second producer of the evidence chain format, and the contract's
 vectors are what "producing it correctly" means, byte for byte.
 
 Nothing here imports whatever generated the vectors. Every value is rebuilt

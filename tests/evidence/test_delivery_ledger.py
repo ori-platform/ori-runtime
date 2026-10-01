@@ -827,15 +827,14 @@ PRODUCED_HERE = {
     "delivery-envelope.json",
     "checkpoint.json",
     # Registration binds this device's verification key to the epoch
-    # authorising it, and is signed by the key being registered. It was
-    # outstanding through steps 2 and 3, and is produced as of #350.
+    # authorising it, and is signed by the key being registered.
     "anchor-registration-v2.json",
 }
 
 RUNTIME_PRODUCER_OUTSTANDING: set[str] = set()
 
-# Received by the runtime and verified on ingest, step 4.
-STEP_FOUR_INGEST_VECTORS = {
+# Received by the runtime and verified on ingest.
+INGEST_VERIFIED_VECTORS = {
     "delivery-receipt-v2.json",
     "epoch-confirmation-v2.json",
     "custody-acknowledgement.json",
@@ -867,7 +866,7 @@ def test_every_exchange_vector_is_claimed_by_an_owner():
     claimed = (
         PRODUCED_HERE
         | RUNTIME_PRODUCER_OUTSTANDING
-        | STEP_FOUR_INGEST_VECTORS
+        | INGEST_VERIFIED_VECTORS
         | NOT_RUNTIME_ARTIFACTS
         | RECEIVED_BEHIND_A_SEAM
         | COURIER_PROJECTIONS
@@ -883,7 +882,7 @@ def test_the_owner_sets_do_not_overlap():
     sets = [
         PRODUCED_HERE,
         RUNTIME_PRODUCER_OUTSTANDING,
-        STEP_FOUR_INGEST_VECTORS,
+        INGEST_VERIFIED_VECTORS,
         NOT_RUNTIME_ARTIFACTS,
         RECEIVED_BEHIND_A_SEAM,
         COURIER_PROJECTIONS,
@@ -1066,7 +1065,7 @@ def test_the_verified_transitions_are_not_a_public_boundary():
 
     Neither method can check what it is told — the signature, purpose, range
     and digest verification that makes a custody or receipt claim meaningful
-    belongs to step 4. A public unverified route into the same state would make
+    belongs to ingest. A public unverified route into the same state would make
     that verification optional in practice.
     """
     public = {name for name in dir(EvidenceDeliveryLedger) if not name.startswith("_")}

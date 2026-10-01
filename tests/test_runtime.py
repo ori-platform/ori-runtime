@@ -1,7 +1,7 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for ori/runtime.py — Step 20.
+"""Tests for ori/runtime.py, the event loop that ties the layers together.
 
 All external dependencies (HAL adapters, WhatsApp, SMS, relay, LocalLLM)
 are mocked.  No real hardware, credentials, or network calls are made.
@@ -5161,7 +5161,7 @@ class TestAlertOutbox:
     async def test_a_sensor_refusing_its_windows_degrades_the_device(self, tmp_path):
         """Connected and not measuring is not healthy.
 
-        The per-sensor field has carried this since #508, but the aggregate
+        The per-sensor field carries this, but the aggregate
         `status` a fleet view keys on did not, so a device withholding every
         window read green. A sensor that never connected already degrades for
         the reason that applies here word for word: something it was told to

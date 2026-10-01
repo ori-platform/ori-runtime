@@ -5503,9 +5503,9 @@ def test_relay_polarity_is_refused_from_the_provisioning_document(tmp_path):
 class TestHostileDocumentIsRefused:
     """`Config.load` answers a malformed document with a refusal, never a traceback.
 
-    Every case here reached the caller as a raw interpreter error before
-    ori-platform/ori-runtime#505: the component that exists to turn a bad
-    document into a clear refusal was not the one answering.
+    Every case here must reach the caller as a refusal naming the file, never
+    as a raw interpreter error: the loader exists to turn a bad document into a
+    clear refusal.
     """
 
     def _load(self, tmp_path, content: str):
@@ -5514,7 +5514,7 @@ class TestHostileDocumentIsRefused:
         return Config.load(str(path))
 
     def test_the_issues_own_reproducer_is_refused_naming_the_file(self, tmp_path):
-        """#505's headline shape: a 5000-digit integer literal."""
+        """The headline shape: a 5000-digit integer literal."""
         with pytest.raises(ConfigValidationError) as excinfo:
             self._load(
                 tmp_path,
@@ -5538,7 +5538,7 @@ class TestHostileDocumentIsRefused:
     def test_a_constructor_failure_that_is_not_the_digit_limit_is_also_refused(
         self, tmp_path
     ):
-        """Not the two shapes #505 named: `datetime` refuses this one, not `int`."""
+        """Not an integer literal: `datetime` refuses this one, not `int`."""
         with pytest.raises(ConfigValidationError) as excinfo:
             self._load(tmp_path, "device:\n  id: x\n  t: 2026-13-45T99:99:99\n")
         assert "ori.yaml" in str(excinfo.value)
@@ -5609,8 +5609,8 @@ class TestHostileDocumentIsRefused:
     ):
         """The backstop, asserted rather than assumed.
 
-        #505 asks for the parse step to be wrapped rather than the two known
-        shapes special-cased. The bounds and the constructor mark cover every
+        The parse step is wrapped rather than the two known shapes
+        special-cased. The bounds and the constructor mark cover every
         shape reachable today, which leaves the general guard untested unless
         the parser is made to raise something none of them classify.
 
@@ -5790,7 +5790,7 @@ class TestHostileDocumentIsRefused:
     ):
         """`PYTHONINTMAXSTRDIGITS=0` removes the interpreter's own limit.
 
-        #505's headline reproducer is a 5000-digit integer, which the
+        The headline reproducer is a 5000-digit integer, which the
         interpreter refuses only while that limit is in force and only for
         decimal. The loader's own bound has to be what refuses it.
         """
@@ -5799,7 +5799,7 @@ class TestHostileDocumentIsRefused:
                 self._load(tmp_path, f"device:\n  id: x\n  k: {literal}\n")
 
     def test_a_value_that_no_conversion_accepts_is_refused_not_raised(self, tmp_path):
-        """The defect #505 names, one step past the parse it was found in.
+        """The same defect, one step past the parse it was found in.
 
         `device.rated_capacity_amps` is the Tier D threshold input, and it is
         read through `float()`. A 309-digit integer parses cleanly and then
@@ -5864,7 +5864,7 @@ class TestHostileDocumentIsRefused:
 
 
 class TestEnvironmentExpansionCannotRewriteTheDocument:
-    """ori-platform/ori-runtime#518.
+    """Environment expansion cannot rewrite the signed document.
 
     The signature was verified over the document as written, and the document
     the runtime built from was a textual substitution of it. A value carrying
@@ -6185,7 +6185,7 @@ class TestEnvironmentExpansionCannotRewriteTheDocument:
 
 
 class TestNoShippedGeneratorEmitsAPlaceholderInKeyPosition:
-    """#518 requires the config-generating paths be checked before this lands.
+    """The config-generating paths are checked for key-position placeholders.
 
     A placeholder is no longer expanded in key position, so a generator that
     emitted one would produce a document whose key stays literal. Nothing in
@@ -6247,7 +6247,7 @@ class TestNoShippedGeneratorEmitsAPlaceholderInKeyPosition:
 
 
 class TestDuplicateKeysAreRefused:
-    """ori-platform/ori-runtime#519."""
+    """A mapping with a duplicate key is refused."""
 
     def _load(self, tmp_path, content: str):
         path = tmp_path / "ori.yaml"
@@ -6287,7 +6287,7 @@ class TestDuplicateKeysAreRefused:
 
 
 class TestFileAdmissionIsBounded:
-    """ori-platform/ori-runtime#520.
+    """The file is admitted under bounds before it is read.
 
     The bounds the loader applies begin after the text is in memory. Getting
     it there was unbounded, and all of it happens before signature
@@ -6403,10 +6403,10 @@ class TestFileAdmissionIsBounded:
 
 
 class TestSiblingReadersDoNotEscape:
-    """ori-platform/ori-runtime#521.
+    """Other readers of `ori.yaml` refuse what the loader refuses.
 
     Three other readers of `ori.yaml` parsed it independently and caught only
-    `yaml.YAMLError`, so #505's reproducer escaped all three.
+    `yaml.YAMLError`, so the 5000-digit integer escaped all three.
     """
 
     _HOSTILE = "device:\n  id: x\n  rated_capacity_amps: " + "9" * 5000 + "\n"

@@ -196,7 +196,7 @@ async def run_runtime_full_startup(runtime: Any, *, timeout: float = 15.0) -> No
 
 SLOW_STARTUP_PROBE_ENV = "ORI_SLOW_STARTUP_PROBE"
 
-# Opt-in harness for the fix in ori-platform/ori-runtime#468. A test that waits
+# Opt-in harness for slow startup. A test that waits
 # for a state rather than an interval must keep passing when startup is slower
 # than the interval it used to guess with, and a run on a fast machine is not
 # evidence of that:

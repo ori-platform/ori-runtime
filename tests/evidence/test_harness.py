@@ -941,7 +941,7 @@ def test_the_host_block_prints_the_boot_id() -> None:
 
 
 def test_the_rollback_phase_proves_the_launcher_and_records_the_boot() -> None:
-    """Issue #335 asks for two things beyond restoration: the launcher, which
+    """Two things beyond restoration: the launcher, which
     resolves at execution time, must reach the restored release, and a later
     reboot must be provable against the rollback rather than the install."""
     rollback = _phase("rollback")

@@ -6,7 +6,7 @@
 `ori.yaml.example` configured a serial sensor with `baud_rate`, and
 `SerialAdapter` read `baudrate`. The key was silently dropped and the port
 opened at the adapter's default, which looked correct only because the
-example's value happened to equal that default (ori-runtime #411).
+example's value happened to equal that default.
 
 A key the runtime discards reads, to whoever wrote it, as a setting that took
 effect. So these tests assert on the rate the serial library was actually

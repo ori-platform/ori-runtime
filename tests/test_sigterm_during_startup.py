@@ -304,7 +304,7 @@ async def _start_with_signal_at(
 
     The trace records every startup step that ran after the signal and the
     moment the state store was closed. A teardown that overlapped startup
-    would put the close before a step, which is the failure #530 describes and
+    would put the close before a step, which is the failure under test and
     the one a test calling private helpers cannot see.
     """
     trace: list[str] = []

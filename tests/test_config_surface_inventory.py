@@ -290,7 +290,7 @@ def real_coverage() -> dict:
 def test_real_coverage_credits_baud_rate_to_both_serial_adapters(
     real_coverage: dict,
 ) -> None:
-    """ori-runtime #411, after the fix: one spelling, read by both adapters.
+    """The serial baud key: one spelling, read by both adapters.
 
     The extractor sees a key only where an adapter reads it literally, so this
     assertion is what keeps the shared resolver from hiding its own inputs. An

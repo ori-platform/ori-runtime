@@ -309,7 +309,7 @@ class TestSelectTier:
 
     async def test_fresh_capability_posture_is_used_without_probe(self):
         # Verify gateway_reachable=False + local_slm_loaded=True → local_slm
-        # with no internet probe. The internet gate was removed in issue #145:
+        # with no internet probe. There is no internet gate:
         # an air-gapped site with a reachable gateway must still escalate.
         conf = type("obj", (object,), {})()
         elevator = IntelligenceElevator(config=conf)
@@ -330,9 +330,9 @@ class TestSelectTier:
 
     async def test_gateway_selected_on_airgapped_site(self):
         # Air-gapped site: gateway is on LAN but there is no internet.
-        # Before issue #145 the internet gate (_is_offline_async) would block
-        # gateway escalation here, falling back to local_slm incorrectly.
-        # The correct behaviour: gateway_available=True → "gateway", regardless
+        # An internet gate would block gateway escalation here and fall back
+        # to local_slm incorrectly. The correct behaviour:
+        # gateway_available=True → "gateway", regardless
         # of internet_available.
         elevator = IntelligenceElevator()
         skill = FakeSkill(

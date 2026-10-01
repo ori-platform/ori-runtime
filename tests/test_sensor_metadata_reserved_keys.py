@@ -6,7 +6,7 @@
 `runtime.py` injects the sensor's identity and the HAL circuit-breaker settings
 into the dict handed to `adapter.connect()`. Those names were not in the
 first-class set `_parse_sensors` withholds, and metadata was spread last, so a
-sensor entry could overwrite them (ori-runtime #416).
+sensor entry could overwrite them.
 
 Two consequences made this a safety defect rather than an untidiness. A sensor
 could raise `failure_threshold` to a value its adapter would never reach,
@@ -232,7 +232,8 @@ def test_every_reserved_key_is_actually_supplied_by_the_assembly() -> None:
     """The reserved set and what the runtime supplies must not drift apart.
 
     A name reserved at load but no longer supplied would refuse a key for a
-    reason that stopped being true; one supplied but not reserved is #416 again.
+    reason that stopped being true; one supplied but not reserved lets metadata
+    overwrite what the runtime supplies.
     """
     assert RESERVED_SENSOR_METADATA_KEYS <= set(
         adapter_connect_config(_poisoned(), _config())

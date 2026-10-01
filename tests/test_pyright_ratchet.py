@@ -311,7 +311,7 @@ def test_ci_gates_every_tree_the_ratchet_counts_at_zero() -> None:
 
 
 def test_ci_gates_the_test_tree_with_mypy_rather_than_a_ratchet() -> None:
-    """The explicit decision #532 asks for, asserted where it is enforced.
+    """The test tree is gated by mypy at zero, asserted where it is enforced.
 
     mypy is already clean over both trees, so it takes a gate at zero instead
     of a baseline. A ratchet exists to hold a number that cannot yet be zero;

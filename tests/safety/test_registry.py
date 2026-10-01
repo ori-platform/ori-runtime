@@ -655,7 +655,7 @@ def _entry(registry, zone_id: str = "main-distribution") -> dict:
 
 
 def _backend_answers_drivable(monkeypatch) -> None:
-    """Stand in for the non-actuating seam member tracked on #482.
+    """Stand in for the non-actuating seam member not yet implemented.
 
     Everything else in the conjunction is live code today. Without this the
     claim would be `unprotected` for one reason in every case and the other

@@ -1160,7 +1160,7 @@ def test_a_conditional_is_satisfied_by_the_siblings_fallback() -> None:
         )
 
 
-# ── ori-specs#118: conditional cycles, direct and indirect ──────────────────
+# ── Conditional cycles, direct and indirect ─────────────────────────────────
 
 
 def _conditional(**deps: Any) -> dict:

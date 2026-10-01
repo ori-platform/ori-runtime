@@ -342,7 +342,7 @@ def test_every_scenario_declares_activation_counts():
     """No scenario may opt out of the ever-active assertion.
 
     Without this, a scenario could quietly drop the field and stop
-    checking the property #245 exists to protect.
+    checking the ever-active property.
     """
     for s in VECTORS["scenarios"]:
         assert "activation_counts" in s["final_state"], s["name"]

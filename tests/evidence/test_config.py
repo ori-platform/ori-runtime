@@ -291,7 +291,7 @@ class TestCustodyKeysReachTheIngestPath:
     def test_the_attestor_verifies_under_the_custody_secret_not_the_envelope_one(
         self, tmp_path, monkeypatch
     ) -> None:
-        """The regression #371 needed, driven through the real constructor."""
+        """The device-secret regression, driven through the real constructor."""
         monkeypatch.setenv("ORI_TEST_DEVICE_SECRET", "a-random-install-secret")
         monkeypatch.setenv("ORI_TEST_ENVELOPE", self.ENVELOPE)
         monkeypatch.setenv("ORI_TEST_CUSTODY", self.CUSTODY)

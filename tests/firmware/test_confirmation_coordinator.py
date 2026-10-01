@@ -1,8 +1,7 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 """The runtime-owned cross-store confirmation coordinator: push to the evidence store,
-read back the active anchor_epoch_id, and resolve the outbox obligation
-(ori-runtime#250)."""
+read back the active anchor_epoch_id, and resolve the outbox obligation."""
 
 from __future__ import annotations
 

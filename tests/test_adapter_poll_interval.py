@@ -6,7 +6,7 @@
 `_parse_sensors` lifts `poll_interval_ms` out of metadata into `SensorConfig`,
 and the runtime did not put it back when assembling an adapter's connection
 config. `CoapAdapter` and `HttpAdapter` read it anyway, so the read always
-returned their own default (ori-runtime #417).
+returned their own default.
 
 That is not only a setting that failed to apply. Both adapters run a background
 loop that refreshes a cache, and `read()` serves that cache. The runtime polls
@@ -176,7 +176,7 @@ def test_smart_adapter_no_longer_reads_an_interval_it_ignores() -> None:
 
 
 def test_no_adapter_directly_reads_a_key_the_assembly_never_supplies() -> None:
-    """The general form of #417, for reads this can actually see.
+    """The general form of a dropped adapter key, for reads this can see.
 
     Every key an adapter reads must be one an operator can set in sensor
     metadata, or one the runtime supplies. A key in neither set resolves to the
@@ -185,14 +185,14 @@ def test_no_adapter_directly_reads_a_key_the_assembly_never_supplies() -> None:
     **This does not close the class.** `adapter_metadata()` finds literal
     `config.get(...)` calls inside adapter classes and nothing else, so a
     setting an adapter resolves through a shared helper is invisible to it.
-    That limitation is not hypothetical: it appeared during #411, when moving
+    That limitation is not hypothetical: moving
     baud resolution into a helper made both serial adapters look as though they
     read nothing, and it is why those adapters pass presence and values into
     the resolver explicitly rather than handing it the config dict.
 
     So this catches the next *direct* instance. A helper-resolved one needs
-    either a stronger extractor or the same explicit-read discipline #411
-    adopted.
+    either a stronger extractor or the same explicit-read discipline the
+    serial adapters adopted.
     """
     from tests.golden.build_config_surface_inventory import adapter_metadata
 

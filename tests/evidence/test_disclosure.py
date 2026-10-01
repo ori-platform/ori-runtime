@@ -725,7 +725,7 @@ def _mentions(haystack: str, terms: Sequence[str]) -> bool:
 # `VENDORED_IMPLEMENTATION` matches names shaped like an evidence
 # implementation, and until the runtime produced chain rows itself, every such
 # name in the wheel was necessarily somebody else's implementation being
-# vendored in. That assumption ended with #326: the runtime is now a producer,
+# vendored in. That assumption no longer holds: the runtime is a producer,
 # and a module describing what it holds is exactly what should be there.
 #
 # The check therefore becomes a closed registry rather than a blanket refusal.
