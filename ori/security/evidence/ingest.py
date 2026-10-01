@@ -27,6 +27,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -49,6 +50,7 @@ from ori.security.evidence.custody_keys import (
 
 CUSTODY_DOMAIN = b"ori.evidence_custody_ack.v1\x00"
 RECEIPT_DOMAIN = b"ori.evidence_delivery_receipt.v1\x00"
+_SHA256_DIGEST_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
 EPOCH_DOMAIN = b"ori.evidence_epoch_confirmation.v1\x00"
 
 PURPOSE_CUSTODY = "gateway_custody"
@@ -361,15 +363,14 @@ def verify_delivery_receipt(
     *,
     device_id: str,
     registry: dict[tuple[str, str], AuthorityKey],
-    envelope_digests: dict[int, str],
+    chain_row_digests: Mapping[int, str],
 ) -> VerifiedReceipt:
     """Prove the authority recorded exactly the range it claims.
 
-    The range digest is what makes the prefix claim checkable: it covers the
-    raw digests of every envelope in the closed interval, in order, so a
-    receipt cannot assert a range it did not actually receive. Recomputing it
-    locally is the difference between a receipt that says something and one
-    that merely looks signed.
+    The range digest covers the raw 32-byte `chain_row_digest` of every sealed
+    envelope in the closed interval, in ascending `local_seq` order, so a
+    receipt cannot assert a range it did not actually receive. It is not taken
+    over envelope digests: those cover the wire bytes, signature included.
     """
     parsed = _require_shape(artifact, RECEIPT_FIELDS, "delivery receipt")
     key = _select(registry, PURPOSE_RECEIPT, parsed["key_id"])
@@ -390,22 +391,32 @@ def verify_delivery_receipt(
         )
 
     missing = [
-        seq for seq in range(from_seq, to_seq + 1) if seq not in envelope_digests
+        seq for seq in range(from_seq, to_seq + 1) if seq not in chain_row_digests
     ]
     if missing:
         raise IngestRejectedError(
             REJECT_UNKNOWN_SEQUENCE,
             f"the receipt covers {len(missing)} sequences this device never sealed",
         )
+    unreadable = [
+        seq
+        for seq in range(from_seq, to_seq + 1)
+        if not _SHA256_DIGEST_RE.fullmatch(str(chain_row_digests[seq]))
+    ]
+    if unreadable:
+        raise IngestRejectedError(
+            REJECT_BINDING_MISMATCH,
+            f"{len(unreadable)} sealed chain row digests in the range are unreadable",
+        )
     concatenated = b"".join(
-        bytes.fromhex(envelope_digests[seq].split("sha256:", 1)[-1])
+        bytes.fromhex(str(chain_row_digests[seq])[len("sha256:") :])
         for seq in range(from_seq, to_seq + 1)
     )
     expected = "sha256:" + hashlib.sha256(concatenated).hexdigest()
     if str(parsed["range_digest"]) != expected:
         raise IngestRejectedError(
             REJECT_BINDING_MISMATCH,
-            "the receipt range digest does not match the envelopes this device sealed",
+            "the receipt range digest does not match the chain rows this device sealed",
         )
     return VerifiedReceipt(
         device_id=str(parsed["device_id"]),

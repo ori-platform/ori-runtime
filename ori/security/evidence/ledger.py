@@ -1980,14 +1980,18 @@ class EvidenceDeliveryLedger:
         ).fetchone()
         return row
 
-    def envelope_digests(self, from_seq: int, to_seq: int) -> dict[int, str]:
-        """Digests for a closed interval, for checking a receipt's range claim."""
+    def chain_row_digests(self, from_seq: int, to_seq: int) -> dict[int, str]:
+        """Each sealed envelope's `chain_row_digest`, as written at seal, for a range.
+
+        What a receipt's range digest is taken over. The column is immutable
+        once sealed, so this is the value the authority verified.
+        """
         rows = self._connection.execute(
-            "SELECT local_seq, envelope_digest FROM evidence_delivery_ledger"
+            "SELECT local_seq, chain_row_digest FROM evidence_delivery_ledger"
             " WHERE local_seq BETWEEN ? AND ?",
             (int(from_seq), int(to_seq)),
         )
-        return {int(r["local_seq"]): str(r["envelope_digest"]) for r in rows}
+        return {int(r["local_seq"]): str(r["chain_row_digest"]) for r in rows}
 
     def _require_sealed(self, local_seq: int) -> sqlite3.Row:
         """Refuse to act on a sequence this ledger never allocated.

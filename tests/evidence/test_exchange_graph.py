@@ -31,7 +31,7 @@ VECTORS = pathlib.Path(__file__).resolve().parent.parent / "vectors"
 #: Raising this is intentional friction. The count only moves when a rule is
 #: added or removed, and a silent drop means the corpus stopped proving
 #: something it used to.
-MINIMUM_CHECKS = 62
+MINIMUM_CHECKS = 65
 
 
 def test_the_exchange_graph_reconstructs_from_the_contracts() -> None:

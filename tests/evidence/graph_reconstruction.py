@@ -255,6 +255,23 @@ def reconstruct() -> tuple[int, list[str]]:
         fail("receipt range is inverted")
     else:
         ok()
+    rows_by_seq = {
+        c["artifact"]["local_seq"]: c["artifact"]["chain_row"]
+        for c in env_doc["cases"]
+        if c["name"] in ("valid", "reordered_batch")
+    }
+    try:
+        raw_rows = b"".join(
+            hashlib.sha256(rows_by_seq[s]["canonical_json"].encode("utf-8")).digest()
+            for s in range(rc_valid["from_seq"], rc_valid["to_seq"] + 1)
+        )
+    except KeyError:
+        fail("the receipt range names a sequence the envelope corpus does not hold")
+    else:
+        if rc_valid["range_digest"] != "sha256:" + hashlib.sha256(raw_rows).hexdigest():
+            fail("range_digest is not sha256 over the raw chain row digests")
+        else:
+            ok()
 
     # ---- 7. every declared authenticator posture is independently true ---------
     for name in (

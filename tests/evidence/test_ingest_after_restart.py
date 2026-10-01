@@ -163,9 +163,14 @@ class Site:
 
     def receipt(self, from_seq: int, to_seq: int, *, accepted_at_ms: int) -> dict:
         assert self.ledger is not None
-        digests = self.ledger.envelope_digests(from_seq, to_seq)
+        # The contract's range: raw chain row digests, read from the sealed
+        # envelopes the authority receives rather than from the ledger's query.
         raw = b"".join(
-            bytes.fromhex(digests[s].split("sha256:")[1])
+            bytes.fromhex(
+                json.loads(str(self.envelope(s)["envelope_json"]))[
+                    "chain_row_digest"
+                ].removeprefix("sha256:")
+            )
             for s in range(from_seq, to_seq + 1)
         )
         return _sign(

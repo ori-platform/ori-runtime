@@ -165,7 +165,7 @@ class EvidenceIngestService:
         from_seq = _int_field(artifact, "from_seq")
         to_seq = _int_field(artifact, "to_seq")
         digests = (
-            self._ledger.envelope_digests(from_seq, to_seq)
+            self._ledger.chain_row_digests(from_seq, to_seq)
             if from_seq is not None and to_seq is not None and to_seq >= from_seq
             else {}
         )
@@ -174,7 +174,7 @@ class EvidenceIngestService:
                 artifact,
                 device_id=self._device_id,
                 registry=self._registry,
-                envelope_digests=digests,
+                chain_row_digests=digests,
             )
         except IngestRejectedError as exc:
             return self._refuse("delivery_receipt", exc)
