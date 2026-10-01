@@ -57,33 +57,40 @@ PURPOSE_CUSTODY = "gateway_custody"
 
 ARTIFACT_VERSION = 1
 
-CUSTODY_FIELDS = frozenset(
-    {"v", "device_id", "local_seq", "envelope_digest", "custody_at_ms", "key_id", "mac"}
-)
-RECEIPT_FIELDS = frozenset(
-    {
-        "v",
-        "device_id",
-        "from_seq",
-        "to_seq",
-        "range_digest",
-        "accepted_at_ms",
-        "key_id",
-        "signature",
-    }
-)
-EPOCH_FIELDS = frozenset(
-    {
-        "v",
-        "device_id",
-        "anchor_epoch_id",
-        "pubkey_hex",
-        "actor",
-        "confirmed_at_ms",
-        "key_id",
-        "signature",
-    }
-)
+#: Every field each authority artifact defines, with its exact JSON type. The
+#: required set is these keys, so a field cannot be required without a type.
+CUSTODY_SHAPE: Mapping[str, type] = {
+    "v": int,
+    "device_id": str,
+    "local_seq": int,
+    "envelope_digest": str,
+    "custody_at_ms": int,
+    "key_id": str,
+    "mac": str,
+}
+RECEIPT_SHAPE: Mapping[str, type] = {
+    "v": int,
+    "device_id": str,
+    "from_seq": int,
+    "to_seq": int,
+    "range_digest": str,
+    "accepted_at_ms": int,
+    "key_id": str,
+    "signature": str,
+}
+EPOCH_SHAPE: Mapping[str, type] = {
+    "v": int,
+    "device_id": str,
+    "anchor_epoch_id": str,
+    "pubkey_hex": str,
+    "actor": str,
+    "confirmed_at_ms": int,
+    "key_id": str,
+    "signature": str,
+}
+CUSTODY_FIELDS = frozenset(CUSTODY_SHAPE)
+RECEIPT_FIELDS = frozenset(RECEIPT_SHAPE)
+EPOCH_FIELDS = frozenset(EPOCH_SHAPE)
 
 # Why an artifact was refused. A closed set for the same reason delivery
 # failure reasons are: this is recorded where an operator can read it, and a
@@ -99,19 +106,24 @@ REJECT_UNKNOWN_SEQUENCE = "unknown_sequence"
 REJECT_BINDING_MISMATCH = "binding_mismatch"
 REJECT_NON_CONTIGUOUS = "non_contiguous_range"
 
-#: Every `int` field each authority artifact defines. JSON has no separate
-#: boolean-as-integer, and Python's `True == 1` would otherwise read `"v": true`
-#: as version 1.
-CUSTODY_INTEGERS = frozenset({"v", "local_seq", "custody_at_ms"})
-RECEIPT_INTEGERS = frozenset({"v", "from_seq", "to_seq", "accepted_at_ms"})
-EPOCH_INTEGERS = frozenset({"v", "confirmed_at_ms"})
 #: The contract's integer zone.
 MAX_JSON_INTEGER = 9007199254740991
 
 
 def is_json_integer(value: object) -> bool:
-    """An `int` and not a `bool`, inside the contract's integer zone."""
+    """An `int` and not a `bool`, inside the contract's integer zone.
+
+    Python's `True == 1` would otherwise read `"v": true` as version 1.
+    """
     return type(value) is int and -MAX_JSON_INTEGER <= value <= MAX_JSON_INTEGER
+
+
+def _has_type(value: object, expected: type) -> bool:
+    if expected is int:
+        return is_json_integer(value)
+    if expected is str:
+        return type(value) is str
+    return False
 
 
 #: A disposition whose effect is already in force.
@@ -174,26 +186,31 @@ class VerifiedEpochConfirmation:
 
 
 def _require_shape(
-    artifact: Any, fields: frozenset[str], integers: frozenset[str], label: str
+    artifact: Any, shape: Mapping[str, type], label: str
 ) -> dict[str, Any]:
     if not isinstance(artifact, dict):
         raise IngestRejectedError(REJECT_MALFORMED, f"the {label} is not an object")
     present = set(artifact)
-    if present != set(fields):
+    if present != set(shape):
         raise IngestRejectedError(
             REJECT_MALFORMED,
-            f"the {label} carries {sorted(present - set(fields))} and is missing "
-            f"{sorted(set(fields) - present)}",
+            f"the {label} carries {sorted(present - set(shape))} and is missing "
+            f"{sorted(set(shape) - present)}",
         )
-    wrong = sorted(name for name in integers if not is_json_integer(artifact[name]))
+    # Exact JSON types before any field is read, so nothing below coerces.
+    wrong = sorted(
+        name
+        for name, expected in shape.items()
+        if not _has_type(artifact[name], expected)
+    )
     if wrong:
         raise IngestRejectedError(
-            REJECT_MALFORMED, f"the {label} carries non-integer {wrong}"
+            REJECT_MALFORMED, f"the {label} carries {wrong} of the wrong JSON type"
         )
     # Version is checked before anything else is trusted: an unrecognised
     # version means the rest of the object is not this contract's to interpret,
     # and guessing at it is how a future field gets silently ignored.
-    if artifact.get("v") != ARTIFACT_VERSION:
+    if artifact["v"] != ARTIFACT_VERSION:
         raise IngestRejectedError(
             REJECT_UNRECOGNISED_VERSION,
             f"the {label} declares version {artifact.get('v')!r}",
@@ -213,8 +230,7 @@ def _signing_bytes(
         ) from exc
 
 
-def _decode_ed25519(wire: Any) -> bytes:
-    text = str(wire)
+def _decode_ed25519(text: str) -> bytes:
     if not text.startswith("ed25519:"):
         raise IngestRejectedError(
             REJECT_MALFORMED, "a signature must carry exactly one 'ed25519:' prefix"
@@ -238,10 +254,10 @@ def _decode_ed25519(wire: Any) -> bytes:
 
 
 def _select(
-    registry: dict[tuple[str, str], AuthorityKey], purpose: str, key_id: Any
+    registry: dict[tuple[str, str], AuthorityKey], purpose: str, key_id: str
 ) -> AuthorityKey:
     try:
-        return select_verifying_key(registry, purpose, str(key_id))
+        return select_verifying_key(registry, purpose, key_id)
     except AuthorityKeyError as exc:
         # Named at each branch rather than computed into a variable, so every
         # call site states its reason literally and can be checked statically.
@@ -304,15 +320,13 @@ def verify_custody_acknowledgement(
     authenticated this" unanswerable afterwards -- and during a rotation it
     would silently accept under the wrong generation.
     """
-    parsed = _require_shape(
-        artifact, CUSTODY_FIELDS, CUSTODY_INTEGERS, "custody acknowledgement"
-    )
+    parsed = _require_shape(artifact, CUSTODY_SHAPE, "custody acknowledgement")
 
     # Shape before registry: an identifier that cannot name any generation is
     # malformed, which is a different fact from one that is well formed and not
     # held. Comparison is byte-exact, so uppercase hex is malformed rather than
     # equivalent.
-    key_id = str(parsed["key_id"])
+    key_id = parsed["key_id"]
     if not is_well_formed_key_id(key_id):
         raise IngestRejectedError(
             REJECT_MALFORMED, "a custody key_id must be hkdf-sha256 with 32 hex digits"
@@ -346,7 +360,7 @@ def verify_custody_acknowledgement(
     # never a candidate authenticator, so reporting it as a failed
     # authentication sends an operator hunting a key mismatch that does not
     # exist. Checking only the prefix would let every one of those through.
-    mac_wire = str(parsed["mac"])
+    mac_wire = parsed["mac"]
     if not CUSTODY_MAC_RE.fullmatch(mac_wire):
         raise IngestRejectedError(
             REJECT_MALFORMED,
@@ -362,25 +376,25 @@ def verify_custody_acknowledgement(
             "the custody MAC does not verify under the generation its key_id names",
         )
 
-    if str(parsed["device_id"]) != device_id:
+    if parsed["device_id"] != device_id:
         raise IngestRejectedError(
             REJECT_BINDING_MISMATCH, "the custody names another device"
         )
-    if int(parsed["local_seq"]) != int(expected_local_seq):
+    if parsed["local_seq"] != int(expected_local_seq):
         raise IngestRejectedError(
             REJECT_UNKNOWN_SEQUENCE, "the custody names another envelope"
         )
-    if str(parsed["envelope_digest"]) != expected_digest:
+    if parsed["envelope_digest"] != expected_digest:
         raise IngestRejectedError(
             REJECT_BINDING_MISMATCH,
             "the custody digest does not match the envelope this device sealed",
         )
     return VerifiedCustody(
-        device_id=str(parsed["device_id"]),
-        local_seq=int(parsed["local_seq"]),
-        envelope_digest=str(parsed["envelope_digest"]),
-        custody_at_ms=int(parsed["custody_at_ms"]),
-        key_id=str(parsed["key_id"]),
+        device_id=parsed["device_id"],
+        local_seq=parsed["local_seq"],
+        envelope_digest=parsed["envelope_digest"],
+        custody_at_ms=parsed["custody_at_ms"],
+        key_id=parsed["key_id"],
     )
 
 
@@ -398,21 +412,19 @@ def verify_delivery_receipt(
     receipt cannot assert a range it did not actually receive. It is not taken
     over envelope digests: those cover the wire bytes, signature included.
     """
-    parsed = _require_shape(
-        artifact, RECEIPT_FIELDS, RECEIPT_INTEGERS, "delivery receipt"
-    )
+    parsed = _require_shape(artifact, RECEIPT_SHAPE, "delivery receipt")
     key = _select(registry, PURPOSE_RECEIPT, parsed["key_id"])
     signature = _decode_ed25519(parsed["signature"])
     _verify_ed25519(
         key, signature, _signing_bytes(parsed, "signature", RECEIPT_DOMAIN), "receipt"
     )
 
-    if str(parsed["device_id"]) != device_id:
+    if parsed["device_id"] != device_id:
         raise IngestRejectedError(
             REJECT_BINDING_MISMATCH, "the receipt names another device"
         )
 
-    from_seq, to_seq = int(parsed["from_seq"]), int(parsed["to_seq"])
+    from_seq, to_seq = parsed["from_seq"], parsed["to_seq"]
     if from_seq < 1 or to_seq < from_seq:
         raise IngestRejectedError(
             REJECT_NON_CONTIGUOUS, "the receipt range is not a closed interval"
@@ -451,19 +463,19 @@ def verify_delivery_receipt(
         bytes.fromhex(str(chain_row_digests[seq])[len("sha256:") :]) for seq in held
     )
     expected = "sha256:" + hashlib.sha256(concatenated).hexdigest()
-    if str(parsed["range_digest"]) != expected:
+    if parsed["range_digest"] != expected:
         raise IngestRejectedError(
             REJECT_BINDING_MISMATCH,
             "the receipt range digest does not match the chain rows this device sealed",
         )
     return VerifiedReceipt(
-        device_id=str(parsed["device_id"]),
+        device_id=parsed["device_id"],
         from_seq=from_seq,
         to_seq=to_seq,
         sequences=tuple(held),
-        range_digest=str(parsed["range_digest"]),
-        accepted_at_ms=int(parsed["accepted_at_ms"]),
-        key_id=str(parsed["key_id"]),
+        range_digest=parsed["range_digest"],
+        accepted_at_ms=parsed["accepted_at_ms"],
+        key_id=parsed["key_id"],
     )
 
 
@@ -481,9 +493,7 @@ def verify_epoch_confirmation(
     device's anchor would advance this one's epoch — which is the substitution
     the whole `(purpose, key_id)` and device-binding apparatus exists to stop.
     """
-    parsed = _require_shape(
-        artifact, EPOCH_FIELDS, EPOCH_INTEGERS, "epoch confirmation"
-    )
+    parsed = _require_shape(artifact, EPOCH_SHAPE, "epoch confirmation")
     key = _select(registry, PURPOSE_EPOCH, parsed["key_id"])
     signature = _decode_ed25519(parsed["signature"])
     _verify_ed25519(
@@ -493,22 +503,22 @@ def verify_epoch_confirmation(
         "epoch confirmation",
     )
 
-    if str(parsed["device_id"]) != device_id:
+    if parsed["device_id"] != device_id:
         raise IngestRejectedError(
             REJECT_BINDING_MISMATCH, "the confirmation names another device"
         )
-    if str(parsed["pubkey_hex"]).lower() != expected_pubkey_hex.lower():
+    if parsed["pubkey_hex"].lower() != expected_pubkey_hex.lower():
         raise IngestRejectedError(
             REJECT_BINDING_MISMATCH,
             "the confirmation names a verification key that is not this device's",
         )
-    if not str(parsed["anchor_epoch_id"]):
+    if not parsed["anchor_epoch_id"]:
         raise IngestRejectedError(REJECT_MALFORMED, "the confirmation names no epoch")
     return VerifiedEpochConfirmation(
-        device_id=str(parsed["device_id"]),
-        anchor_epoch_id=str(parsed["anchor_epoch_id"]),
-        pubkey_hex=str(parsed["pubkey_hex"]),
-        actor=str(parsed["actor"]),
-        confirmed_at_ms=int(parsed["confirmed_at_ms"]),
-        key_id=str(parsed["key_id"]),
+        device_id=parsed["device_id"],
+        anchor_epoch_id=parsed["anchor_epoch_id"],
+        pubkey_hex=parsed["pubkey_hex"],
+        actor=parsed["actor"],
+        confirmed_at_ms=parsed["confirmed_at_ms"],
+        key_id=parsed["key_id"],
     )

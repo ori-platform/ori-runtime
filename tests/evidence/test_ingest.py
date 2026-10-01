@@ -38,6 +38,12 @@ from ori.security.evidence.custody_keys import (
     derive_custody_key_id,
 )
 from ori.security.evidence.ingest import (
+    CUSTODY_FIELDS,
+    CUSTODY_SHAPE,
+    EPOCH_FIELDS,
+    EPOCH_SHAPE,
+    RECEIPT_FIELDS,
+    RECEIPT_SHAPE,
     REJECT_BAD_AUTHENTICATOR,
     REJECT_BINDING_MISMATCH,
     REJECT_MALFORMED,
@@ -50,6 +56,7 @@ from ori.security.evidence.ingest import (
     REJECT_UNRECOGNISED_VERSION,
     REJECT_WRONG_PURPOSE,
     IngestRejectedError,
+    _require_shape,
     verify_custody_acknowledgement,
     verify_delivery_receipt,
     verify_epoch_confirmation,
@@ -803,3 +810,36 @@ def test_the_verifiers_only_use_published_reasons():
     assert used <= REJECT_REASONS, (
         f"unpublished reasons in use: {sorted(used - REJECT_REASONS)}"
     )
+
+
+# --------------------------------------------------------------------------
+# Every field is typed
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("shape", "fields", "name"),
+    [
+        (CUSTODY_SHAPE, CUSTODY_FIELDS, "custody-acknowledgement"),
+        (RECEIPT_SHAPE, RECEIPT_FIELDS, "delivery-receipt-v2"),
+        (EPOCH_SHAPE, EPOCH_FIELDS, "epoch-confirmation-v2"),
+    ],
+)
+def test_every_required_field_is_classified_once_by_its_json_type(shape, fields, name):
+    """The required set is the shape's keys, and the shape matches the contract.
+
+    A field the corpus carries that the shape does not, or one the shape types
+    differently from the corpus's valid case, fails here before it can be read
+    untyped.
+    """
+    assert fields == frozenset(shape)
+    assert set(shape.values()) <= {int, str}
+    valid = case(name, "valid")["artifact"]
+    assert {k: type(v) for k, v in valid.items()} == dict(shape)
+
+
+def test_a_field_typed_outside_the_known_json_types_refuses():
+    """An unrecognised declared type fails closed rather than admitting anything."""
+    with pytest.raises(IngestRejectedError) as raised:
+        _require_shape({"v": 1, "x": 1.5}, {"v": int, "x": float}, "probe")
+    assert raised.value.reason == REJECT_MALFORMED

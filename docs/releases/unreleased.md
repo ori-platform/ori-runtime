@@ -543,11 +543,14 @@ candidate or release is cut.
   contract's integer limit held the evidence worker; it now counts the claimed
   interval and walks only the sealed rows inside it, and the applied sequences
   are those rows.
-- Integer fields of authority artifacts must be JSON integers. `"v": true` was
-  read as version 1 because Python compares `True == 1`; every `int` field of
-  a custody acknowledgement, delivery receipt and epoch confirmation, and a
-  verified disposition's `decided_at_ms`, is now refused `malformed` when it is
-  a boolean, a float, a string, or outside the contract's integer zone.
+- Every field of an authority artifact must carry its contract's exact JSON
+  type. `"v": true` was read as version 1 because Python compares
+  `True == 1`, and string fields were coerced, so a re-signed epoch
+  confirmation with `"actor": true` was accepted as actor `True`. Each custody
+  acknowledgement, delivery receipt and epoch confirmation field is now typed
+  `int` (not a boolean, inside the contract's integer zone) or `str` before
+  anything reads it, and a field of any other type is refused `malformed`; a
+  verified disposition's `decided_at_ms` is held to the same integer rule.
 - HTTP telemetry export sends the readings the runtime publishes. The poll loop
   and the firmware telemetry subscriber publish a reading as
   `sensor.<sensor_type>`, and the exporter admitted only `sensor.reading`, so a

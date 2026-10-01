@@ -366,22 +366,35 @@ def test_a_receipt_reaching_past_the_sealed_head_is_unknown_sequence(rig):
 
 
 def test_a_receipt_at_the_largest_json_integer_is_refused_promptly(rig):
-    """The signed interval's width is counted, never enumerated."""
-    import time
+    """The signed interval's width is counted, never enumerated.
+
+    An alarm interrupts an enumeration rather than letting it run for the
+    life of the suite; the ceiling is generous because the property is "does
+    not walk the interval", not a latency budget.
+    """
+    import signal
+
+    def _expired(signum, frame):
+        raise TimeoutError("the receipt interval was enumerated")
 
     _, chain, ledger, service = rig
     for n in (1, 2):
         _seal(chain, ledger, n)
-    for from_seq in (1, 3):
-        artifact = _receipt(ledger, 1, 2)
-        artifact["from_seq"], artifact["to_seq"] = from_seq, 9007199254740991
-        _sign(artifact, RECEIPT_DOMAIN, RECEIPT_SEED)
-
-        started = time.monotonic()
-        outcome = service.accept_receipt(artifact)
-        assert time.monotonic() - started < 0.5
-        assert outcome.reason == REJECT_UNKNOWN_SEQUENCE
-        assert [r["local_seq"] for r in ledger.undelivered()] == [1, 2]
+    previous = signal.signal(signal.SIGALRM, _expired)
+    try:
+        for from_seq in (1, 3):
+            artifact = _receipt(ledger, 1, 2)
+            artifact["from_seq"], artifact["to_seq"] = from_seq, 9007199254740991
+            _sign(artifact, RECEIPT_DOMAIN, RECEIPT_SEED)
+            signal.setitimer(signal.ITIMER_REAL, 5.0)
+            try:
+                outcome = service.accept_receipt(artifact)
+            finally:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+            assert outcome.reason == REJECT_UNKNOWN_SEQUENCE
+            assert [r["local_seq"] for r in ledger.undelivered()] == [1, 2]
+    finally:
+        signal.signal(signal.SIGALRM, previous)
 
 
 NOT_INTEGERS = (True, False, 1.0, "1")
@@ -424,6 +437,57 @@ def test_an_epoch_integer_of_another_json_type_is_malformed(rig, field, bad):
     artifact = _confirmation(key.public_key_hex)
     artifact[field] = bad
     _sign(artifact, EPOCH_DOMAIN, EPOCH_SEED)
+
+    outcome = service.accept_epoch_confirmation(artifact)
+    assert outcome.reason == REJECT_MALFORMED
+    assert ledger.confirmed_epoch(DEVICE) is None
+
+
+NOT_STRINGS = (None, True, 1, ["x"], {"x": "y"})
+
+
+@pytest.mark.parametrize("bad", NOT_STRINGS, ids=repr)
+@pytest.mark.parametrize("field", ["device_id", "range_digest", "key_id", "signature"])
+def test_a_receipt_string_of_another_json_type_is_malformed(rig, field, bad):
+    _, chain, ledger, service = rig
+    _seal(chain, ledger, 1)
+    artifact = _receipt(ledger, 1, 1)
+    artifact[field] = bad
+    if field != "signature":
+        _sign(artifact, RECEIPT_DOMAIN, RECEIPT_SEED)
+
+    outcome = service.accept_receipt(artifact)
+    assert outcome.reason == REJECT_MALFORMED
+    assert ledger.find_by_local_seq(1)["receipt_state"] == RECEIPT_NONE
+
+
+@pytest.mark.parametrize("bad", NOT_STRINGS, ids=repr)
+@pytest.mark.parametrize("field", ["device_id", "envelope_digest", "key_id", "mac"])
+def test_a_custody_string_of_another_json_type_is_malformed(rig, field, bad):
+    _, chain, ledger, service = rig
+    _seal(chain, ledger, 1)
+    artifact = _custody(ledger, 1)
+    artifact[field] = bad
+    if field != "mac":
+        _mac(artifact, CUSTODY_SECRET)
+
+    outcome = service.accept_custody(artifact)
+    assert outcome.reason == REJECT_MALFORMED
+    assert ledger.find_by_local_seq(1)["custody_state"] != CUSTODY_HELD
+
+
+@pytest.mark.parametrize("bad", NOT_STRINGS, ids=repr)
+@pytest.mark.parametrize(
+    "field",
+    ["device_id", "anchor_epoch_id", "pubkey_hex", "actor", "key_id", "signature"],
+)
+def test_an_epoch_string_of_another_json_type_is_malformed(rig, field, bad):
+    key, _, ledger, service = rig
+    _register(ledger, key)
+    artifact = _confirmation(key.public_key_hex)
+    artifact[field] = bad
+    if field != "signature":
+        _sign(artifact, EPOCH_DOMAIN, EPOCH_SEED)
 
     outcome = service.accept_epoch_confirmation(artifact)
     assert outcome.reason == REJECT_MALFORMED
