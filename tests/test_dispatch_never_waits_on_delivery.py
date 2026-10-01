@@ -42,7 +42,7 @@ from unittest.mock import patch
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from ori.gateway import evidence_inbound
+from ori.gateway import evidence_inbound, evidence_outbound
 from ori.gateway.evidence_inbound import (
     ARTIFACT_RECEIPT,
     INBOUND_IN_FLIGHT_BOUND,
@@ -901,6 +901,46 @@ class TestATripHasNoExecutorToWaitFor:
             assert site.subscriber is not None and site.subscriber.shed_count > 0
 
 
+class TestAFailedTripStillRaisesTheAlarm:
+    async def test_the_emergency_notice_goes_with_the_state_store_locked(
+        self, tmp_path: Path
+    ) -> None:
+        """The trip's executor fails; the independent emergency SMS is not held.
+
+        Both stores locked and the inbound flood running: neither the attempt
+        nor the notice of its failure waits on either store.
+        """
+        _pi_sized_default_executor()
+        async with _site(tmp_path) as site:
+            sent: list[float] = []
+
+            class _Sms:
+                async def send(self, message: str, *, to_number: str) -> bool:
+                    sent.append(time.monotonic())
+                    return True
+
+            site.dispatcher._emergency_sms_sender = _Sms()
+            attempted: list[float] = []
+
+            async def fails(*_a: Any, **_k: Any) -> bool:
+                attempted.append(time.monotonic())
+                return False
+
+            site.dispatcher.register_executor("trip_relay", fails)
+            await site.start_routes()
+            site.lock("state.db")
+            site.lock("evidence.db")
+            site.flood_inbound(_MALFORMED_RECEIPT)
+            await asyncio.sleep(0.2)
+            started = time.monotonic()
+            site._dispatch("current_clamp")
+            await _until(lambda: bool(sent))
+            assert attempted and attempted[0] - started < _TRIP_BOUND_S
+            assert sent, "no emergency notice"
+            assert sent[0] - started < _TRIP_BOUND_S, sent[0] - started
+            site.release()
+
+
 class TestTheDefaultExecutorIsNotTheEvidenceRoutes:
     async def test_a_flood_held_by_a_locked_store_occupies_no_shared_thread(
         self, tmp_path: Path
@@ -1058,6 +1098,11 @@ class _ManualAckClient(_Courier):
         super().__init__("silent")
         self.manual = False
         self.acked: list[int] = []
+        self.sessions = 0
+
+    def loop_start(self) -> None:
+        self.sessions += 1
+        super().loop_start()
 
     def manual_ack_set(self, on: bool) -> None:
         self.manual = on
@@ -1296,12 +1341,12 @@ class TestTheInFlightSlots:
                 raise RuntimeError("ingest failed")
 
             subscriber._router.route = broken  # type: ignore[method-assign]
-            with pytest.raises(RuntimeError):
-                await subscriber._route(client, _MALFORMED_RECEIPT, 7, 1)
+            _deliver(client, range(7, 8))
+            # The message is still the broker's: the route reconnects for it.
+            await _until(lambda: client.sessions >= 2)
             assert subscriber._in_flight == 0
             assert client.acked == []
-            assert subscriber._redeliver is not None
-            assert subscriber._redeliver.is_set()
+            assert client.sessions >= 2
 
     async def test_a_slot_is_released_when_routing_is_cancelled(
         self, tmp_path: Path
@@ -1309,36 +1354,159 @@ class TestTheInFlightSlots:
         async with _site(tmp_path) as site:
             subscriber, client = await _serving(site)
             site.lock("evidence.db")
-            task = asyncio.create_task(
-                subscriber._route(client, _MALFORMED_RECEIPT, 9, 1)
-            )
+            _deliver(client, range(9, 10))
             await _until(lambda: subscriber._in_flight == 1)
+            await asyncio.sleep(0.05)
+            (task,) = [
+                t
+                for t in asyncio.all_tasks()
+                if getattr(t.get_coro(), "__qualname__", "").endswith("._routed")
+            ]
             task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
+            await _until(lambda: subscriber._in_flight == 0)
             assert subscriber._in_flight == 0
             assert client.acked == []
-            assert subscriber._redeliver is not None
-            assert subscriber._redeliver.is_set()
+            await _until(lambda: client.sessions >= 2)
+            assert client.sessions >= 2
             site.release()
 
-    async def test_a_flood_past_the_bound_holds_nothing_behind_it(
+    async def test_a_slot_is_released_when_routing_is_cancelled_before_it_starts(
         self, tmp_path: Path
     ) -> None:
         async with _site(tmp_path) as site:
             subscriber, client = await _serving(site)
+            scheduled: list[Any] = []
+            real = asyncio.run_coroutine_threadsafe
+
+            def capture(coro: Any, loop: Any) -> Any:
+                future = real(coro, loop)
+                scheduled.append(future)
+                return future
+
+            with patch.object(asyncio, "run_coroutine_threadsafe", capture):
+                _deliver(client, range(11, 12))
+            # Still on the loop thread: the route has not started yet.
+            assert subscriber._in_flight == 1
+            (future,) = scheduled
+            future.cancel()
+            await _until(lambda: subscriber._in_flight == 0)
+            assert subscriber._in_flight == 0
+            assert client.acked == []
+
+    async def test_a_burst_schedules_nothing_past_the_bound(
+        self, tmp_path: Path
+    ) -> None:
+        """Admission is decided in the client's thread, before the loop sees it.
+
+        A trip already queued on the loop when a sustained burst arrives, while
+        the loop is briefly blocked, still runs within the bound once the loop
+        is free; and at no instant does the loop hold more routing work than
+        the bound.
+        """
+        async with _site(tmp_path) as site:
+            subscriber, client = await _serving(site)
             site.lock("evidence.db")
-            baseline = len(asyncio.all_tasks())
-            flood = 5000
-            await asyncio.to_thread(_deliver, client, range(1, flood + 1))
-            await _until(lambda: subscriber.shed_count == flood - 16)
-            await asyncio.sleep(0.05)
-            assert subscriber._in_flight == INBOUND_IN_FLIGHT_BOUND
-            assert subscriber.shed_count == flood - INBOUND_IN_FLIGHT_BOUND
-            # Only the routes holding a slot remain; nothing queued behind them.
-            assert len(asyncio.all_tasks()) - baseline <= INBOUND_IN_FLIGHT_BOUND
+            outstanding = 0
+            peak = 0
+            count_lock = threading.Lock()
+            real = asyncio.run_coroutine_threadsafe
+
+            def counted(coro: Any, loop: Any) -> Any:
+                nonlocal outstanding, peak
+                with count_lock:
+                    outstanding += 1
+                    peak = max(peak, outstanding)
+                future = real(coro, loop)
+
+                def done(_f: Any) -> None:
+                    nonlocal outstanding
+                    with count_lock:
+                        outstanding -= 1
+
+                future.add_done_callback(done)
+                return future
+
+            stop = threading.Event()
+
+            def burst() -> None:
+                mid = 0
+                while not stop.is_set():
+                    mid += 1
+                    client.on_message(
+                        client,
+                        None,
+                        SimpleNamespace(payload=_MALFORMED_RECEIPT, mid=mid, qos=1),
+                    )
+
+            with patch.object(asyncio, "run_coroutine_threadsafe", counted):
+                ran = site.acts.ran["trip_relay"]
+                site._dispatch("current_clamp")
+                sender = threading.Thread(target=burst)
+                sender.start()
+                time.sleep(0.3)  # the loop is blocked; the burst keeps arriving
+                unblocked = time.monotonic()
+                await _until(lambda: bool(ran))
+                stop.set()
+                sender.join(_PROMPT_S)
+            assert ran, "the queued trip never ran"
+            assert ran[0] - unblocked < _TRIP_BOUND_S, ran[0] - unblocked
+            assert subscriber.shed_count > 1000, subscriber.shed_count
+            assert peak <= INBOUND_IN_FLIGHT_BOUND, peak
             site.release()
             await _until(lambda: subscriber._in_flight == 0)
+
+    async def test_a_burst_of_courier_answers_schedules_nothing_past_the_bound(
+        self, tmp_path: Path
+    ) -> None:
+        async with _site(tmp_path, courier=_Courier("silent")) as site:
+            await site.start_routes()
+            site.lock("evidence.db")
+            outstanding = 0
+            peak = 0
+            count_lock = threading.Lock()
+            real = asyncio.run_coroutine_threadsafe
+
+            def counted(coro: Any, loop: Any) -> Any:
+                nonlocal outstanding, peak
+                with count_lock:
+                    outstanding += 1
+                    peak = max(peak, outstanding)
+                future = real(coro, loop)
+
+                def done(_f: Any) -> None:
+                    nonlocal outstanding
+                    with count_lock:
+                        outstanding -= 1
+
+                future.add_done_callback(done)
+                return future
+
+            answer = json.dumps(
+                {
+                    "device_id": DEVICE,
+                    "artifact_type": "delivery_envelope",
+                    "artifact_digest": "sha256:" + "a" * 64,
+                    "outcome": "queued",
+                    "reason": "",
+                }
+            ).encode()
+
+            def burst() -> None:
+                for _ in range(20000):
+                    site.courier.on_message(
+                        site.courier, None, SimpleNamespace(payload=answer)
+                    )
+
+            with patch.object(asyncio, "run_coroutine_threadsafe", counted):
+                sender = threading.Thread(target=burst)
+                sender.start()
+                time.sleep(0.3)
+                sender.join(_PROMPT_S)
+                await asyncio.sleep(0.1)
+            assert site.publisher.acks_shed > 1000, site.publisher.acks_shed
+            assert peak <= evidence_outbound.ACK_IN_FLIGHT_BOUND, peak
+            site.release()
+            await _until(lambda: site.publisher._acks_in_flight == 0)
 
     async def test_the_route_stops_cleanly_with_work_in_flight(
         self, tmp_path: Path

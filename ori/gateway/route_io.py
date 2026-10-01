@@ -67,3 +67,29 @@ class RouteIO:
             executor, self._executor = self._executor, None
         if executor is not None:
             executor.shutdown(wait=False, cancel_futures=True)
+
+
+class Slots:
+    """A fixed number of slots, taken without blocking from any thread."""
+
+    def __init__(self, limit: int) -> None:
+        self._limit = limit
+        self._taken = 0
+        self._lock = threading.Lock()
+
+    @property
+    def taken(self) -> int:
+        return self._taken
+
+    def try_take(self) -> bool:
+        with self._lock:
+            if self._taken >= self._limit:
+                return False
+            self._taken += 1
+            return True
+
+    def give_back(self) -> int:
+        """Release one slot and return how many remain taken."""
+        with self._lock:
+            self._taken -= 1
+            return self._taken

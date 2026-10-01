@@ -21,14 +21,16 @@ delivery state, and only a verified epoch confirmation activates an epoch.
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json
 import logging
+import threading
 from dataclasses import dataclass
 from typing import Any, Callable
 
 from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_url
-from ori.gateway.route_io import RouteIO
+from ori.gateway.route_io import RouteIO, Slots
 from ori.security.evidence.bound import BoundIngestService
 from ori.security.evidence.canonical import canonical_json
 from ori.security.evidence.executor import EvidenceExecutorSaturatedError
@@ -293,9 +295,12 @@ class MqttEvidenceInboundSubscriber:
         self._connected = False
         self._lost: asyncio.Event | None = None
         self._io = RouteIO("ori-evidence-in")
-        self._in_flight = 0
+        # Taken in the client's callback thread, before anything is scheduled
+        # on the event loop, so a flood allocates nothing past the bound.
+        self._slots = Slots(INBOUND_IN_FLIGHT_BOUND)
         self._shed = 0
         self._manual_ack = False
+        self._owed_lock = threading.Lock()
         self._redelivery_owed = False
         self._redeliver: asyncio.Event | None = None
 
@@ -307,6 +312,10 @@ class MqttEvidenceInboundSubscriber:
     def shed_count(self) -> int:
         """Messages left unacknowledged at the in-flight bound."""
         return self._shed
+
+    @property
+    def _in_flight(self) -> int:
+        return self._slots.taken
 
     async def serve_until(self, shutdown_event: asyncio.Event) -> None:
         """Connect, subscribe, and serve until *shutdown_event* fires.
@@ -505,31 +514,71 @@ class MqttEvidenceInboundSubscriber:
                 "[evidence-inbound] message received before event loop ready"
             )
             return
+        if not self._slots.try_take():
+            # Nothing is scheduled for it: the message stays with the broker
+            # and comes back after the reconnect that follows the backlog.
+            self._shed += 1
+            if self._owe_redelivery():
+                logger.warning(
+                    "[evidence-inbound] %d messages in flight; further messages "
+                    "are left with the broker until they clear",
+                    INBOUND_IN_FLIGHT_BOUND,
+                )
+            return
         payload = getattr(message, "payload", b"") or b""
-        future = asyncio.run_coroutine_threadsafe(
-            self._route(
-                client,
-                payload,
-                getattr(message, "mid", None),
-                getattr(message, "qos", 0),
-            ),
-            loop,
-        )
-        future.add_done_callback(_log_future_failure)
+        ticket = _Ticket()
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self._routed(
+                    ticket,
+                    client,
+                    payload,
+                    getattr(message, "mid", None),
+                    getattr(message, "qos", 0),
+                ),
+                loop,
+            )
+        except Exception:
+            logger.warning("[evidence-inbound] could not schedule a message")
+            self._owe_redelivery()
+            self._give_back()
+            return
+        future.add_done_callback(functools.partial(self._settled, ticket))
+
+    def _owe_redelivery(self) -> bool:
+        """Mark a redelivery owed; True when this is the first of the episode."""
+        with self._owed_lock:
+            first = not self._redelivery_owed
+            self._redelivery_owed = True
+            return first
+
+    def _give_back(self) -> None:
+        """Release a slot; once none is taken, reconnect for what is owed."""
+        if self._slots.give_back() > 0:
+            return
+        with self._owed_lock:
+            owed, self._redelivery_owed = self._redelivery_owed, False
+        loop, redeliver = self._loop, self._redeliver
+        if owed and loop is not None and redeliver is not None:
+            loop.call_soon_threadsafe(redeliver.set)
+
+    def _settled(self, ticket: _Ticket, future: Any) -> None:
+        # A route cancelled before it started never reached its own release.
+        if not ticket.started:
+            self._owe_redelivery()
+            self._give_back()
+        _log_future_failure(future)
+
+    async def _routed(
+        self, ticket: _Ticket, client: Any, payload: bytes, mid: Any, qos: Any
+    ) -> None:
+        ticket.started = True
+        try:
+            await self._route(client, payload, mid, qos)
+        finally:
+            self._give_back()
 
     async def _route(self, client: Any, payload: bytes, mid: Any, qos: Any) -> None:
-        # Runs on the event loop, so the check and the count are one step.
-        if self._in_flight >= INBOUND_IN_FLIGHT_BOUND:
-            if not self._redelivery_owed:
-                logger.warning(
-                    "[evidence-inbound] %d messages in flight; further messages are "
-                    "left with the broker until they clear",
-                    self._in_flight,
-                )
-            self._shed += 1
-            self._redelivery_owed = True
-            return
-        self._in_flight += 1
         acknowledged = False
         try:
             await self._route_admitted(payload)
@@ -537,22 +586,17 @@ class MqttEvidenceInboundSubscriber:
         except EvidenceExecutorSaturatedError:
             # Left with the broker like a message past the bound, and reported
             # once per episode rather than once per message.
-            if not self._redelivery_owed:
+            if self._owe_redelivery():
                 logger.warning(
                     "[evidence-inbound] the evidence worker is saturated; "
                     "messages are left with the broker until it clears"
                 )
         finally:
-            self._in_flight -= 1
             if not acknowledged and self._manual_ack and mid is not None:
                 # Routing failed or was cancelled before the broker released
                 # the message: it is still the broker's, and comes back after
                 # the reconnect.
-                self._redelivery_owed = True
-            if self._redelivery_owed and self._in_flight == 0:
-                self._redelivery_owed = False
-                if self._redeliver is not None:
-                    self._redeliver.set()
+                self._owe_redelivery()
 
     async def _acknowledge(self, client: Any, mid: Any, qos: Any) -> bool:
         """Release the message at the broker once it has been routed."""
@@ -588,6 +632,15 @@ class MqttEvidenceInboundSubscriber:
             # The courier retires an artifact only on an acknowledgement, so a
             # lost one costs a redelivery rather than the evidence.
             logger.warning("[evidence-inbound] failed to publish acknowledgement")
+
+
+class _Ticket:
+    """Whether one admitted message's route has started on the loop."""
+
+    __slots__ = ("started",)
+
+    def __init__(self) -> None:
+        self.started = False
 
 
 def _rc_value(code: Any) -> int:

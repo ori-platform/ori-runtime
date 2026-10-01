@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_url
-from ori.gateway.route_io import RouteIO
+from ori.gateway.route_io import RouteIO, Slots
 from ori.security.evidence.bound import BoundOutboundQueue
 from ori.security.evidence.executor import EvidenceExecutorSaturatedError
 from ori.security.evidence.ledger import (
@@ -334,7 +334,8 @@ class MqttEvidenceOutboundPublisher:
         self._drain_lock = asyncio.Lock()
         self._published = 0
         self._io = RouteIO("ori-evidence-out")
-        self._acks_in_flight = 0
+        # Taken in the client's callback thread, before anything is scheduled.
+        self._ack_slots = Slots(ACK_IN_FLIGHT_BOUND)
         self._acks_shed = 0
 
     @property
@@ -726,30 +727,51 @@ class MqttEvidenceOutboundPublisher:
                 "[evidence-outbound] acknowledgement received before event loop ready"
             )
             return
+        if not self._ack_slots.try_take():
+            # Dropped before anything is scheduled; the artifact stays retained
+            # and its next attempt draws another acknowledgement.
+            self._acks_shed += 1
+            if self._acks_shed == 1 or self._acks_shed % 1000 == 0:
+                logger.warning(
+                    "[evidence-outbound] %d acknowledgements in flight; %d dropped, "
+                    "their artifacts stay retained",
+                    ACK_IN_FLIGHT_BOUND,
+                    self._acks_shed,
+                )
+            return
         payload = getattr(message, "payload", b"") or b""
-        future = asyncio.run_coroutine_threadsafe(self._route_ack(payload), loop)
-        future.add_done_callback(_log_future_failure)
+        started = [False]
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self._route_ack(payload, started), loop
+            )
+        except Exception:
+            logger.warning("[evidence-outbound] could not schedule an acknowledgement")
+            self._ack_slots.give_back()
+            return
+
+        def settled(done: Any) -> None:
+            if not started[0]:
+                self._ack_slots.give_back()
+            _log_future_failure(done)
+
+        future.add_done_callback(settled)
 
     @property
     def acks_shed(self) -> int:
         """Acknowledgements dropped at the in-flight bound."""
         return self._acks_shed
 
-    async def _route_ack(self, payload: bytes) -> None:
-        # Runs on the event loop, so the check and the count are one step.
-        if self._acks_in_flight >= ACK_IN_FLIGHT_BOUND:
-            self._acks_shed += 1
-            logger.warning(
-                "[evidence-outbound] %d acknowledgements already in flight; one "
-                "is dropped and the artifact stays retained",
-                self._acks_in_flight,
-            )
-            return
-        self._acks_in_flight += 1
+    @property
+    def _acks_in_flight(self) -> int:
+        return self._ack_slots.taken
+
+    async def _route_ack(self, payload: bytes, started: list[bool]) -> None:
+        started[0] = True
         try:
             await self._apply_ack(payload)
         finally:
-            self._acks_in_flight -= 1
+            self._ack_slots.give_back()
 
     async def _apply_ack(self, payload: bytes) -> None:
         routed = await self._router.handle_ack(payload)
