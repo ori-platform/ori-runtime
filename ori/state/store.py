@@ -1184,6 +1184,7 @@ class StateStore:
         # flood of reads cannot take it.
         self._write_executor: ThreadPoolExecutor | None = None
         self._read_executor: ThreadPoolExecutor | None = None
+        self._read_admission: asyncio.Semaphore | None = None
 
     # ─── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -1271,6 +1272,7 @@ class StateStore:
                 if executor is not None:
                     executor.shutdown(wait=False)
             self._write_executor = self._read_executor = None
+            self._read_admission = None
 
     def _migrate_sync(self, conn: sqlite3.Connection) -> None:
         conn.executescript(_CORE_DDL)
@@ -1962,9 +1964,14 @@ class StateStore:
             self._read_executor = ThreadPoolExecutor(
                 max_workers=_READ_WORKERS, thread_name_prefix="ori-store-read"
             )
-        return await asyncio.get_running_loop().run_in_executor(
-            self._read_executor, call_with_conn
-        )
+        # Admission, not a queue: no more reads are handed to the pool than it
+        # has threads, and the rest wait here holding nothing.
+        if self._read_admission is None:
+            self._read_admission = asyncio.Semaphore(_READ_WORKERS)
+        async with self._read_admission:
+            return await asyncio.get_running_loop().run_in_executor(
+                self._read_executor, call_with_conn
+            )
 
     async def _on_writer(
         self, fn: Callable[_P, _T], *args: _P.args, **kwargs: _P.kwargs

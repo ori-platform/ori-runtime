@@ -34,6 +34,7 @@ from typing import Any, Callable
 from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_url
 from ori.gateway.route_io import RouteIO
 from ori.security.evidence.bound import BoundOutboundQueue
+from ori.security.evidence.executor import EvidenceExecutorSaturatedError
 from ori.security.evidence.ledger import (
     FAULT_HOLDER_ENVELOPE,
     FAULT_HOLDER_OBLIGATION,
@@ -92,6 +93,7 @@ RETRY_BACKOFF_MAX_S = 900.0
 DRAIN_BATCH = 50
 _RECONNECT_MIN_S = 5.0
 _RECONNECT_MAX_S = 300.0
+_SHUTDOWN_DRAIN_S = 5.0
 #: Acknowledgements being applied at once. Past it one is dropped; the
 #: artifact stays retained and its next attempt draws another.
 ACK_IN_FLIGHT_BOUND = 16
@@ -424,15 +426,23 @@ class MqttEvidenceOutboundPublisher:
         if not shutdown_event.is_set():
             raise ConnectionError("subscription lost")
         # Shutting down with the session still granted: carry what was retained
-        # since the last drain before the route is closed.
-        await self.drain()
+        # since the last drain before the route is closed, within a bound, so a
+        # held evidence store cannot hold the shutdown.
+        await self.flush(_SHUTDOWN_DRAIN_S)
 
     async def drain(self) -> int:
         """Publish every retained artifact whose retry is due. Returns the count."""
         # One drain at a time: a nudge and a shutdown flush that overlap would
         # both read the same undue rows and carry each artifact twice.
         async with self._drain_lock:
-            return await self._drain()
+            try:
+                return await self._drain()
+            except EvidenceExecutorSaturatedError:
+                # The worker has all the work it admits; the next cycle retries.
+                logger.warning(
+                    "[evidence-outbound] evidence worker busy; drain deferred"
+                )
+                return 0
 
     async def _drain(self) -> int:
         if not self._connected or self._client is None:

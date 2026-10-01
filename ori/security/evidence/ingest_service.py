@@ -17,9 +17,12 @@ why its evidence never arrived.
 
 from __future__ import annotations
 
+import hashlib
+from collections import OrderedDict
 from dataclasses import dataclass
 
 from ori.security.evidence.authority_keys import AuthorityKey
+from ori.security.evidence.canonical import canonical_json
 from ori.security.evidence.custody_keys import CustodyKeyRegistry
 from ori.security.evidence.disposition import (
     DispositionVerifier,
@@ -36,6 +39,7 @@ from ori.security.evidence.ingest import (
     verify_epoch_confirmation,
 )
 from ori.security.evidence.ledger import (
+    INGEST_REFUSAL_RETENTION,
     DeliveryLedgerError,
     DispositionRefusedError,
     EvidenceDeliveryLedger,
@@ -86,6 +90,7 @@ class EvidenceIngestService:
         # secret and invited exactly the wrong value at the call site -- and
         # got it.
         self._custody_keys = custody_keys
+        self._refused: OrderedDict[tuple[str, str, str], None] = OrderedDict()
 
     @property
     def rejections(self) -> tuple[IngestOutcome, ...]:
@@ -100,16 +105,32 @@ class EvidenceIngestService:
             for row in self._ledger.ingest_refusals()
         )
 
-    def _refuse(self, artifact: str, exc: IngestRejectedError) -> IngestOutcome:
+    def _refuse(
+        self, subject: object, artifact: str, exc: IngestRejectedError
+    ) -> IngestOutcome:
+        """Refuse *subject*, recording the refusal once per artifact and reason.
+
+        A courier redelivers what it holds no acknowledgement for, so the same
+        artifact can be refused again for the same reason; that is a repeat of
+        one refusal, not a second, and the ledger keeps it once. Remembered for
+        the newest refusals the ledger retains, within this process.
+        """
         outcome = IngestOutcome(
             artifact=artifact, state=REJECTED, reason=exc.reason, detail=exc.detail
         )
+        key = (artifact, _subject_digest(subject), exc.reason)
+        if key in self._refused:
+            self._refused.move_to_end(key)
+            return outcome
         self._ledger.record_ingest_refusal(
             artifact_type=artifact,
             reason=exc.reason,
             detail=exc.detail,
             observed_at_ms=now_ms(),
         )
+        self._refused[key] = None
+        while len(self._refused) > INGEST_REFUSAL_RETENTION:
+            self._refused.popitem(last=False)
         return outcome
 
     def accept_custody(self, artifact: object) -> IngestOutcome:
@@ -117,12 +138,14 @@ class EvidenceIngestService:
         local_seq = _int_field(artifact, "local_seq")
         if local_seq is None:
             return self._refuse(
+                artifact,
                 "custody_acknowledgement",
                 IngestRejectedError("malformed", "the custody names no local_seq"),
             )
         sealed = self._ledger.find_by_local_seq(local_seq)
         if sealed is None:
             return self._refuse(
+                artifact,
                 "custody_acknowledgement",
                 IngestRejectedError(
                     "unknown_sequence",
@@ -132,6 +155,7 @@ class EvidenceIngestService:
         try:
             if self._custody_keys is None:
                 return self._refuse(
+                    artifact,
                     "custody_acknowledgement",
                     IngestRejectedError(
                         REJECT_UNKNOWN_KEY,
@@ -147,7 +171,7 @@ class EvidenceIngestService:
                 expected_local_seq=local_seq,
             )
         except IngestRejectedError as exc:
-            return self._refuse("custody_acknowledgement", exc)
+            return self._refuse(artifact, "custody_acknowledgement", exc)
 
         self._ledger._apply_verified_custody(
             verified.local_seq,
@@ -177,7 +201,7 @@ class EvidenceIngestService:
                 chain_row_digests=digests,
             )
         except IngestRejectedError as exc:
-            return self._refuse("delivery_receipt", exc)
+            return self._refuse(artifact, "delivery_receipt", exc)
 
         applied = verified.sequences
         for local_seq in applied:
@@ -203,6 +227,7 @@ class EvidenceIngestService:
             verified = None
         if verified is None:
             return self._refuse(
+                artifact,
                 "disposition",
                 IngestRejectedError(
                     REJECT_UNKNOWN_KEY, "no disposition verifies on this release"
@@ -211,10 +236,11 @@ class EvidenceIngestService:
         fault = disposition_fault(verified)
         if fault is not None:
             return self._refuse(
-                "disposition", IngestRejectedError(REJECT_MALFORMED, fault)
+                artifact, "disposition", IngestRejectedError(REJECT_MALFORMED, fault)
             )
         if verified.device_id != self._device_id:
             return self._refuse(
+                artifact,
                 "disposition",
                 IngestRejectedError(
                     REJECT_BINDING_MISMATCH, "the disposition names another device"
@@ -224,7 +250,7 @@ class EvidenceIngestService:
             applied = self._ledger._apply_verified_disposition(verified, at_ms=now_ms())
         except DispositionRefusedError as exc:
             return self._refuse(
-                "disposition", IngestRejectedError(exc.reason, exc.detail)
+                artifact, "disposition", IngestRejectedError(exc.reason, exc.detail)
             )
         return IngestOutcome(artifact="disposition", state=ACCEPTED, detail=applied)
 
@@ -244,7 +270,7 @@ class EvidenceIngestService:
                 expected_pubkey_hex=self._device_pubkey_hex,
             )
         except IngestRejectedError as exc:
-            return self._refuse("epoch_confirmation", exc)
+            return self._refuse(artifact, "epoch_confirmation", exc)
 
         # Bound to a registration this device sealed for that epoch and key,
         # whichever epoch it is: the ledger refuses anything else.
@@ -260,6 +286,7 @@ class EvidenceIngestService:
             )
         except DeliveryLedgerError as exc:
             return self._refuse(
+                artifact,
                 "epoch_confirmation",
                 IngestRejectedError(REJECT_BINDING_MISMATCH, str(exc)),
             )
@@ -281,6 +308,15 @@ class ConfirmedEpochReader:
 
     def active_anchor_epoch_id(self, device_id: str) -> str | None:
         return self._ledger.active_anchor_epoch_id(device_id)
+
+
+def _subject_digest(subject: object) -> str:
+    """A stable identity for a refused artifact, whatever shape it arrived in."""
+    try:
+        body = canonical_json(subject)
+    except Exception:
+        body = repr(subject).encode("utf-8", "backslashreplace")
+    return hashlib.sha256(body).hexdigest()
 
 
 def _int_field(artifact: object, name: str) -> int | None:

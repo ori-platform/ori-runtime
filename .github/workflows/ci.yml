@@ -283,8 +283,20 @@ jobs:
             tests/test_skill_loader.py::TestValidation::test_missing_defaults_mapping_for_trigger_raises \
             tests/test_skill_loader.py::TestValidation::test_extra_defaults_key_without_trigger_raises
 
+      # The inbound evidence route's redelivery proof runs against a real
+      # broker. With the flag below the test fails where it would otherwise
+      # skip, so the proof cannot drop out of CI unnoticed.
+      - name: Install the MQTT broker the redelivery proof runs against
+        if: steps.scope.outputs.run == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mosquitto
+          sudo systemctl stop mosquitto || true
+
       - name: Run tests with coverage
         if: steps.scope.outputs.run == 'true'
+        env:
+          ORI_REQUIRE_MQTT_BROKER: "1"
         run: |
           pytest tests/ -v \
             --cov=ori \

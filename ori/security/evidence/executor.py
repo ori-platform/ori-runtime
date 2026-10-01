@@ -34,8 +34,19 @@ T = TypeVar("T")
 _CLOSE_WAIT_TIMEOUT_S = 30.0
 
 
+#: Calls admitted to the worker and not yet finished. Past it a call is
+#: refused rather than queued: every caller already treats evidence work as
+#: something that can fail and be retried, and an unbounded queue in front of
+#: one thread is a backlog nothing would ever report.
+PENDING_CEILING = 256
+
+
 class EvidenceExecutorClosedError(RuntimeError):
     """Raised when work is submitted after the evidence executor is closed."""
+
+
+class EvidenceExecutorSaturatedError(RuntimeError):
+    """Raised when the worker already holds as much work as it admits."""
 
 
 class EvidenceExecutor:
@@ -67,6 +78,25 @@ class EvidenceExecutor:
         # returning while the first closer is still tearing down would hand it
         # an executor whose SQLite objects are mid-close.
         self._closed_event = threading.Event()
+        self._pending = 0
+        self._pending_ceiling = PENDING_CEILING
+
+    @property
+    def pending(self) -> int:
+        """Calls admitted and not yet finished."""
+        return self._pending
+
+    def _admit(self) -> None:
+        """Count one admitted call; the caller holds ``self._lock``."""
+        if self._pending >= self._pending_ceiling:
+            raise EvidenceExecutorSaturatedError(
+                f"the evidence worker holds {self._pending} calls already"
+            )
+        self._pending += 1
+
+    def _finished(self, _future: Any) -> None:
+        with self._lock:
+            self._pending -= 1
 
     @property
     def owns_current_thread(self) -> bool:
@@ -109,7 +139,10 @@ class EvidenceExecutor:
                 raise EvidenceExecutorClosedError(
                     f"the evidence executor is {self._state}"
                 )
+            self._admit()
             future = self._executor.submit(fn, *args, **kwargs)
+        # Outside the lock: a call already finished runs its callback here.
+        future.add_done_callback(self._finished)
         return future.result()
 
     async def run_async(self, fn: Callable[..., T], /, *args: Any, **kwargs: Any) -> T:
@@ -124,10 +157,10 @@ class EvidenceExecutor:
                 raise EvidenceExecutorClosedError(
                     f"the evidence executor is {self._state}"
                 )
-            future = loop.run_in_executor(
-                self._executor, functools.partial(fn, *args, **kwargs)
-            )
-        return await future
+            self._admit()
+            submitted = self._executor.submit(functools.partial(fn, *args, **kwargs))
+        submitted.add_done_callback(self._finished)
+        return await asyncio.wrap_future(submitted, loop=loop)
 
     def close(self, *, teardown: Callable[[], None] | None = None) -> None:
         """Refuse further work, run *teardown* on the owning thread, then stop.

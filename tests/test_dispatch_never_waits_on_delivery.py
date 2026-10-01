@@ -28,6 +28,7 @@ import shutil
 import socket
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import AsyncIterator, Iterator
@@ -979,11 +980,10 @@ class TestAShippedTierDTriggerWithHistoryHooks:
     ) -> None:
         """The packaged energy-anomaly-detector, its hook included.
 
-        The hook reads history synchronously before any condition is evaluated,
-        and the Tier D condition reads a threshold the hook sets from
-        configuration. With the state store's write lock held by another
-        connection, those reads go through only because the store runs in WAL
-        mode, where a writer does not block a reader. The trigger's bundled
+        The Tier D condition is decided before the hook runs. The hook then
+        reads history synchronously, and with the state store's write lock
+        held by another connection those reads go through only because the
+        store runs in WAL mode, where a writer does not block a reader. The trigger's bundled
         actions are notifications, no protective outcome is bound to it, and
         what is timed is the first of them.
         """
@@ -1033,11 +1033,18 @@ class TestAShippedTierDTriggerWithHistoryHooks:
             site._dispatches.append(site.dispatching)
             fired = site.acts.by_trigger.setdefault("dangerous_overcurrent", [])
             await _until(lambda: bool(fired))
-            assert hook_reads, "the hook never read history"
             assert fired, "the overcurrent trigger did not fire"
             name, at = fired[0]
             assert name == "alert_whatsapp", site.acts.by_trigger
             assert at - started < _TRIP_BOUND_S, at - started
+            # The hook runs after the trip, and its history reads still go
+            # through the held write lock: the notices that need its baseline
+            # follow promptly rather than after the store's busy timeout.
+            spike = site.acts.by_trigger.setdefault("sudden_load_spike", [])
+            await _until(lambda: bool(spike))
+            assert hook_reads, "the hook never read history"
+            assert spike, f"the hook never completed: {site.acts.by_trigger}"
+            assert spike[0][1] - started < 1.0, spike[0][1] - started
             site.release()
 
 
@@ -1103,6 +1110,8 @@ def _free_port() -> int:
 def _broker(root: Path) -> Iterator[int]:
     binary = _mosquitto()
     if binary is None:
+        if os.environ.get("ORI_REQUIRE_MQTT_BROKER") == "1":
+            pytest.fail("ORI_REQUIRE_MQTT_BROKER=1 and mosquitto is not installed")
         pytest.skip("mosquitto is not installed")
     port = _free_port()
     config = root / "mosquitto.conf"
@@ -1154,6 +1163,25 @@ async def test_the_broker_redelivers_what_the_route_had_no_room_for(
                 router=router,
                 device_id=DEVICE,
             )
+            # Every arrival as the real client hands it over: which message,
+            # and whether the broker marked it a redelivery.
+            arrivals: list[tuple[int, bool]] = []
+            sessions: list[Any] = []
+            on_message = subscriber._on_message
+            factory = evidence_inbound._default_client_factory
+
+            def observed(client: Any, userdata: Any, message: Any) -> None:
+                body = json.loads(message.payload)
+                arrivals.append((int(body["artifact"]["n"]), bool(message.dup)))
+                on_message(client, userdata, message)
+
+            def client_factory(**kwargs: Any) -> Any:
+                client = factory(**kwargs)
+                sessions.append(client)
+                return client
+
+            subscriber._on_message = observed  # type: ignore[method-assign]
+            subscriber._client_factory = client_factory
             shutdown = asyncio.Event()
             serving = asyncio.create_task(subscriber.serve_until(shutdown))
             await _until(lambda: subscriber.connected)
@@ -1181,6 +1209,19 @@ async def test_the_broker_redelivers_what_the_route_had_no_room_for(
             # At least once, as QoS 1 promises: a message routed just before
             # the reconnect can come round again, and ingest is idempotent.
             assert set(routed) == set(range(published))
+            # The session is persistent and the route acknowledges by hand, so
+            # what it left unacknowledged came back from the broker as a
+            # redelivery, on a second session of the same client.
+            assert len(sessions) >= 2
+            assert all(getattr(c, "_clean_session", False) is False for c in sessions)
+            first_seen: set[int] = set()
+            redelivered: set[int] = set()
+            for n, dup in arrivals:
+                if n in first_seen:
+                    assert dup, f"message {n} came again without the dup flag"
+                    redelivered.add(n)
+                first_seen.add(n)
+            assert redelivered, "nothing was redelivered by the broker"
             sender.loop_stop()
             sender.disconnect()
             shutdown.set()
@@ -1191,3 +1232,283 @@ def test_the_bound_is_below_the_broker_window_and_the_flood() -> None:
     """Under mosquitto's default in-flight window of 20, and under every flood here."""
     assert evidence_inbound.INBOUND_IN_FLIGHT_BOUND < 20
     assert evidence_inbound.INBOUND_IN_FLIGHT_BOUND * 3 <= _FLOOD
+
+
+def test_the_broker_proof_fails_rather_than_skips_when_required(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(sys.modules[__name__], "_mosquitto", lambda: None)
+    monkeypatch.setenv("ORI_REQUIRE_MQTT_BROKER", "1")
+    with pytest.raises(pytest.fail.Exception, match="ORI_REQUIRE_MQTT_BROKER"):
+        with _broker(tmp_path):
+            pass
+
+
+def test_ci_installs_the_broker_and_requires_the_proof() -> None:
+    workflow = (
+        Path(__file__).resolve().parent.parent / ".github" / "workflows" / "ci.yml"
+    ).read_text()
+    assert "apt-get install -y --no-install-recommends mosquitto" in workflow
+    assert 'ORI_REQUIRE_MQTT_BROKER: "1"' in workflow
+
+
+# ── The in-flight slots ──────────────────────────────────────────────────────
+
+
+async def _serving(site: _Site) -> tuple[MqttEvidenceInboundSubscriber, Any]:
+    client = _ManualAckClient()
+    site.inbound_client = client
+    await site.start_routes()
+    assert site.subscriber is not None
+    return site.subscriber, client
+
+
+def _deliver(client: Any, mids: range, payload: bytes = _MALFORMED_RECEIPT) -> None:
+    for mid in mids:
+        client.on_message(
+            client, None, SimpleNamespace(payload=payload, mid=mid, qos=1)
+        )
+
+
+class TestTheInFlightSlots:
+    async def test_a_slot_is_released_when_routing_succeeds(
+        self, tmp_path: Path
+    ) -> None:
+        async with _site(tmp_path) as site:
+            subscriber, client = await _serving(site)
+            _deliver(client, range(1, 6))
+            await _until(lambda: len(client.acked) == 5)
+            assert subscriber._in_flight == 0
+            assert sorted(client.acked) == [1, 2, 3, 4, 5]
+
+    async def test_a_slot_is_released_when_routing_raises(self, tmp_path: Path) -> None:
+        async with _site(tmp_path) as site:
+            subscriber, client = await _serving(site)
+
+            async def broken(_payload: Any) -> Any:
+                raise RuntimeError("ingest failed")
+
+            subscriber._router.route = broken  # type: ignore[method-assign]
+            with pytest.raises(RuntimeError):
+                await subscriber._route(client, _MALFORMED_RECEIPT, 7, 1)
+            assert subscriber._in_flight == 0
+            assert client.acked == []
+            assert subscriber._redeliver is not None
+            assert subscriber._redeliver.is_set()
+
+    async def test_a_slot_is_released_when_routing_is_cancelled(
+        self, tmp_path: Path
+    ) -> None:
+        async with _site(tmp_path) as site:
+            subscriber, client = await _serving(site)
+            site.lock("evidence.db")
+            task = asyncio.create_task(
+                subscriber._route(client, _MALFORMED_RECEIPT, 9, 1)
+            )
+            await _until(lambda: subscriber._in_flight == 1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert subscriber._in_flight == 0
+            assert client.acked == []
+            assert subscriber._redeliver is not None
+            assert subscriber._redeliver.is_set()
+            site.release()
+
+    async def test_a_flood_past_the_bound_holds_nothing_behind_it(
+        self, tmp_path: Path
+    ) -> None:
+        async with _site(tmp_path) as site:
+            subscriber, client = await _serving(site)
+            site.lock("evidence.db")
+            baseline = len(asyncio.all_tasks())
+            flood = 5000
+            await asyncio.to_thread(_deliver, client, range(1, flood + 1))
+            await _until(lambda: subscriber.shed_count == flood - 16)
+            await asyncio.sleep(0.05)
+            assert subscriber._in_flight == INBOUND_IN_FLIGHT_BOUND
+            assert subscriber.shed_count == flood - INBOUND_IN_FLIGHT_BOUND
+            # Only the routes holding a slot remain; nothing queued behind them.
+            assert len(asyncio.all_tasks()) - baseline <= INBOUND_IN_FLIGHT_BOUND
+            site.release()
+            await _until(lambda: subscriber._in_flight == 0)
+
+    async def test_the_route_stops_cleanly_with_work_in_flight(
+        self, tmp_path: Path
+    ) -> None:
+        async with _site(tmp_path) as site:
+            subscriber, client = await _serving(site)
+            site.lock("evidence.db")
+            _deliver(client, range(1, INBOUND_IN_FLIGHT_BOUND + 1))
+            await _until(lambda: subscriber._in_flight == INBOUND_IN_FLIGHT_BOUND)
+            site._shutdown.set()
+            started = time.monotonic()
+            inbound = site._tasks[1]
+            await asyncio.wait_for(inbound, _PROMPT_S)
+            assert time.monotonic() - started < 1.0
+            assert subscriber._io._executor is None
+            site.release()
+            await _until(lambda: subscriber._in_flight == 0)
+            assert subscriber._in_flight == 0
+
+    async def test_a_reconnect_keeps_the_slots_it_holds(self, tmp_path: Path) -> None:
+        async with _site(tmp_path) as site:
+            subscriber, client = await _serving(site)
+            site.lock("evidence.db")
+            _deliver(client, range(1, INBOUND_IN_FLIGHT_BOUND + 1))
+            await _until(lambda: subscriber._in_flight == INBOUND_IN_FLIGHT_BOUND)
+            with patch.object(evidence_inbound, "_RECONNECT_MIN_S", 0.01):
+                subscriber._signal_lost()
+                await _until(lambda: subscriber.connected is False)
+                await _until(lambda: subscriber.connected)
+            assert subscriber._in_flight == INBOUND_IN_FLIGHT_BOUND
+            _deliver(client, range(100, 101))
+            await _until(lambda: subscriber.shed_count == 1)
+            assert subscriber.shed_count == 1
+            site.release()
+
+    async def test_an_inbound_flood_takes_no_slot_from_courier_acknowledgements(
+        self, tmp_path: Path
+    ) -> None:
+        """One device per runtime: the two evidence routes are bounded apart."""
+        async with _site(tmp_path, courier=_Courier("queue_full")) as site:
+            subscriber, client = await _serving(site)
+            site.lock("evidence.db")
+            _deliver(client, range(1, INBOUND_IN_FLIGHT_BOUND + 10))
+            await _until(lambda: subscriber.shed_count > 0)
+            for n in range(4):
+                site.courier.on_message(
+                    site.courier,
+                    None,
+                    SimpleNamespace(
+                        payload=json.dumps(
+                            {
+                                "device_id": DEVICE,
+                                "artifact_type": "delivery_envelope",
+                                "artifact_digest": "sha256:" + f"{n:x}" * 64,
+                                "outcome": "queued",
+                                "reason": "",
+                            }
+                        ).encode()
+                    ),
+                )
+            await asyncio.sleep(0.1)
+            assert site.publisher.acks_shed == 0
+            assert site.publisher._acks_in_flight == 4
+            site.release()
+            await _until(lambda: site.publisher._acks_in_flight == 0)
+
+
+# ── A redelivered refusal is the same refusal ───────────────────────────────
+
+
+class TestARedeliveredRefusalIsRecordedOnce:
+    async def test_the_same_artifact_refused_again_adds_no_row(
+        self, tmp_path: Path
+    ) -> None:
+        async with _site(tmp_path) as site:
+            subscriber, client = await _serving(site)
+            _deliver(client, range(1, 4))
+            await _until(lambda: len(client.acked) == 3)
+            refusals = await site.attestor.ingest_refusal_summary()
+            assert refusals is not None and refusals["count"] == 1
+            other = json.loads(_MALFORMED_RECEIPT)
+            other["artifact"]["n"] = 1
+            _deliver(client, range(4, 6), json.dumps(other).encode())
+            await _until(lambda: len(client.acked) == 5)
+            refusals = await site.attestor.ingest_refusal_summary()
+            assert refusals is not None and refusals["count"] == 2
+            # Every delivery is still answered: the courier retires on that.
+            assert sorted(client.acked) == [1, 2, 3, 4, 5]
+
+
+# ── Every executor admits a bounded amount of work ──────────────────────────
+
+
+class TestTheExecutorsAreBounded:
+    async def test_the_evidence_worker_refuses_past_its_ceiling(self) -> None:
+        from ori.security.evidence.executor import (
+            EvidenceExecutor,
+            EvidenceExecutorSaturatedError,
+        )
+
+        executor = EvidenceExecutor()
+        executor._pending_ceiling = 4
+        hold = threading.Event()
+        try:
+            held = [
+                asyncio.create_task(executor.run_async(hold.wait)) for _ in range(4)
+            ]
+            await asyncio.sleep(0.05)
+            assert executor.pending == 4
+            # Bounded waits: past the ceiling a call is refused at once, and
+            # one queued behind the held calls would otherwise never return.
+            with pytest.raises(EvidenceExecutorSaturatedError):
+                await asyncio.wait_for(executor.run_async(lambda: None), 1.0)
+            with pytest.raises(EvidenceExecutorSaturatedError):
+                await asyncio.wait_for(
+                    asyncio.to_thread(executor.run, lambda: None), 1.0
+                )
+            assert executor.pending == 4
+            hold.set()
+            await asyncio.gather(*held)
+            assert executor.pending == 0
+        finally:
+            hold.set()
+            executor.close()
+
+    async def test_a_route_thread_refuses_past_its_ceiling(self) -> None:
+        from ori.gateway.route_io import RouteIO, RouteIOSaturatedError
+
+        io = RouteIO("test-route", ceiling=2)
+        hold = threading.Event()
+        try:
+            held = [asyncio.create_task(io.run(hold.wait)) for _ in range(2)]
+            await asyncio.sleep(0.05)
+            assert io.pending == 2
+            with pytest.raises(RouteIOSaturatedError):
+                await asyncio.wait_for(io.run(lambda: None), 1.0)
+            hold.set()
+            await asyncio.gather(*held)
+            assert io.pending == 0
+        finally:
+            hold.set()
+            io.shutdown()
+
+    async def test_store_reads_are_admitted_no_faster_than_the_pool_runs_them(
+        self, tmp_path: Path
+    ) -> None:
+        from ori.state import store as store_module
+
+        store = StateStore(db_path=str(tmp_path / "state.db"))
+        await store.open()
+        hold = threading.Event()
+        running: list[int] = []
+        peak = 0
+        lock = threading.Lock()
+        original = store._run_read_with_conn
+
+        def held(fn: Any, *args: Any, **kwargs: Any) -> Any:
+            nonlocal peak
+            with lock:
+                running.append(1)
+                peak = max(peak, len(running))
+            hold.wait()
+            with lock:
+                running.pop()
+            return original(fn, *args, **kwargs)
+
+        store._run_read_with_conn = held  # type: ignore[method-assign]
+        try:
+            reads = [
+                asyncio.create_task(store.get_action_log(limit=1)) for _ in range(20)
+            ]
+            await asyncio.sleep(0.1)
+            assert store._read_executor is not None
+            assert store._read_executor._work_queue.qsize() == 0
+            assert peak == store_module._READ_WORKERS
+            hold.set()
+            await asyncio.gather(*reads)
+        finally:
+            hold.set()
+            await store.close()

@@ -31,6 +31,7 @@ from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_ur
 from ori.gateway.route_io import RouteIO
 from ori.security.evidence.bound import BoundIngestService
 from ori.security.evidence.canonical import canonical_json
+from ori.security.evidence.executor import EvidenceExecutorSaturatedError
 from ori.security.evidence.ingest_service import IngestOutcome
 from ori.security.gateway_messages import (
     GatewayMessageAuthenticator,
@@ -529,24 +530,40 @@ class MqttEvidenceInboundSubscriber:
             self._redelivery_owed = True
             return
         self._in_flight += 1
+        acknowledged = False
         try:
             await self._route_admitted(payload)
-            await self._acknowledge(client, mid, qos)
+            acknowledged = await self._acknowledge(client, mid, qos)
+        except EvidenceExecutorSaturatedError:
+            # Left with the broker like a message past the bound, and reported
+            # once per episode rather than once per message.
+            if not self._redelivery_owed:
+                logger.warning(
+                    "[evidence-inbound] the evidence worker is saturated; "
+                    "messages are left with the broker until it clears"
+                )
         finally:
             self._in_flight -= 1
+            if not acknowledged and self._manual_ack and mid is not None:
+                # Routing failed or was cancelled before the broker released
+                # the message: it is still the broker's, and comes back after
+                # the reconnect.
+                self._redelivery_owed = True
             if self._redelivery_owed and self._in_flight == 0:
                 self._redelivery_owed = False
                 if self._redeliver is not None:
                     self._redeliver.set()
 
-    async def _acknowledge(self, client: Any, mid: Any, qos: Any) -> None:
+    async def _acknowledge(self, client: Any, mid: Any, qos: Any) -> bool:
         """Release the message at the broker once it has been routed."""
         if not self._manual_ack or mid is None:
-            return
+            return True
         try:
             await self._io.run(client.ack, mid, qos)
         except Exception:
             logger.warning("[evidence-inbound] failed to acknowledge a message")
+            return False
+        return True
 
     async def _route_admitted(self, payload: bytes) -> None:
         routed = await self._router.route(payload)
