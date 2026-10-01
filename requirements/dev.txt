@@ -2001,9 +2001,9 @@ tomli-w==1.2.0 \
     --hash=sha256:188306098d013b691fcadc011abd66727d3c414c571bb01b1a174ba8c983cf90 \
     --hash=sha256:2dd14fac5a47c27be9cd4c976af5a12d87fb1f0b4512f81d69cce3b35ae25021
     # via pip-audit
-twilio==9.11.1 \
-    --hash=sha256:bb700599c721f49a437bf6ee03b0f9cc729752646873985c94b4affaf88f113c \
-    --hash=sha256:d4e08cef8d7e437e9ad8c589a801842ccc4f7e46fd35366e315ec4ce6bb9e313
+twilio==9.11.2 \
+    --hash=sha256:002df1b366ff193bf8748f68ef2ef0dda96d500c3a14898175c159633fd88643 \
+    --hash=sha256:dbc2cc950885dd9af573e9d1b489b8c757230bd8e3154806f4bf0def40fc59da
     # via -r runtime.txt
 types-pyyaml==6.0.12.20260906 \
     --hash=sha256:bca893ff0d51df5c9053137d5d0e6ccd36e939a196356f1d5c16372422f5137b \
