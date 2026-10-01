@@ -186,5 +186,13 @@ class FirmwareConfirmationCoordinator:
         )
 
     async def _readback(self, device_id: str) -> str | None:
-        result = await asyncio.to_thread(self._chain.active_anchor_epoch_id, device_id)
+        # The evidence-bound view awaits its worker directly; a thread from the
+        # loop's default executor would sit blocked on it.
+        read = getattr(self._chain, "active_anchor_epoch_id_async", None)
+        if read is not None:
+            result = await read(device_id)
+        else:
+            result = await asyncio.to_thread(
+                self._chain.active_anchor_epoch_id, device_id
+            )
         return str(result) if result is not None else None

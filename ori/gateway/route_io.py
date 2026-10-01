@@ -27,6 +27,10 @@ class RouteIOSaturatedError(RuntimeError):
     """Raised when a route's thread already holds as much work as it admits."""
 
 
+class RouteIOClosedError(RuntimeError):
+    """Raised when a route's thread has been shut down."""
+
+
 class RouteIO:
     """Runs one route's blocking client calls on that route's own thread."""
 
@@ -36,6 +40,7 @@ class RouteIO:
         self._pending = 0
         self._lock = threading.Lock()
         self._executor: ThreadPoolExecutor | None = None
+        self._closed = False
 
     @property
     def pending(self) -> int:
@@ -44,6 +49,8 @@ class RouteIO:
 
     async def run(self, fn: Callable[..., T], /, *args: Any, **kwargs: Any) -> T:
         with self._lock:
+            if self._closed:
+                raise RouteIOClosedError(f"{self._name} is shut down")
             if self._pending >= self._ceiling:
                 raise RouteIOSaturatedError(
                     f"{self._name} holds {self._pending} client calls already"
@@ -61,9 +68,18 @@ class RouteIO:
         with self._lock:
             self._pending -= 1
 
-    def shutdown(self) -> None:
-        """Release the thread without waiting on a call the broker never answered."""
+    def open(self) -> None:
+        """Admit work again, for a route that is serving."""
         with self._lock:
+            self._closed = False
+
+    def shutdown(self) -> None:
+        """Release the thread without waiting on a call the broker never answered.
+
+        Work submitted afterwards is refused, never given a new thread.
+        """
+        with self._lock:
+            self._closed = True
             executor, self._executor = self._executor, None
         if executor is not None:
             executor.shutdown(wait=False, cancel_futures=True)

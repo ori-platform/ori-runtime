@@ -1099,16 +1099,20 @@ class _ManualAckClient(_Courier):
         self.manual = False
         self.acked: list[int] = []
         self.sessions = 0
+        self.session_at: list[float] = []
+        self.ack_code = 0
 
     def loop_start(self) -> None:
         self.sessions += 1
+        self.session_at.append(time.monotonic())
         super().loop_start()
 
     def manual_ack_set(self, on: bool) -> None:
         self.manual = on
 
-    def ack(self, mid: int, qos: int) -> None:
+    def ack(self, mid: int, qos: int) -> int:
         self.acked.append(mid)
+        return self.ack_code
 
 
 async def test_a_message_past_the_bound_is_left_unacknowledged(tmp_path: Path) -> None:
@@ -1322,6 +1326,45 @@ def _deliver(client: Any, mids: range, payload: bytes = _MALFORMED_RECEIPT) -> N
         )
 
 
+@asynccontextmanager
+async def _fast_reconnect(seconds: float = 0.05) -> AsyncIterator[None]:
+    with patch.object(evidence_inbound, "_RECONNECT_MIN_S", seconds):
+        yield
+
+
+class TestRedeliveryTiming:
+    async def test_past_the_bound_reconnects_at_once(self, tmp_path: Path) -> None:
+        async with _site(tmp_path) as site, _fast_reconnect(1.0):
+            subscriber, client = await _serving(site)
+            site.lock("evidence.db")
+            _deliver(client, range(1, INBOUND_IN_FLIGHT_BOUND + 5))
+            await _until(lambda: subscriber.shed_count == 4)
+            site.release()
+            await _until(lambda: subscriber._in_flight == 0)
+            drained = time.monotonic()
+            await _until(lambda: client.sessions >= 2)
+            assert client.sessions >= 2
+            assert client.session_at[1] - drained < 0.5
+
+    async def test_a_failed_route_reconnects_only_after_a_growing_backoff(
+        self, tmp_path: Path
+    ) -> None:
+        async with _site(tmp_path) as site, _fast_reconnect(0.3):
+            subscriber, client = await _serving(site)
+
+            async def broken(_payload: Any) -> Any:
+                raise RuntimeError("ingest failed")
+
+            subscriber._router.route = broken  # type: ignore[method-assign]
+            _deliver(client, range(1, 2))
+            await _until(lambda: client.sessions >= 2, 5.0)
+            _deliver(client, range(2, 3))
+            await _until(lambda: client.sessions >= 3, 5.0)
+            first, second, third = client.session_at[:3]
+            assert second - first >= 0.3, second - first
+            assert third - second >= 0.6, third - second
+
+
 class TestTheInFlightSlots:
     async def test_a_slot_is_released_when_routing_succeeds(
         self, tmp_path: Path
@@ -1334,7 +1377,7 @@ class TestTheInFlightSlots:
             assert sorted(client.acked) == [1, 2, 3, 4, 5]
 
     async def test_a_slot_is_released_when_routing_raises(self, tmp_path: Path) -> None:
-        async with _site(tmp_path) as site:
+        async with _site(tmp_path) as site, _fast_reconnect():
             subscriber, client = await _serving(site)
 
             async def broken(_payload: Any) -> Any:
@@ -1351,7 +1394,7 @@ class TestTheInFlightSlots:
     async def test_a_slot_is_released_when_routing_is_cancelled(
         self, tmp_path: Path
     ) -> None:
-        async with _site(tmp_path) as site:
+        async with _site(tmp_path) as site, _fast_reconnect():
             subscriber, client = await _serving(site)
             site.lock("evidence.db")
             _deliver(client, range(9, 10))
@@ -1522,9 +1565,26 @@ class TestTheInFlightSlots:
             await asyncio.wait_for(inbound, _PROMPT_S)
             assert time.monotonic() - started < 1.0
             assert subscriber._io._executor is None
+            threads = {t.name for t in threading.enumerate()}
             site.release()
             await _until(lambda: subscriber._in_flight == 0)
             assert subscriber._in_flight == 0
+            # The routes still in flight finished without a new route thread,
+            # and nothing was acknowledged on the stopped client.
+            assert subscriber._io._executor is None
+            new = {t.name for t in threading.enumerate()} - threads
+            assert not [n for n in new if n.startswith("ori-evidence-in")], new
+            assert client.acked == []
+
+    async def test_an_ack_the_client_refuses_leaves_the_message_owed(
+        self, tmp_path: Path
+    ) -> None:
+        async with _site(tmp_path) as site, _fast_reconnect():
+            subscriber, client = await _serving(site)
+            client.ack_code = 4  # paho's MQTT_ERR_NO_CONN
+            _deliver(client, range(1, 2))
+            await _until(lambda: client.sessions >= 2)
+            assert client.sessions >= 2
 
     async def test_a_reconnect_keeps_the_slots_it_holds(self, tmp_path: Path) -> None:
         async with _site(tmp_path) as site:
@@ -1687,3 +1747,21 @@ class TestTheExecutorsAreBounded:
         finally:
             hold.set()
             await store.close()
+
+
+async def test_the_confirmation_read_back_holds_no_default_executor_thread(
+    tmp_path: Path,
+) -> None:
+    """The firmware confirmation read-back awaits the evidence worker directly."""
+    from ori.security.firmware.confirmation import FirmwareConfirmationCoordinator
+
+    async with _site(tmp_path) as site:
+        backend = site.attestor.confirmation_backend()
+        assert backend is not None
+        coordinator = FirmwareConfirmationCoordinator(store=site.store, chain=backend)
+
+        async def no_default_executor(*_a: Any, **_k: Any) -> Any:
+            raise AssertionError("the read-back used the loop's default executor")
+
+        with patch.object(asyncio, "to_thread", no_default_executor):
+            assert await coordinator._readback("fw-1") is None

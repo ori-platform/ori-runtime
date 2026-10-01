@@ -298,3 +298,9 @@ class ExecutorBoundConfirmationBackend:
 
     def active_anchor_epoch_id(self, device_id: str) -> str | None:
         return self._executor.run(self._reader.active_anchor_epoch_id, device_id)
+
+    async def active_anchor_epoch_id_async(self, device_id: str) -> str | None:
+        """The same read, awaited without holding a thread outside the worker."""
+        return await self._executor.run_async(
+            self._reader.active_anchor_epoch_id, device_id
+        )

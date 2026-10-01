@@ -331,6 +331,10 @@ SURFACE_TOUCHES: dict[str, str] = {
     "._readback::active_anchor_epoch_id": (
         "grant side: the coordinator's evidence read-back for a newly approved epoch"
     ),
+    "ori/security/firmware/confirmation.py::FirmwareConfirmationCoordinator"
+    "._readback::active_anchor_epoch_id_async": (
+        "grant side: the same read-back, awaited on the evidence worker"
+    ),
     "ori/security/firmware/mqtt_provisioning.py::_canonical_response_object"
     "::active_anchor_epoch_id": (
         "a wire field name in a provisioning response object, not a read"

@@ -302,6 +302,8 @@ class MqttEvidenceInboundSubscriber:
         self._manual_ack = False
         self._owed_lock = threading.Lock()
         self._redelivery_owed = False
+        self._owed_after_failure = False
+        self._redeliver_after_failure = False
         self._redeliver: asyncio.Event | None = None
 
     @property
@@ -329,6 +331,7 @@ class MqttEvidenceInboundSubscriber:
         self._lost = asyncio.Event()
         self._redeliver = asyncio.Event()
         delay = _RECONNECT_MIN_S
+        self._io.open()
         try:
             await self._serve(shutdown_event, delay)
         finally:
@@ -339,7 +342,8 @@ class MqttEvidenceInboundSubscriber:
             redeliver = False
             try:
                 redeliver = await self._connect_and_serve(shutdown_event)
-                delay = _RECONNECT_MIN_S
+                if not (redeliver and self._redeliver_after_failure):
+                    delay = _RECONNECT_MIN_S
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -353,8 +357,16 @@ class MqttEvidenceInboundSubscriber:
                 await self.close()
             if shutdown_event.is_set():
                 return
-            if redeliver:
+            if redeliver and not self._redeliver_after_failure:
+                # Past the bound only: the broker holds what was left, and the
+                # route has room for it now.
                 continue
+            if redeliver:
+                logger.warning(
+                    "[evidence-inbound] routing failed; reconnecting for "
+                    "redelivery in %.0fs",
+                    delay,
+                )
             try:
                 await asyncio.wait_for(shutdown_event.wait(), timeout=delay)
                 return
@@ -540,16 +552,22 @@ class MqttEvidenceInboundSubscriber:
             )
         except Exception:
             logger.warning("[evidence-inbound] could not schedule a message")
-            self._owe_redelivery()
+            self._owe_redelivery(failed=True)
             self._give_back()
             return
         future.add_done_callback(functools.partial(self._settled, ticket))
 
-    def _owe_redelivery(self) -> bool:
-        """Mark a redelivery owed; True when this is the first of the episode."""
+    def _owe_redelivery(self, *, failed: bool = False) -> bool:
+        """Mark a redelivery owed; True when this is the first of the episode.
+
+        *failed* when routing itself did not complete: the reconnect for it
+        then waits out the route's backoff, since redelivering at once would
+        only fail again.
+        """
         with self._owed_lock:
             first = not self._redelivery_owed
             self._redelivery_owed = True
+            self._owed_after_failure = self._owed_after_failure or failed
             return first
 
     def _give_back(self) -> None:
@@ -558,14 +576,16 @@ class MqttEvidenceInboundSubscriber:
             return
         with self._owed_lock:
             owed, self._redelivery_owed = self._redelivery_owed, False
+            failed, self._owed_after_failure = self._owed_after_failure, False
         loop, redeliver = self._loop, self._redeliver
         if owed and loop is not None and redeliver is not None:
+            self._redeliver_after_failure = failed
             loop.call_soon_threadsafe(redeliver.set)
 
     def _settled(self, ticket: _Ticket, future: Any) -> None:
         # A route cancelled before it started never reached its own release.
         if not ticket.started:
-            self._owe_redelivery()
+            self._owe_redelivery(failed=True)
             self._give_back()
         _log_future_failure(future)
 
@@ -586,7 +606,7 @@ class MqttEvidenceInboundSubscriber:
         except EvidenceExecutorSaturatedError:
             # Left with the broker like a message past the bound, and reported
             # once per episode rather than once per message.
-            if self._owe_redelivery():
+            if self._owe_redelivery(failed=True):
                 logger.warning(
                     "[evidence-inbound] the evidence worker is saturated; "
                     "messages are left with the broker until it clears"
@@ -596,16 +616,19 @@ class MqttEvidenceInboundSubscriber:
                 # Routing failed or was cancelled before the broker released
                 # the message: it is still the broker's, and comes back after
                 # the reconnect.
-                self._owe_redelivery()
+                self._owe_redelivery(failed=True)
 
     async def _acknowledge(self, client: Any, mid: Any, qos: Any) -> bool:
         """Release the message at the broker once it has been routed."""
         if not self._manual_ack or mid is None:
             return True
         try:
-            await self._io.run(client.ack, mid, qos)
+            code = await self._io.run(client.ack, mid, qos)
         except Exception:
             logger.warning("[evidence-inbound] failed to acknowledge a message")
+            return False
+        if _rc_value(code) != 0:
+            logger.warning("[evidence-inbound] the client refused an ack rc=%s", code)
             return False
         return True
 
