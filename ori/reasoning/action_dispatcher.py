@@ -1150,37 +1150,34 @@ class ActionDispatcher:
                 action = safe_default_action
                 tier = ActionTier.INFORMATIONAL
 
-        # Nothing that records a Tier D act runs ahead of it, or ahead of the
-        # next one: a busy store or a signer that never returns would otherwise
-        # hold a trip. Records of a Tier D act — the override entry an
-        # autonomous dispatch is, and the action row — and of an approved act
-        # are opened here, before the act, so the shutdown drain holds them
-        # while the executor is still driving; tracked tasks write them once
-        # there is something to write, and retry a store that is busy or
-        # locked rather than losing them.
-        record: asyncio.Future[ActionResult] | None = None
-        if tier in (ActionTier.SAFETY_CRITICAL, ActionTier.HARD_PHYSICAL) or (
-            tier == ActionTier.SOFT_PHYSICAL and self._tier_b_requires_approval(context)
-        ):
-            opened: asyncio.Future[ActionResult] = (
-                asyncio.get_running_loop().create_future()
-            )
-            record = opened
-            if tier == ActionTier.SAFETY_CRITICAL:
-                # Deferred on the same settled result as the row, and registered
-                # first, so it is written after the act and ahead of the row:
-                # a record submitted now would race the executor for the store.
-                self._defer_record(
-                    lambda: self._log_tier_d_override(action, context),
-                    after=opened,
-                    label=f"override_log autonomous_tier_d action={action}",
-                )
+        # Nothing that records an act runs ahead of it, or ahead of the next
+        # one: a busy store or a signer that never returns would otherwise hold
+        # a trip, and rows awaited inline queue on the store's write lock ahead
+        # of the commit an approval waits on. Every act's records — for a
+        # Tier D act the override entry an autonomous dispatch is, and for
+        # every act its row — are opened here, before the act, so the shutdown
+        # drain holds them while the executor is still driving; one bounded
+        # writer writes them once there is something to write, and retries a
+        # store that is busy or locked rather than losing them.
+        opened: asyncio.Future[ActionResult] = (
+            asyncio.get_running_loop().create_future()
+        )
+        record = opened
+        if tier == ActionTier.SAFETY_CRITICAL:
+            # Deferred on the same settled result as the row, and registered
+            # first, so it is written after the act and ahead of the row:
+            # a record submitted now would race the executor for the store.
             self._defer_record(
-                lambda: self._log_action(opened.result(), context, durable=True),
+                lambda: self._log_tier_d_override(action, context),
                 after=opened,
-                label=lambda: _record_label(opened.result()),
-                report=True,
+                label=f"override_log autonomous_tier_d action={action}",
             )
+        self._defer_record(
+            lambda: self._log_action(opened.result(), context, durable=True),
+            after=opened,
+            label=lambda: _record_label(opened.result()),
+            report=True,
+        )
         try:
             return await self._admit_and_run(
                 action,

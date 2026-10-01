@@ -254,6 +254,7 @@ class TestTierA:
         ctx = SkillContext(skill=FakeSkill(), event=_event(), state_store=store)
         d = ActionDispatcher()
         await d.dispatch("alert_whatsapp", ActionTier.INFORMATIONAL, ctx, _result())
+        await d.drain_records()
         store.log_action_for_event.assert_awaited_once()
 
     async def test_returns_action_result_instance(self):
@@ -1323,6 +1324,7 @@ class TestLogging:
         ctx = SkillContext(skill=FakeSkill(), event=_event(), state_store=None)
         d = ActionDispatcher(state_store=store)
         await d.dispatch("alert_whatsapp", ActionTier.INFORMATIONAL, ctx, _result())
+        await d.drain_records()
         store.log_action_for_event.assert_awaited_once()
 
     async def test_context_store_takes_priority(self):
@@ -1331,6 +1333,7 @@ class TestLogging:
         ctx = SkillContext(skill=FakeSkill(), event=_event(), state_store=ctx_store)
         d = ActionDispatcher(state_store=dispatcher_store)
         await d.dispatch("alert_whatsapp", ActionTier.INFORMATIONAL, ctx, _result())
+        await d.drain_records()
         ctx_store.log_action_for_event.assert_awaited_once()
         dispatcher_store.log_action_for_event.assert_not_awaited()
 
@@ -1352,6 +1355,7 @@ class TestLogging:
 
         d.register_executor("alert_whatsapp", boom)
         await d.dispatch("alert_whatsapp", ActionTier.INFORMATIONAL, ctx, _result())
+        await d.drain_records()
         store.log_action_for_event.assert_awaited_once()
 
 

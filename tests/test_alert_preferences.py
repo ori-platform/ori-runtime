@@ -645,6 +645,7 @@ async def test_the_real_dispatcher_logs_a_suppression_as_suppressed(
         ctx, res = _dispatch_inputs()
         suppressed = await dispatcher.dispatch("alert_sms", "A", ctx, res)
         failed = await dispatcher.dispatch("alert_whatsapp", "A", ctx, res)
+        await dispatcher.drain_records()
 
         assert suppressed.executed is False
         assert suppressed.action_taken == "suppressed"

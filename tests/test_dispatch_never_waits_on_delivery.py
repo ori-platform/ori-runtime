@@ -1769,3 +1769,52 @@ async def test_the_confirmation_read_back_holds_no_default_executor_thread(
 
         with patch.object(asyncio, "to_thread", no_default_executor):
             assert await coordinator._readback("fw-1") is None
+
+
+class TestABacklogOfNoticesCannotHoldAnApproval:
+    async def test_the_approval_is_committed_ahead_of_queued_notice_rows(
+        self, tmp_path: Path
+    ) -> None:
+        """A run of notices written slowly cannot push a proposal past its lifetime.
+
+        Every act's row goes through the one bounded writer, so a backlog of
+        them holds the store's write lock one row at a time, never as a queue
+        ahead of the proposal's commit.
+        """
+        async with _site(tmp_path) as site:
+            real = site.store._log_action_sync
+
+            def slow(*args: Any, **kwargs: Any) -> Any:
+                time.sleep(0.2)
+                return real(*args, **kwargs)
+
+            site.store._log_action_sync = slow  # type: ignore[method-assign]
+            from ori.network.events import ReasoningResult
+            from ori.reasoning.elevator import SkillContext
+
+            context = SkillContext(
+                skill=_protector(),
+                event=_event("current_clamp"),
+                state_store=site.store,
+                trigger_name="drift",
+            )
+            # Thirty notices settling at once, as a run of incidents leaves.
+            notices = [
+                asyncio.create_task(
+                    site.dispatcher.dispatch(
+                        "log_to_dashboard",
+                        "A",
+                        context,
+                        ReasoningResult(
+                            text="x", tier="rule", model="", tokens_used=0, latency_ms=0
+                        ),
+                    )
+                )
+                for _ in range(30)
+            ]
+            await asyncio.sleep(0.05)
+            approved = await site.approve()
+            await asyncio.gather(*notices)
+            assert approved["ran"] == 1, approved
+            assert approved["after_s"] < _APPROVAL_ROUND_BOUND_S, approved
+            assert await site.decided() == _DECIDED
