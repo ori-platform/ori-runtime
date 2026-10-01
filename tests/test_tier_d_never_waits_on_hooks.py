@@ -13,7 +13,6 @@ plan reaches, a notification, never a proven physical trip.
 from __future__ import annotations
 
 import asyncio
-import gc
 import shutil
 import threading
 import time
@@ -570,21 +569,51 @@ def _stall(kind: str, release: threading.Event) -> Any:
 
 
 class TestAStalledHookRunsOffTheLoop:
+    def test_a_cpu_bound_hook_in_a_fresh_interpreter(self) -> None:
+        """The CPU-bound case, in an interpreter of its own.
+
+        A CPU-bound hook shares the interpreter lock with the loop. Inside a
+        long test session other threads contend for it too and the measured
+        latency reflects them; the bound here is for one runtime's own
+        threads, so the case runs where only those exist.
+        """
+        import os
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "-p",
+                "no:cacheprovider",
+                __file__,
+                "-k",
+                "test_the_next_incident_acts_while_the_hook_is_stuck and cpu",
+            ],
+            env={**os.environ, "ORI_CPU_HOOK_CASE": "1"},
+            capture_output=True,
+            text=True,
+            timeout=120,
+            cwd=str(Path(__file__).resolve().parent.parent),
+        )
+        assert result.returncode == 0, result.stdout[-3000:]
+        assert "2 passed" in result.stdout, result.stdout[-1000:]
+
     @pytest.mark.parametrize("kind", ["event", "sleep", "cpu"])
     @pytest.mark.parametrize("name", sorted(_TIER_D_READINGS))
     async def test_the_next_incident_acts_while_the_hook_is_stuck(
         self, name: str, kind: str, tmp_path: Path
     ) -> None:
+        import os
+
+        if kind == "cpu" and os.environ.get("ORI_CPU_HOOK_CASE") != "1":
+            pytest.skip("runs in a fresh interpreter, see the test above")
         trigger, sensor_type, value = _TIER_D_READINGS[name]
         normal = 5.0 if name == "energy-anomaly-detector" else 60.0
         release = threading.Event()
-        if kind == "cpu":
-            # A CPU-bound hook shares the interpreter lock, which the loop gets
-            # back at every switch interval. A collection of the whole suite's
-            # heap, run from whichever thread allocates, pauses both alike and
-            # is not what this measures.
-            gc.collect()
-            gc.disable()
         async with _site(tmp_path) as site:
             bus, (skill,) = _register(site, [name])
             skill.hooks.pre_trigger_eval = _stall(kind, release)
@@ -608,7 +637,6 @@ class TestAStalledHookRunsOffTheLoop:
                 assert fired[0][1] - produced[0] < _TRIP_BOUND_S
             finally:
                 release.set()
-                gc.enable()
 
     async def test_readings_past_a_stuck_hook_are_skipped_not_queued(
         self, tmp_path: Path
