@@ -1239,9 +1239,16 @@ def test_the_broker_proof_fails_rather_than_skips_when_required(
 ) -> None:
     monkeypatch.setattr(sys.modules[__name__], "_mosquitto", lambda: None)
     monkeypatch.setenv("ORI_REQUIRE_MQTT_BROKER", "1")
-    with pytest.raises(pytest.fail.Exception, match="ORI_REQUIRE_MQTT_BROKER"):
+    # A skip is an outcome here, not a pass: catch it and fail on it.
+    try:
         with _broker(tmp_path):
             pass
+    except pytest.fail.Exception as exc:
+        assert "ORI_REQUIRE_MQTT_BROKER" in str(exc)
+    except pytest.skip.Exception:
+        pytest.fail("the broker proof skipped where it is required")
+    else:
+        pytest.fail("the broker proof ran without a broker")
 
 
 def test_ci_installs_the_broker_and_requires_the_proof() -> None:
