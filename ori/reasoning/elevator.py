@@ -17,6 +17,7 @@ and returns a :class:`~ori.network.events.ReasoningResult`.
 
 import ast
 import asyncio
+import copy
 import datetime
 import inspect
 import json
@@ -46,6 +47,7 @@ from ori.reasoning.rule_engine import (
     RuleEngineSafetyError,
     RuleResult,
 )
+from ori.skills.hook_runner import HookRunner, HookSkippedError
 from ori.utils.time_utils import now_ms
 
 if TYPE_CHECKING:
@@ -218,6 +220,8 @@ class IntelligenceElevator:
         self._local_llm = local_llm
         self._gateway_reasoner = gateway_reasoner
         self._rule_engine = rule_engine or RuleEngine()
+        # Skill hooks run here, off the event loop, one at a time.
+        self._hooks = HookRunner()
         self._config = (
             config  # ReasoningConfig from ori.yaml; None in test environments
         )
@@ -573,23 +577,58 @@ class IntelligenceElevator:
         if hasattr(skill, "hooks") and hasattr(skill.hooks, "pre_trigger_eval"):
             from ori.skills.hooks_api import HookContext
 
+            # The hook gets its own copy of the configuration and its own
+            # context; only its derived values come back, merged on the loop.
             hook_ctx = HookContext.build(
                 event,
                 state_store,
                 getattr(skill, "name", "unknown"),
-                skill_config=getattr(skill, "config", None),
+                skill_config=copy.deepcopy(getattr(skill, "config", None)),
             )
             try:
-                maybe = skill.hooks.pre_trigger_eval(hook_ctx)
-                if asyncio.iscoroutine(maybe):
-                    await maybe
-                ctx.update(_without_reserved_names(hook_ctx.derived, skill))
+                await self._hooks.run(skill.hooks.pre_trigger_eval, hook_ctx)
+                ctx.update(_without_reserved_names(dict(hook_ctx.derived), skill))
+            except HookSkippedError as exc:
+                logger.warning(
+                    "IntelligenceElevator: pre_trigger_eval for %r skipped (%s); "
+                    "triggers needing its output are not evaluated for this reading",
+                    getattr(skill, "name", "unknown"),
+                    exc,
+                )
             except Exception:
                 logger.exception(
                     "IntelligenceElevator: pre_trigger_eval hook failed for %r",
                     getattr(skill, "name", "unknown"),
                 )
         return ctx, hook_ctx
+
+    async def close_hooks(self) -> int:
+        """Stop the skill hook thread within a bound; return hooks lost."""
+        return await self._hooks.close()
+
+    async def _post_reasoning(
+        self, skill: Any, result: ReasoningResult, pt_ctx: Any, rule_result: Any
+    ) -> None:
+        """Run a post_reasoning hook off the loop, on a copy of the result.
+
+        The hook mutates the result it is given; it is handed a copy, and the
+        copy is taken back only when the hook finished in time.
+        """
+        if str(getattr(rule_result, "action_tier", "") or "").upper() == "D":
+            # A Tier D incident's work never waits on a hook, not even to
+            # enrich its notices' text.
+            return
+        working = copy.copy(result)
+        try:
+            await self._hooks.run(skill.hooks.post_reasoning, working, pt_ctx)
+        except HookSkippedError as exc:
+            logger.warning(
+                "IntelligenceElevator: post_reasoning for %r skipped (%s)",
+                getattr(skill, "name", "unknown"),
+                exc,
+            )
+            return
+        result.__dict__.update(working.__dict__)
 
     async def _evaluate_rules_with_hooks(
         self, event: OriEvent, skill: Any, state_store: Any
@@ -1210,9 +1249,7 @@ class IntelligenceElevator:
         pt_ctx.trigger_name = rule_result.rule_name if rule_result.matched else ""
 
         try:
-            maybe = skill.hooks.post_reasoning(result, pt_ctx)
-            if asyncio.iscoroutine(maybe):
-                await maybe
+            await self._post_reasoning(skill, result, pt_ctx, rule_result)
         except Exception:
             logger.exception(
                 "IntelligenceElevator: post_reasoning hook failed for %r",
@@ -1583,9 +1620,7 @@ class IntelligenceElevator:
                 pt_ctx.trigger_name = rule_res.rule_name if rule_res.matched else ""
 
                 try:
-                    maybe = skill.hooks.post_reasoning(result, pt_ctx)
-                    if asyncio.iscoroutine(maybe):
-                        await maybe
+                    await self._post_reasoning(skill, result, pt_ctx, rule_res)
                 except Exception:
                     logger.exception(
                         "IntelligenceElevator: post_reasoning hook failed for %r",

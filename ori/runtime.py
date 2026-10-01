@@ -494,6 +494,7 @@ class OriRuntime:
         self._sms_webhook_server: SMSWebhookServer | None = None
         self._dispatcher: ActionDispatcher | None = None
         self._event_bus: EventBus | None = None
+        self._elevator: IntelligenceElevator | None = None
         self._skill_loader: SkillLoader | None = None
         self._skills_dir: str | None = None
         self._loaded_skills: list[Any] = []
@@ -1438,6 +1439,7 @@ class OriRuntime:
         event_bus = EventBus()
         elevator.attach_event_bus(event_bus)
         self._event_bus = event_bus
+        self._elevator = elevator
         if posture_tracker is not None:
             # Build an initial posture snapshot before processing events.
             posture = await posture_tracker.refresh(
@@ -2067,6 +2069,13 @@ class OriRuntime:
                     )
             except Exception:
                 logger.exception("[shutdown] open Tier C proposals could not be closed")
+
+        # 2a. Stop the skill hook thread. A hook that does not finish within
+        #     the bound is abandoned and counted lost, never waited for.
+        if self._elevator is not None:
+            lost_hooks = await self._elevator.close_hooks()
+            if lost_hooks:
+                logger.warning("[shutdown] %d skill hook call(s) lost", lost_hooks)
 
         # 2b. Write the records of acts. They are kept off each act's path, so
         #     they settle afterwards, and must land while the store and the

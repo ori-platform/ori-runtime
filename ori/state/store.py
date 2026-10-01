@@ -1194,8 +1194,11 @@ class StateStore:
         self._write_executor: ThreadPoolExecutor | None = None
         self._read_executor: ThreadPoolExecutor | None = None
         self._read_admission: asyncio.Semaphore | None = None
-        # Skill hooks' own connection: never the writer's, short busy timeout.
-        self._hook_conn: sqlite3.Connection | None = None
+        # Skill hooks' own connections, one per calling thread (the hook
+        # thread, and the loop for prompt history): never the writer's, each
+        # used only by the thread that opened it, with a short busy timeout.
+        self._hook_local = threading.local()
+        self._hook_conns: list[tuple[threading.Thread, sqlite3.Connection]] = []
         self._hook_lock = threading.Lock()
         self._hook_busy_until = 0.0
 
@@ -1287,9 +1290,14 @@ class StateStore:
             self._write_executor = self._read_executor = None
             self._read_admission = None
             with self._hook_lock:
-                hook_conn, self._hook_conn = self._hook_conn, None
-            if hook_conn is not None:
-                hook_conn.close()
+                hook_conns, self._hook_conns = self._hook_conns, []
+                self._hook_local = threading.local()
+            for owner, hook_conn in hook_conns:
+                # A hook abandoned mid-call still holds its connection; it is
+                # left to the abandoned thread rather than closed under it.
+                if owner is threading.current_thread() or not owner.is_alive():
+                    with contextlib.suppress(sqlite3.Error):
+                        hook_conn.close()
 
     def _migrate_sync(self, conn: sqlite3.Connection) -> None:
         conn.executescript(_CORE_DDL)
@@ -2068,27 +2076,32 @@ class StateStore:
             finally:
                 if close_when_done:
                     conn.close()
-        with self._hook_lock:
-            if time.monotonic() < self._hook_busy_until:
-                raise sqlite3.OperationalError(
-                    "database is locked; hook store access is deferred"
-                )
-            if self._hook_conn is None:
-                conn = sqlite3.connect(
-                    self._db_path,
-                    timeout=HOOK_BUSY_TIMEOUT_S,
-                    check_same_thread=False,
-                )
-                conn.row_factory = sqlite3.Row
-                self._hook_conn = conn
-            try:
-                return fn(self._hook_conn, *args, **kwargs)
-            except sqlite3.OperationalError as exc:
-                if "locked" in str(exc) or "busy" in str(exc):
-                    self._hook_busy_until = time.monotonic() + HOOK_BUSY_BACKOFF_S
-                with contextlib.suppress(sqlite3.Error):
-                    self._hook_conn.rollback()
-                raise
+        if time.monotonic() < self._hook_busy_until:
+            raise sqlite3.OperationalError(
+                "database is locked; hook store access is deferred"
+            )
+        conn = self._hook_connection()
+        try:
+            return fn(conn, *args, **kwargs)
+        except sqlite3.OperationalError as exc:
+            if "locked" in str(exc) or "busy" in str(exc):
+                self._hook_busy_until = time.monotonic() + HOOK_BUSY_BACKOFF_S
+            with contextlib.suppress(sqlite3.Error):
+                conn.rollback()
+            raise
+
+    def _hook_connection(self) -> sqlite3.Connection:
+        """This thread's hook connection, opened on first use by this thread."""
+        conn: sqlite3.Connection | None = getattr(self._hook_local, "conn", None)
+        if conn is None:
+            # Thread affinity is enforced by sqlite3 itself: a connection
+            # used from any thread but its opener raises ProgrammingError.
+            conn = sqlite3.connect(self._db_path, timeout=HOOK_BUSY_TIMEOUT_S)
+            conn.row_factory = sqlite3.Row
+            self._hook_local.conn = conn
+            with self._hook_lock:
+                self._hook_conns.append((threading.current_thread(), conn))
+        return conn
 
     def _open_read_conn_sync(self) -> tuple[sqlite3.Connection, bool]:
         """Open a short-lived read connection safe for concurrent executor threads."""

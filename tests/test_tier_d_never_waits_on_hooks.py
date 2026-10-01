@@ -5,8 +5,9 @@
 
 The shipped skills are loaded through the real loader and registered on a real
 event bus, and latency is measured from the reading's publication on that bus.
-Each bundled Tier D trigger here carries notifications only; what is timed is
-the first act its plan reaches.
+Each bundled Tier D trigger here is an unbound safety incident: it carries
+notifications only, no protective outcome. What is timed is the first act its
+plan reaches, a notification, never a proven physical trip.
 """
 
 from __future__ import annotations
@@ -98,10 +99,10 @@ async def _first_act(
     return fired[before][1] - started
 
 
-class TestAHookCannotHoldATrip:
+class TestAHookCannotHoldATierDIncident:
     @pytest.mark.parametrize("name", sorted(_TIER_D_READINGS))
     async def test_a_hook_that_never_returns(self, name: str, tmp_path: Path) -> None:
-        """The hook awaits forever; the trip runs regardless, on every reading."""
+        """The hook awaits forever; the incident acts regardless, on every reading."""
         trigger, sensor_type, value = _TIER_D_READINGS[name]
         async with _site(tmp_path) as site:
             bus, (skill,) = _register(site, [name])
@@ -125,7 +126,7 @@ class TestAHookCannotHoldATrip:
                 never.set()
 
     @pytest.mark.parametrize("name", sorted(_TIER_D_READINGS))
-    async def test_a_hook_that_blocks_the_loop_runs_after_the_trip(
+    async def test_a_hook_that_blocks_runs_after_the_incident_acts(
         self, name: str, tmp_path: Path
     ) -> None:
         trigger, sensor_type, value = _TIER_D_READINGS[name]
@@ -142,7 +143,9 @@ class TestAHookCannotHoldATrip:
             assert latency < _TRIP_BOUND_S, latency
             fired = site.acts.by_trigger[trigger]
             await _until(lambda: bool(called))
-            assert called and called[0] >= fired[0][1], "the hook ran before the trip"
+            assert called and called[0] >= fired[0][1], (
+                "the hook ran before the incident acted"
+            )
 
     @pytest.mark.parametrize("name", sorted(_TIER_D_READINGS))
     async def test_flood_and_both_stores_locked_with_the_hook_held(
@@ -200,14 +203,14 @@ _FOLLOWED_BY_CRITICAL = {
 }
 
 
-class TestAShippedHookCannotHoldTheNextTrip:
+class TestAShippedHookCannotHoldTheNextIncident:
     @pytest.mark.parametrize("case", sorted(_FOLLOWED_BY_CRITICAL))
     async def test_a_critical_reading_after_a_normal_one_with_the_store_locked(
         self, case: str, tmp_path: Path
     ) -> None:
         """The shipped hooks, not stubs, run for the first reading with the
         state store held; the critical reading that follows from the sensor's
-        own thread is tripped within the bound of that thread's clock."""
+        own thread reaches its first act within the bound of that thread's clock."""
         (first_skill, first_type, first_value), (trigger, crit_type, crit_value) = (
             _FOLLOWED_BY_CRITICAL[case]
         )
@@ -420,7 +423,7 @@ def test_set_threshold_cannot_raise_the_shipped_overcurrent_threshold() -> None:
     assert ok
 
 
-class TestTheRewrittenBatteryConditionTripsAsBefore:
+class TestTheRewrittenBatteryConditionMatchesAsBefore:
     def test_every_eligible_reading_matches_as_the_hook_derived_form_did(
         self,
     ) -> None:
@@ -542,3 +545,186 @@ class TestAHookWriteNeverJoinsTheWritersTransaction:
         finally:
             finish.set()
             await store.close()
+
+
+# ── Hooks run off the event loop ─────────────────────────────────────────────
+
+
+def _stall(kind: str, release: threading.Event) -> Any:
+    """A synchronous hook that stalls the way a real one could."""
+
+    def hook(_context: Any) -> None:
+        if kind == "event":
+            release.wait()
+        elif kind == "sleep":
+            deadline = time.monotonic() + 3.0
+            while not release.is_set() and time.monotonic() < deadline:
+                time.sleep(0.05)
+        else:  # cpu
+            deadline = time.monotonic() + 3.0
+            while not release.is_set() and time.monotonic() < deadline:
+                sum(range(1000))
+
+    return hook
+
+
+class TestAStalledHookRunsOffTheLoop:
+    @pytest.mark.parametrize("kind", ["event", "sleep", "cpu"])
+    @pytest.mark.parametrize("name", sorted(_TIER_D_READINGS))
+    async def test_the_next_incident_acts_while_the_hook_is_stuck(
+        self, name: str, kind: str, tmp_path: Path
+    ) -> None:
+        trigger, sensor_type, value = _TIER_D_READINGS[name]
+        normal = 5.0 if name == "energy-anomaly-detector" else 60.0
+        release = threading.Event()
+        async with _site(tmp_path) as site:
+            bus, (skill,) = _register(site, [name])
+            skill.hooks.pre_trigger_eval = _stall(kind, release)
+            loop = asyncio.get_running_loop()
+            fired = site.acts.by_trigger.setdefault(trigger, [])
+            produced: list[float] = []
+
+            def sensor() -> None:
+                _publish_from_sensor_thread(bus, loop, _reading(sensor_type, normal))
+                time.sleep(0.3)
+                produced.append(
+                    _publish_from_sensor_thread(bus, loop, _reading(sensor_type, value))
+                )
+
+            thread = threading.Thread(target=sensor)
+            thread.start()
+            try:
+                await asyncio.to_thread(thread.join, 5.0)
+                await _until(lambda: bool(fired))
+                assert fired, f"{trigger} did not act behind a stuck hook"
+                assert fired[0][1] - produced[0] < _TRIP_BOUND_S
+            finally:
+                release.set()
+
+    async def test_readings_past_a_stuck_hook_are_skipped_not_queued(
+        self, tmp_path: Path
+    ) -> None:
+        from ori.skills.hook_runner import HOOK_QUEUE_CAPACITY
+
+        release = threading.Event()
+        async with _site(tmp_path) as site:
+            bus, (skill,) = _register(site, ["energy-anomaly-detector"])
+            skill.hooks.pre_trigger_eval = _stall("event", release)
+            runner = site.coordinator._elevator._hooks
+            try:
+                for _ in range(HOOK_QUEUE_CAPACITY + 6):
+                    await bus.publish(_reading("current_clamp", 5.0))
+                await _until(lambda: runner.skipped_saturated >= 5)
+                assert runner.pending <= HOOK_QUEUE_CAPACITY
+                assert runner.skipped_saturated >= 5
+            finally:
+                release.set()
+
+    async def test_a_hook_past_its_timeout_is_skipped_for_its_reading(
+        self, tmp_path: Path
+    ) -> None:
+        release = threading.Event()
+        async with _site(tmp_path) as site:
+            bus, (skill,) = _register(site, ["energy-anomaly-detector"])
+            runner = site.coordinator._elevator._hooks
+            runner._timeout_s = 0.2
+            real = skill.hooks.pre_trigger_eval
+            calls: list[int] = []
+
+            def slow(context: Any) -> None:
+                calls.append(1)
+                real(context)
+                release.wait(2.0)
+
+            skill.hooks.pre_trigger_eval = slow
+            for n in range(3):
+                await site.store.append_history(_reading("current_clamp", 5.0 + n))
+            try:
+                await bus.publish(_reading("current_clamp", 30.0))
+                await _until(lambda: runner.timed_out >= 1)
+                assert runner.timed_out == 1
+                # Tier D was decided without it; the notices that need the
+                # hook's baseline were not evaluated for this reading.
+                assert "dangerous_overcurrent" in site.acts.by_trigger
+                await site._finish_dispatches()
+                assert "sudden_load_spike" not in site.acts.by_trigger
+            finally:
+                release.set()
+
+    async def test_stop_abandons_a_stuck_hook_within_its_bound(
+        self, tmp_path: Path
+    ) -> None:
+        release = threading.Event()
+        async with _site(tmp_path) as site:
+            bus, (skill,) = _register(site, ["energy-anomaly-detector"])
+            skill.hooks.pre_trigger_eval = _stall("event", release)
+            await bus.publish(_reading("current_clamp", 5.0))
+            await bus.publish(_reading("current_clamp", 5.0))
+            runner = site.coordinator._elevator._hooks
+            await _until(lambda: runner.pending >= 1)
+            started = time.monotonic()
+            lost = await asyncio.wait_for(runner.close(timeout_s=0.3), 2.0)
+            assert time.monotonic() - started < 1.0
+            assert lost >= 2, lost
+            assert runner.lost_at_shutdown == lost
+            release.set()
+
+    async def test_hooks_run_with_the_default_executor_full(
+        self, tmp_path: Path
+    ) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        async with _site(tmp_path) as site:
+            bus, (skill,) = _register(site, ["energy-anomaly-detector"])
+            loop = asyncio.get_running_loop()
+            loop.set_default_executor(ThreadPoolExecutor(max_workers=2))
+            hold = threading.Event()
+            held = [loop.run_in_executor(None, hold.wait) for _ in range(2)]
+            ran: list[float] = []
+            real = skill.hooks.pre_trigger_eval
+
+            def recorded(context: Any) -> None:
+                ran.append(time.monotonic())
+                real(context)
+
+            skill.hooks.pre_trigger_eval = recorded
+            try:
+                await bus.publish(_reading("current_clamp", 5.0))
+                await _until(lambda: bool(ran), 2.0)
+                assert ran, "the hook waited on the loop's default executor"
+            finally:
+                hold.set()
+                await asyncio.gather(*held)
+
+    def test_the_hook_connection_belongs_to_the_thread_that_opened_it(
+        self, tmp_path: Path
+    ) -> None:
+        import sqlite3
+
+        from ori.state.store import StateStore
+
+        async def scenario() -> None:
+            store = StateStore(db_path=str(tmp_path / "state.db"))
+            await store.open()
+            try:
+                store.hooks_set_skill_state("s", "k", "1")
+                mine = store._hook_local.conn
+                other: list[Any] = []
+
+                def elsewhere() -> None:
+                    store.hooks_set_skill_state("s", "k", "2")
+                    other.append(store._hook_local.conn)
+                    try:
+                        mine.execute("SELECT 1")
+                    except sqlite3.ProgrammingError as exc:
+                        other.append(exc)
+
+                thread = threading.Thread(target=elsewhere)
+                thread.start()
+                thread.join(5.0)
+                assert other[0] is not mine and other[0] is not store._conn
+                assert isinstance(other[1], sqlite3.ProgrammingError)
+            finally:
+                await store.close()
+
+        asyncio.run(scenario())
