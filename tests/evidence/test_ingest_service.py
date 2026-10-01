@@ -35,6 +35,7 @@ from ori.security.evidence.device_key import EvidenceDeviceKey
 from ori.security.evidence.ingest import (
     REJECT_BAD_AUTHENTICATOR,
     REJECT_BINDING_MISMATCH,
+    REJECT_MALFORMED,
     REJECT_UNKNOWN_KEY,
     REJECT_UNKNOWN_SEQUENCE,
     REJECT_WRONG_PURPOSE,
@@ -362,6 +363,81 @@ def test_a_receipt_reaching_past_the_sealed_head_is_unknown_sequence(rig):
     outcome = service.accept_receipt(artifact)
     assert outcome.reason == REJECT_UNKNOWN_SEQUENCE
     assert [r["local_seq"] for r in ledger.undelivered()] == [1, 2]
+
+
+def test_a_receipt_at_the_largest_json_integer_is_refused_promptly(rig):
+    """The signed interval's width is counted, never enumerated."""
+    import time
+
+    _, chain, ledger, service = rig
+    for n in (1, 2):
+        _seal(chain, ledger, n)
+    for from_seq in (1, 3):
+        artifact = _receipt(ledger, 1, 2)
+        artifact["from_seq"], artifact["to_seq"] = from_seq, 9007199254740991
+        _sign(artifact, RECEIPT_DOMAIN, RECEIPT_SEED)
+
+        started = time.monotonic()
+        outcome = service.accept_receipt(artifact)
+        assert time.monotonic() - started < 0.5
+        assert outcome.reason == REJECT_UNKNOWN_SEQUENCE
+        assert [r["local_seq"] for r in ledger.undelivered()] == [1, 2]
+
+
+NOT_INTEGERS = (True, False, 1.0, "1")
+
+
+@pytest.mark.parametrize("bad", NOT_INTEGERS, ids=repr)
+@pytest.mark.parametrize("field", ["v", "from_seq", "to_seq", "accepted_at_ms"])
+def test_a_receipt_integer_of_another_json_type_is_malformed(rig, field, bad):
+    """Re-signed, so the refusal can only come from the type."""
+    _, chain, ledger, service = rig
+    _seal(chain, ledger, 1)
+    artifact = _receipt(ledger, 1, 1)
+    artifact[field] = bad
+    _sign(artifact, RECEIPT_DOMAIN, RECEIPT_SEED)
+
+    outcome = service.accept_receipt(artifact)
+    assert outcome.reason == REJECT_MALFORMED
+    assert ledger.find_by_local_seq(1)["receipt_state"] == RECEIPT_NONE
+
+
+@pytest.mark.parametrize("bad", NOT_INTEGERS, ids=repr)
+@pytest.mark.parametrize("field", ["v", "local_seq", "custody_at_ms"])
+def test_a_custody_integer_of_another_json_type_is_malformed(rig, field, bad):
+    _, chain, ledger, service = rig
+    _seal(chain, ledger, 1)
+    artifact = _custody(ledger, 1)
+    artifact[field] = bad
+    _mac(artifact, CUSTODY_SECRET)
+
+    outcome = service.accept_custody(artifact)
+    assert outcome.reason == REJECT_MALFORMED
+    assert ledger.find_by_local_seq(1)["custody_state"] != CUSTODY_HELD
+
+
+@pytest.mark.parametrize("bad", NOT_INTEGERS, ids=repr)
+@pytest.mark.parametrize("field", ["v", "confirmed_at_ms"])
+def test_an_epoch_integer_of_another_json_type_is_malformed(rig, field, bad):
+    key, _, ledger, service = rig
+    _register(ledger, key)
+    artifact = _confirmation(key.public_key_hex)
+    artifact[field] = bad
+    _sign(artifact, EPOCH_DOMAIN, EPOCH_SEED)
+
+    outcome = service.accept_epoch_confirmation(artifact)
+    assert outcome.reason == REJECT_MALFORMED
+    assert ledger.confirmed_epoch(DEVICE) is None
+
+
+def test_the_valid_artifacts_still_pass_the_integer_check(rig):
+    """The negative cases above differ from accepted ones only in the field."""
+    key, chain, ledger, service = rig
+    _seal(chain, ledger, 1)
+    _register(ledger, key)
+    assert service.accept_custody(_custody(ledger, 1)).accepted
+    assert service.accept_receipt(_receipt(ledger, 1, 1)).accepted
+    assert service.accept_epoch_confirmation(_confirmation(key.public_key_hex)).accepted
 
 
 # --------------------------------------------------------------------------

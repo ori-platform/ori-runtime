@@ -98,6 +98,22 @@ REJECT_BAD_AUTHENTICATOR = "bad_authenticator"
 REJECT_UNKNOWN_SEQUENCE = "unknown_sequence"
 REJECT_BINDING_MISMATCH = "binding_mismatch"
 REJECT_NON_CONTIGUOUS = "non_contiguous_range"
+
+#: Every `int` field each authority artifact defines. JSON has no separate
+#: boolean-as-integer, and Python's `True == 1` would otherwise read `"v": true`
+#: as version 1.
+CUSTODY_INTEGERS = frozenset({"v", "local_seq", "custody_at_ms"})
+RECEIPT_INTEGERS = frozenset({"v", "from_seq", "to_seq", "accepted_at_ms"})
+EPOCH_INTEGERS = frozenset({"v", "confirmed_at_ms"})
+#: The contract's integer zone.
+MAX_JSON_INTEGER = 9007199254740991
+
+
+def is_json_integer(value: object) -> bool:
+    """An `int` and not a `bool`, inside the contract's integer zone."""
+    return type(value) is int and -MAX_JSON_INTEGER <= value <= MAX_JSON_INTEGER
+
+
 #: A disposition whose effect is already in force.
 REJECT_SUPERSEDED = "superseded"
 REJECT_REASONS = frozenset(
@@ -141,6 +157,7 @@ class VerifiedReceipt:
     device_id: str
     from_seq: int
     to_seq: int
+    sequences: tuple[int, ...]
     range_digest: str
     accepted_at_ms: int
     key_id: str
@@ -156,7 +173,9 @@ class VerifiedEpochConfirmation:
     key_id: str
 
 
-def _require_shape(artifact: Any, fields: frozenset[str], label: str) -> dict[str, Any]:
+def _require_shape(
+    artifact: Any, fields: frozenset[str], integers: frozenset[str], label: str
+) -> dict[str, Any]:
     if not isinstance(artifact, dict):
         raise IngestRejectedError(REJECT_MALFORMED, f"the {label} is not an object")
     present = set(artifact)
@@ -165,6 +184,11 @@ def _require_shape(artifact: Any, fields: frozenset[str], label: str) -> dict[st
             REJECT_MALFORMED,
             f"the {label} carries {sorted(present - set(fields))} and is missing "
             f"{sorted(set(fields) - present)}",
+        )
+    wrong = sorted(name for name in integers if not is_json_integer(artifact[name]))
+    if wrong:
+        raise IngestRejectedError(
+            REJECT_MALFORMED, f"the {label} carries non-integer {wrong}"
         )
     # Version is checked before anything else is trusted: an unrecognised
     # version means the rest of the object is not this contract's to interpret,
@@ -280,7 +304,9 @@ def verify_custody_acknowledgement(
     authenticated this" unanswerable afterwards -- and during a rotation it
     would silently accept under the wrong generation.
     """
-    parsed = _require_shape(artifact, CUSTODY_FIELDS, "custody acknowledgement")
+    parsed = _require_shape(
+        artifact, CUSTODY_FIELDS, CUSTODY_INTEGERS, "custody acknowledgement"
+    )
 
     # Shape before registry: an identifier that cannot name any generation is
     # malformed, which is a different fact from one that is well formed and not
@@ -372,7 +398,9 @@ def verify_delivery_receipt(
     receipt cannot assert a range it did not actually receive. It is not taken
     over envelope digests: those cover the wire bytes, signature included.
     """
-    parsed = _require_shape(artifact, RECEIPT_FIELDS, "delivery receipt")
+    parsed = _require_shape(
+        artifact, RECEIPT_FIELDS, RECEIPT_INTEGERS, "delivery receipt"
+    )
     key = _select(registry, PURPOSE_RECEIPT, parsed["key_id"])
     signature = _decode_ed25519(parsed["signature"])
     _verify_ed25519(
@@ -390,17 +418,28 @@ def verify_delivery_receipt(
             REJECT_NON_CONTIGUOUS, "the receipt range is not a closed interval"
         )
 
-    missing = [
-        seq for seq in range(from_seq, to_seq + 1) if seq not in chain_row_digests
-    ]
-    if missing:
+    # Counted, never enumerated: the interval is signed, so its width is the
+    # authority's to choose, and only the sealed rows inside it are walked.
+    claimed = to_seq - from_seq + 1
+    held = sorted(
+        seq
+        for seq in chain_row_digests
+        if type(seq) is int and from_seq <= seq <= to_seq
+    )
+    if (
+        len(held) != claimed
+        or held[0] != from_seq
+        or held[-1] != to_seq
+        or any(later - earlier != 1 for earlier, later in zip(held, held[1:]))
+    ):
         raise IngestRejectedError(
             REJECT_UNKNOWN_SEQUENCE,
-            f"the receipt covers {len(missing)} sequences this device never sealed",
+            f"the receipt covers {claimed} sequences and this device sealed "
+            f"{len(held)} of them",
         )
     unreadable = [
         seq
-        for seq in range(from_seq, to_seq + 1)
+        for seq in held
         if not _SHA256_DIGEST_RE.fullmatch(str(chain_row_digests[seq]))
     ]
     if unreadable:
@@ -409,8 +448,7 @@ def verify_delivery_receipt(
             f"{len(unreadable)} sealed chain row digests in the range are unreadable",
         )
     concatenated = b"".join(
-        bytes.fromhex(str(chain_row_digests[seq])[len("sha256:") :])
-        for seq in range(from_seq, to_seq + 1)
+        bytes.fromhex(str(chain_row_digests[seq])[len("sha256:") :]) for seq in held
     )
     expected = "sha256:" + hashlib.sha256(concatenated).hexdigest()
     if str(parsed["range_digest"]) != expected:
@@ -422,6 +460,7 @@ def verify_delivery_receipt(
         device_id=str(parsed["device_id"]),
         from_seq=from_seq,
         to_seq=to_seq,
+        sequences=tuple(held),
         range_digest=str(parsed["range_digest"]),
         accepted_at_ms=int(parsed["accepted_at_ms"]),
         key_id=str(parsed["key_id"]),
@@ -442,7 +481,9 @@ def verify_epoch_confirmation(
     device's anchor would advance this one's epoch — which is the substitution
     the whole `(purpose, key_id)` and device-binding apparatus exists to stop.
     """
-    parsed = _require_shape(artifact, EPOCH_FIELDS, "epoch confirmation")
+    parsed = _require_shape(
+        artifact, EPOCH_FIELDS, EPOCH_INTEGERS, "epoch confirmation"
+    )
     key = _select(registry, PURPOSE_EPOCH, parsed["key_id"])
     signature = _decode_ed25519(parsed["signature"])
     _verify_ed25519(

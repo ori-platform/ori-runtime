@@ -496,6 +496,10 @@ async def test_a_disposition_not_bound_to_a_sealed_artifact_changes_nothing(site
             ),
             "malformed",
         ),
+        *(
+            (f"decided_at_ms {bad!r}", replace(base, decided_at_ms=bad), "malformed")
+            for bad in (True, False, 1.0, "1787000009000", 2**53)
+        ),
     ]
     for name, disposition, reason in cases:
         outcome = await _apply(site, disposition)

@@ -537,6 +537,17 @@ candidate or release is cut.
   An envelope whose receipt was refused stays in custody and unreceipted; the
   runtime does not re-offer an envelope a courier holds, so it is receipted
   only when the authority's receipt for it is delivered again.
+- A correctly signed receipt naming a very wide interval is refused
+  `unknown_sequence` at once. The verifier enumerated every integer in
+  `from_seq..to_seq` after the signature check, so a receipt up to the
+  contract's integer limit held the evidence worker; it now counts the claimed
+  interval and walks only the sealed rows inside it, and the applied sequences
+  are those rows.
+- Integer fields of authority artifacts must be JSON integers. `"v": true` was
+  read as version 1 because Python compares `True == 1`; every `int` field of
+  a custody acknowledgement, delivery receipt and epoch confirmation, and a
+  verified disposition's `decided_at_ms`, is now refused `malformed` when it is
+  a boolean, a float, a string, or outside the contract's integer zone.
 - HTTP telemetry export sends the readings the runtime publishes. The poll loop
   and the firmware telemetry subscriber publish a reading as
   `sensor.<sensor_type>`, and the exporter admitted only `sensor.reading`, so a

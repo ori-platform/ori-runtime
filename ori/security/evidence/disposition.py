@@ -76,8 +76,16 @@ class NoDispositionVerifier:
         return None
 
 
+#: The contract's integer zone.
+_MAX_JSON_INTEGER = 9007199254740991
+
+
 def disposition_fault(disposition: VerifiedDisposition) -> str | None:
     """Why a verified disposition is malformed, or None when its shape holds."""
+    if type(disposition.decided_at_ms) is not int or not (
+        -_MAX_JSON_INTEGER <= disposition.decided_at_ms <= _MAX_JSON_INTEGER
+    ):
+        return "the disposition's decided_at_ms is not an integer"
     if not isinstance(disposition.value, DispositionValue):
         return "the disposition value is outside the closed vocabulary"
     if not isinstance(disposition.scope, DispositionScope):

@@ -179,7 +179,7 @@ class EvidenceIngestService:
         except IngestRejectedError as exc:
             return self._refuse("delivery_receipt", exc)
 
-        applied = tuple(range(verified.from_seq, verified.to_seq + 1))
+        applied = verified.sequences
         for local_seq in applied:
             self._ledger._apply_verified_receipt(
                 local_seq, receipt_at_ms=verified.accepted_at_ms, key_id=verified.key_id
