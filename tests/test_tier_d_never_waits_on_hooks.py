@@ -561,7 +561,7 @@ def _stall(kind: str, release: threading.Event) -> Any:
             while not release.is_set() and time.monotonic() < deadline:
                 time.sleep(0.05)
         else:  # cpu
-            deadline = time.monotonic() + 3.0
+            deadline = time.monotonic() + 30.0
             while not release.is_set() and time.monotonic() < deadline:
                 sum(range(1000))
 
@@ -572,10 +572,11 @@ class TestAStalledHookRunsOffTheLoop:
     def test_a_cpu_bound_hook_in_a_fresh_interpreter(self) -> None:
         """The CPU-bound case, in an interpreter of its own.
 
-        A CPU-bound hook shares the interpreter lock with the loop. Inside a
-        long test session other threads contend for it too and the measured
-        latency reflects them; the bound here is for one runtime's own
-        threads, so the case runs where only those exist.
+        A pure-Python CPU-bound hook on the hook thread hands the interpreter
+        lock back to the loop every switch interval; inside a long test session
+        other threads contend for it too, so the case runs where only one
+        runtime's own threads exist. It asserts the bound on the maximum over
+        every reading and prints p50, p95 and max.
         """
         import os
         import subprocess
@@ -587,30 +588,77 @@ class TestAStalledHookRunsOffTheLoop:
                 "-m",
                 "pytest",
                 "-q",
+                "-s",
                 "-p",
                 "no:cacheprovider",
                 __file__,
                 "-k",
-                "test_the_next_incident_acts_while_the_hook_is_stuck and cpu",
+                "test_cpu_bound_hook_latency_over_many_readings",
             ],
             env={**os.environ, "ORI_CPU_HOOK_CASE": "1"},
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=300,
             cwd=str(Path(__file__).resolve().parent.parent),
         )
+        report = [
+            line for line in result.stdout.splitlines() if "cpu-bound hook" in line
+        ]
+        print("\n".join(report))
         assert result.returncode == 0, result.stdout[-3000:]
         assert "2 passed" in result.stdout, result.stdout[-1000:]
 
-    @pytest.mark.parametrize("kind", ["event", "sleep", "cpu"])
+    @pytest.mark.parametrize("name", sorted(_TIER_D_READINGS))
+    async def test_cpu_bound_hook_latency_over_many_readings(
+        self, name: str, tmp_path: Path
+    ) -> None:
+        import os
+        import statistics
+
+        if os.environ.get("ORI_CPU_HOOK_CASE") != "1":
+            pytest.skip("runs in a fresh interpreter, see the test above")
+        readings = 20
+        trigger, sensor_type, value = _TIER_D_READINGS[name]
+        release = threading.Event()
+        async with _site(tmp_path) as site:
+            bus, (skill,) = _register(site, [name])
+            skill.hooks.pre_trigger_eval = _stall("cpu", release)
+            loop = asyncio.get_running_loop()
+            fired = site.acts.by_trigger.setdefault(trigger, [])
+            produced: list[float] = []
+
+            def sensor() -> None:
+                for _ in range(readings):
+                    produced.append(
+                        _publish_from_sensor_thread(
+                            bus, loop, _reading(sensor_type, value)
+                        )
+                    )
+                    time.sleep(0.1)
+
+            thread = threading.Thread(target=sensor)
+            thread.start()
+            try:
+                await asyncio.to_thread(thread.join, 10.0)
+                await _until(lambda: len(fired) >= 2 * readings, 10.0)
+                firsts = [at for action, at in fired if action == "alert_whatsapp"]
+                latencies = sorted(a - p for a, p in zip(firsts, produced))
+            finally:
+                release.set()
+        assert len(latencies) == readings, (len(latencies), readings)
+        p95 = latencies[max(0, -(-95 * len(latencies) // 100) - 1)]
+        print(
+            f"cpu-bound hook {name}: n={len(latencies)} "
+            f"p50={statistics.median(latencies) * 1000:.1f}ms "
+            f"p95={p95 * 1000:.1f}ms max={latencies[-1] * 1000:.1f}ms"
+        )
+        assert latencies[-1] < _TRIP_BOUND_S, latencies[-1]
+
+    @pytest.mark.parametrize("kind", ["event", "sleep"])
     @pytest.mark.parametrize("name", sorted(_TIER_D_READINGS))
     async def test_the_next_incident_acts_while_the_hook_is_stuck(
         self, name: str, kind: str, tmp_path: Path
     ) -> None:
-        import os
-
-        if kind == "cpu" and os.environ.get("ORI_CPU_HOOK_CASE") != "1":
-            pytest.skip("runs in a fresh interpreter, see the test above")
         trigger, sensor_type, value = _TIER_D_READINGS[name]
         normal = 5.0 if name == "energy-anomaly-detector" else 60.0
         release = threading.Event()
