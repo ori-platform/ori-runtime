@@ -777,8 +777,11 @@ def built_wheel(tmp_path_factory) -> pathlib.Path:
         capture_output=True,
         text=True,
     )
-    if result.returncode != 0:
-        pytest.skip(f"wheel build unavailable: {result.stderr.strip()[-200:]}")
+    # `build` is pinned in requirements/dev.txt, so a failed build is a failure:
+    # skipping would let a release pass without its wheel ever being inspected.
+    assert result.returncode == 0, (
+        f"the wheel did not build: {result.stderr.strip()[-2000:]}"
+    )
     wheels = sorted(out.glob("*.whl"))
     assert wheels, "build produced no wheel"
     return wheels[-1]
@@ -2384,12 +2387,78 @@ def test_each_shipped_key_id_is_the_digest_of_its_raw_key():
     )
 
 
-def test_the_installed_package_loads_the_shipped_registry():
-    from ori.runtime import _load_authority_keys
+_INSTALLED_PROBE = """
+import json, sys
+sys.path.extend(json.loads(sys.argv[1]))
+import ori
+from ori.runtime import _load_authority_keys
+loaded = _load_authority_keys()
+print(json.dumps({
+    "ori": ori.__file__,
+    "refused": loaded.refused,
+    "keys": sorted([list(selector) for selector in loaded.keys]),
+}))
+"""
 
-    loaded = _load_authority_keys()
-    assert not loaded.refused
-    assert set(loaded.keys) == SHIPPED_AUTHORITY_KEYS
+
+def test_the_installed_wheel_loads_the_shipped_registry(built_wheel, tmp_path):
+    """The wheel, installed alone into a fresh venv, resolves the registry from itself.
+
+    The checkout is kept off the probe's path: it runs isolated (`-I`, so no
+    PYTHONPATH, user site or working directory) from outside the tree. The
+    runtime's third-party dependencies are borrowed from this interpreter's
+    site-packages, appended after the venv's own, because `--no-deps` installs
+    none and fetching them would need the network; a `.pth` there is not
+    processed, so an editable checkout cannot resolve through them, and the
+    probe asserts where `ori` came from.
+    """
+    import site
+    import sysconfig
+    import venv
+
+    env_dir = tmp_path / "venv"
+    venv.EnvBuilder(with_pip=True).create(env_dir)
+    python = env_dir / "bin" / "python"
+    subprocess.run(
+        [
+            str(python),
+            "-m",
+            "pip",
+            "install",
+            "--quiet",
+            "--no-deps",
+            "--no-index",
+            str(built_wheel),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    purelib = subprocess.run(
+        [str(python), "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    borrowed = [*site.getsitepackages(), sysconfig.get_path("purelib")]
+    assert not any(pathlib.Path(p).resolve() == REPO_ROOT.resolve() for p in borrowed)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    probe = subprocess.run(
+        [str(python), "-I", "-c", _INSTALLED_PROBE, json.dumps(sorted(set(borrowed)))],
+        cwd=outside,
+        env={"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path)},
+        capture_output=True,
+        text=True,
+    )
+    assert probe.returncode == 0, probe.stderr[-2000:]
+    report = json.loads(probe.stdout.strip().splitlines()[-1])
+    origin = pathlib.Path(report["ori"]).resolve()
+    assert origin.is_relative_to(pathlib.Path(purelib).resolve()), (
+        f"ori was imported from {origin}, not from the installed wheel"
+    )
+    assert not origin.is_relative_to(REPO_ROOT.resolve())
+    assert report["refused"] is False
+    assert {tuple(selector) for selector in report["keys"]} == SHIPPED_AUTHORITY_KEYS
 
 
 @pytest.mark.parametrize(
