@@ -152,6 +152,32 @@ class HookStateAdapter:
             fn(self._skill_name, key, value)
 
 
+class BufferedHookState:
+    """A hook's skill-state writes, held until the hook's result is accepted.
+
+    Reads see the hook's own pending writes first. ``commit`` writes them to
+    the store; a hook that is skipped, times out or is abandoned has its writes
+    discarded, so a reading the runtime declared skipped leaves no state.
+    """
+
+    def __init__(self, inner: "HookStateAdapter | BufferedHookState") -> None:
+        self._inner = inner
+        self._pending: dict[str, str] = {}
+
+    def get(self, key: str) -> Optional[str]:
+        if key in self._pending:
+            return self._pending[key]
+        return self._inner.get(key)
+
+    def set(self, key: str, value: str) -> None:
+        self._pending[str(key)] = str(value)
+
+    def commit(self) -> None:
+        pending, self._pending = self._pending, {}
+        for key, value in pending.items():
+            self._inner.set(key, value)
+
+
 @dataclass
 class HookContext:
     """Context block provided to synchronous skill hooks."""
@@ -160,7 +186,7 @@ class HookContext:
     trigger_name: str
     readings: dict[str, Any]
     history: HookHistoryAdapter
-    state: HookStateAdapter
+    state: HookStateAdapter | BufferedHookState
     timestamp: int  # the reading's own time, as the device reported it
     config: dict[str, Any] = field(default_factory=dict)
     derived: dict[str, Any] = field(default_factory=dict)

@@ -142,7 +142,12 @@ def test_rpc_history_proxy_exposes_time_of_week_baseline():
 
 
 @pytest.mark.asyncio
-async def test_elevator_awaits_async_hook_methods():
+async def test_elevator_never_runs_async_hook_methods():
+    """Hooks are synchronous and run on the hook thread; a coroutine is not run.
+
+    The loader refuses an asynchronous hook; one reaching the elevator anyway
+    is closed unrun, so its body never executes on the event loop.
+    """
     called = {"pre": False, "post": False}
 
     class _AsyncHooks:
@@ -187,7 +192,7 @@ async def test_elevator_awaits_async_hook_methods():
         state_store=None,
         dispatcher=_Dispatcher(),
     )
-    assert called["pre"] is True
-    assert called["post"] is True
+    assert called["pre"] is False
+    assert called["post"] is False
     assert dispatched
-    assert dispatched[0][2] == "post hook updated"
+    assert dispatched[0][2] != "post hook updated"

@@ -106,12 +106,12 @@ class TestAHookCannotHoldATierDIncident:
         trigger, sensor_type, value = _TIER_D_READINGS[name]
         async with _site(tmp_path) as site:
             bus, (skill,) = _register(site, [name])
-            never = asyncio.Event()
+            never = threading.Event()
             called: list[float] = []
 
-            async def blocked(_context: Any) -> None:
+            def blocked(_context: Any) -> None:
                 called.append(time.monotonic())
-                await never.wait()
+                never.wait(3.0)
 
             skill.hooks.pre_trigger_eval = blocked
             try:
@@ -155,10 +155,10 @@ class TestAHookCannotHoldATierDIncident:
         _pi_sized_default_executor()
         async with _site(tmp_path) as site:
             bus, (skill,) = _register(site, [name])
-            never = asyncio.Event()
+            never = threading.Event()
 
-            async def blocked(_context: Any) -> None:
-                await never.wait()
+            def blocked(_context: Any) -> None:
+                never.wait(3.0)
 
             skill.hooks.pre_trigger_eval = blocked
             await site.start_routes()
@@ -813,3 +813,162 @@ class TestAStalledHookRunsOffTheLoop:
                 await store.close()
 
         asyncio.run(scenario())
+
+
+class TestASkippedHookLeavesNothingBehind:
+    async def test_a_queued_hook_past_its_deadline_never_starts(self) -> None:
+        from ori.skills.hook_runner import HookRunner, HookSkippedError
+
+        runner = HookRunner(timeout_s=0.2)
+        release = threading.Event()
+        started: list[str] = []
+
+        def first() -> None:
+            started.append("first")
+            release.wait(1.0)
+
+        def second() -> None:
+            started.append("second")
+
+        try:
+            with pytest.raises(HookSkippedError):
+                await asyncio.gather(runner.run(first), runner.run(second))
+            release.set()
+            await _until(lambda: runner.expired_unstarted == 1, 3.0)
+            assert started == ["first"]
+            assert runner.expired_unstarted == 1
+        finally:
+            release.set()
+            await runner.close(0.5)
+
+    async def test_a_hook_that_runs_past_its_deadline_persists_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        from ori.skills.hook_runner import HookRunner, HookSkippedError
+        from ori.skills.hooks_api import BufferedHookState, HookStateAdapter
+        from ori.state.store import StateStore
+
+        store = StateStore(db_path=str(tmp_path / "state.db"))
+        await store.open()
+        runner = HookRunner(timeout_s=0.2)
+        state = BufferedHookState(HookStateAdapter(store, "battery-lifecycle-observer"))
+        returned = threading.Event()
+
+        def late(_state: Any) -> None:
+            _state.set("outage_active", "1")
+            time.sleep(0.5)
+            returned.set()
+
+        try:
+            with pytest.raises(HookSkippedError):
+                await runner.run(late, state, commit=state.commit)
+            await asyncio.to_thread(returned.wait, 3.0)
+            await _until(lambda: runner.discarded == 1, 3.0)
+            assert runner.discarded == 1
+            assert (
+                store.hooks_get_skill_state(
+                    "battery-lifecycle-observer", "outage_active"
+                )
+                is None
+            )
+        finally:
+            await runner.close(0.5)
+            await store.close()
+
+    async def test_a_hook_abandoned_at_stop_persists_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        from ori.skills.hook_runner import HookRunner
+        from ori.skills.hooks_api import BufferedHookState, HookStateAdapter
+        from ori.state.store import StateStore
+
+        store = StateStore(db_path=str(tmp_path / "state.db"))
+        await store.open()
+        runner = HookRunner(timeout_s=10.0)
+        state = BufferedHookState(HookStateAdapter(store, "battery-lifecycle-observer"))
+        release = threading.Event()
+        returned = threading.Event()
+
+        def stuck(_state: Any) -> None:
+            _state.set("outage_active", "1")
+            release.wait(3.0)
+            returned.set()
+
+        pending = asyncio.ensure_future(runner.run(stuck, state, commit=state.commit))
+        try:
+            await asyncio.sleep(0.1)
+            lost = await asyncio.wait_for(runner.close(timeout_s=0.2), 2.0)
+            assert lost == 1
+            release.set()
+            await asyncio.to_thread(returned.wait, 3.0)
+            await asyncio.sleep(0.1)
+            assert (
+                store.hooks_get_skill_state(
+                    "battery-lifecycle-observer", "outage_active"
+                )
+                is None
+            )
+        finally:
+            release.set()
+            pending.cancel()
+            await store.close()
+
+
+class TestAnAsynchronousHookNeverRunsOnTheLoop:
+    def test_an_asynchronous_hook_is_refused_at_load(self, tmp_path: Path) -> None:
+        skill_dir = tmp_path / "energy-anomaly-detector"
+        shutil.copytree(_SKILLS / "energy-anomaly-detector", skill_dir)
+        hooks = skill_dir / "hooks.py"
+        hooks.write_text(
+            hooks.read_text().replace(
+                "def pre_trigger_eval(context):", "async def pre_trigger_eval(context):"
+            )
+        )
+        loader = SkillLoader()
+        loader._is_core_bundled_skill = lambda _path: True  # type: ignore[method-assign]
+        with pytest.raises(SkillValidationError, match="asynchronous"):
+            loader.load_one(skill_dir)
+
+    def test_no_shipped_hook_is_asynchronous(self) -> None:
+        import inspect
+
+        for skill in SkillLoader().load_all(str(_SKILLS)):
+            for name in ("pre_trigger_eval", "post_reasoning"):
+                fn = getattr(skill.hooks, name, None)
+                assert fn is None or not inspect.iscoroutinefunction(fn), (
+                    skill.name,
+                    name,
+                )
+
+    @pytest.mark.parametrize("name", sorted(_TIER_D_READINGS))
+    async def test_an_async_hook_that_sleeps_cannot_hold_the_next_incident(
+        self, name: str, tmp_path: Path
+    ) -> None:
+        trigger, sensor_type, value = _TIER_D_READINGS[name]
+        normal = 5.0 if name == "energy-anomaly-detector" else 60.0
+        async with _site(tmp_path) as site:
+            bus, (skill,) = _register(site, [name])
+            ran: list[float] = []
+
+            async def sleeps(_context: Any) -> None:
+                ran.append(time.monotonic())
+                time.sleep(2.0)
+
+            skill.hooks.pre_trigger_eval = sleeps
+            loop = asyncio.get_running_loop()
+            fired = site.acts.by_trigger.setdefault(trigger, [])
+            produced: list[float] = []
+
+            def sensor() -> None:
+                _publish_from_sensor_thread(bus, loop, _reading(sensor_type, normal))
+                time.sleep(0.3)
+                produced.append(
+                    _publish_from_sensor_thread(bus, loop, _reading(sensor_type, value))
+                )
+
+            thread = threading.Thread(target=sensor)
+            thread.start()
+            await asyncio.to_thread(thread.join, 5.0)
+            await _until(lambda: bool(fired))
+            assert fired and fired[0][1] - produced[0] < _TRIP_BOUND_S
+            assert ran == [], "the asynchronous hook's body ran"

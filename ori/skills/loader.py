@@ -26,6 +26,7 @@ import base64
 import binascii
 import errno
 import importlib.util
+import inspect
 import logging
 import math
 import os
@@ -128,6 +129,23 @@ def _refuse_unresolved_names_in_tier_d_condition(
                 f"Skill '{skill_name}' trigger '{trigger_name}' is Tier D and its "
                 f"condition reads config {name!r} = {value!r}, which is not a "
                 "finite number; a Tier D input is compared as configured."
+            )
+
+
+def _refuse_asynchronous_hooks(skill_name: str, hooks: Any) -> None:
+    """Hooks are synchronous: they run on the hook thread, never the event loop.
+
+    A coroutine function would hand its body back to the loop to run, where
+    synchronous work before its first await holds every reading behind it.
+    """
+    if hooks is None:
+        return
+    for name in ("pre_trigger_eval", "post_reasoning"):
+        fn = getattr(hooks, name, None)
+        if fn is not None and inspect.iscoroutinefunction(fn):
+            raise SkillValidationError(
+                f"Skill '{skill_name}' hook {name} is asynchronous; skill hooks "
+                "must be synchronous functions, run on the hook thread."
             )
 
 
@@ -952,6 +970,7 @@ class SkillLoader:
         self._verify_community_signature(raw, skill_dir)
         if load_hooks:
             hooks = self._load_hooks(skill_dir)
+            _refuse_asynchronous_hooks(raw.get("name", "<unknown>"), hooks)
         else:
             if enforce_hook_policy:
                 self._assert_hooks_activatable(skill_dir)

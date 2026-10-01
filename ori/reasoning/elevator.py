@@ -48,6 +48,7 @@ from ori.reasoning.rule_engine import (
     RuleResult,
 )
 from ori.skills.hook_runner import HookRunner, HookSkippedError
+from ori.skills.hooks_api import BufferedHookState
 from ori.utils.time_utils import now_ms
 
 if TYPE_CHECKING:
@@ -585,8 +586,14 @@ class IntelligenceElevator:
                 getattr(skill, "name", "unknown"),
                 skill_config=copy.deepcopy(getattr(skill, "config", None)),
             )
+            # The hook's skill-state writes are held and kept only with a
+            # result accepted in time.
+            buffered = BufferedHookState(hook_ctx.state)
+            hook_ctx.state = buffered
             try:
-                await self._hooks.run(skill.hooks.pre_trigger_eval, hook_ctx)
+                await self._hooks.run(
+                    skill.hooks.pre_trigger_eval, hook_ctx, commit=buffered.commit
+                )
                 ctx.update(_without_reserved_names(dict(hook_ctx.derived), skill))
             except HookSkippedError as exc:
                 logger.warning(
@@ -619,8 +626,12 @@ class IntelligenceElevator:
             # enrich its notices' text.
             return
         working = copy.copy(result)
+        buffered = BufferedHookState(pt_ctx.state)
+        pt_ctx.state = buffered
         try:
-            await self._hooks.run(skill.hooks.post_reasoning, working, pt_ctx)
+            await self._hooks.run(
+                skill.hooks.post_reasoning, working, pt_ctx, commit=buffered.commit
+            )
         except HookSkippedError as exc:
             logger.warning(
                 "IntelligenceElevator: post_reasoning for %r skipped (%s)",
