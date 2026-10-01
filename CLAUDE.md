@@ -443,12 +443,18 @@ ori/
 │   │   ├── device_policy.py
 │   │   └── remote_fetch.py
 │   │
+│   ├── safety/                ← release-owned safety registry (dormant until the cutover)
+│   │
 │   ├── security/
 │   │   ├── __init__.py
 │   │   ├── offline_tokens.py
+│   │   ├── evidence-authority-keys.json ← the evidence authority's key registry the release ships
+│   │   ├── commissioning/     ← signed binding, anchors, profiles, proof operation
 │   │   ├── evidence/          ← chain, ledger, exchange artifacts, custody keys
 │   │   ├── firmware/          ← telemetry, commands, liveness, provisioning
 │   │   └── remote_commands/   ← verification, policy, throttle, lockout
+│   │
+│   ├── telemetry/             ← HTTP telemetry export to the product API
 │   │
 │   ├── skills/                ← Skills loader (Layer 5)
 │   │   ├── __init__.py
