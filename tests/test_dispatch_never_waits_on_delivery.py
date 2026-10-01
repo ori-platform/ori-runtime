@@ -293,12 +293,16 @@ class _Acts:
 
     def __init__(self) -> None:
         self.ran: dict[str, list[float]] = {}
+        self.by_trigger: dict[str, list[tuple[str, float]]] = {}
 
     def executor(self, name: str) -> Any:
         self.ran[name] = []
 
-        async def run(*_a: Any, **_k: Any) -> bool:
-            self.ran[name].append(time.monotonic())
+        async def run(_action: str, context: Any, *_a: Any, **_k: Any) -> bool:
+            at = time.monotonic()
+            self.ran[name].append(at)
+            trigger = str(getattr(context, "trigger_name", "") or "")
+            self.by_trigger.setdefault(trigger, []).append((name, at))
             return True
 
         return run
@@ -967,6 +971,74 @@ class TestATripDoesNotWaitOnAnotherTriggersHistory:
             # The history-reading trigger was still evaluated, after the trip.
             assert len(site.history_reads) == 1
             assert site.history_reads[0] >= site.acts.ran["trip_relay"][0]
+
+
+class TestAShippedTierDTriggerWithHistoryHooks:
+    async def test_the_overcurrent_trigger_fires_with_both_stores_locked(
+        self, tmp_path: Path
+    ) -> None:
+        """The packaged energy-anomaly-detector, its hook included.
+
+        The hook reads history synchronously before any condition is evaluated,
+        and the Tier D condition reads a threshold the hook sets from
+        configuration. With the state store's write lock held by another
+        connection, those reads go through only because the store runs in WAL
+        mode, where a writer does not block a reader. The trigger's bundled
+        actions are notifications, no protective outcome is bound to it, and
+        what is timed is the first of them.
+        """
+        from ori.skills.loader import SkillLoader
+
+        skill = next(
+            s
+            for s in SkillLoader().load_all("skills")
+            if s.name == "energy-anomaly-detector"
+        )
+        assert skill.first_party and skill.hooks is not None
+        _pi_sized_default_executor()
+        async with _site(tmp_path) as site:
+            for n in range(6):
+                await site.store.append_history(_event("current_clamp"))
+            site.coordinator._skills = []
+            site.coordinator.add_skill(skill)
+            site.dispatcher.register_executor(
+                "alert_whatsapp", site.acts.executor("alert_whatsapp")
+            )
+            hook_reads: list[float] = []
+            original = site.store.hooks_avg_last_hours
+
+            def spied(*args: Any, **kwargs: Any) -> Any:
+                hook_reads.append(time.monotonic())
+                return original(*args, **kwargs)
+
+            site.store.hooks_avg_last_hours = spied  # type: ignore[method-assign]
+            await site.start_routes()
+            site.lock("state.db")
+            site.lock("evidence.db")
+            site.flood_inbound(_MALFORMED_RECEIPT)
+            await asyncio.sleep(0.2)
+
+            reading = SensorReading(
+                sensor_id="load-current",
+                sensor_type="current_clamp",
+                value=30.0,
+                unit="ampere",
+                timestamp=int(time.time() * 1000),
+                quality=1.0,
+            )
+            started = time.monotonic()
+            site.dispatching = asyncio.create_task(
+                site.coordinator.dispatch_event(OriEvent.from_reading(reading, DEVICE))
+            )
+            site._dispatches.append(site.dispatching)
+            fired = site.acts.by_trigger.setdefault("dangerous_overcurrent", [])
+            await _until(lambda: bool(fired))
+            assert hook_reads, "the hook never read history"
+            assert fired, "the overcurrent trigger did not fire"
+            name, at = fired[0]
+            assert name == "alert_whatsapp", site.acts.by_trigger
+            assert at - started < _TRIP_BOUND_S, at - started
+            site.release()
 
 
 # ── The broker keeps what the route has no room for ─────────────────────────
