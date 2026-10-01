@@ -365,6 +365,7 @@ class MqttEvidenceOutboundPublisher:
         self._lost = asyncio.Event()
         self._granted = asyncio.Event()
         self._wake = asyncio.Event()
+        self._io.open()
         try:
             await self._serve(shutdown_event)
         finally:
