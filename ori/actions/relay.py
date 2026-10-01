@@ -36,8 +36,8 @@ Used for Tier B (soft physical) and Tier D (safety-critical) actions.
     - **A released line is not the zone's controller-loss condition.**
       The modes were measured apart on the bench Pi 4 (2026-09-01):
       power loss and reset de-energise; abrupt process loss leaves the
-      pad driving.  A different platform must be observed, not assumed
-      (#397).
+      pad driving.  A different platform must be observed at
+      commissioning, not assumed.
     - Test with the load de-energised before connecting live circuits.
     - Never operate a relay above its rated duty cycle.
 

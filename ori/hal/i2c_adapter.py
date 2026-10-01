@@ -1064,7 +1064,8 @@ class I2CAdapter(BaseAdapter):
     # controller. Selecting this configuration again would be a writing
     # contest, and the failure mode of losing one intermittently is a
     # plausible number rather than a refusal. Availability is given up so that
-    # truthfulness is not, and #508 makes the loss visible rather than healthy.
+    # truthfulness is not, and measurement supervision reports the loss
+    # rather than health.
     _REFUSAL_REMEDY = (
         "; configuration changed after startup, so the measurement is withheld "
         "until runtime restart — investigate a competing writer, a brownout or "

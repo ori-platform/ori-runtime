@@ -3800,20 +3800,21 @@ class OriRuntime:
         if self._measurement_degraded:
             # A sensor that connected and then refused a run of windows is not
             # measuring either, and the reasoning one branch below applies to it
-            # word for word. Reported per sensor since #508 and absent from the
-            # aggregate until now, so a fleet view keyed on `status` read green
-            # while a channel went unmeasured — which is the condition
+            # word for word. Reported per sensor and carried into the
+            # aggregate, so a fleet view keyed on `status` cannot read green
+            # while a channel goes unmeasured — which is the condition
             # `docs/MEASUREMENT_SUPERVISION.md` exists to make impossible to
             # miss. Degraded rather than critical, and it names no
             # `degradation_reasons` token because that vocabulary is closed and
-            # carries none for this (ori-platform/ori-specs#171).
+            # carries none for this yet; the health contract has no token for
+            # a sensor that stopped measuring.
             snapshot["status"] = "degraded"
         if self._unconnected_sensors:
             # A configured sensor that never connected is not a healthy
             # runtime: something it was told to measure is not being measured.
             # Degraded rather than critical, and it names no token in
             # `degradation_reasons` because that vocabulary is closed and
-            # carries none for this (ori-platform/ori-specs#171); the sensor
+            # carries none for this yet; the sensor
             # itself reports `connected: false` in the meantime.
             snapshot["status"] = "degraded"
         if community_skills_health["refused_skills"]:
@@ -3892,14 +3893,14 @@ class OriRuntime:
             # is gated by it.
             #
             # The consequence to expect: `_backend_drivable` is a constant
-            # `False` until the non-actuating drivability member on #482, so
+            # `False` until the actuation seam carries a non-actuating
+            # drivability member, which is not built yet, so
             # the first ratified profile makes every device carrying one
             # permanently degraded on a fully commissioned zone with nothing
             # wrong. That is the honest report — the producer cannot establish
             # protection — but it is a fleet-wide change the day ratification
-            # lands, and `degradation_reasons` carries no token for it
-            # (ori-platform/ori-specs#171), so the reason will not be nameable
-            # until that closes.
+            # lands, and `degradation_reasons` carries no token for it, so the
+            # reason is not nameable until the health contract adds one.
             snapshot["status"] = "degraded"
 
         # Named reasons for the site view. The rich diagnostics above stay
@@ -7277,8 +7278,8 @@ def _build_firmware_liveness_stack(
         # It does not by itself orphan anything. A device is orphaned only
         # when neither the runtime nor a gateway is reachable, and firmware
         # today still derives runtime_reachable from broker connectivity —
-        # so an expired assertion changes nothing until that switchover
-        # lands (ori-edge-firmware#68).
+        # so an expired assertion changes nothing until the edge firmware
+        # derives reachability from the liveness assertion instead.
         scheduler = FirmwareLivenessScheduler(
             command_pair[1],
             interval_s=float(

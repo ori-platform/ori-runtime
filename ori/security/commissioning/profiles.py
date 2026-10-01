@@ -5,7 +5,7 @@
 safety-profile/v1 ships `profiles.json` inside the release and says a set that
 fails to load is a broken release: refuse in every posture. This module holds
 that grammar. Activation, evaluation and trip state belong to the safety
-registry (#324); what the binding verifier needs from the set today is the
+registry, which is not yet the only Tier D path; what the binding verifier needs from the set today is the
 capacity multiplier that bounds a zone's trip point.
 """
 

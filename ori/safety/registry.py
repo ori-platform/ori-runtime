@@ -631,7 +631,7 @@ class SafetyRegistry:
         The actuation seam carries commands and no status, so the only way to
         answer this today would be to drive a coil, and nothing may move one
         in order to describe itself. Until the seam carries a non-actuating
-        drivability member (#482) the producer has no evidence for the
+        drivability member, which is not built yet, the producer has no evidence for the
         positive claim, and says so.
         """
         return False

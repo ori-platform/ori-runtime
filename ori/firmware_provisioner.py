@@ -3,7 +3,7 @@
 
 """Operator CLI for the firmware provisioning transaction.
 
-Supports the bench proof in ori-edge-firmware#14. It **orchestrates the
+Supports the edge firmware's provisioning bench proof. It **orchestrates the
 runtime's existing provisioning path** — it is not a second authority.
 Approvals are signed by :class:`FirmwareCommandService` from the stored
 registry row, so registration, explicit operator approval, and
@@ -70,8 +70,8 @@ from ori.security.firmware.telemetry import FirmwareVerificationError
 from ori.security.published_test_keys import is_published_seed
 from ori.utils.path_utils import shown
 
-# The shared corpus that ties these bytes to the C verifier in
-# ori-edge-firmware; the same bytes its test_provisioning.c accepts.
+# The shared corpus that ties these bytes to the edge firmware's C verifier;
+# the same bytes its provisioning tests accept.
 _VECTORS = (
     Path(__file__).resolve().parent.parent
     / "tests"
