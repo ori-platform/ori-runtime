@@ -6010,7 +6010,7 @@ def _generated_registry(*purposes: str) -> dict:
 class TestEvidencePostureNeverGatesStartup:
     """Tier D is never gated on evidence, not by availability and not by trust.
 
-    A hardened runtime whose release ships no authority-key registry cannot
+    A hardened runtime without an authority-key registry it can use cannot
     establish evidence trust. It must still start, still hold its dispatcher,
     and say so in health — never construct a trust claim it cannot back, and
     never withhold the deterministic safety path because the record is at
@@ -6033,7 +6033,7 @@ class TestEvidencePostureNeverGatesStartup:
         config.evidence.db_path = str(tmp_path / "evidence.db")
         config.evidence.key_path = str(tmp_path / "evidence.key")
         monkeypatch.setattr("ori.runtime.Config.load", lambda _path: config)
-        # The release under test ships no authority-key registry.
+        # Stand in for a release that ships no authority-key registry.
         monkeypatch.setattr(
             "ori.runtime._load_authority_keys", lambda: ReleaseAuthorityKeys(keys={})
         )
@@ -6059,6 +6059,70 @@ class TestEvidencePostureNeverGatesStartup:
         assert health["evidence"]["posture_problems"] == ["authority_keys_missing"]
         assert health["status"] == "degraded"
         assert health.get("critical") is not True
+
+    @staticmethod
+    def _hardened_gateway_config(minimal_config, monkeypatch, tmp_path) -> Config:
+        """Production, evidence on, a loopback gateway with envelope auth and custody."""
+        monkeypatch.setenv("ORI_EVIDENCE_DEVICE_SECRET", "install-secret-for-test")
+        monkeypatch.setenv("GATEWAY_SHARED_SECRET", "gateway-envelope-secret-for-test")
+        monkeypatch.setenv("ORI_CUSTODY_SECRET", "gateway-custody-secret-for-test")
+        config = Config.load(str(minimal_config))
+        config.device.deployment_profile = "production"
+        config.reasoning.default_tier = "rule"
+        config.reasoning.local_model = ""
+        config.reasoning.model_path = ""
+        config.evidence.enabled = True
+        config.evidence.db_path = str(tmp_path / "evidence.db")
+        config.evidence.key_path = str(tmp_path / "evidence.key")
+        config.gateway.enabled = True
+        config.gateway.broker_url = "mqtt://127.0.0.1:1"
+        config.gateway.auth = {
+            "enabled": True,
+            "shared_secret_env": "GATEWAY_SHARED_SECRET",
+        }
+        config.gateway.encryption = {"enabled": True}
+        config.gateway.custody = {"secret_env": "ORI_CUSTODY_SECRET"}
+        return config
+
+    @pytest.mark.parametrize("registry", ["shipped", "absent"])
+    async def test_a_hardened_runtime_reports_the_shipped_registry(
+        self, minimal_config, monkeypatch, tmp_path, registry
+    ):
+        """The packaged registry, read by the real loader, is what clears evidence posture."""
+        from importlib import resources
+
+        _patch_external(monkeypatch)
+        _treat_scratch_skills_as_packaged(monkeypatch)
+        config = self._hardened_gateway_config(minimal_config, monkeypatch, tmp_path)
+        monkeypatch.setattr("ori.runtime.Config.load", lambda _path: config)
+        if registry == "absent":
+            empty = tmp_path / "package"
+            empty.mkdir()
+            original_files = resources.files
+            monkeypatch.setattr(
+                resources,
+                "files",
+                lambda package: (
+                    empty if package == "ori.security" else original_files(package)
+                ),
+            )
+        runtime = OriRuntime(config_path=str(minimal_config))
+        observed: dict[str, Any] = {}
+
+        async def _observe_then_stop():
+            await _until_started(runtime)
+            observed["dispatcher"] = runtime._dispatcher
+            observed["health"] = await runtime._build_health_snapshot()
+            await runtime.stop()
+
+        await asyncio.gather(runtime.start(), _observe_then_stop())
+
+        assert observed["dispatcher"] is not None, "the action path did not come up"
+        evidence = observed["health"]["evidence"]
+        assert evidence["available"] is True
+        expected = [] if registry == "shipped" else ["authority_keys_missing"]
+        assert evidence["posture_problems"] == expected
+        assert observed["health"].get("critical") is not True
 
     async def test_a_refused_shipped_registry_does_not_stop_the_runtime(
         self, minimal_config, monkeypatch, tmp_path

@@ -187,17 +187,23 @@ class TestAttestorConstruction:
         finally:
             attestor.close()
 
-    def test_no_authority_keys_ship_today(self, monkeypatch, tmp_path) -> None:
-        """Absent is the correct posture, and it must fail closed rather than open.
+    def test_the_release_ships_one_receipt_and_one_epoch_key(self) -> None:
+        """The packaged registry is the authority generation this release trusts.
 
-        With no registry, a receipt or epoch confirmation is refused as
-        unknown-key. If this ever returns keys without a release shipping them,
-        something is resolving a trust root from somewhere it should not.
+        Exactly one active key for each purpose the release verifies, and none
+        for dispositions, which no verifier here consumes. Any other set means
+        the registry was replaced without a new export.
         """
         from ori.runtime import _load_authority_keys
 
         shipped = _load_authority_keys()
-        assert shipped.keys == {} and not shipped.refused
+        assert not shipped.refused
+        assert {
+            (purpose, key.status) for (purpose, _), key in shipped.keys.items()
+        } == {
+            ("evidence_authority_epoch", "active"),
+            ("evidence_authority_receipt", "active"),
+        }
 
 
 class TestConfigLoadWiresTheEvidenceParser:

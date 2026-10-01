@@ -32,6 +32,7 @@ against them without this repo carrying them.
 from __future__ import annotations
 
 import ast
+import hashlib
 import io
 import json
 import logging
@@ -2136,6 +2137,23 @@ def test_every_denylist_backed_check_is_sanitised():
 # it silently.
 
 SHIPPED_REGISTRY = "ori/security/evidence-authority-keys.json"
+
+# The authority's export from its release ingest-v0.1.0, copied byte for byte.
+# A new authority generation replaces the file and these values together, from
+# a new export; the file is never edited here.
+SHIPPED_REGISTRY_SHA256 = (
+    "538de83632e334dcf9f728032a555edde04eac79908b6bc3304daa7c95e9a4db"
+)
+SHIPPED_AUTHORITY_KEYS = {
+    (
+        "evidence_authority_epoch",
+        "sha256:ae5746cbdf167d6542ff0f24d8533bc263f25d6b901625364f61de4274a7a06e",
+    ),
+    (
+        "evidence_authority_receipt",
+        "sha256:70cf7cb1f682a42b69d499ae780d7a639baf02ab8e9de0433e8048dbef180fce",
+    ),
+}
 REVIEWED_REGISTRY_SCHEMA = "ori.evidence_authority_keys.v1"
 REVIEWED_REGISTRY_PURPOSES = frozenset(
     {
@@ -2324,44 +2342,83 @@ def test_the_audit_never_passes_what_the_runtime_refuses(tmp_path, monkeypatch):
     assert passed, "no case passed review, so the differential checked nothing"
 
 
-def test_the_source_tree_registry_and_the_wheel_agree(built_wheel):
-    """What the source tree ships is what the wheel carries, and it passes review."""
-    source = REPO_ROOT / SHIPPED_REGISTRY
+def test_the_wheel_carries_the_shipped_registry_byte_for_byte(built_wheel):
+    """The deliverable carries the authority's export, unaltered, and it passes review."""
     with zipfile.ZipFile(built_wheel) as archive:
-        carried = SHIPPED_REGISTRY in archive.namelist()
-        text = archive.read(SHIPPED_REGISTRY).decode("utf-8") if carried else None
-    assert carried == source.exists()
-    if text is not None:
-        assert _registry_review_findings(text) == []
+        assert SHIPPED_REGISTRY in archive.namelist(), (
+            "the wheel does not carry the authority key registry; check "
+            "[tool.setuptools.package-data]"
+        )
+        carried = archive.read(SHIPPED_REGISTRY)
+    assert hashlib.sha256(carried).hexdigest() == SHIPPED_REGISTRY_SHA256
+    assert _registry_review_findings(carried.decode("utf-8")) == []
 
 
-def test_a_built_wheel_carries_a_shipped_registry(tmp_path):
-    """Package data, proven on a wheel built from a tree that holds a registry.
+def _shipped_registry_bytes() -> bytes:
+    return (REPO_ROOT / SHIPPED_REGISTRY).read_bytes()
 
-    No release registry exists yet, so the tree is a copy with a generated one
-    placed where the runtime reads it.
-    """
-    import shutil
-    import sys
 
-    tree = tmp_path / "tree"
-    tree.mkdir()
-    for name in ("pyproject.toml", "README.md", "LICENSE"):
-        shutil.copy2(REPO_ROOT / name, tree / name)
-    ignore = shutil.ignore_patterns("__pycache__", "*.pyc")
-    shutil.copytree(REPO_ROOT / "ori", tree / "ori", ignore=ignore)
-    shutil.copytree(REPO_ROOT / "skills", tree / "skills", ignore=ignore)
-    registry = json.dumps(_reviewable_registry()).encode("utf-8")
-    (tree / SHIPPED_REGISTRY).write_bytes(registry)
-
-    out = tmp_path / "dist"
-    result = subprocess.run(
-        [sys.executable, "-m", "build", "--wheel", "--outdir", str(out), str(tree)],
-        capture_output=True,
-        text=True,
+def test_the_shipped_registry_is_the_pinned_export():
+    assert hashlib.sha256(_shipped_registry_bytes()).hexdigest() == (
+        SHIPPED_REGISTRY_SHA256
+    ), (
+        "the shipped authority key registry differs from the pinned export; it "
+        "is replaced only by a new export from the evidence authority, with "
+        "this pin, the capability matrix and the release notes in one change"
     )
-    if result.returncode != 0:
-        pytest.skip(f"wheel build unavailable: {result.stderr.strip()[-200:]}")
-    (wheel,) = sorted(out.glob("*.whl"))
-    with zipfile.ZipFile(wheel) as archive:
-        assert archive.read(SHIPPED_REGISTRY) == registry
+
+
+def test_the_shipped_registry_passes_review():
+    assert _registry_review_findings(_shipped_registry_bytes().decode("utf-8")) == []
+
+
+def test_each_shipped_key_id_is_the_digest_of_its_raw_key():
+    """Recomputed with hashlib, independently of the loader's derivation."""
+    document = json.loads(_shipped_registry_bytes())
+    for key in document["keys"]:
+        raw = bytes.fromhex(key["public_key_hex"])
+        assert len(raw) == 32
+        assert key["key_id"] == "sha256:" + hashlib.sha256(raw).hexdigest()
+    assert {(k["purpose"], k["key_id"]) for k in document["keys"]} == (
+        SHIPPED_AUTHORITY_KEYS
+    )
+
+
+def test_the_installed_package_loads_the_shipped_registry():
+    from ori.runtime import _load_authority_keys
+
+    loaded = _load_authority_keys()
+    assert not loaded.refused
+    assert set(loaded.keys) == SHIPPED_AUTHORITY_KEYS
+
+
+@pytest.mark.parametrize(
+    "member,value",
+    [
+        ("purpose", "evidence_device"),
+        ("purpose", "evidence_authority_custody"),
+        ("status", "retired"),
+        ("status", "ACTIVE"),
+    ],
+)
+def test_the_shipped_registry_with_an_unknown_token_is_refused(
+    tmp_path, monkeypatch, member, value
+):
+    """The shipped text, one token changed, through the release loader and the audit."""
+    from importlib import resources
+
+    from ori.runtime import _load_authority_keys
+
+    document = json.loads(_shipped_registry_bytes())
+    document["keys"][0][member] = value
+    text = json.dumps(document)
+    assert _registry_review_findings(text)
+    original = resources.files
+    monkeypatch.setattr(
+        resources,
+        "files",
+        lambda package: tmp_path if package == "ori.security" else original(package),
+    )
+    (tmp_path / "evidence-authority-keys.json").write_text(text, encoding="utf-8")
+    loaded = _load_authority_keys()
+    assert loaded.refused and loaded.keys == {}

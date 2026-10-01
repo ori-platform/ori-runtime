@@ -948,6 +948,21 @@ candidate or release is cut.
   authority artifact is still refused `unknown_key`. The contract's corpus is
   replayed in full through the loader.
 
+- The release ships the evidence authority's key registry, the authority
+  generation it trusts. `ori/security/evidence-authority-keys.json` is the
+  export from the evidence authority's release `ingest-v0.1.0`, copied byte for
+  byte and never edited here: SHA-256
+  `538de83632e334dcf9f728032a555edde04eac79908b6bc3304daa7c95e9a4db`, epoch key
+  `sha256:ae5746cbdf167d6542ff0f24d8533bc263f25d6b901625364f61de4274a7a06e` and
+  receipt key
+  `sha256:70cf7cb1f682a42b69d499ae780d7a639baf02ab8e9de0433e8048dbef180fce`,
+  both `active`, and no disposition key. A test pins the digest and recomputes
+  each `key_id` from its raw key; the disclosure audit and the release loader
+  pass the file and refuse a copy carrying an unknown purpose or status; a
+  built wheel carries the same bytes. A hardened runtime with the registry and
+  a gateway custody secret reports `posture_problems: []`. No artifact signed
+  by the deployed authority has been verified on a device.
+
 - A trust anchor whose private key this repository publishes is refused, at
   every deployment profile. This repository commits Ed25519 seeds as test
   material, and three verification paths across two trust boundaries accepted a
