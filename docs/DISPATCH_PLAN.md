@@ -286,8 +286,9 @@ So admission has two phases, and the first is **event-wide**:
    collected after that, inside the same event scope and still before any
    reasoning is scheduled. A hook that is slow or fails, and a store slow to
    answer a history read, therefore delay lower-tier discovery, never a trip.
-   The loader refuses a Tier D condition that names history or a name only a
-   hook supplies, and the rule engine refuses one it cannot resolve.
+   The loader refuses a Tier D condition naming anything other than the
+   reading's fields and the skill's packaged configuration, and the rule
+   engine refuses one it cannot resolve.
 2. **Resource admission.** Then admit actions against the gate below.
 
 Without phase 1, "Tier D is attempted first" is true only within a skill, which

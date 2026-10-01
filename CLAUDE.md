@@ -248,7 +248,7 @@ DISCOVERY BARRIER — one event, every eligible skill, evaluated exhaustively
     across those skills, before any reasoning is scheduled. Tier D conditions
     read the reading and the skill's configuration only, so they are decided
     and their acts attempted before any hook runs or any history is read; the
-    loader refuses a Tier D condition that names history or a hook's output.
+    loader refuses a Tier D condition naming anything else.
     Declaration order decides nothing. A trigger in cooldown does not match,
     and neither does one with a cooldown whose own plan is still in flight —
     except a plan granting Tier D, which is never held; cooldown is charged

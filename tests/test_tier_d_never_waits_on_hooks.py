@@ -231,18 +231,18 @@ class TestTheLoaderRefusesATierDConditionAHookDecides:
         )
         assert _hook_supplied_names(hooks) == {"a", "b", "c", "d"}
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="pc-system-health cpu_overheating names cpu_temp and "
-        "cpu_temp_quality, which nothing supplies, so it never fires; "
-        "rewriting it changes what trips and awaits a decision",
-    )
     def test_every_shipped_tier_d_condition_names_only_the_reading_or_config(
         self,
     ) -> None:
         import ast
 
-        for skill in SkillLoader().load_all(str(_SKILLS)):
+        skills = SkillLoader().load_all(str(_SKILLS))
+        assert len(skills) == len(
+            [p for p in _SKILLS.iterdir() if (p / "skill.yaml").is_file()]
+        ) - int((_SKILLS / "template" / "skill.yaml").is_file()), (
+            "a shipped skill no longer loads"
+        )
+        for skill in skills:
             for trigger in skill.triggers:
                 if trigger.action_tier != "D":
                     continue
@@ -253,6 +253,92 @@ class TestTheLoaderRefusesATierDConditionAHookDecides:
                 }
                 unknown = named - _READING_NAMES - set(skill.config)
                 assert not unknown, f"{skill.name}.{trigger.name}: {sorted(unknown)}"
+
+    def test_a_name_nothing_supplies_is_refused(self, tmp_path: Path) -> None:
+        skill_dir = tmp_path / "hvac-refrigerant-monitor"
+        shutil.copytree(_SKILLS / "hvac-refrigerant-monitor", skill_dir)
+        manifest = skill_dir / "skill.yaml"
+        text = manifest.read_text()
+        assert "value > 400" in text
+        manifest.write_text(
+            text.replace("value > 400", "value > gas_limit_nobody_sets")
+        )
+        loader = SkillLoader()
+        loader._is_core_bundled_skill = lambda _path: True  # type: ignore[method-assign]
+        with pytest.raises(SkillValidationError, match="nothing supplies them"):
+            loader.load_one(skill_dir)
+
+    def test_only_the_skills_own_configuration_is_allowed(self, tmp_path: Path) -> None:
+        skill_dir = tmp_path / "hvac-refrigerant-monitor"
+        shutil.copytree(_SKILLS / "hvac-refrigerant-monitor", skill_dir)
+        manifest = skill_dir / "skill.yaml"
+        text = manifest.read_text().replace("value > 400", "value > gas_limit")
+        loader = SkillLoader()
+        loader._is_core_bundled_skill = lambda _path: True  # type: ignore[method-assign]
+        manifest.write_text(text)
+        with pytest.raises(SkillValidationError):
+            loader.load_one(skill_dir)
+        manifest.write_text(text.replace("config:\n", "config:\n  gas_limit: 400\n", 1))
+        skill = loader.load_one(skill_dir)
+        assert skill.config["gas_limit"] == 400
+
+
+class TestCpuOverheatingIsANotice:
+    async def test_it_fires_on_a_hot_reading_only(self) -> None:
+        skill = next(
+            s
+            for s in SkillLoader().load_all(str(_SKILLS))
+            if s.name == "pc-system-health"
+        )
+        (trigger,) = [t for t in skill.triggers if t.name == "cpu_overheating"]
+        assert trigger.action_tier == "A" and not trigger.bypass_llm
+        engine = RuleEngine()
+
+        def reading(value: float, quality: float) -> OriEvent:
+            return OriEvent.from_reading(
+                SensorReading(
+                    sensor_id="cpu-temp",
+                    sensor_type="cpu_temp",
+                    value=value,
+                    unit="celsius",
+                    timestamp=int(time.time() * 1000),
+                    quality=quality,
+                ),
+                DEVICE,
+            )
+
+        async def fires(event: OriEvent) -> bool:
+            matches = await engine.evaluate_all(event, [trigger], dict(skill.config))
+            return [m.rule_name for m in matches] == ["cpu_overheating"]
+
+        assert await fires(reading(95.0, 1.0))
+        assert not await fires(reading(60.0, 1.0))
+        assert not await fires(reading(95.0, 0.0))
+
+
+def test_set_threshold_cannot_raise_the_shipped_overcurrent_threshold() -> None:
+    from ori.security.threshold_guard import check_tier_d_startup_sensitivity
+
+    skill = next(
+        s
+        for s in SkillLoader().load_all(str(_SKILLS))
+        if s.name == "energy-anomaly-detector"
+    )
+    startup = skill.config["dangerous_overcurrent_threshold"]
+    ok, detail = check_tier_d_startup_sensitivity(
+        skill,
+        threshold_key="dangerous_overcurrent_threshold",
+        new_value=startup + 5.0,
+        startup_value=startup,
+    )
+    assert not ok and "less sensitive" in detail
+    ok, _ = check_tier_d_startup_sensitivity(
+        skill,
+        threshold_key="dangerous_overcurrent_threshold",
+        new_value=startup - 5.0,
+        startup_value=startup,
+    )
+    assert ok
 
 
 class TestTheRewrittenBatteryConditionTripsAsBefore:

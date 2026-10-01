@@ -131,27 +131,37 @@ def _hook_supplied_names(hooks_path: Path) -> frozenset[str]:
     return frozenset(names)
 
 
-def _refuse_hook_names_in_tier_d_condition(
+def _refuse_unresolved_names_in_tier_d_condition(
     skill_name: str,
     trigger_name: str,
     condition: str,
-    hook_names: frozenset[str],
     config_keys: frozenset[str],
+    hook_names: frozenset[str],
 ) -> None:
-    """A Tier D condition may not name what only a hook supplies."""
+    """A Tier D condition may name only the reading and the skill's own configuration.
+
+    That is all the rule engine gives a Tier D condition, before any hook
+    runs; a name outside it never resolves, so the trigger could never fire.
+    """
     try:
         tree = ast.parse(condition, mode="eval")
     except SyntaxError:
         return
     named = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
-    hook_only = sorted((named & hook_names) - config_keys)
-    if hook_only:
-        raise SkillValidationError(
-            f"Skill '{skill_name}' trigger '{trigger_name}' is Tier D and its "
-            f"condition names {hook_only}, which only a hook supplies. A Tier D "
-            "condition is decided from the reading and the skill's configuration "
-            "before any hook runs, so a hook can neither delay nor decide it."
-        )
+    unresolved = sorted(named - RESERVED_CONTEXT_NAMES - config_keys - {"history"})
+    if not unresolved:
+        return
+    hook_only = sorted(set(unresolved) & hook_names)
+    supplied = (
+        f"{hook_only} only a hook supplies" if hook_only else "nothing supplies them"
+    )
+    raise SkillValidationError(
+        f"Skill '{skill_name}' trigger '{trigger_name}' is Tier D and its "
+        f"condition names {unresolved}, which neither the reading nor the "
+        f"skill's configuration supplies ({supplied}). A Tier D condition is "
+        "decided from the reading and the skill's configuration before any hook "
+        "runs, so a hook can neither delay nor decide it."
+    )
 
 
 _TRIGGER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
@@ -964,19 +974,20 @@ class SkillLoader:
             raw.get("name", "<unknown>"),
         )
         hooks_path = skill_dir / "hooks.py"
-        if hooks_path.is_file():
-            hook_names = _hook_supplied_names(hooks_path)
-            config = raw.get("config")
-            config_keys = frozenset(config) if isinstance(config, dict) else frozenset()
-            for trigger in triggers:
-                if trigger.action_tier == "D":
-                    _refuse_hook_names_in_tier_d_condition(
-                        raw.get("name", "<unknown>"),
-                        trigger.name,
-                        trigger.condition,
-                        hook_names,
-                        config_keys,
-                    )
+        hook_names = (
+            _hook_supplied_names(hooks_path) if hooks_path.is_file() else frozenset()
+        )
+        config = raw.get("config")
+        config_keys = frozenset(config) if isinstance(config, dict) else frozenset()
+        for trigger in triggers:
+            if trigger.action_tier == "D":
+                _refuse_unresolved_names_in_tier_d_condition(
+                    raw.get("name", "<unknown>"),
+                    trigger.name,
+                    trigger.condition,
+                    config_keys,
+                    hook_names,
+                )
         self._verify_community_signature(raw, skill_dir)
         if load_hooks:
             hooks = self._load_hooks(skill_dir)

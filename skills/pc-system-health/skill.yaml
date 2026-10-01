@@ -84,12 +84,12 @@ triggers:
     approval_timeout_seconds: 300
     safe_default_action: log_to_dashboard
 
-  # ── Tier D: CPU overheating — safety critical ─────────────────────────
+  # ── Tier A: CPU overheating — a notice; nothing here is actuated ─────
   - name: cpu_overheating
-    condition: "cpu_temp > 90 and cpu_temp_quality > 0"
-    bypass_llm: true
-    action_tier: D
-    cooldown_seconds: 0
+    condition: "sensor_type == 'cpu_temp' and value > 90 and quality > 0"
+    cooldown_seconds: 600
+    escalate_to: rule
+    action_tier: A
 
 prompts:
   high_cpu: |
