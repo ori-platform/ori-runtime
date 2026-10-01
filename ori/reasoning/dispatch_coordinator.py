@@ -12,7 +12,7 @@ because at that moment the Tier D action does not exist to take it.
 So admission has two phases. The first is event-wide: evaluate every registered
 skill exhaustively and assemble the full set of matched triggers across all of
 them, before any reasoning task is scheduled. Tier D triggers are decided
-first, without reading history, and attempted before the rest are evaluated.
+first, without hooks or history, and attempted before the rest are evaluated.
 The second is resource admission, which
 :mod:`ori.reasoning.resource_gate` decides.
 
@@ -48,6 +48,9 @@ logger = logging.getLogger(__name__)
 # performs the event-wide evaluation and the rest return. The window only has to
 # outlive the fan-out of a single event.
 _CLAIM_WINDOW = 512
+#: How long the rest of an event's discovery waits for its Tier D incidents'
+#: own work to run before it runs skill hooks.
+_TIER_D_HEAD_START_S = 0.25
 #: A skill whose Tier D triggers were evaluated, and the evaluation of the rest.
 _PendingSkill = tuple[Any, OriEvent, Callable[[], Awaitable[list[Any]]]]
 
@@ -177,9 +180,9 @@ class DispatchCoordinator:
     async def dispatch_event(self, event: OriEvent) -> None:
         """Phase 1 discovery, then Tier D, then everything else.
 
-        Tier D conditions read the reading in hand only, so they are decided
-        and attempted before the store is asked for any other trigger's
-        history; the rest of the discovery set is evaluated after.
+        Tier D conditions read the reading and the skill's configuration only,
+        so they are decided and attempted before any hook runs or any history
+        is read; the rest of the discovery set is evaluated after.
         """
         immediate, pending = await self._discover_tier_d(event)
         rest: list[TriggerPlan] | None = None
@@ -211,12 +214,24 @@ class DispatchCoordinator:
                     if plan.grants_tier_d
                 )
             )
-            if rest is None:
-                rest = await self._discover_rest(pending)
-            plans += self._hold_in_flight(rest)
-
-            # Phase 3 — the rest of each plan, through the reasoning path.
+            # Phase 3 — the rest of each plan, through the reasoning path. A
+            # Tier D incident's own notices go first: every Tier D act in the
+            # event has been attempted, and the rest of the discovery set,
+            # which waits on skill hooks and history, cannot hold them.
             for plan in plans:
+                task = await self._schedule_remainder(plan, event)
+                if task is not None:
+                    scheduled.append(task)
+            if rest is None:
+                if scheduled:
+                    # A head start, bounded: the rest of discovery runs skill
+                    # hooks on this loop, and a hook that blocks it would
+                    # otherwise run ahead of the notices just scheduled.
+                    await asyncio.wait(scheduled, timeout=_TIER_D_HEAD_START_S)
+                rest = await self._discover_rest(pending)
+            later = self._hold_in_flight(rest)
+            plans += later
+            for plan in later:
                 task = await self._schedule_remainder(plan, event)
                 if task is not None:
                     scheduled.append(task)

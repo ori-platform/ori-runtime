@@ -366,6 +366,8 @@ class RuleEngine:
     def __init__(self) -> None:
         # rule_name → last-fired timestamp
         self._cooldowns: dict[str, _CooldownRecord] = {}
+        # Tier D rules already reported as naming something nothing supplies.
+        self._unresolved_tier_d: set[tuple[str, str]] = set()
 
     @staticmethod
     def _cooldown_key(rule_name: str, scope: str) -> str:
@@ -444,6 +446,7 @@ class RuleEngine:
                 Tier D rules and reads no history, so nothing a Tier D
                 condition decides waits on a store read made for another rule;
                 ``RULES_OTHER`` takes the rest, prefetching only what they name.
+                The caller supplies a Tier D context without hook output.
 
         Returns:
             Every matching :class:`RuleResult`. An empty list means no rule
@@ -575,6 +578,21 @@ class RuleEngine:
                 # The runtime evaluates all triggers on every event; sensors not
                 # included in the current reading will always produce NameError.
                 # Log at DEBUG — this is not an error, it is a skip.
+                if action_tier.upper() == "D" and select == RULES_TIER_D:
+                    # A Tier D condition sees the reading and the skill's own
+                    # configuration, never a hook's output: a name only a hook
+                    # supplies is refused here, as the loader refuses it.
+                    if (scope, name) not in self._unresolved_tier_d:
+                        self._unresolved_tier_d.add((scope, name))
+                        logger.warning(
+                            "RuleEngine: Tier D rule %r of %r is not evaluated: %s; "
+                            "a Tier D condition reads the reading and the skill's "
+                            "configuration only",
+                            name,
+                            scope,
+                            exc,
+                        )
+                    continue
                 logger.debug(
                     "RuleEngine: skipping rule %r — sensor not in event (%s)",
                     name,

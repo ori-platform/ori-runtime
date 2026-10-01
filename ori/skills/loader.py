@@ -90,6 +90,70 @@ def _refuse_history_in_tier_d_condition(
             )
 
 
+def _hook_supplied_names(hooks_path: Path) -> frozenset[str]:
+    """Names a skill's hooks write into ``derived``, read from the source.
+
+    Read, never imported: a statically named key is what this sees, and a
+    key built at run time is not. The rule engine evaluates Tier D without
+    any hook output, so a name this misses is refused there instead.
+    """
+    try:
+        tree = ast.parse(hooks_path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return frozenset()
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "derived"
+            and isinstance(node.slice, ast.Constant)
+            and isinstance(node.slice.value, str)
+        ):
+            names.add(node.slice.value)
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"update", "setdefault"}
+            and isinstance(node.func.value, ast.Attribute)
+            and node.func.value.attr == "derived"
+        ):
+            for arg in node.args:
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    names.add(arg.value)
+                elif isinstance(arg, ast.Dict):
+                    names.update(
+                        k.value
+                        for k in arg.keys
+                        if isinstance(k, ast.Constant) and isinstance(k.value, str)
+                    )
+            names.update(k.arg for k in node.keywords if k.arg)
+    return frozenset(names)
+
+
+def _refuse_hook_names_in_tier_d_condition(
+    skill_name: str,
+    trigger_name: str,
+    condition: str,
+    hook_names: frozenset[str],
+    config_keys: frozenset[str],
+) -> None:
+    """A Tier D condition may not name what only a hook supplies."""
+    try:
+        tree = ast.parse(condition, mode="eval")
+    except SyntaxError:
+        return
+    named = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    hook_only = sorted((named & hook_names) - config_keys)
+    if hook_only:
+        raise SkillValidationError(
+            f"Skill '{skill_name}' trigger '{trigger_name}' is Tier D and its "
+            f"condition names {hook_only}, which only a hook supplies. A Tier D "
+            "condition is decided from the reading and the skill's configuration "
+            "before any hook runs, so a hook can neither delay nor decide it."
+        )
+
+
 _TRIGGER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 _HISTORY_PLACEHOLDER_PATTERN = re.compile(r"\{history\.[^{}]+\}")
 _MAX_HISTORY_PLACEHOLDERS = 16
@@ -899,6 +963,20 @@ class SkillLoader:
             raw.get("config") or {},
             raw.get("name", "<unknown>"),
         )
+        hooks_path = skill_dir / "hooks.py"
+        if hooks_path.is_file():
+            hook_names = _hook_supplied_names(hooks_path)
+            config = raw.get("config")
+            config_keys = frozenset(config) if isinstance(config, dict) else frozenset()
+            for trigger in triggers:
+                if trigger.action_tier == "D":
+                    _refuse_hook_names_in_tier_d_condition(
+                        raw.get("name", "<unknown>"),
+                        trigger.name,
+                        trigger.condition,
+                        hook_names,
+                        config_keys,
+                    )
         self._verify_community_signature(raw, skill_dir)
         if load_hooks:
             hooks = self._load_hooks(skill_dir)

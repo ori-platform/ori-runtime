@@ -35,9 +35,10 @@ triggers:
     action_tier: A
 
   # Tier D — Critical SOC emergency cutoff: prevent deep discharge damage
-  # Covers simulation (sensor_type='battery'), Growatt, Victron, and hook-derived is_soc_sensor.
+  # Covers simulation (sensor_type='battery') and every SOC type the hook treats
+  # as one; a Tier D condition reads the reading, never a hook's output.
   - name: battery_emergency_cutoff
-    condition: "(sensor_type == 'battery' or sensor_type == 'growatt_battery_soc' or sensor_type == 'victron_battery_soc' or is_soc_sensor == 1) and value < battery_critical_threshold"
+    condition: "(sensor_type == 'battery' or sensor_type == 'growatt_battery_soc' or sensor_type == 'victron_battery_soc' or sensor_type == 'battery_percent') and value < battery_critical_threshold"
     bypass_llm: true
     action_tier: D
     cooldown_seconds: 0

@@ -280,11 +280,14 @@ So admission has two phases, and the first is **event-wide**:
    state changes **on the resources it licenses** — not on unrelated ones. The
    barrier exists so that a Tier D match is *known* before lower-tier work
    starts; the resource gate decides what that knowledge forecloses.
-   Tier D conditions read the reading in hand only, so they are decided, and
-   their acts attempted, before the store is asked for any other trigger's
-   history; the remaining triggers are collected after that, inside the same
-   event scope and still before any reasoning is scheduled. A store slow to
-   answer a history read therefore delays lower-tier discovery, never a trip.
+   Tier D conditions read the reading and the skill's configuration only, so
+   they are decided, and their acts attempted, before any skill hook runs and
+   before the store is asked for any history; the remaining triggers are
+   collected after that, inside the same event scope and still before any
+   reasoning is scheduled. A hook that is slow or fails, and a store slow to
+   answer a history read, therefore delay lower-tier discovery, never a trip.
+   The loader refuses a Tier D condition that names history or a name only a
+   hook supplies, and the rule engine refuses one it cannot resolve.
 2. **Resource admission.** Then admit actions against the gate below.
 
 Without phase 1, "Tier D is attempted first" is true only within a skill, which

@@ -530,23 +530,26 @@ class IntelligenceElevator:
     ) -> tuple[list[RuleResult], Callable[[], Awaitable[list[RuleResult]]]]:
         """The Tier D matches of *skill* now, and the rest when awaited.
 
-        Hooks run once, for both. The Tier D matches are decided without any
-        history read, so a store that is slow to answer another trigger's
-        history cannot hold a trip.
+        Tier D is decided from the reading and the skill's configuration alone,
+        before any hook runs and without reading history, so neither a hook nor
+        the store can hold or decide a trip. The hook runs once, for the rest.
         """
-        ctx, _hook_ctx = await self._condition_context(event, skill, state_store)
         rules = getattr(skill, "triggers", [])
         scope = str(getattr(skill, "name", "") or "")
+        config: dict[str, Any] = {}
+        if isinstance(getattr(skill, "config", None), dict):
+            config.update(_without_reserved_names(skill.config, skill))
         tier_d = await self._rule_engine.evaluate_all(
             event,
             rules,
-            context=ctx,
-            state_store=state_store,
+            context=config,
+            state_store=None,
             scope=scope,
             select=RULES_TIER_D,
         )
 
         async def rest() -> list[RuleResult]:
+            ctx, _hook_ctx = await self._condition_context(event, skill, state_store)
             return await self._rule_engine.evaluate_all(
                 event,
                 rules,
