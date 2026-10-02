@@ -1525,6 +1525,7 @@ class TestReasonAndDispatch:
                 _event(value=5.0), _tier_a_skill(), store, dispatcher
             )
 
+            await dispatcher.drain_records()
             actions = await store.get_action_log()
             conn = store._conn
             assert conn is not None
@@ -1592,6 +1593,7 @@ class TestReasonAndDispatch:
                 _event(value=5.0), _tier_b_post_action_skill(), store, dispatcher
             )
 
+            await dispatcher.drain_records()
             actions = await store.get_action_log()
             correlations = {row["correlation_id"] for row in actions}
             conn = store._conn
@@ -1656,6 +1658,7 @@ class TestReasonAndDispatch:
             )
 
             local_llm.reason.assert_not_called()
+            await dispatcher.drain_records()
             actions = await store.get_action_log()
             by_action = {row["action_name"]: row for row in actions}
             assert by_action["alert_whatsapp"]["tier"] == "A"
@@ -1844,6 +1847,7 @@ class TestReasonAndDispatch:
                 dispatcher,
             )
 
+            await dispatcher.drain_records()
             actions = await store.get_action_log()
             by_action = {row["action_name"]: row for row in actions}
             assert by_action["coap_command"]["tier"] == "B"
