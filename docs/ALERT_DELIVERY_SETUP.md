@@ -218,7 +218,7 @@ configuration lives outside version control for this reason.
 A green suite proves the code calls the provider. It does not prove a message
 arrived. The proof is a handset.
 
-**Minimum evidence before v2.5.0 is called ready:**
+**Minimum evidence before live alert delivery is claimed:**
 
 1. A sandbox SMS lands on a registered handset.
 2. Each of the four approved WhatsApp templates lands on a joined handset from

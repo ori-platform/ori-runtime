@@ -42,6 +42,8 @@ candidate onto the restored release, and uninstalled cleanly. The records are
 `docs/releases/evidence/v2.5.0-rc.7-published-systemd-host-linux-aarch64-python3.13.md`
 with `docs/releases/evidence/v2.5.0-rc.7-rollback-published-linux-aarch64-python3.13.md`,
 and `docs/releases/evidence/v2.5.0-rc.7-published-systemd-host-linux-x86_64-python3.12.md`.
+The installer has changed since that candidate, and `v2.5.0` itself has not been
+through the runbook; the release notes' known gaps say what changed.
 
 Building, signing and passing the suite for a tuple is a different claim from
 installing on it, which is why the other bundles are listed as published rather
