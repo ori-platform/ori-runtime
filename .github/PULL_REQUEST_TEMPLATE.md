@@ -20,7 +20,7 @@
 - [ ] `ruff check --fix ori/ tests/ skills/` is clean
 - [ ] Every new `.py` file has the Apache-2.0 license header
 - [ ] If capability behavior changed, `docs/CAPABILITY_MATRIX.md` is updated in this PR
-- [ ] If capability-impacting files changed but matrix update is intentionally not needed, add `[skip-cap-matrix]` in PR body with rationale
+- [ ] If capability-impacting files changed but the matrix truly needs no update, a line of this body starts with the bypass token `skip-cap-matrix` in square brackets, followed by the reason
 - [ ] PR description explains **why**, not just what
 
 ### If you used AI assistance
