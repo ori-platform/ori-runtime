@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-1E6B4A?style=flat-square)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11%2B-1E6B4A?style=flat-square)](https://python.org)
 [![CI](https://github.com/ori-platform/ori-runtime/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/ori-platform/ori-runtime/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/badge/release-v2.4.0-1E6B4A?style=flat-square)](#release-status)
+[![Release](https://img.shields.io/badge/release-v2.5.0-1E6B4A?style=flat-square)](#release-status)
 [![Platform](https://img.shields.io/badge/runs%20on-Raspberry%20Pi%20·%20Linux%20·%20macOS-C8A951?style=flat-square)](#)
 
 </div>
@@ -480,7 +480,7 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting, supported versions, 
 
 ## Release Status
 
-**Current channel: Stable (`2.4.x`)**
+**Current channel: Stable (`2.5.x`)**
 
 - Runtime core is stable for PoC, demo API, and controlled field deployment,
   with a fail-closed production security posture: staging/production configs
@@ -498,14 +498,18 @@ See [SECURITY.md](SECURITY.md) for vulnerability reporting, supported versions, 
   runtime verifies and trust-grades them, and the runtime's own evidence chain
   verifies the shared golden bytes/signatures without owning firmware
   canonicalization.
+- Under a bench stress run on a Raspberry Pi with the signed `v2.5.0-rc.13`
+  bundle (full CPU load, locked stores, an inbound evidence flood), evidence
+  contention did not delay runtime dispatch of Tier D or approved Tier C
+  beyond the measured bounds. No hardware was driven. See the
+  [Claim](docs/releases/v2.5.0.md#claim) for the numbers and their limits.
 - Safety invariants (tier guards, the runtime action registry, strict skill validation, skill provenance) are CI-enforced on every PR.
 - Public runtime contracts used by companion repos are the MQTT gateway/export contracts and the typed `ori.integration` rule-evaluation boundary — unchanged from v1.0.0. The runtime health payload is also read by companion repos and is versioned separately: `2.4.x` serves `ori-specs/runtime-health/v1`, and `2.5.0` serves `v3`, which, like `v2`, omits the evidence artifact version, a field that no longer has a source now that the private artifact is retired.
 - Recommended use today: pilots, PoCs, controlled deployments, product provisioning, and downstream demo/API integration.
-- Upgrading from `2.3.x` and scripting the Linux installer? `2.4.0` makes
-  `--scope` explicit, prints a human summary unless `--json` is passed, and
-  drops `--service-user`. See
-  [Migration](docs/releases/v2.4.0.md#migration).
-- Release notes: [`docs/releases/v2.4.0.md`](docs/releases/v2.4.0.md)
+- Upgrading from `2.4.x`? A sensor entry may no longer set `sensor_id`,
+  `sensor_type` or `circuit_breaker`, and startup refuses one that does. See
+  [Breaking configuration change](docs/releases/v2.5.0.md#breaking-configuration-change).
+- Release notes: [`docs/releases/v2.5.0.md`](docs/releases/v2.5.0.md)
 
 Related public repos in the org:
 

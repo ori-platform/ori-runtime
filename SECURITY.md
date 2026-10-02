@@ -6,13 +6,13 @@ Ori Runtime controls physical systems. Security issues can have real-world conse
 
 | Version | Supported |
 | ------- | --------- |
-| `2.4.x` (stable) | Yes |
-| `<2.4.0` | No |
+| `2.5.x` (stable) | Yes |
+| `<2.5.0` | No |
 
 ### Where a security fix lands
 
 A fix reaches the release line under active development. `GHSA-rv38-92xc-7xq8`
-is fixed in `v2.5.0-rc.8` and is not backported to `2.4.x`, deliberately: that
+is fixed in `v2.5.0` (first in `v2.5.0-rc.8`) and is not backported to `2.4.x`, deliberately: that
 guard refuses to start a device configured with a forgeable anchor rather than
 repairing one, so shipping it to a stable line would stop a running device
 without making its anchor any less forgeable.

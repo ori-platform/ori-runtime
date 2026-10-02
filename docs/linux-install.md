@@ -167,8 +167,8 @@ port — fails config validation rather than being reported later.
 
 ```sh
 curl -fsSL \
-  https://github.com/ori-platform/ori-runtime/releases/download/v2.4.0/install-linux.sh \
-  | bash -s -- --version 2.4.0
+  https://github.com/ori-platform/ori-runtime/releases/download/v2.5.0/install-linux.sh \
+  | bash -s -- --version 2.5.0
 ```
 
 You are asked, in order: the installation scope, a device ID, a device name, a
@@ -233,8 +233,8 @@ Every identity value must be supplied; unattended mode never prompts.
 
 ```sh
 curl -fsSL \
-  https://github.com/ori-platform/ori-runtime/releases/download/v2.4.0/install-linux.sh \
-  | bash -s -- --version 2.4.0 -- \
+  https://github.com/ori-platform/ori-runtime/releases/download/v2.5.0/install-linux.sh \
+  | bash -s -- --version 2.5.0 -- \
       --scope system \
       --unattended \
       --device-id energy-monitor-ikeja-01 \
@@ -251,12 +251,12 @@ it. To remove that residual trust, fetch the script and its checksum from the
 immutable tag, verify, inspect, then run it locally:
 
 ```sh
-base=https://github.com/ori-platform/ori-runtime/releases/download/v2.4.0
+base=https://github.com/ori-platform/ori-runtime/releases/download/v2.5.0
 curl -fsSLO "${base}/install-linux.sh"
 curl -fsSLO "${base}/install-linux.sh.sha256"
 sha256sum -c install-linux.sh.sha256
 less install-linux.sh
-bash install-linux.sh --version 2.4.0 -- --scope system --unattended ...
+bash install-linux.sh --version 2.5.0 -- --scope system --unattended ...
 ```
 
 Everything after the bootstrap is already covered by the KMS signature.
@@ -348,11 +348,11 @@ what happens to it after a reboot:
 ```text
 Ori Runtime installed
 
-  version   2.4.0
+  version   2.5.0
   scope     system
   device    energy-monitor-ikeja-01
   root      /opt/ori
-  release   /opt/ori/releases/2.4.0
+  release   /opt/ori/releases/2.5.0
   config    /opt/ori/data/ori.yaml
   data      /opt/ori/data
   socket    /opt/ori/data/health.sock
@@ -370,14 +370,14 @@ one JSON document — on failure as well as success — while prompts and progre
 go to stderr:
 
 ```json
-{"active_release":"/opt/ori/releases/2.4.0",
+{"active_release":"/opt/ori/releases/2.5.0",
  "boot_persistence":true,
  "changed":true,
  "config_path":"/opt/ori/data/ori.yaml",
  "data_path":"/opt/ori/data",
  "device_id":"energy-monitor-ikeja-01",
  "diagnostics":[{"name":"install.identity","status":"PASS","mandatory":false,
-                 "message":"Ori 2.4.0 installed in system scope at /opt/ori"}],
+                 "message":"Ori 2.5.0 installed in system scope at /opt/ori"}],
  "health":{"device_id":"energy-monitor-ikeja-01","critical":false},
  "health_socket":"/opt/ori/data/health.sock",
  "install_root":"/opt/ori",
@@ -388,7 +388,7 @@ go to stderr:
  "service_user":"ori-runtime",
  "status":"healthy",
  "unit_path":"/etc/systemd/system/ori-runtime.service",
- "version":"2.4.0",
+ "version":"2.5.0",
  "warnings":[]}
 ```
 
