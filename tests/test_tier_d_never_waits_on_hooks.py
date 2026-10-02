@@ -536,7 +536,7 @@ class TestAHookWriteNeverJoinsTheWritersTransaction:
                 store.hooks_set_skill_state("battery-lifecycle-observer", "k", "v")
             assert time.monotonic() - started < HOOK_BUSY_TIMEOUT_S + 0.2
             finish.set()
-            await writer
+            await asyncio.wait_for(writer, 5.0)
             with sqlite3.connect(str(tmp_path / "state.db")) as reader:
                 left = reader.execute(
                     "SELECT value FROM skill_state WHERE skill_name = 'writer'"

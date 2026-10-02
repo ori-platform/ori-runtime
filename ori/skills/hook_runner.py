@@ -218,6 +218,8 @@ class HookRunner:
             try:
                 self._queue.put_nowait(None)
             except queue.Full:
+                # Unreachable: submit refuses once closed and the queue was
+                # drained above; the deadline below still bounds the wait.
                 pass
             deadline = time.monotonic() + timeout_s
             while thread.is_alive() and time.monotonic() < deadline:
