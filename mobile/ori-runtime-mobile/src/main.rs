@@ -3,7 +3,7 @@
 
 use base64::Engine;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
 use serde_yaml::Value as YamlValue;
