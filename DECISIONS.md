@@ -1326,6 +1326,17 @@ Phasing and versioning:
     synthetic injection (injection must be logged as such);
   - every divergence classified and signed off — "zero divergences" may not
     be satisfied by zero evaluations.
+- **Amended 2026-10-02 — the criteria are gated on evidence, never on a
+  customer.** A live deployment is any commissioned representative deployment
+  running the release-owned typed safety profiles, or a release-owned
+  long-running qualification site on reference hardware. Only evaluations of
+  those profiles on commissioned inputs count; legacy skill conditions and
+  synthetic injection are labelled, and injection counts only toward the
+  boundary criterion. Shadow agreement proves decision equivalence, not
+  wiring or physical outcome, so the authority flip also requires the
+  reference hardware-in-the-loop acceptance on the authoritative path. No
+  milestone before v3.0.0 depends on a particular site, and v3.0.0 waits
+  rather than lowering a criterion.
 
 Non-goals:
 
