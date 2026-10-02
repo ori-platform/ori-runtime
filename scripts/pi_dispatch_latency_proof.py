@@ -420,6 +420,8 @@ async def _prove(data: Path, readings: int, notice_readings: int = 3) -> dict[st
                 else math.inf
             )
             await coordinator.drain(timeout=APPROVAL_WINDOW_S)
+        # A proposal's outcome is appended after its act, by the record writer.
+        await dispatcher.drain_records(timeout=APPROVAL_WINDOW_S)
         decisions = await store.get_tier_c_proposals()
     finally:
         flooding.set()
