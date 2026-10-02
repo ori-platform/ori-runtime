@@ -482,6 +482,13 @@ class _Site:
             "after_s": ran[before] - started if len(ran) > before else None,
         }
 
+    async def settle_trip(self) -> None:
+        """Wait, bounded, for the trip's event to finish dispatching."""
+        trip = self.dispatching
+        assert trip is not None
+        done, _ = await asyncio.wait({trip}, timeout=_PROMPT_S)
+        assert done, "the trip's event never settled"
+
     async def approve(self) -> dict[str, Any]:
         """Raise an approval, answer YES, and return once the act has run."""
         ran = self.acts.ran["trip_relay"]
@@ -731,6 +738,9 @@ async def _run(case: str, root: Path) -> dict[str, Any]:
     async with _site(root, courier=_courier_for(case)) as site:
         delivering = await _prepare(site, case)
         tripped = await site.trip()
+        # The trip's event holds its resource until the event settles; an
+        # isolation raised before then coalesces into the trip, not a proposal.
+        await site.settle_trip()
         approved = await site.approve()
         held_records = site.dispatcher.pending_record_count()
         approved["decided"] = await site.decided()
