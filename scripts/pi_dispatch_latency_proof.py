@@ -15,13 +15,16 @@ store is locked by another connection and the inbound route is flooded.
   triggers carry notifications only, so the first act is a notification.
 * Tier C: with the state store free (an approval is committed to it before
   anything acts), a governed approval is raised on a commissioned zone, the
-  operator answers YES, and the act is timed from the reply to its executor.
+  operator answers YES, and the act is timed twice: from the reply, and from
+  the moment the store's approval transaction committed, each to the executor.
+  Every round must reach exactly one act, the approved one, and every proposal
+  must end executed.
 
     <install root>/current/venv/bin/python pi_dispatch_latency_proof.py \\
         --data-dir /var/tmp/ori-latency-proof --readings 200
 
 scripts/ is not in the wheel, so copy this file to the device. It writes a
-JSON report to stdout and exits 1 when any first act misses the bound. Nothing
+JSON report to stdout and exits 1 when any bound or round check fails. Nothing
 outside --data-dir is written, no MQTT broker is needed (the route's client
 is replaced at the transport edge), and no relay is driven.
 """
@@ -66,7 +69,15 @@ from ori.skills.loader import SkillLoader, Trigger
 from ori.state.store import StateStore
 
 DEVICE = "latency-proof"
+#: A Tier D trigger's first act, from the reading.
 BOUND_S = 0.25
+#: An approved Tier C act from the reply: the target, reported.
+TIER_C_TARGET_S = 0.5
+#: An approved Tier C act from the reply: the ceiling, past which an approval
+#: is lost or wedged.
+TIER_C_CEILING_S = 1.0
+#: An approved Tier C act from its committed approval: dispatch begins at once.
+COMMIT_TO_ACT_S = 0.25
 #: How long the whole notice set of a dangerous reading is waited for.
 NOTICE_WINDOW_S = 8.0
 #: How long one approval round may take, the proposal's own lifetime.
@@ -272,6 +283,19 @@ async def _prove(data: Path, readings: int, notice_readings: int = 3) -> dict[st
 
         return run
 
+    # When each approval transaction committed, read in the store's own write
+    # thread so the hop back to the loop counts against dispatch.
+    committed_at: list[float] = []
+    admit = store._admit_tier_c_approval_sync
+
+    def timed_admit(*args: Any) -> str:
+        answer = admit(*args)
+        if answer == "committed":
+            committed_at.append(time.monotonic())
+        return answer
+
+    store._admit_tier_c_approval_sync = timed_admit  # type: ignore[method-assign, assignment]
+
     phone = _Phone()
     dispatcher = ActionDispatcher(
         state_store=store,
@@ -357,6 +381,9 @@ async def _prove(data: Path, readings: int, notice_readings: int = 3) -> dict[st
     first: dict[str, list[float]] = {name: [] for name in CASES}
     every: dict[str, dict[str, list[float]]] = {name: {} for name in CASES}
     approvals: list[float] = []
+    commit_to_act: list[float] = []
+    #: Per round: the acts its trigger reached and the approvals committed.
+    rounds: list[dict[str, Any]] = []
     decisions: list[dict[str, Any]] = []
     try:
         # Tier D, both stores locked: a normal reading, then a dangerous one.
@@ -408,6 +435,7 @@ async def _prove(data: Path, readings: int, notice_readings: int = 3) -> dict[st
             fired = acts.setdefault("isolate", [])
             before = len(fired)
             replies = len(phone.replied_at)
+            commits = len(committed_at)
             await asyncio.to_thread(
                 publish, _event("proof-isolation", "isolation_request", 1.0)
             )
@@ -419,7 +447,18 @@ async def _prove(data: Path, readings: int, notice_readings: int = 3) -> dict[st
                 if len(fired) > before and len(phone.replied_at) > replies
                 else math.inf
             )
+            commit_to_act.append(
+                fired[before][1] - committed_at[commits]
+                if len(fired) > before and len(committed_at) > commits
+                else math.inf
+            )
             await coordinator.drain(timeout=APPROVAL_WINDOW_S)
+            rounds.append(
+                {
+                    "acts": [name for name, _ in fired[before:]],
+                    "commits": len(committed_at) - commits,
+                }
+            )
         # A proposal's outcome is appended after its act, by the record writer.
         await dispatcher.drain_records(timeout=APPROVAL_WINDOW_S)
         decisions = await store.get_tier_c_proposals()
@@ -434,8 +473,15 @@ async def _prove(data: Path, readings: int, notice_readings: int = 3) -> dict[st
         await store.close()
         attestor.close()
 
+    clean_rounds = sum(
+        1 for r in rounds if r["acts"] == ["trip_relay"] and r["commits"] == 1
+    )
+    states = [str(d.get("decision_state", "")) for d in decisions]
     report: dict[str, Any] = {
         "bound_ms": BOUND_S * 1000,
+        "tier_c_target_ms": TIER_C_TARGET_S * 1000,
+        "tier_c_ceiling_ms": TIER_C_CEILING_S * 1000,
+        "tier_c_commit_to_act_bound_ms": COMMIT_TO_ACT_S * 1000,
         "inbound_messages_left_with_broker": subscriber.shed_count,
         "tier_d": {
             name: {
@@ -447,12 +493,18 @@ async def _prove(data: Path, readings: int, notice_readings: int = 3) -> dict[st
             for name in CASES
         },
         "approved_tier_c_reply_to_act": _summary(approvals),
-        "tier_c_decisions": _count(str(d.get("decision_state", "")) for d in decisions),
+        "approved_tier_c_commit_to_act": _summary(commit_to_act),
+        "tier_c_rounds": len(rounds),
+        "tier_c_rounds_one_approved_act": clean_rounds,
+        "tier_c_decisions": _count(states),
     }
+    report["tier_c_target_met"] = all(v < TIER_C_TARGET_S for v in approvals)
     report["pass"] = (
         all(v < BOUND_S for values in first.values() for v in values)
-        and all(v < BOUND_S for v in approvals)
-        and all(str(d.get("decision_state", "")) == "executed" for d in decisions)
+        and all(v < TIER_C_CEILING_S for v in approvals)
+        and all(v < COMMIT_TO_ACT_S for v in commit_to_act)
+        and clean_rounds == len(rounds) > 0
+        and states == ["executed"] * len(rounds)
     )
     return report
 
