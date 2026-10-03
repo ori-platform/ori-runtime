@@ -96,6 +96,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_doctor(commands)
     _add_status(commands)
     _add_config(commands)
+    _add_skills(commands)
     _add_install(commands)
     _add_uninstall(commands)
     return parser
@@ -215,6 +216,193 @@ def _add_config(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -
     )
     validate.set_defaults(handler=_run_config_validate)
     parser.set_defaults(handler=_require_subcommand, parser=parser)
+
+
+def _add_skills(
+    commands: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    parser = commands.add_parser(
+        "skills",
+        help="validate and inspect bundled skills",
+        description="Work with the skills installed alongside the runtime.",
+        formatter_class=_formatter,
+        allow_abbrev=False,
+    )
+    subcommands = parser.add_subparsers(dest="subcommand", metavar="<subcommand>")
+    validate = subcommands.add_parser(
+        "validate",
+        help="load a skill directory and report the first problem",
+        description=(
+            "Validate a skill through the runtime's own loader, so what it "
+            "accepts here is exactly what the runtime will accept at startup. "
+            "Every key that the loader reads is accepted; any unrecognized key "
+            "is refused with a named error identifying the skill, the trigger "
+            "or action, and the key."
+        ),
+        epilog=(
+            "examples:\n"
+            "  ori skills validate ./skills/my-skill      validate a single skill\n"
+            "  ori skills validate ./skills               validate every skill in a directory\n"
+            "\n"
+            "exit status:\n"
+            "  0  all skills are valid\n"
+            "  1  at least one skill failed validation; the reason is printed\n"
+            "  2  the path could not be read\n"
+        ),
+        formatter_class=_formatter,
+        allow_abbrev=False,
+    )
+    validate.add_argument(
+        "path",
+        help=(
+            "path to a single skill directory (must contain skill.yaml) "
+            "or to a parent directory to validate all skills inside it"
+        ),
+    )
+    validate.add_argument(
+        "--json", action="store_true", help="emit one JSON document on stdout"
+    )
+    validate.set_defaults(handler=_run_skills_validate)
+    parser.set_defaults(handler=_require_subcommand, parser=parser)
+
+
+def _run_skills_validate(args: argparse.Namespace) -> int:
+    import yaml
+
+    from ori.skills.loader import SkillLoader, SkillValidationError
+    from ori.skills.sandbox import SkillSecurityError
+
+    target = Path(args.path)
+    stream = _out(args)
+
+    if not target.exists():
+        msg = f"ori: path not found: {shown(str(target))}"
+        if getattr(args, "json", False):
+            json.dump({"status": "error", "error": msg}, sys.stdout)
+            sys.stdout.write("\n")
+        else:
+            print(msg, file=sys.stderr)
+        return EXIT_UNUSABLE
+
+    loader = SkillLoader()
+
+    # Single skill directory: contains skill.yaml directly
+    if (target / "skill.yaml").exists():
+        try:
+            skill = loader.load_one(target)
+            payload = {
+                "status": "valid",
+                "name": skill.name,
+                "version": skill.version,
+                "triggers": len(skill.triggers),
+            }
+            _emit(
+                args,
+                payload,
+                terminal.success(
+                    f"\u2714 Valid: {skill.name} v{skill.version} "
+                    f"({len(skill.triggers)} trigger(s))",
+                    stream=stream,
+                ),
+            )
+            return EXIT_OK
+        except SkillValidationError as exc:
+            payload = {"status": "invalid", "error": str(exc)}
+            _emit(
+                args,
+                payload,
+                terminal.failure(f"\u2718 Invalid: {shown(str(target))}", stream=stream)
+                + f"\n  {exc}",
+            )
+            return EXIT_FAILED
+        except SkillSecurityError as exc:
+            payload = {"status": "invalid", "error": str(exc)}
+            _emit(
+                args,
+                payload,
+                terminal.failure(f"\u2718 Invalid: {shown(str(target))}", stream=stream)
+                + f"\n  {exc}",
+            )
+            return EXIT_FAILED
+        except yaml.YAMLError as exc:
+            payload = {"status": "invalid", "error": str(exc)}
+            _emit(
+                args,
+                payload,
+                terminal.failure(
+                    f"\u2718 Malformed YAML: {shown(str(target))}", stream=stream
+                )
+                + f"\n  {exc}",
+            )
+            return EXIT_FAILED
+        except OSError as exc:
+            msg = f"ori: could not read {shown(str(target))}: {exc.strerror or exc}"
+            if getattr(args, "json", False):
+                json.dump({"status": "error", "error": msg}, sys.stdout)
+                sys.stdout.write("\n")
+            else:
+                print(msg, file=sys.stderr)
+            return EXIT_UNUSABLE
+
+    # Parent directory: validate every skill inside it
+    try:
+        skill_dirs = [d for d in sorted(target.iterdir()) if d.is_dir()]
+    except OSError as exc:
+        msg = f"ori: could not read {shown(str(target))}: {exc.strerror or exc}"
+        if getattr(args, "json", False):
+            json.dump({"status": "error", "error": msg}, sys.stdout)
+            sys.stdout.write("\n")
+        else:
+            print(msg, file=sys.stderr)
+        return EXIT_UNUSABLE
+
+    if not skill_dirs:
+        print(
+            f"ori: no skill directories found under {shown(str(target))}. "
+            "Pass a path to a directory that contains skill.yaml, "
+            "or to a parent directory that contains skill directories.",
+            file=sys.stderr,
+        )
+        return EXIT_UNUSABLE
+
+    results: list[dict[str, str]] = []
+    failed = False
+    human_lines: list[str] = []
+
+    for skill_dir in skill_dirs:
+        if not (skill_dir / "skill.yaml").exists():
+            continue
+        try:
+            skill = loader.load_one(skill_dir)
+            human_lines.append(
+                terminal.success(
+                    f"  \u2714 {skill.name} v{skill.version}",
+                    stream=stream,
+                )
+            )
+            results.append({"name": skill.name, "status": "valid"})
+        except (SkillValidationError, SkillSecurityError) as exc:
+            human_lines.append(
+                terminal.failure(f"  \u2718 {skill_dir.name}", stream=stream)
+                + f"\n    {exc}"
+            )
+            results.append(
+                {"name": skill_dir.name, "status": "invalid", "error": str(exc)}
+            )
+            failed = True
+        except yaml.YAMLError as exc:
+            human_lines.append(
+                terminal.failure(f"  \u2718 {skill_dir.name}", stream=stream)
+                + f"\n    {exc}"
+            )
+            results.append(
+                {"name": skill_dir.name, "status": "invalid", "error": str(exc)}
+            )
+            failed = True
+
+    payload = {"results": results}
+    _emit(args, payload, "\n".join(human_lines))
+    return EXIT_FAILED if failed else EXIT_OK
 
 
 def _add_install(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:

@@ -3,6 +3,7 @@
 
 import asyncio
 import base64
+import logging
 import textwrap
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -14,6 +15,8 @@ import yaml
 from ori.network.event_bus import EventBus
 from ori.network.events import OriEvent, SensorReading
 from ori.skills.loader import (
+    _ACTION_ALLOWED_KEYS,
+    _TRIGGER_ALLOWED_KEYS,
     Skill,
     SkillLoader,
     SkillValidationError,
@@ -1986,3 +1989,141 @@ def test_every_bundled_skill_loads(manifest: Path) -> None:
     assert skill.first_party
     for trigger in skill.triggers:
         assert isinstance(trigger.requires_approval, bool)
+
+
+# ---------------------------------------------------------------------------
+# Unknown-key rejection tests (Issue #709)
+# ---------------------------------------------------------------------------
+# These tests are built from the loader's own allowed-key sets so that if a
+# new key is ever added to the grammar, the tests adapt automatically rather
+# than silently becoming stale.
+
+
+def _a_key_outside(allowed: frozenset[str]) -> str:
+    """Return a key string that is definitely not in *allowed*."""
+    candidate = "unknown_key"
+    while candidate in allowed:
+        candidate = "_" + candidate
+    return candidate
+
+
+# -- Trigger unknown-key tests -----------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad_key",
+    [
+        _a_key_outside(_TRIGGER_ALLOWED_KEYS),
+        "Requires_Approval",  # capital-R typo from the issue
+        "requiresApproval",  # camelCase typo from the issue
+    ],
+)
+def test_rejects_unknown_keys_in_trigger(tmp_path: Path, bad_key: str) -> None:
+    """Loader must refuse any key not in _TRIGGER_ALLOWED_KEYS."""
+    skill_dir = tmp_path / "s"
+    # Inject the bad key inside the trigger block by appending after action_tier
+    yaml_text = _minimal_yaml().replace(
+        "            action_tier: A",
+        f"            action_tier: A\n            {bad_key}: true",
+    )
+    _write_skill_yaml(skill_dir, yaml_text)
+    with pytest.raises(SkillValidationError, match="unrecognized key"):
+        _first_party_loader().load_one(skill_dir)
+
+
+@pytest.mark.parametrize(
+    "bad_key",
+    [
+        "Requires_Approval",
+        "requiresApproval",
+    ],
+)
+def test_rejects_unknown_trigger_key_through_load_all(
+    tmp_path: Path, bad_key: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Unknown trigger keys must also surface when discovered via load_all.
+
+    The skill must be absent from the result *because of the bad key*: the
+    logged error message must name it, not some other skip reason such as a
+    quota or duplicate name.  A control pass without the bad key confirms the
+    fixture itself is valid.
+    """
+    skill_dir = tmp_path / "bad-skill"
+    yaml_text = _minimal_yaml().replace(
+        "            action_tier: A",
+        f"            action_tier: A\n            {bad_key}: true",
+    )
+    _write_skill_yaml(skill_dir, yaml_text)
+
+    with caplog.at_level(logging.ERROR, logger="ori.skills.loader"):
+        skills = _first_party_loader().load_all(str(tmp_path))
+
+    assert not any(s.name == "test-skill" for s in skills)
+    # The logged reason must name the offending key so operators can diagnose it.
+    assert bad_key in caplog.text
+
+    # Control: the same fixture without the bad key loads successfully.
+    good_dir = tmp_path / "good-skill"
+    _write_skill_yaml(good_dir, _minimal_yaml())
+    good_skills = _first_party_loader().load_all(str(good_dir.parent))
+    assert any(s.name == "test-skill" for s in good_skills)
+
+
+# -- Action unknown-key tests ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad_key",
+    [
+        _a_key_outside(_ACTION_ALLOWED_KEYS),
+        "Requires_Approval",
+        "requiresApproval",
+    ],
+)
+def test_rejects_unknown_keys_in_action(tmp_path: Path, bad_key: str) -> None:
+    """Loader must refuse any key not in _ACTION_ALLOWED_KEYS."""
+    skill_dir = tmp_path / "s"
+    yaml_text = _minimal_yaml().replace(
+        "- name: alert_whatsapp\n              tier: A",
+        f"- name: alert_whatsapp\n              tier: A\n              {bad_key}: false",
+    )
+    _write_skill_yaml(skill_dir, yaml_text)
+    with pytest.raises(SkillValidationError, match="unrecognized key"):
+        _first_party_loader().load_one(skill_dir)
+
+
+@pytest.mark.parametrize(
+    "bad_key",
+    [
+        "Requires_Approval",
+        "requiresApproval",
+    ],
+)
+def test_rejects_unknown_action_key_through_load_all(
+    tmp_path: Path, bad_key: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Unknown action keys must also surface when discovered via load_all.
+
+    The skill must be absent because of the bad key, not any other reason.
+    The logged error must name the offending key; a control pass confirms the
+    fixture is otherwise valid.
+    """
+    skill_dir = tmp_path / "bad-skill"
+    yaml_text = _minimal_yaml().replace(
+        "- name: alert_whatsapp\n              tier: A",
+        f"- name: alert_whatsapp\n              tier: A\n              {bad_key}: false",
+    )
+    _write_skill_yaml(skill_dir, yaml_text)
+
+    with caplog.at_level(logging.ERROR, logger="ori.skills.loader"):
+        skills = _first_party_loader().load_all(str(tmp_path))
+
+    assert not any(s.name == "test-skill" for s in skills)
+    # The logged reason must name the offending key so operators can diagnose it.
+    assert bad_key in caplog.text
+
+    # Control: the same fixture without the bad key loads successfully.
+    good_dir = tmp_path / "good-skill"
+    _write_skill_yaml(good_dir, _minimal_yaml())
+    good_skills = _first_party_loader().load_all(str(good_dir.parent))
+    assert any(s.name == "test-skill" for s in good_skills)

@@ -61,6 +61,28 @@ from ori.utils.path_utils import shown
 
 logger = logging.getLogger(__name__)
 
+_TRIGGER_ALLOWED_KEYS = frozenset(
+    {
+        "name",
+        "condition",
+        "action_tier",
+        "cooldown_seconds",
+        "escalate_to",
+        "bypass_llm",
+        "requires_approval",
+        "reasoning_policy",
+        "approval_timeout_seconds",
+        "safe_default_action",
+    }
+)
+
+_ACTION_ALLOWED_KEYS = frozenset(
+    {
+        "name",
+        "tier",
+    }
+)
+
 _VALID_TIERS = frozenset({"A", "B", "C", "D"})
 
 
@@ -1595,6 +1617,7 @@ class SkillLoader:
         for entry in available:
             if not isinstance(entry, dict):
                 continue
+
             action_name = entry.get("name")
             if "requires_approval" in entry:
                 raise SkillValidationError(
@@ -1603,6 +1626,16 @@ class SkillLoader:
                     "does not read it. Approval is decided per trigger: declare "
                     "requires_approval on the trigger that defaults to this action."
                 )
+
+            unknown_keys = set(entry.keys()) - _ACTION_ALLOWED_KEYS
+            if unknown_keys:
+                action_name = entry.get("name", "<unnamed>")
+                raise SkillValidationError(
+                    f"Skill {skill_name!r}: action {action_name!r} in actions.available contains "
+                    f"unrecognized key(s) which the runtime does not read: "
+                    f"{', '.join(sorted(unknown_keys))}"
+                )
+
             declared = str(entry.get("tier") or "").upper()
             if not isinstance(action_name, str):
                 continue
@@ -1723,6 +1756,15 @@ class SkillLoader:
             if not isinstance(raw, dict):
                 raise SkillValidationError(
                     f"Skill '{skill_name}': each trigger must be a mapping."
+                )
+
+            unknown_keys = set(raw.keys()) - _TRIGGER_ALLOWED_KEYS
+            if unknown_keys:
+                trigger_name_for_err = raw.get("name", "<unnamed>")
+                raise SkillValidationError(
+                    f"Skill '{skill_name}' trigger '{trigger_name_for_err}' contains "
+                    f"unrecognized key(s) which the runtime does not read: "
+                    f"{', '.join(sorted(unknown_keys))}"
                 )
 
             raw_name = raw.get("name")

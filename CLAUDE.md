@@ -740,10 +740,6 @@ actions:
 
     - name: trip_relay
       tier: C
-      approval_message: |
-        PROPOSED: Isolate the commissioned circuit.
-        REASON: {result.text}
-        Reply YES to approve or NO to cancel.
 
   defaults:
     anomalous_draw: [alert_whatsapp, log_to_dashboard]
