@@ -2142,3 +2142,26 @@ operator-facing label for a zone, which is where a name like "refrigeration
 isolation circuit" belongs, is a binding amendment if it is ever wanted; the
 trigger name and profile identifier already carry why an outcome was commanded.
 
+
+## 2026-10-03 — The Android payload is a lab and contingency profile, not a deployment shape
+
+**Status:** Accepted
+
+The runtime release builds, signs and publishes an Android payload
+(`ori-runtime-mobile`). A phone that runs it reads a USB meter and exports
+telemetry. It is not where a site's runtime lives. A deployment's runtime runs
+on a Linux edge host, which holds the device authority; a phone is an
+interface to a site, and running the payload on one is a lab and contingency
+profile.
+
+**What the payload is for:** demonstrations, installer diagnostics, supervised
+advisory runs, and short data collection where no edge host is available.
+
+**What a release never claims for it:** actuation, Tier D or Tier C authority,
+continuous operation, or protection. It accepts only `deployment_type: phone`,
+and protection is unavailable wherever it runs.
+
+**Why releases keep shipping it:** a profile that is not built and verified on
+every release stops working without anyone noticing, and the contingency it
+exists for would then not be there. Keeping it signed and verified costs one
+release job; keeping it honest costs these rules.

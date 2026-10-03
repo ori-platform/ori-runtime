@@ -1,8 +1,11 @@
 # Android Runtime Mobile Payload
 
-`ori-runtime-mobile` is the native Phone Starter substrate used by APK
-provisioning. It is not the Ori Edge Node control runtime and it must not be
-described as one.
+`ori-runtime-mobile` is the native runtime a phone runs under its lab and
+contingency profile: demonstrations, installer diagnostics and supervised
+advisory runs. It is not a deployment shape. It is not the edge host's control
+runtime and must not be described as one: it actuates nothing, holds no Tier D
+or Tier C authority, and makes no continuous-operation guarantee. Releases keep
+building, signing and verifying it so the profile stays usable.
 
 The payload is a real Android ELF executable built per ABI:
 

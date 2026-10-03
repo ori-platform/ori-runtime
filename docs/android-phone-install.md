@@ -1,6 +1,6 @@
 # Android Phone Install Guide
 
-This guide is for early Phone Starter testing on a dedicated Android phone.
+This guide is for testing the phone lab profile on a dedicated Android phone. A phone is not a deployment shape: it actuates nothing and makes no continuous-operation guarantee.
 It is not the certified Edge Node path for physical actuation.
 
 ## Hardware

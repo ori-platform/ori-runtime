@@ -54,7 +54,7 @@ Use `ori.yaml.phone.example` as the USB starter profile:
 
 - `device.deployment_type: phone`;
 - `sensors[].protocol: usb_serial`;
-- `sensors[].type: usb_power` for a single plug-level phone starter sensor;
+- `sensors[].type: usb_power` for a single plug-level phone sensor;
 - `sensors[].device_path: /dev/ttyUSB0` or `/dev/ttyACM0` for direct tty
   devices, or `socket://127.0.0.1:PORT` for an approved Android USB-serial
   bridge;
@@ -161,7 +161,7 @@ enforce Ori's runtime safety model.
 
 ## Android APK Path
 
-The APK is the client-facing packaging layer for Phone Starter. It
+The APK is the packaging layer for the phone lab profile. It
 does not change Ori's safety model; it wraps the same runtime capability behind
 normal Android install and permission screens.
 
@@ -277,8 +277,8 @@ Candidate priority for Nigeria and sub-Saharan Africa:
 | Solis/Sofar/GoodWe/Huawei/Sungrow | Vendor-specific local API, logger, or Modbus path | Needs qualification |
 | Axpert/Voltronic-style off-grid units | Serial/USB or RS485 protocol bridge | Needs qualification |
 
-Until a candidate passes this checklist, the fallback deployable Phone Starter
-path remains USB/PZEM metering because it gives Ori an independent measurement
+Until a candidate passes this checklist, the phone lab profile's
+metering path remains USB/PZEM because it gives Ori an independent measurement
 surface that does not depend on inverter-brand support.
 
 Use the offline profile doctor to inspect bundled maps or verify a captured raw
@@ -294,7 +294,7 @@ ori-inverter-profile-doctor --profile deye_hybrid --decode deye_grid_power --raw
 This tool never opens a network connection and never writes inverter registers.
 
 For future inverter commands, follow
-[INVERTER_CONTROL_LADDER.md](INVERTER_CONTROL_LADDER.md). Current Phone Starter
+[INVERTER_CONTROL_LADDER.md](INVERTER_CONTROL_LADDER.md). Current phone lab
 profiles remain read/advisory only.
 It only exercises the same decode path used by the runtime.
 
@@ -310,7 +310,7 @@ phone as a dedicated runtime device:
 - use Termux:Boot or a support-run startup shortcut for restart recovery;
 - keep the phone powered from a stable adapter or inverter-backed socket.
 
-This is acceptable for Phone Starter monitoring and Tier A alerts. It is not the
+This is acceptable for phone lab-profile monitoring and Tier A alerts. It is not the
 durability boundary for certified actuation; physical control remains an Ori
 Edge Node responsibility.
 
@@ -355,7 +355,7 @@ business/audit history when gateway encryption is enabled.
 
 ## Alerts On Phone
 
-Phone Starter should keep direct SMS or WhatsApp alerts available as a local
+The phone lab profile should keep direct SMS or WhatsApp alerts available as a local
 runtime path. Push notifications can be added through account-backed services,
 but they depend on account sync, browser notification permissions, and internet
 delivery. Direct runtime alerts remain the fallback when the provisioning service is
@@ -392,8 +392,8 @@ The provisioning backend needs explicit support for phone deployments:
 - a PWA dashboard that reads cloud state instead of talking directly to the USB
   meter;
 - Gemini weekly report generation from real persisted telemetry;
-- upgrade flow from Phone Starter to Certified Edge Node without losing the
-  site's historical baseline.
+- adding an edge host to a site that began on the phone lab profile without
+  losing the site's historical baseline.
 
 Scenario/demo services should remain clearly marked development-only surfaces
 and must not be used as the committed default for a real phone deployment.
