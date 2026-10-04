@@ -484,3 +484,164 @@ def test_directory_json_no_extra_stdout(tmp_path: Path, monkeypatch, capsys) -> 
     # Must parse as a single document (not multiple concatenated ones).
     doc = json.loads(stdout)
     assert isinstance(doc, dict)
+
+
+def test_directory_unsigned_community_skill(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """Directory mode flags a skill outside the package with no valid signature (SkillSecurityError)."""
+    parent = tmp_path / "skills"
+
+    good_skill = parent / "good-skill"
+    community_skill = parent / "community-skill"
+
+    _write_valid_skill(good_skill, name="good-skill")
+    _write_valid_skill(community_skill, name="community-skill")
+
+    def mocked_is_core(self, skill_dir: Path) -> bool:
+        if skill_dir.name == "good-skill":
+            return True
+        return False
+
+    monkeypatch.setattr(
+        "ori.skills.loader.SkillLoader._is_core_bundled_skill",
+        mocked_is_core,
+    )
+
+    rc = main(["skills", "validate", str(parent)])
+
+    captured = capsys.readouterr()
+    assert rc == EXIT_FAILED
+    assert "good-skill" in captured.out
+    _assert_no_traceback(captured)
+
+
+def test_directory_unsigned_community_skill_json(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """Directory mode --json flags a community skill as invalid due to SkillSecurityError."""
+    parent = tmp_path / "skills"
+    good_skill = parent / "good-skill"
+    community_skill = parent / "community-skill"
+    _write_valid_skill(good_skill, name="good-skill")
+    _write_valid_skill(community_skill, name="community-skill")
+
+    def mocked_is_core(self, skill_dir: Path) -> bool:
+        if skill_dir.name == "good-skill":
+            return True
+        return False
+
+    monkeypatch.setattr(
+        "ori.skills.loader.SkillLoader._is_core_bundled_skill",
+        mocked_is_core,
+    )
+
+    rc = main(["skills", "validate", str(parent), "--json"])
+
+    captured = capsys.readouterr()
+    assert rc == EXIT_FAILED
+    doc = _read_json(captured)
+    results = {r["name"]: r for r in doc["results"]}
+    assert results["good-skill"]["status"] == "valid"
+    assert results["community-skill"]["status"] == "invalid"
+    _assert_no_traceback(captured)
+
+
+def test_directory_malformed_yaml(tmp_path: Path, monkeypatch, capsys) -> None:
+    """Directory mode catches yaml.YAMLError, flags skill as invalid, and continues."""
+    monkeypatch.setattr(
+        "ori.skills.loader.SkillLoader._is_core_bundled_skill",
+        lambda self, skill_dir: True,
+    )
+    parent = tmp_path / "skills"
+    good_skill = parent / "good-skill"
+    broken_skill = parent / "broken-skill"
+
+    _write_valid_skill(good_skill, name="good-skill")
+
+    broken_skill.mkdir(parents=True)
+    (broken_skill / "skill.yaml").write_text(
+        "name: broken\nkey: [\nbad yaml",
+        encoding="utf-8",
+    )
+
+    rc = main(["skills", "validate", str(parent)])
+
+    captured = capsys.readouterr()
+    assert rc == EXIT_FAILED
+    assert "good-skill" in captured.out
+    _assert_no_traceback(captured)
+
+
+def test_directory_malformed_yaml_json(tmp_path: Path, monkeypatch, capsys) -> None:
+    """Directory mode --json handles yaml.YAMLError."""
+    monkeypatch.setattr(
+        "ori.skills.loader.SkillLoader._is_core_bundled_skill",
+        lambda self, skill_dir: True,
+    )
+    parent = tmp_path / "skills"
+    good_skill = parent / "good-skill"
+    broken_skill = parent / "broken-skill"
+
+    _write_valid_skill(good_skill, name="good-skill")
+    broken_skill.mkdir(parents=True)
+    (broken_skill / "skill.yaml").write_text(
+        "name: broken\nkey: [\nbad yaml",
+        encoding="utf-8",
+    )
+
+    rc = main(["skills", "validate", str(parent), "--json"])
+
+    captured = capsys.readouterr()
+    assert rc == EXIT_FAILED
+    doc = _read_json(captured)
+    results = {r.get("name", "broken-skill"): r for r in doc["results"]}
+    assert results["good-skill"]["status"] == "valid"
+    assert results["broken-skill"]["status"] == "invalid"
+    _assert_no_traceback(captured)
+
+
+def test_single_skill_unreadable_file_exits_unusable(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    """Single skill unreadable file exits 2 with a message."""
+    skill_dir = tmp_path / "bad-skill"
+    skill_dir.mkdir()
+    (skill_dir / "skill.yaml").touch()
+
+    def mock_load_one(self, target):
+        import errno
+
+        raise OSError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr("ori.skills.loader.SkillLoader.load_one", mock_load_one)
+
+    rc = main(["skills", "validate", str(skill_dir)])
+
+    captured = capsys.readouterr()
+    assert rc == EXIT_UNUSABLE
+    assert "could not read" in captured.err
+    _assert_no_traceback(captured)
+
+
+def test_single_skill_unreadable_file_json(tmp_path: Path, monkeypatch, capsys) -> None:
+    """Single skill unreadable file with --json exits 2 with JSON error document."""
+    skill_dir = tmp_path / "bad-skill"
+    skill_dir.mkdir()
+    (skill_dir / "skill.yaml").touch()
+
+    def mock_load_one(self, target):
+        import errno
+
+        raise OSError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr("ori.skills.loader.SkillLoader.load_one", mock_load_one)
+
+    rc = main(["skills", "validate", str(skill_dir), "--json"])
+
+    captured = capsys.readouterr()
+    assert rc == EXIT_UNUSABLE
+    doc = _read_json(captured)
+    assert doc["status"] == "error"
+    assert "could not read" in doc["error"]
+    _assert_no_traceback(captured)
