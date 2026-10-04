@@ -11,8 +11,8 @@ outputs out of the project root.
 | `runtime.txt` | Hash-locked runtime dependencies | No |
 | `dev.in` | Human-readable development and CI constraints | Yes |
 | `dev.txt` | Hash-locked development and CI dependencies | No |
-| `phone.in` | Phone Starter source/build constraints | Yes |
-| `phone.txt` | Hash-locked Phone Starter source/build dependencies | No |
+| `phone.in` | Phone lab-profile source/build constraints | Yes |
+| `phone.txt` | Hash-locked phone lab-profile source/build dependencies | No |
 | `phone-growatt.in` | Additive Growatt phone profile constraints | Yes |
 | `phone-growatt.txt` | Hash-locked Growatt phone profile dependencies | No |
 | `phone-victron.in` | Additive Victron phone profile constraints | Yes |
