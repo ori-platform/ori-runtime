@@ -158,3 +158,22 @@ async def test_a_failing_endpoint_still_opens_the_breaker(
         assert breaker.state == CircuitState.OPEN
         with pytest.raises(AdapterReadError, match="circuit breaker OPEN"):
             await source.adapter._poll_once()
+
+
+async def test_a_coap_value_that_overflows_withdraws_the_cached_value(
+    clock: _Clock,
+) -> None:
+    import asyncio
+    from types import SimpleNamespace
+
+    async with _running(_CoapSource) as source:
+        await source.send(12.0)
+        future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+        future.set_result(
+            SimpleNamespace(payload=b'{"metrics":{"current":1' + b"0" * 400 + b"}}")
+        )
+        source.futures.append(future)
+        with pytest.raises(AdapterReadError):
+            await source.adapter._poll_once()
+        with pytest.raises(AdapterReadError, match="refused"):
+            await source.adapter.read(SENSOR)

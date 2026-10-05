@@ -445,3 +445,70 @@ async def test_no_value_survives_the_connection_it_arrived_on(
                 await adapter.read(sensor_id)
         finally:
             await adapter.close()
+
+
+@pytest.mark.parametrize("stable", [False, True], ids=["flapping", "stable"])
+async def test_a_link_that_drops_at_once_keeps_backing_off(stable: bool) -> None:
+    """A broker that accepts and drops must not be redialled at the base delay."""
+    attempts: list[int] = []
+    available, module = _patched()
+    with (
+        available,
+        module,
+        patch("ori.hal.mqtt_base.reconnect_delay", lambda a: attempts.append(a) or 0),
+        patch("ori.hal.mqtt_base.RECONNECT_STABLE_S", 0.0 if stable else 3600.0),
+    ):
+        adapter, client, _topic_name = await _connected(MqttAdapter, mqtt_config())
+        try:
+            for _ in range(4):
+                await adapter._client._queue.put(_LostConnection())
+                for _ in range(10):
+                    await asyncio.sleep(0)
+            assert len(attempts) == 4
+            assert attempts == ([0, 0, 0, 0] if stable else [0, 1, 2, 3])
+        finally:
+            await adapter.close()
+
+
+async def test_a_broker_that_never_answers_leaves_nothing_open() -> None:
+    aiomqtt = pytest.importorskip("aiomqtt")
+    held: list[asyncio.StreamWriter] = []
+
+    async def accept_and_hold(_reader: Any, writer: asyncio.StreamWriter) -> None:
+        held.append(writer)
+
+    server = await asyncio.start_server(accept_and_hold, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    built: list[Any] = []
+
+    class Recording(aiomqtt.Client):  # type: ignore[misc, valid-type]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            built.append(self)
+
+    adapter = MqttAdapter()
+    try:
+        with patch("ori.hal.mqtt_base._aiomqtt", SimpleNamespace(Client=Recording)):
+            with pytest.raises(Exception):
+                await adapter.connect(
+                    {
+                        **mqtt_config(),
+                        "broker_host": "127.0.0.1",
+                        "port": port,
+                        "mqtt": {"timeout": 0.3},
+                    }
+                )
+        assert built, "no client was built"
+        for client in built:
+            assert client._client.socket() is None, "paho's socket was left open"
+            task = getattr(client, "_misc_task", None)
+            if task is not None:
+                for _ in range(10):
+                    await asyncio.sleep(0)
+                assert task.done(), "aiomqtt's misc task was left running"
+    finally:
+        await adapter.close()
+        for writer in held:
+            writer.close()
+        server.close()
+        await server.wait_closed()

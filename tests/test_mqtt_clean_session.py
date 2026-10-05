@@ -11,7 +11,6 @@ value would read as live.
 from __future__ import annotations
 
 import importlib
-import inspect
 
 import pytest
 
@@ -92,8 +91,17 @@ def test_the_adapter_always_connects_clean(config) -> None:
     assert MqttAdapter()._build_mqtt_client_kwargs(config)["clean_session"] is True
 
 
-def test_the_evidence_links_keep_their_persistent_sessions() -> None:
-    from ori.gateway import evidence_inbound, evidence_outbound
+@pytest.mark.parametrize("module_name", ["evidence_inbound", "evidence_outbound"])
+def test_the_evidence_links_keep_their_persistent_sessions(
+    module_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = importlib.import_module(f"ori.gateway.{module_name}")
+    seen: dict = {}
 
-    for module in (evidence_inbound, evidence_outbound):
-        assert '"clean_session": False' in inspect.getsource(module)
+    class _Client:
+        def __init__(self, **kwargs: object) -> None:
+            seen.update(kwargs)
+
+    monkeypatch.setattr(module, "mqtt", type("mqtt", (), {"Client": _Client}))
+    module._default_client_factory(client_id="ori-evidence")
+    assert seen["clean_session"] is False and seen["client_id"] == "ori-evidence"

@@ -27,6 +27,10 @@ logger = logging.getLogger(__name__)
 # Reconnect back-off after the broker drops: full jitter over a doubling ceiling.
 RECONNECT_BASE_S = 1.0
 RECONNECT_CAP_S = 60.0
+# A connection that lasted less than this before dropping does not reset the
+# back-off: a broker accepting and dropping (two clients sharing one client id)
+# would otherwise be redialled at the base delay forever.
+RECONNECT_STABLE_S = 30.0
 
 
 def reconnect_delay(attempt: int, rng: random.Random | None = None) -> float:
@@ -231,6 +235,28 @@ for _canonical, _aliases in _TLS_ALIASES.items():
         }
 
 
+def _abandon_half_open(client: Any) -> None:
+    """Give back what a connect that never completed left open.
+
+    aiomqtt leaves paho's socket and its misc task running when the connect
+    handshake times out or is cancelled, and the adapter never held the client,
+    so nothing else would close them before paho's own keepalive. Private
+    attributes of aiomqtt 2.5.x, read defensively; tested against a broker
+    that accepts and never answers.
+    """
+    paho = getattr(client, "_client", None)
+    for name in ("disconnect", "_sock_close"):
+        close = getattr(paho, name, None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+    task = getattr(client, "_misc_task", None)
+    if isinstance(task, asyncio.Task) and not task.done():
+        task.cancel()
+
+
 class MqttCachedAdapter(BaseAdapter):
     """Reusable base for MQTT adapters that subscribe and cache latest values."""
 
@@ -328,7 +354,9 @@ class MqttCachedAdapter(BaseAdapter):
                 "away and delivers them on reconnect, and the freshness bound "
                 "would time each one from its delivery, not its publication."
             )
-        # Always clean: a value delivered after (re)connect was published after it.
+        # Always clean, so nothing queued for this client is delivered on
+        # (re)connect. A retained message still is: silence-bounded adapters
+        # ignore it, and on-change adapters accept it as their current value.
         kwargs["clean_session"] = True
         if transport not in (None, ""):
             kwargs["transport"] = str(transport)
@@ -476,7 +504,11 @@ class MqttCachedAdapter(BaseAdapter):
             port=self._port,
             **self._client_kwargs,
         )
-        self._client = await client.__aenter__()
+        try:
+            self._client = await client.__aenter__()
+        except BaseException:
+            _abandon_half_open(client)
+            raise
         try:
             for topic in self._topics:
                 await self._client.subscribe(topic)
@@ -491,11 +523,15 @@ class MqttCachedAdapter(BaseAdapter):
         cannot leave two listeners. Cancelling it (close) ends a pending
         back-off or reconnect as well.
         """
+        loop = asyncio.get_running_loop()
+        attempt = 0
         while True:
+            connected_at = loop.time()
             await self._listen_loop()
             self._mark_link_down()
             await self._close_mqtt_quietly()
-            attempt = 0
+            if loop.time() - connected_at >= RECONNECT_STABLE_S:
+                attempt = 0
             while True:
                 await asyncio.sleep(reconnect_delay(attempt))
                 attempt += 1
@@ -516,10 +552,12 @@ class MqttCachedAdapter(BaseAdapter):
                 break
             self._link_up = True
             logger.info(
-                "%s: reconnected to %s:%s and resubscribed to %d topic(s)",
+                "%s: reconnected to %s:%s after %d attempt(s) and resubscribed to "
+                "%d topic(s)",
                 self.adapter_name,
                 self._broker_host,
                 self._port,
+                attempt,
                 len(self._topics),
             )
 

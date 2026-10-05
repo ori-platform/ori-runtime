@@ -273,9 +273,13 @@ class CoapAdapter(BaseAdapter):
                 value = self._extract(
                     self._decode_payload(response.payload), self._json_path
                 )
-            except AdapterReadError as exc:
-                self._withdraw(str(exc))
-                raise
+            except Exception as exc:
+                self._withdraw(str(exc) or type(exc).__name__)
+                if isinstance(exc, AdapterReadError):
+                    raise
+                raise AdapterReadError(
+                    f"CoapAdapter: response from uri={self._uri} refused: {exc}"
+                ) from exc
             self._cached_arrival = cache_arrival()
             self._cached_reading = SensorReading(
                 sensor_id=self._sensor_id or self._sensor_type,
