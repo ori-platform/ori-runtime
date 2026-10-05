@@ -182,3 +182,238 @@ async def test_a_state_store_without_the_reference_table_gains_it(tmp_path):
         } <= triggers
     finally:
         conn.close()
+
+
+async def test_a_courier_answer_moves_out_of_last_failure_on_upgrade(tmp_path):
+    db = tmp_path / "evidence.db"
+    _previous_release_store(db)
+    conn = sqlite3.connect(str(db))
+    try:
+        for seq, failure in ((1, "refused"), (2, "queue_full"), (3, "unreachable")):
+            conn.execute(
+                "INSERT INTO evidence_delivery_ledger (local_seq, event_id, chain_seq,"
+                " device_id, anchor_epoch_id, key_id, envelope_json, envelope_digest,"
+                " chain_row_digest, sealed_at_ms, attempts, last_failure,"
+                " last_attempt_ms)"
+                " VALUES (?, ?, ?, ?, 'e', 'k', '{}', ?, ?, 1, 1, ?, ?)",
+                (
+                    seq,
+                    f"evt-{seq}",
+                    seq,
+                    DEVICE,
+                    f"d{seq}",
+                    f"c{seq}",
+                    failure,
+                    seq * 10,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    attestor = FirstPartyEvidenceAttestor(
+        db_path=str(db),
+        key_path=str(tmp_path / "evidence.key"),
+        device_secret=SECRET,
+        device_id=DEVICE,
+    )
+    assert await attestor.start() is True
+    attestor.close()
+
+    conn = sqlite3.connect(str(db))
+    try:
+        rows = conn.execute(
+            "SELECT local_seq, courier_answer, courier_answer_at_ms, last_failure"
+            " FROM evidence_delivery_ledger ORDER BY local_seq"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert rows == [
+        (1, "refused", 10, None),
+        (2, "queue_full", 20, None),
+        (3, None, None, "unreachable"),
+    ]
+
+
+async def test_an_unknown_stored_answer_fails_closed_after_upgrade(tmp_path):
+    """An added column has no CHECK, so the ledger validates stored answers itself."""
+    from ori.security.evidence.ledger import DeliveryLedgerError
+
+    db = tmp_path / "evidence.db"
+    _previous_release_store(db)
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "INSERT INTO evidence_delivery_ledger (local_seq, event_id, chain_seq,"
+            " device_id, anchor_epoch_id, key_id, envelope_json, envelope_digest,"
+            " chain_row_digest, sealed_at_ms, attempts)"
+            " VALUES (1, 'evt-1', 1, ?, 'e', 'k', '{}', 'd1', 'c1', 1, 1)",
+            (DEVICE,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    attestor = FirstPartyEvidenceAttestor(
+        db_path=str(db),
+        key_path=str(tmp_path / "evidence.key"),
+        device_secret=SECRET,
+        device_id=DEVICE,
+    )
+    assert await attestor.start() is True
+    attestor.close()
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute("UPDATE evidence_delivery_ledger SET courier_answer = 'accepted'")
+        conn.commit()
+    finally:
+        conn.close()
+
+    attestor = FirstPartyEvidenceAttestor(
+        db_path=str(db),
+        key_path=str(tmp_path / "evidence.key"),
+        device_secret=SECRET,
+        device_id=DEVICE,
+    )
+    assert await attestor.start() is True
+    try:
+        ledger = attestor._ledger
+        assert ledger is not None
+        assert ledger.courier_answer_faults() == 1
+        outbound = attestor.outbound
+        assert outbound is not None
+        with pytest.raises(DeliveryLedgerError, match="does not recognise"):
+            await outbound.apply_courier_answer(
+                1, answer="refused", at_ms=5, answered_at_ms=5
+            )
+    finally:
+        attestor.close()
+
+
+async def test_a_courier_answer_a_rolled_back_release_recorded_is_carried_over(
+    tmp_path,
+):
+    """The carry-over holds on every open, not only the first."""
+    db = tmp_path / "evidence.db"
+    _previous_release_store(db)
+    attestor = FirstPartyEvidenceAttestor(
+        db_path=str(db),
+        key_path=str(tmp_path / "evidence.key"),
+        device_secret=SECRET,
+        device_id=DEVICE,
+    )
+    assert await attestor.start() is True
+    attestor.close()
+    # The previous release, rolled back to, records a refusal the way it does:
+    # in last_failure, with the columns this release added left untouched.
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "INSERT INTO evidence_delivery_ledger (local_seq, event_id, chain_seq,"
+            " device_id, anchor_epoch_id, key_id, envelope_json, envelope_digest,"
+            " chain_row_digest, sealed_at_ms, attempts, last_failure)"
+            " VALUES (1, 'evt-1', 1, ?, 'e', 'k', '{}', 'd1', 'c1', 1, 2, 'refused')",
+            (DEVICE,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    attestor = FirstPartyEvidenceAttestor(
+        db_path=str(db),
+        key_path=str(tmp_path / "evidence.key"),
+        device_secret=SECRET,
+        device_id=DEVICE,
+    )
+    assert await attestor.start() is True
+    attestor.close()
+    conn = sqlite3.connect(str(db))
+    try:
+        row = conn.execute(
+            "SELECT courier_answer, last_failure FROM evidence_delivery_ledger"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row == ("refused", None)
+
+
+@pytest.mark.parametrize(
+    ("rollback_at", "carried_at"), [(6000, 6000), (4000, 5000)], ids=["later", "skewed"]
+)
+async def test_a_carried_answer_keeps_its_place_against_a_delayed_acknowledgement(
+    tmp_path, rollback_at, carried_at
+):
+    """New release, rollback, roll-forward on one row: the time never goes back."""
+    db = tmp_path / "evidence.db"
+    _previous_release_store(db)
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "INSERT INTO evidence_delivery_ledger (local_seq, event_id, chain_seq,"
+            " device_id, anchor_epoch_id, key_id, envelope_json, envelope_digest,"
+            " chain_row_digest, sealed_at_ms, attempts)"
+            " VALUES (1, 'evt-1', 1, ?, 'e', 'k', '{}', 'd1', 'c1', 1, 1)",
+            (DEVICE,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    def _attestor() -> FirstPartyEvidenceAttestor:
+        return FirstPartyEvidenceAttestor(
+            db_path=str(db),
+            key_path=str(tmp_path / "evidence.key"),
+            device_secret=SECRET,
+            device_id=DEVICE,
+        )
+
+    attestor = _attestor()
+    assert await attestor.start() is True
+    try:
+        outbound = attestor.outbound
+        assert outbound is not None
+        await outbound.apply_courier_answer(
+            1, answer="queued", at_ms=5000, answered_at_ms=5000
+        )
+    finally:
+        attestor.close()
+    # The previous release, rolled back to, records a later refusal its way.
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "UPDATE evidence_delivery_ledger SET last_failure = 'refused',"
+            " last_attempt_ms = ?, attempts = attempts + 1 WHERE local_seq = 1",
+            (rollback_at,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    attestor = _attestor()
+    assert await attestor.start() is True
+    try:
+        outbound = attestor.outbound
+        assert outbound is not None
+        await outbound.apply_courier_answer(
+            1, answer="queued", at_ms=7000, answered_at_ms=carried_at
+        )
+        conn = sqlite3.connect(str(db))
+        try:
+            row = conn.execute(
+                "SELECT courier_answer, courier_answer_at_ms, last_failure"
+                " FROM evidence_delivery_ledger"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row == ("refused", carried_at, None)
+        await outbound.apply_courier_answer(
+            1, answer="queued", at_ms=7000, answered_at_ms=carried_at + 1
+        )
+        conn = sqlite3.connect(str(db))
+        try:
+            answer = conn.execute(
+                "SELECT courier_answer FROM evidence_delivery_ledger"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+        assert answer == "queued"
+    finally:
+        attestor.close()

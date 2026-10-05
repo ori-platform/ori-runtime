@@ -30,12 +30,15 @@ from typing import Any
 
 from ori.network.events import SensorReading
 from ori.security.firmware.telemetry import (
+    ERR_BOOT_ROLLBACK,
+    ERR_DEVICE_NOT_APPROVED,
     ERR_DEVICE_REVOKED,
     ERR_KEY_CHANGE_REQUIRES_REPROVISIONING,
     ERR_KEY_EPOCH_REUSED,
     ERR_SAME_KEY_NOT_A_ROTATION,
     ERR_SEQUENCE_REPLAY,
     ERR_UNKNOWN_DEVICE,
+    ERR_UPTIME_REGRESSION,
     GRADE_REJECTED,
     FirmwareFaultVerification,
     FirmwareVerificationError,
@@ -63,6 +66,32 @@ class FirmwareTelemetryGate:
 
     def __init__(self, store: Any) -> None:
         self._store = store
+
+    async def _freshness_refusal(self, verification: Any) -> tuple[str, str]:
+        """The reason a message lost the atomic advance, read against the new mark."""
+        row = await self._store.get_firmware_device(verification.device_id)
+        if row is not None:
+            if row["revoked"]:
+                return ERR_DEVICE_REVOKED, "device was revoked before the advance"
+            if not row["approved"]:
+                return ERR_DEVICE_NOT_APPROVED, "device is not approved"
+            boot_id = int(row["last_boot_id"])
+            last_uptime = row["last_uptime_ms"]
+            if verification.boot_id < boot_id:
+                return ERR_BOOT_ROLLBACK, (
+                    f"boot_id {verification.boot_id} < {boot_id}"
+                )
+            if (
+                verification.boot_id == boot_id
+                and verification.seq > int(row["last_seq"])
+                and last_uptime is not None
+                and verification.device_uptime_ms < last_uptime
+            ):
+                return ERR_UPTIME_REGRESSION, (
+                    f"device_uptime_ms {verification.device_uptime_ms} < "
+                    f"{last_uptime} within boot {boot_id}"
+                )
+        return ERR_SEQUENCE_REPLAY, "high-water mark advanced by a newer message"
 
     async def register_device(
         self,
@@ -297,6 +326,7 @@ class FirmwareTelemetryGate:
             accepted_manifest_hash=row["capability_hash"],
             last_boot_id=row["last_boot_id"],
             last_seq=row["last_seq"],
+            last_uptime_ms=row["last_uptime_ms"],
             approved=row["approved"],
             revoked=row["revoked"],
             accepted_channels=row["channel_map"],
@@ -309,15 +339,17 @@ class FirmwareTelemetryGate:
             verification.device_id,
             boot_id=verification.boot_id,
             seq=verification.seq,
+            uptime_ms=verification.device_uptime_ms,
         )
         if not advanced:
-            # A concurrent writer advanced the mark first: this message
-            # is a replay/duplicate no matter what its signature says.
+            # A concurrent writer advanced the mark first: the message is
+            # refused against the mark it now faces, under that reason.
+            code, detail = await self._freshness_refusal(verification)
             verification = TelemetryVerification(
                 grade=GRADE_REJECTED,
                 device_id=verification.device_id,
-                error_code=ERR_SEQUENCE_REPLAY,
-                error_detail="high-water mark advanced by a newer message",
+                error_code=code,
+                error_detail=detail,
             )
             self._log_rejection(verification)
             return verification, []
@@ -393,6 +425,7 @@ class FirmwareTelemetryGate:
             accepted_manifest_hash=row["capability_hash"],
             last_boot_id=row["last_boot_id"],
             last_seq=row["last_seq"],
+            last_uptime_ms=row["last_uptime_ms"],
             approved=row["approved"],
             revoked=row["revoked"],
         )
@@ -404,13 +437,15 @@ class FirmwareTelemetryGate:
             verification.device_id,
             boot_id=verification.boot_id,
             seq=verification.seq,
+            uptime_ms=verification.device_uptime_ms,
         )
         if not advanced:
+            code, detail = await self._freshness_refusal(verification)
             verification = FirmwareFaultVerification(
                 grade=GRADE_REJECTED,
                 device_id=verification.device_id,
-                error_code=ERR_SEQUENCE_REPLAY,
-                error_detail="high-water mark advanced by a newer message",
+                error_code=code,
+                error_detail=detail,
             )
             self._log_fault_rejection(verification)
             return verification

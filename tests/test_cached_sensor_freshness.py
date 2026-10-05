@@ -768,11 +768,15 @@ async def test_an_old_value_from_an_on_change_source_is_still_served(
 
 
 @pytest.mark.parametrize("factory", UNBOUNDED)
-async def test_an_on_change_retained_replay_is_still_cached(
+async def test_an_on_change_retained_replay_is_not_a_reading(
     factory: Callable[[], Any], clock: _Clock
 ) -> None:
+    """Unbounded by silence, a replay would be served as current indefinitely."""
     async with _running(factory) as source:
         await source.replay(84.5)
+        with pytest.raises(AdapterReadError, match="no .* cached"):
+            await source.adapter.read(SENSOR)
+        await source.send(84.5)
         assert _value(await source.adapter.read(SENSOR)) == 84.5
 
 

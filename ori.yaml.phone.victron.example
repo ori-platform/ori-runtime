@@ -58,17 +58,9 @@ sensors:
 skills:
   - name: solar-performance-monitor
     version: "0.1.0"
-    config:
-      installed_pv_capacity_watts: 5000
-      battery_capacity_wh: 10000
-      country_code: NG
-      currency_code: NGN
 
   - name: battery-lifecycle-observer
     version: "0.1.0"
-    config:
-      battery_sensor_id: victron-battery-soc
-      grid_power_sensor_id: victron-grid-power
 
 reasoning:
   default_tier: local

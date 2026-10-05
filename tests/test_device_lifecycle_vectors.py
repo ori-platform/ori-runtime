@@ -209,7 +209,11 @@ async def run_step(store: StateStore, step: dict) -> None:
         )
     elif op == "advance_freshness":
         outcome = await store.advance_firmware_freshness(
-            DEVICE_ID, boot_id=step["boot_id"], seq=step["seq"]
+            # The shared vectors carry no uptime; 0 never regresses.
+            DEVICE_ID,
+            boot_id=step["boot_id"],
+            seq=step["seq"],
+            uptime_ms=0,
         )
     elif op == "allocate_cmd_seq":
         outcome = await store.allocate_firmware_command_seq(DEVICE_ID)

@@ -231,6 +231,31 @@ class HardwareCircuitBreaker:
         # HALF_OPEN — allow the probe read
         return True
 
+    def probe_every(self, interval_s: float) -> None:
+        """Cap the open period at one poll interval, for an adapter that polls.
+
+        A poller already paces its own requests, so an open circuit that skips
+        polls for ``recovery_timeout_s`` only delays seeing the endpoint answer.
+        """
+        self.recovery_timeout_s = min(self.recovery_timeout_s, max(0.0, interval_s))
+
+    def record_fresh_value(self) -> None:
+        """Close the circuit: a value just arrived from the source it guards.
+
+        For a cached source the arrival is the recovery proof. Waiting out
+        ``recovery_timeout_s`` after it would withhold a live value, and a Tier D
+        condition with it.
+        """
+        if self.state != CircuitState.CLOSED:
+            logger.info(
+                "%s: circuit breaker → CLOSED (a fresh value arrived)",
+                self.adapter_name,
+            )
+        self.state = CircuitState.CLOSED
+        self.failure_count = 0
+        self.success_count = 0
+        self.opened_at = None
+
     def _record_success(self) -> None:
         if self.state == CircuitState.HALF_OPEN:
             self.success_count += 1

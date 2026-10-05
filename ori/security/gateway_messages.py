@@ -52,6 +52,19 @@ _AES_GCM_NONCE_BYTES = 12
 logger = logging.getLogger(__name__)
 
 
+def _signed_at_ms(auth: Mapping[str, Any]) -> int:
+    """The signing time exactly as signed: a JSON integer, never a coercible one.
+
+    The auth block is outside the signed bytes, so a string or a float that
+    int() would accept verifies all the same, and a consumer ordering on the
+    raw value would read a different time than the one verified.
+    """
+    value = auth.get("signed_at_ms")
+    if type(value) is not int:
+        raise GatewayMessageAuthError("invalid_signed_at_ms")
+    return value
+
+
 class GatewayMessageAuthError(ValueError):
     """Raised when a runtime-gateway MQTT envelope fails authentication."""
 
@@ -245,10 +258,7 @@ class GatewayMessageAuthenticator:
         signature = str(auth.get("signature", "") or "")
         if not signature.startswith(SIGNATURE_PREFIX):
             raise GatewayMessageAuthError("missing_signature")
-        try:
-            signed_at_ms = int(auth.get("signed_at_ms", 0) or 0)
-        except (TypeError, ValueError) as exc:
-            raise GatewayMessageAuthError("invalid_signed_at_ms") from exc
+        signed_at_ms = _signed_at_ms(auth)
 
         current_ms = int(now_ms_value if now_ms_value is not None else now_ms())
         if signed_at_ms < current_ms - self._max_skew_ms:
@@ -314,10 +324,7 @@ class GatewayMessageAuthenticator:
         signature = str(auth.get("signature", "") or "")
         if not signature.startswith(SIGNATURE_PREFIX):
             raise GatewayMessageAuthError("missing_signature")
-        try:
-            signed_at_ms = int(auth.get("signed_at_ms", 0) or 0)
-        except (TypeError, ValueError) as exc:
-            raise GatewayMessageAuthError("invalid_signed_at_ms") from exc
+        signed_at_ms = _signed_at_ms(auth)
 
         current_ms = int(now_ms_value if now_ms_value is not None else now_ms())
         if signed_at_ms < current_ms - self._max_skew_ms:

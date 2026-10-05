@@ -184,6 +184,13 @@ class EvidenceOutboundAckRouter:
         if not isinstance(decoded, dict):
             return AckRouted(ROUTED_REFUSED, "payload is not an object")
 
+        # The courier's own time for this answer, which orders it against the
+        # answers before it: the authenticated signing time where envelopes
+        # are authenticated, otherwise the acknowledgement's own field.
+        auth_block = decoded.get("auth")
+        signed_at = (
+            auth_block.get("signed_at_ms") if isinstance(auth_block, dict) else None
+        )
         if self._message_auth is not None:
             try:
                 decoded = self._message_auth.verify(
@@ -217,14 +224,23 @@ class EvidenceOutboundAckRouter:
             return AckRouted(ROUTED_REFUSED, f"unknown outcome {outcome!r}")
 
         at_ms = self._now()
+        if self._message_auth is None:
+            signed_at = decoded.get("acknowledged_at_ms")
+        answered_at_ms = (
+            int(signed_at)
+            if isinstance(signed_at, int) and not isinstance(signed_at, bool)
+            else at_ms
+        )
         if artifact_type == ARTIFACT_DELIVERY_ENVELOPE:
-            return await self._apply_to_envelope(digest, outcome, reason, at_ms)
+            return await self._apply_to_envelope(
+                digest, outcome, reason, at_ms, answered_at_ms
+            )
         return await self._apply_to_artifact(
             artifact_type, digest, outcome, reason, at_ms
         )
 
     async def _apply_to_envelope(
-        self, digest: str, outcome: str, reason: str, at_ms: int
+        self, digest: str, outcome: str, reason: str, at_ms: int, answered_at_ms: int
     ) -> AckRouted:
         row = await self._outbox.find_envelope(digest)
         if row is None:
@@ -238,24 +254,33 @@ class EvidenceOutboundAckRouter:
         local_seq = int(row["local_seq"])
         if outcome == ACK_QUEUED:
             # Custody is claimed only by the custody acknowledgement, which
-            # arrives through the inbound route under its own key.
+            # arrives through the inbound route under its own key; `queued`
+            # ends a refusal episode and nothing more.
+            await self._outbox.apply_courier_answer(
+                local_seq, answer=ACK_QUEUED, at_ms=at_ms, answered_at_ms=answered_at_ms
+            )
             return AckRouted(ROUTED_APPLIED, "", ARTIFACT_DELIVERY_ENVELOPE, digest)
         if reason == ACK_REASON_QUEUE_FULL:
-            await self._outbox.record_attempt(local_seq, at_ms=at_ms, failure=reason)
-            return AckRouted(ROUTED_APPLIED, reason, ARTIFACT_DELIVERY_ENVELOPE, digest)
-        logger.error(
-            "[evidence-outbound] the courier refused sealed envelope local_seq=%s (%s)",
-            local_seq,
-            reason,
-        )
-        # One failure row per refusal episode: the envelope keeps being
-        # republished at the backoff cap, and a courier that refuses the same
-        # bytes indefinitely must not grow the record by one row per attempt.
-        if row["last_failure"] != "refused":
-            await self._outbox.record_delivery_failure(
-                local_seq, reason="refused", observed_at_ms=at_ms
+            await self._outbox.apply_courier_answer(
+                local_seq,
+                answer=ACK_REASON_QUEUE_FULL,
+                at_ms=at_ms,
+                answered_at_ms=answered_at_ms,
             )
-        await self._outbox.record_attempt(local_seq, at_ms=at_ms, failure="refused")
+            return AckRouted(ROUTED_APPLIED, reason, ARTIFACT_DELIVERY_ENVELOPE, digest)
+        # One failure row per refusal episode, decided in the ledger's own
+        # transaction: the envelope keeps being republished at the backoff
+        # cap, and a courier refusing the same bytes indefinitely must not
+        # grow the record by one row per attempt.
+        if await self._outbox.apply_courier_answer(
+            local_seq, answer="refused", at_ms=at_ms, answered_at_ms=answered_at_ms
+        ):
+            logger.error(
+                "[evidence-outbound] the courier refused sealed envelope "
+                "local_seq=%s (%s)",
+                local_seq,
+                reason,
+            )
         return AckRouted(ROUTED_APPLIED, reason, ARTIFACT_DELIVERY_ENVELOPE, digest)
 
     async def _apply_to_artifact(

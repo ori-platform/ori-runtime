@@ -201,7 +201,7 @@ NOT_JSON_NUMBERS = ["NaN", "Infinity", "-Infinity", "1e400"]
 @pytest.mark.parametrize(
     ("adapter_type", "config", "sensor_id", "valid", "value", "wrap"), ADAPTERS
 )
-async def test_a_number_json_does_not_have_never_replaces_the_cached_value(
+async def test_a_number_json_does_not_have_withdraws_the_cached_value(
     adapter_type: type,
     config: dict[str, Any],
     sensor_id: str,
@@ -209,16 +209,23 @@ async def test_a_number_json_does_not_have_never_replaces_the_cached_value(
     value: float,
     wrap: Any,
 ) -> None:
-    """Python's json reads NaN, Infinity and 1e400; none of them is JSON."""
+    """Python's json reads NaN, Infinity and 1e400; none of them is JSON.
+
+    Each is refused, and the refusal withdraws the value it would have
+    replaced: the earlier value is not served as current.
+    """
     available, module = _patched()
     with available, module:
         adapter, client, topic = await _connected(adapter_type, config)
         try:
-            await _delivered(client, topic, valid)
             for token in NOT_JSON_NUMBERS:
+                await _delivered(client, topic, valid)
+                assert (await adapter.read(sensor_id)).value == pytest.approx(value)
                 await _delivered(client, topic, wrap(token).encode())
-            reading = await adapter.read(sensor_id)
-            assert reading.value == pytest.approx(value)
+                with pytest.raises(AdapterReadError, match="was refused"):
+                    await adapter.read(sensor_id)
+            await _delivered(client, topic, valid)
+            assert (await adapter.read(sensor_id)).value == pytest.approx(value)
         finally:
             await adapter.close()
 
@@ -237,7 +244,7 @@ async def test_a_perception_timestamp_json_does_not_have_is_refused(token: str) 
                 '"timestamp_ms": ' + token + "}"
             )
             await _delivered(client, topic, body.encode())
-            with pytest.raises(AdapterReadError, match="no perception message"):
+            with pytest.raises(AdapterReadError, match="was refused"):
                 await adapter.read("ppe-hardhat-cam-01")
         finally:
             await adapter.close()
@@ -284,7 +291,7 @@ class _LostConnection:
 @pytest.mark.parametrize(
     ("adapter_type", "config", "sensor_id", "valid", "value", "wrap"), ADAPTERS
 )
-async def test_a_stopped_listener_makes_the_sensor_silent(
+async def test_a_lost_connection_is_silent_then_reconnects(
     adapter_type: type,
     config: dict[str, Any],
     sensor_id: str,
@@ -292,28 +299,48 @@ async def test_a_stopped_listener_makes_the_sensor_silent(
     value: float,
     wrap: Any,
 ) -> None:
-    """Once the listener stops, the cached value is refused rather than served."""
+    """A lost broker refuses reads and opens the breaker; the reconnect resumes.
+
+    The cached value does not survive the connection it arrived on, so reads
+    refuse after reconnecting until a new value arrives, which closes the
+    breaker at once.
+    """
     available, module = _patched()
-    with available, module:
+    with available, module, patch("ori.hal.mqtt_base.reconnect_delay", lambda _a: 0):
         adapter, client, topic = await _connected(adapter_type, config)
         try:
             await _delivered(client, topic, valid)
             assert (await adapter.read(sensor_id)).value == pytest.approx(value)
+            listener = adapter._listener_task
+            gate = asyncio.Event()
+            original_open = adapter._open_client
+
+            async def held_open() -> None:
+                await gate.wait()
+                await original_open()
+
+            adapter._open_client = held_open
             await client._queue.put(_LostConnection())
             for _ in range(5):
                 await asyncio.sleep(0)
-            listener = adapter._listener_task
-            assert listener is not None and listener.done(), (
-                "the listener survived its stream"
-            )
             threshold = adapter._breaker.failure_threshold
             for _ in range(threshold):
-                with pytest.raises(AdapterReadError, match="listener is not running"):
+                with pytest.raises(AdapterReadError, match="connection is down"):
                     await adapter.read(sensor_id)
-            # The refusal counts against the breaker, so a dead listener opens
-            # it like any other failing sensor.
             with pytest.raises(AdapterReadError, match="circuit breaker OPEN"):
                 await adapter.read(sensor_id)
+
+            gate.set()
+            for _ in range(10):
+                await asyncio.sleep(0)
+            assert adapter._listener_task is listener and not listener.done()
+            fresh = adapter._client
+            assert fresh is not client and isinstance(fresh, _FakeClient)
+            assert fresh.subscriptions == client.subscriptions
+            with pytest.raises(AdapterReadError, match="circuit breaker OPEN"):
+                await adapter.read(sensor_id)
+            await _delivered(fresh, topic, valid)
+            assert (await adapter.read(sensor_id)).value == pytest.approx(value)
         finally:
             await adapter.close()
 
@@ -391,3 +418,150 @@ def test_a_usable_reading_passes() -> None:
     refuse_unusable_reading(_reading())
     refuse_unusable_reading(_reading(value=0, timestamp=2**63 - 1, quality=1.0))
     refuse_unusable_reading(_reading(value=-(2**63)))
+
+
+@pytest.mark.parametrize(
+    ("adapter_type", "config", "sensor_id", "valid", "value", "wrap"), ADAPTERS
+)
+async def test_no_value_survives_the_connection_it_arrived_on(
+    adapter_type: type,
+    config: dict[str, Any],
+    sensor_id: str,
+    valid: Any,
+    value: float,
+    wrap: Any,
+) -> None:
+    """After a reconnect, with the breaker never opened, the old value is gone."""
+    available, module = _patched()
+    with available, module, patch("ori.hal.mqtt_base.reconnect_delay", lambda _a: 0):
+        adapter, client, topic = await _connected(adapter_type, config)
+        try:
+            await _delivered(client, topic, valid)
+            await client._queue.put(_LostConnection())
+            for _ in range(10):
+                await asyncio.sleep(0)
+            assert adapter._link_up and adapter._client is not client
+            with pytest.raises(AdapterReadError, match="no .* cached yet"):
+                await adapter.read(sensor_id)
+        finally:
+            await adapter.close()
+
+
+@pytest.mark.parametrize("stable", [False, True], ids=["flapping", "stable"])
+async def test_a_link_that_drops_at_once_keeps_backing_off(stable: bool) -> None:
+    """A broker that accepts and drops must not be redialled at the base delay."""
+    attempts: list[int] = []
+    available, module = _patched()
+    with (
+        available,
+        module,
+        patch("ori.hal.mqtt_base.reconnect_delay", lambda a: attempts.append(a) or 0),
+        patch("ori.hal.mqtt_base.RECONNECT_STABLE_S", 0.0 if stable else 3600.0),
+    ):
+        adapter, client, _topic_name = await _connected(MqttAdapter, mqtt_config())
+        try:
+            for _ in range(4):
+                await adapter._client._queue.put(_LostConnection())
+                for _ in range(10):
+                    await asyncio.sleep(0)
+            assert len(attempts) == 4
+            assert attempts == ([0, 0, 0, 0] if stable else [0, 1, 2, 3])
+        finally:
+            await adapter.close()
+
+
+async def test_a_broker_that_never_answers_leaves_nothing_open() -> None:
+    aiomqtt = pytest.importorskip("aiomqtt")
+    held: list[asyncio.StreamWriter] = []
+
+    async def accept_and_hold(_reader: Any, writer: asyncio.StreamWriter) -> None:
+        held.append(writer)
+
+    server = await asyncio.start_server(accept_and_hold, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    built: list[Any] = []
+
+    class Recording(aiomqtt.Client):  # type: ignore[misc, valid-type]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            built.append(self)
+
+    adapter = MqttAdapter()
+    try:
+        with patch("ori.hal.mqtt_base._aiomqtt", SimpleNamespace(Client=Recording)):
+            with pytest.raises(Exception):
+                await adapter.connect(
+                    {
+                        **mqtt_config(),
+                        "broker_host": "127.0.0.1",
+                        "port": port,
+                        "mqtt": {"timeout": 0.3},
+                    }
+                )
+        await _assert_abandoned(built, aiomqtt)
+    finally:
+        await adapter.close()
+        for writer in held:
+            writer.close()
+        server.close()
+        await server.wait_closed()
+
+
+async def _assert_abandoned(built: list[Any], aiomqtt: Any) -> None:
+    assert built, "no client was built"
+    for client in built:
+        assert client._client.socket() is None, "paho's socket was left open"
+        assert hasattr(client, "_misc_task"), (
+            f"aiomqtt {getattr(aiomqtt, '__version__', '?')} no longer has "
+            "_misc_task; _abandon_half_open must be revisited for it"
+        )
+        task = client._misc_task
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert task is None or task.done(), "aiomqtt's misc task was left running"
+
+
+async def test_a_connect_cancelled_mid_handshake_leaves_nothing_open() -> None:
+    """close() while the broker has not answered: the cancel reaches the handshake."""
+    aiomqtt = pytest.importorskip("aiomqtt")
+    held: list[asyncio.StreamWriter] = []
+    accepted = asyncio.Event()
+
+    async def accept_and_hold(_reader: Any, writer: asyncio.StreamWriter) -> None:
+        held.append(writer)
+        accepted.set()
+
+    server = await asyncio.start_server(accept_and_hold, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    built: list[Any] = []
+
+    class Recording(aiomqtt.Client):  # type: ignore[misc, valid-type]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            built.append(self)
+
+    adapter = MqttAdapter()
+    try:
+        with patch("ori.hal.mqtt_base._aiomqtt", SimpleNamespace(Client=Recording)):
+            connecting = asyncio.create_task(
+                adapter.connect(
+                    {
+                        **mqtt_config(),
+                        "broker_host": "127.0.0.1",
+                        "port": port,
+                        "mqtt": {"timeout": 30},
+                    }
+                )
+            )
+            await asyncio.wait_for(accepted.wait(), 5)
+            await asyncio.sleep(0.05)
+            connecting.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(connecting, 5)
+        await _assert_abandoned(built, aiomqtt)
+    finally:
+        await adapter.close()
+        for writer in held:
+            writer.close()
+        server.close()
+        await server.wait_closed()

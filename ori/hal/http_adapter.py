@@ -53,6 +53,8 @@ class HttpAdapter(BaseAdapter):
         self._timeout_s: float = _DEFAULT_TIMEOUT_S
         self._cached_reading: SensorReading | None = None
         self._cached_arrival: float | None = None
+        # why the last answered response was refused; cleared by an accepted one
+        self._refused: str | None = None
         self._poll_task: asyncio.Task[None] | None = None
         self._breaker: HardwareCircuitBreaker | None = None
 
@@ -99,6 +101,7 @@ class HttpAdapter(BaseAdapter):
             self._poll_interval_ms = poll_interval_ms
             self._timeout_s = timeout_s
             self._breaker = HardwareCircuitBreaker(self.adapter_name, config)
+            self._breaker.probe_every(poll_interval_ms / 1000.0)
             self._poll_task = asyncio.create_task(
                 self._poll_loop(),
                 name=f"http-poll:{sensor_id or sensor_type}",
@@ -108,6 +111,11 @@ class HttpAdapter(BaseAdapter):
         if not self._connected:
             raise AdapterReadError("HttpAdapter: not connected — call connect() first")
         if self._cached_reading is None:
+            if self._refused is not None:
+                raise AdapterReadError(
+                    f"HttpAdapter: the last response was refused ({self._refused}); "
+                    "no current value"
+                )
             raise AdapterReadError(
                 "HttpAdapter: no data available yet (polling in progress)"
             )
@@ -132,6 +140,12 @@ class HttpAdapter(BaseAdapter):
     async def close(self) -> None:
         async with self._closing():
             await self._teardown()
+
+    def _withdraw(self, reason: str) -> None:
+        """A refused response withdraws the value it would have replaced."""
+        self._cached_reading = None
+        self._cached_arrival = None
+        self._refused = reason
 
     async def _teardown(self) -> None:
         """Stop the poll loop, whether the connect finished or not."""
@@ -180,13 +194,21 @@ class HttpAdapter(BaseAdapter):
                     raise_for_status = getattr(response, "raise_for_status", None)
                     if callable(raise_for_status):
                         raise_for_status()
-                    payload = response.json()
-                value = self._extract(payload, self._json_path)
-            except AdapterReadError:
-                raise
             except Exception as exc:
                 raise AdapterReadError(
                     f"HttpAdapter: HTTP poll failed for url={self._url}: {exc}"
+                ) from exc
+            # The endpoint answered: a body that cannot be read is refused, and
+            # withdraws the value it would have replaced.
+            try:
+                value = self._extract(response.json(), self._json_path)
+            except Exception as exc:
+                reason = str(exc)
+                self._withdraw(reason)
+                if isinstance(exc, AdapterReadError):
+                    raise
+                raise AdapterReadError(
+                    f"HttpAdapter: response from url={self._url} refused: {reason}"
                 ) from exc
 
             self._cached_arrival = cache_arrival()
@@ -203,6 +225,8 @@ class HttpAdapter(BaseAdapter):
                     "json_path": self._json_path,
                 },
             )
+            self._refused = None
+            self._breaker.record_fresh_value()
 
     @staticmethod
     def _extract(data: dict[str, Any], json_path: str) -> float:
