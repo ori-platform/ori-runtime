@@ -28,7 +28,9 @@ import secrets
 import sqlite3
 import string
 import time
+import uuid
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any, Final
 
 from ori.actions.alert_delivery import (
@@ -394,6 +396,15 @@ def _cancelled_here(exc: BaseException) -> bool:
         return False
     task = asyncio.current_task()
     return task is None or task.cancelling() > 0
+
+
+@dataclass
+class _RecordMeta:
+    """What one dispatch's action-log row records, fixed before it acts."""
+
+    key: str
+    kind: str = "dispatch"
+    contributed_to: str | None = None
 
 
 class _ApprovalProgress:
@@ -919,6 +930,17 @@ class ActionDispatcher:
         if not pending.done():
             pending.set_result(action_result)
 
+    async def _log_tier_d_override_for(
+        self, meta: _RecordMeta, action: str, context: SkillContext
+    ) -> None:
+        """The override entry of an autonomous Tier D dispatch, never a contributor's.
+
+        Read when written, after the act settles: a request that joined an act
+        another dispatch held dispatched nothing autonomously.
+        """
+        if meta.kind == "dispatch":
+            await self._log_tier_d_override(action, context)
+
     async def _log_tier_d_override(self, action: str, context: SkillContext) -> None:
         """Record an autonomous Tier D dispatch in the override log."""
         store = self._resolve_state_store(context)
@@ -1167,17 +1189,18 @@ class ActionDispatcher:
             asyncio.get_running_loop().create_future()
         )
         record = opened
+        meta = _RecordMeta(key=uuid.uuid4().hex)
         if tier == ActionTier.SAFETY_CRITICAL:
             # Deferred on the same settled result as the row, and registered
             # first, so it is written after the act and ahead of the row:
             # a record submitted now would race the executor for the store.
             self._defer_record(
-                lambda: self._log_tier_d_override(action, context),
+                lambda: self._log_tier_d_override_for(meta, action, context),
                 after=opened,
                 label=f"override_log autonomous_tier_d action={action}",
             )
         self._defer_record(
-            lambda: self._log_action(opened.result(), context, durable=True),
+            lambda: self._log_action(opened.result(), context, durable=True, meta=meta),
             after=opened,
             label=lambda: _record_label(opened.result()),
             report=True,
@@ -1191,6 +1214,7 @@ class ActionDispatcher:
                 safe_default_action,
                 timeout_value,
                 record,
+                meta,
             )
         finally:
             # A path that left without a result has nothing to record, as when
@@ -1211,6 +1235,7 @@ class ActionDispatcher:
         safe_default_action: str,
         timeout_value: int,
         record: asyncio.Future[ActionResult] | None,
+        meta: _RecordMeta | None = None,
     ) -> ActionResult:
         """Admit *action* against its resource, run it, and record the attempt."""
         # Resource admission. Contention is decided on the resource an action
@@ -1256,6 +1281,7 @@ class ActionDispatcher:
                 dispatch_tier=tier,
                 correlation_id=str(getattr(result, "correlation_id", "") or ""),
                 tier_d_granted=tier == ActionTier.SAFETY_CRITICAL,
+                record_key=meta.key if meta is not None else "",
             )
             awaits_operator = tier == ActionTier.HARD_PHYSICAL or (
                 tier == ActionTier.SOFT_PHYSICAL
@@ -1267,19 +1293,37 @@ class ActionDispatcher:
 
             if decision.admission == Admission.JOINED:
                 # One physical act stands for several contributors. Execution is
-                # merged; licensing is not, and this contributor keeps its own.
+                # merged; authority never is. This request performed nothing and
+                # holds no licence, so it is recorded as a contributor naming the
+                # holder it joined, never attested, and returns without waiting
+                # on the holder's outcome, which is the holder's to record.
                 holder = decision.token
-                if holder is not None:
-                    await holder.done.wait()
+                holder_key = (
+                    holder.contributors[0].record_key
+                    if holder is not None and holder.contributors
+                    else ""
+                )
                 joined = ActionResult(
                     action_name=action,
                     tier=tier,
-                    executed=bool(getattr(holder, "result", False)),
+                    executed=False,
                     approved=None,
                     action_taken="coalesced",
                     timestamp=now_ms(),
                 )
-                await self._record(joined, context, record)
+                if meta is not None and holder_key:
+                    meta.kind = "contributor"
+                    meta.contributed_to = holder_key
+                    await self._record(joined, context, record)
+                else:
+                    # No holder key to link to: nothing truthful can be written,
+                    # so the row is not written and the loss is counted.
+                    logger.error(
+                        "ActionDispatcher: action=%r joined a holder with no "
+                        "record key; its contributor record is not written",
+                        action,
+                    )
+                    self._note_decision_lost()
                 return joined
 
             if not decision.may_execute:
@@ -4522,6 +4566,7 @@ class ActionDispatcher:
         context: SkillContext,
         *,
         durable: bool = False,
+        meta: _RecordMeta | None = None,
     ) -> None:
         """Persist *action_result* to the ``action_log`` table.
 
@@ -4602,8 +4647,17 @@ class ActionDispatcher:
             if firmware_registration is not None
             else ""
         )
-        authority_json = _authority_snapshot_json(
-            action_result, context, trigger_name=matched_trigger, binding_seq=None
+        record_kind = meta.kind if meta is not None else "dispatch"
+        if record_kind != "dispatch":
+            # A contributor performed nothing and holds no licence: it is not a
+            # runtime_action and is never a candidate for attestation.
+            attest = False
+        authority_json = (
+            _authority_snapshot_json(
+                action_result, context, trigger_name=matched_trigger, binding_seq=None
+            )
+            if record_kind == "dispatch"
+            else None
         )
         binding_seq: int | None = None
         capability = ACTION_REGISTRY.get(action_result.action_name)
@@ -4638,13 +4692,22 @@ class ActionDispatcher:
                     attestation_pending=attest,
                     binding_seq=binding_seq,
                     authority_json=authority_json,
+                    record_kind=record_kind,
+                    record_key=meta.key if meta is not None else "",
+                    contributed_to=meta.contributed_to if meta is not None else None,
                 )
             else:
                 # This insert cannot store the licence with the row, so the row
                 # is never marked for attestation: signing a licence the log
                 # does not hold would leave reconciliation nothing to replay.
                 attest = False
-                action_row_id = await store.log_action(action_result, trigger_name)
+                action_row_id = await store.log_action(
+                    action_result,
+                    trigger_name,
+                    record_kind=record_kind,
+                    record_key=meta.key if meta is not None else "",
+                    contributed_to=meta.contributed_to if meta is not None else None,
+                )
         except Exception:
             # A durable record is the writer's to retry or count lost; any
             # failure swallowed here would read to it as a record written.

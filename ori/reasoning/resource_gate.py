@@ -94,6 +94,9 @@ class Contributor:
     dispatch_tier: str
     correlation_id: str = ""
     tier_d_granted: bool = False
+    # The key reserved for this dispatch's action-log row before it acts, so a
+    # request that joins it can name it whatever order the two rows land in.
+    record_key: str = ""
 
 
 @dataclass

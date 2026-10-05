@@ -987,7 +987,11 @@ class TestARecordWithNothingToRecordLeavesTheQueueWorking:
     async def test_a_dispatch_cancelled_before_its_act_does_not_wedge_the_writer(
         self,
     ) -> None:
-        """A joined trip cancelled while it waits: its record has no result."""
+        """A joined trip does not wait on the holder, so cancelling it changes nothing.
+
+        It is recorded at once as a contributor: not executed, never attested,
+        and with no autonomous override entry, which is the holder's alone.
+        """
         store = _RecordStore()
         _, dispatcher, ran = _build(store, signer=_Signer())
         release = asyncio.Event()
@@ -1022,7 +1026,10 @@ class TestARecordWithNothingToRecordLeavesTheQueueWorking:
         await asyncio.wait_for(first, _PROMPT)
         await dispatcher.drain_records(timeout=_PROMPT)
         assert dispatcher.record_backlog()["lost"] == 0
-        assert [row[0] for row in store.rows] == ["trip_relay"]
+        assert sorted(store.rows) == [
+            ("trip_relay", "D", False, "False"),
+            ("trip_relay", "D", True, "True"),
+        ]
         # The joiner never acted, so nothing says it dispatched autonomously.
         assert store.overrides == ["trip_relay"]
 
