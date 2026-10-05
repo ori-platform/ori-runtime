@@ -139,10 +139,7 @@ class MqttAdapter(MqttCachedAdapter):
 
         async with self._breaker:
             self._require_listener()
-            cached = self._cache.get(self._topic)
-            if cached is None:
-                raise AdapterReadError("MqttAdapter: no MQTT data cached yet")
-
+        cached = self._cached_value(self._topic)
         self._require_fresh(self._topic)
         value, timestamp_ms, raw_payload = cached
         quality = 1.0

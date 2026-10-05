@@ -88,12 +88,9 @@ class VictronAdapter(MqttCachedAdapter):
 
         async with self._breaker:
             self._require_listener()
-            cached = self._cache.get(topic)
-            if cached is None:
-                raise AdapterReadError(
-                    "VictronAdapter: no MQTT data cached yet for "
-                    f"sensor_type='{self._sensor_type}'"
-                )
+        cached = self._cached_value(
+            topic, f"no MQTT data cached yet for sensor_type='{self._sensor_type}'"
+        )
         self._require_fresh(topic)
         value, timestamp_ms, raw_payload = cached
 

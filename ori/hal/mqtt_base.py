@@ -6,6 +6,7 @@ import inspect
 import json
 import logging
 import math
+import random
 import ssl
 from typing import Any, ClassVar, Iterable
 
@@ -22,6 +23,20 @@ from ori.hal.base import (
 from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
+
+# Reconnect back-off after the broker drops: full jitter over a doubling ceiling.
+RECONNECT_BASE_S = 1.0
+RECONNECT_CAP_S = 60.0
+# A connection that lasted less than this before dropping does not reset the
+# back-off: a broker accepting and dropping (two clients sharing one client id)
+# would otherwise be redialled at the base delay forever.
+RECONNECT_STABLE_S = 30.0
+
+
+def reconnect_delay(attempt: int, rng: random.Random | None = None) -> float:
+    """Seconds before reconnect *attempt* (0-based): uniform in [0, ceiling]."""
+    ceiling = min(RECONNECT_CAP_S, RECONNECT_BASE_S * (2 ** min(attempt, 16)))
+    return (rng or random).uniform(0.0, ceiling)
 
 
 def _refuse_constant(name: str) -> Any:
@@ -220,10 +235,35 @@ for _canonical, _aliases in _TLS_ALIASES.items():
         }
 
 
+def _abandon_half_open(client: Any) -> None:
+    """Give back what a connect that never completed left open.
+
+    aiomqtt leaves paho's socket and its misc task running when the connect
+    handshake times out or is cancelled, and the adapter never held the client,
+    so nothing else would close them before paho's own keepalive. Private
+    attributes of aiomqtt 2.5.x, read defensively; tested against a broker
+    that accepts and never answers.
+    """
+    paho = getattr(client, "_client", None)
+    for name in ("disconnect", "_sock_close"):
+        close = getattr(paho, name, None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                # Best effort on an abandoned client: the socket may already
+                # be closed, and the misc task below is cancelled regardless.
+                continue
+    task = getattr(client, "_misc_task", None)
+    if isinstance(task, asyncio.Task) and not task.done():
+        task.cancel()
+
+
 class MqttCachedAdapter(BaseAdapter):
     """Reusable base for MQTT adapters that subscribe and cache latest values."""
 
-    # Reads past the silence bound are refused and retained replays ignored.
+    # Reads past the silence bound are refused. Retained replays are ignored
+    # by every adapter, bounded or not.
     # False for a publish-on-change or duty-cycled producer, where silence is
     # not staleness, until a keepalive or reporting guarantee bounds it.
     SILENCE_BOUNDED: ClassVar[bool] = True
@@ -236,9 +276,15 @@ class MqttCachedAdapter(BaseAdapter):
         self._breaker: HardwareCircuitBreaker | None = None
         self._client: Any = None
         self._listener_task: asyncio.Task[None] | None = None
+        self._topics: tuple[str, ...] = ()
+        self._client_kwargs: dict[str, Any] = {}
+        # False while the broker connection is down and being re-established.
+        self._link_up = False
 
         # topic -> (value, timestamp_ms, raw_payload)
         self._cache: dict[str, tuple[float, int, Any]] = {}
+        # topic -> why its last payload was refused; cleared by an accepted one
+        self._refused: dict[str, str] = {}
         # topic -> receiver monotonic arrival time of the cached value
         self._arrived_at: dict[str, float] = {}
         self._poll_interval_ms: int = DEFAULT_POLL_INTERVAL_MS
@@ -304,8 +350,16 @@ class MqttCachedAdapter(BaseAdapter):
             kwargs["identifier"] = str(identifier)
         if keepalive not in (None, ""):
             kwargs["keepalive"] = int(keepalive)
-        if clean_session is not None:
-            kwargs["clean_session"] = self._as_bool(clean_session)
+        if clean_session is not None and not self._as_bool(clean_session, True):
+            raise AdapterConnectionError(
+                f"{self.adapter_name}: a persistent MQTT session is refused for a "
+                "sensor. A broker queues messages for it while the runtime is "
+                "away and delivers them on reconnect, and the freshness bound "
+                "would time each one from its delivery, not its publication."
+            )
+        # Always clean, so nothing queued for this client is delivered on
+        # (re)connect. A retained message still is, and every adapter ignores it.
+        kwargs["clean_session"] = True
         if transport not in (None, ""):
             kwargs["transport"] = str(transport)
         if timeout not in (None, ""):
@@ -426,21 +480,12 @@ class MqttCachedAdapter(BaseAdapter):
             )
 
         try:
-            client_kwargs = self._build_mqtt_client_kwargs(config)
-            if _aiomqtt is None:
-                raise AdapterConnectionError(
-                    "MQTT adapter: 'aiomqtt' is not installed. Run: pip install aiomqtt"
-                )
-            client = _aiomqtt.Client(
-                hostname=self._broker_host,
-                port=self._port,
-                **client_kwargs,
-            )
-            self._client = await client.__aenter__()
-            for topic in topics:
-                await self._client.subscribe(topic)
+            self._client_kwargs = self._build_mqtt_client_kwargs(config)
+            self._topics = tuple(topics)
+            await self._open_client()
+            self._link_up = True
             self._listener_task = asyncio.create_task(
-                self._listen_loop(),
+                self._supervise(),
                 name=listener_name or f"mqtt-listener:{self._broker_host}:{self._port}",
             )
         except Exception as exc:
@@ -449,6 +494,88 @@ class MqttCachedAdapter(BaseAdapter):
                 f"{self.adapter_name}: failed to connect/subscribe to "
                 f"{self._broker_host}:{self._port}: {exc}"
             ) from exc
+
+    async def _open_client(self) -> None:
+        """Connect and subscribe to every topic, or leave no client behind."""
+        if _aiomqtt is None:
+            raise AdapterConnectionError(
+                "MQTT adapter: 'aiomqtt' is not installed. Run: pip install aiomqtt"
+            )
+        client = _aiomqtt.Client(
+            hostname=self._broker_host,
+            port=self._port,
+            **self._client_kwargs,
+        )
+        try:
+            self._client = await client.__aenter__()
+        except BaseException:
+            _abandon_half_open(client)
+            raise
+        try:
+            for topic in self._topics:
+                await self._client.subscribe(topic)
+        except BaseException:
+            await self._close_mqtt_quietly()
+            raise
+
+    async def _supervise(self) -> None:
+        """The adapter's one listener: consume, and reconnect when the broker drops.
+
+        Only this task ever holds the client after connect, so a reconnect
+        cannot leave two listeners. Cancelling it (close) ends a pending
+        back-off or reconnect as well.
+        """
+        loop = asyncio.get_running_loop()
+        attempt = 0
+        while True:
+            connected_at = loop.time()
+            await self._listen_loop()
+            self._mark_link_down()
+            await self._close_mqtt_quietly()
+            if loop.time() - connected_at >= RECONNECT_STABLE_S:
+                attempt = 0
+            while True:
+                await asyncio.sleep(reconnect_delay(attempt))
+                attempt += 1
+                try:
+                    await self._open_client()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        "%s: reconnect %d to %s:%s failed: %s",
+                        self.adapter_name,
+                        attempt,
+                        self._broker_host,
+                        self._port,
+                        exc,
+                    )
+                    continue
+                break
+            self._link_up = True
+            logger.info(
+                "%s: reconnected to %s:%s after %d attempt(s) and resubscribed to "
+                "%d topic(s)",
+                self.adapter_name,
+                self._broker_host,
+                self._port,
+                attempt,
+                len(self._topics),
+            )
+
+    def _mark_link_down(self) -> None:
+        """No cached value survives the connection it arrived on."""
+        self._link_up = False
+        self._cache.clear()
+        self._arrived_at.clear()
+        self._refused.clear()
+        logger.warning(
+            "%s: lost the broker at %s:%s; reads refuse until a value arrives "
+            "after reconnecting",
+            self.adapter_name,
+            self._broker_host,
+            self._port,
+        )
 
     async def close(self) -> None:
         """Close for the whole MQTT family, under the lifecycle contract.
@@ -467,6 +594,7 @@ class MqttCachedAdapter(BaseAdapter):
         """
         task = self._listener_task
         self._listener_task = None
+        self._link_up = False
         if task is not None and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
@@ -484,15 +612,19 @@ class MqttCachedAdapter(BaseAdapter):
             logger.warning("%s: exception while closing MQTT client", self.adapter_name)
 
     async def _listen_loop(self) -> None:
+        """Consume until the connection ends; cancellation propagates."""
         if self._client is None:
             return
 
         try:
             async for message in self._client.messages:
                 topic = str(message.topic)
-                if self.SILENCE_BOUNDED and getattr(message, "retain", False):
+                if getattr(message, "retain", False):
                     # A retained message is replayed on subscribe with no age
                     # the receiver can know; only a live delivery is a reading.
+                    # This holds for an on-change source too: its cache clears
+                    # on a link drop, and a replay given a fresh arrival would
+                    # be served as current with no silence bound to expire it.
                     logger.info(
                         "%s: ignoring retained message on topic=%s",
                         self.adapter_name,
@@ -502,30 +634,43 @@ class MqttCachedAdapter(BaseAdapter):
                 try:
                     await self._handle_message(topic, message.payload)
                 except AdapterReadError as exc:
+                    self._refuse_topic(topic, str(exc))
                     logger.warning(
-                        "%s: skipping invalid payload on topic=%s: %s",
+                        "%s: refused payload on topic=%s: %s",
                         self.adapter_name,
                         topic,
                         exc,
                     )
-                except Exception:
+                except Exception as exc:
                     # No single message ends the listener: a payload a parser
                     # did not anticipate is refused like any other, and the
                     # next one is still consumed.
+                    self._refuse_topic(topic, f"{type(exc).__name__}: {exc}")
                     logger.exception(
-                        "%s: skipping a payload that could not be handled on topic=%s",
+                        "%s: refused a payload that could not be handled on topic=%s",
                         self.adapter_name,
                         topic,
                     )
         except asyncio.CancelledError:
-            return
-        except Exception:
-            logger.exception(
-                "%s: listener loop crashed for broker %s:%s",
+            raise
+        except Exception as exc:
+            logger.warning(
+                "%s: listener lost the broker %s:%s: %s",
                 self.adapter_name,
                 self._broker_host,
                 self._port,
+                exc,
             )
+
+    def _refuse_topic(self, topic: str, reason: str) -> None:
+        """A refused payload withdraws the value it would have replaced.
+
+        Serving the earlier value would present it as current while the source
+        reports something the runtime could not accept.
+        """
+        self._cache.pop(topic, None)
+        self._arrived_at.pop(topic, None)
+        self._refused[topic] = reason
 
     def _require_listener(self) -> None:
         """Refuse a read once the listener has stopped.
@@ -541,6 +686,31 @@ class MqttCachedAdapter(BaseAdapter):
                 f"{self.adapter_name}: the MQTT listener is not running; "
                 "the cached value is no longer a live reading"
             )
+        if not self._link_up:
+            raise AdapterReadError(
+                f"{self.adapter_name}: the broker connection is down and being "
+                "re-established; no value is current"
+            )
+
+    def _cached_value(
+        self, topic: str, missing: str = "no MQTT data cached yet"
+    ) -> tuple[float, int, Any]:
+        """The cached value for *topic*, or a refusal naming why there is none.
+
+        Called outside the breaker: a source that has not published, or whose
+        last payload was refused, is not a fault to back off from, and counted
+        there it would keep the next real value refused for the recovery window.
+        """
+        cached = self._cache.get(topic)
+        if cached is not None:
+            return cached
+        reason = self._refused.get(topic)
+        if reason is not None:
+            raise AdapterReadError(
+                f"{self.adapter_name}: the last payload on topic={topic} was "
+                f"refused ({reason}); no current value"
+            )
+        raise AdapterReadError(f"{self.adapter_name}: {missing}")
 
     async def _handle_message(self, topic: str, payload: Any) -> None:
         """Override in concrete adapters to parse and cache message values."""
@@ -549,6 +719,9 @@ class MqttCachedAdapter(BaseAdapter):
     def _cache_value(self, topic: str, value: float, raw_payload: Any) -> None:
         self._cache[topic] = (float(value), now_ms(), raw_payload)
         self._arrived_at[topic] = cache_arrival()
+        self._refused.pop(topic, None)
+        if self._breaker is not None:
+            self._breaker.record_fresh_value()
 
     def _require_fresh(self, topic: str) -> None:
         """Refuse the cached value for *topic* once it is past the silence bound.
