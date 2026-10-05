@@ -72,6 +72,28 @@ SUPPORTED_CHANNEL_PROTOCOLS = frozenset(
 )
 SUPPORTED_ACTION_AUTHORITIES = frozenset({"local_interlock_only", "runtime_commanded"})
 SUPPORTED_FIRMWARE_ACTIONS = frozenset({"relay_open", "relay_close"})
+MANIFEST_REQUIRED_FIELDS = frozenset(
+    {
+        "v",
+        "alg",
+        "device_id",
+        "firmware_version",
+        "board_profile",
+        "device_mode",
+        "public_key_b64",
+        "posture",
+        "secure_boot_enabled",
+        "flash_encryption_enabled",
+        "key_storage",
+        "transports",
+        "channels",
+        "actions",
+        "interlocks",
+    }
+)
+MANIFEST_OPTIONAL_FIELDS = frozenset({"deployment_maintenance_limit_ms"})
+_ACTION_FIELDS = frozenset({"action", "channel", "authority"})
+_INTERLOCK_FIELDS = frozenset({"name", "channel", "action"})
 
 GRADE_ATTESTED = "attested"
 GRADE_ATTESTED_DEV = "attested_dev"
@@ -85,6 +107,8 @@ ERR_SIGNATURE_FAILED = "signature_verification_failed"
 ERR_CAPABILITY_HASH_MISMATCH = "capability_hash_mismatch"
 ERR_SEQUENCE_REPLAY = "sequence_replay"
 ERR_BOOT_ROLLBACK = "boot_rollback"
+# Runtime code for the contract's rule that uptime resets only with boot_id.
+ERR_UPTIME_REGRESSION = "uptime_regression"
 ERR_UNSUPPORTED_CHANNEL = "unsupported_channel"
 ERR_INVALID_POSTURE = "invalid_posture"
 ERR_INVALID_READING = "invalid_reading"
@@ -378,6 +402,10 @@ def _validate_manifest_actions(manifest: dict[str, Any]) -> None:
             raise FirmwareVerificationError(
                 ERR_INVALID_ENVELOPE, f"action {index} is not an object"
             )
+        if set(action) != _ACTION_FIELDS:
+            raise FirmwareVerificationError(
+                ERR_INVALID_ENVELOPE, f"action {index} has unexpected fields"
+            )
         name = _require_str(action, "action", ERR_INVALID_ENVELOPE)
         if name not in SUPPORTED_FIRMWARE_ACTIONS:
             raise FirmwareVerificationError(
@@ -457,7 +485,49 @@ def manifest_channel_map(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return out
 
 
+def _is_version_one(value: Any) -> bool:
+    """Exactly the integer 1: `True == 1` and `1.0 == 1` in Python, not on the wire."""
+    return type(value) is int and value == 1
+
+
+def _validate_manifest_interlocks(manifest: dict[str, Any]) -> None:
+    interlocks = _require_list(manifest, "interlocks", ERR_INVALID_ENVELOPE)
+    for index, interlock in enumerate(interlocks):
+        if not isinstance(interlock, dict) or set(interlock) != _INTERLOCK_FIELDS:
+            raise FirmwareVerificationError(
+                ERR_INVALID_ENVELOPE,
+                f"interlock {index} is not an object with exactly "
+                "name, channel and action",
+            )
+        for field_name in sorted(_INTERLOCK_FIELDS):
+            _require_str(interlock, field_name, ERR_INVALID_ENVELOPE)
+
+
+def _validate_manifest_fields(manifest: dict[str, Any]) -> None:
+    keys = set(manifest)
+    missing = MANIFEST_REQUIRED_FIELDS - keys
+    unknown = keys - MANIFEST_REQUIRED_FIELDS - MANIFEST_OPTIONAL_FIELDS
+    if missing or unknown:
+        raise FirmwareVerificationError(
+            ERR_INVALID_ENVELOPE,
+            f"manifest fields: missing {sorted(missing)}, unknown {sorted(unknown)}",
+        )
+    for flag in ("secure_boot_enabled", "flash_encryption_enabled"):
+        if not isinstance(manifest[flag], bool):
+            raise FirmwareVerificationError(
+                ERR_INVALID_ENVELOPE, f"{flag} must be a boolean"
+            )
+    if "deployment_maintenance_limit_ms" in manifest:
+        limit = manifest["deployment_maintenance_limit_ms"]
+        if type(limit) is not int or limit < 1:
+            raise FirmwareVerificationError(
+                ERR_INVALID_ENVELOPE,
+                "deployment_maintenance_limit_ms must be a positive integer",
+            )
+
+
 def _validate_manifest_contract(manifest: dict[str, Any]) -> None:
+    _validate_manifest_fields(manifest)
     _require_str(manifest, "firmware_version", ERR_INVALID_ENVELOPE)
     _require_str(manifest, "board_profile", ERR_INVALID_ENVELOPE)
     _require_str(manifest, "device_mode", ERR_INVALID_ENVELOPE)
@@ -465,7 +535,7 @@ def _validate_manifest_contract(manifest: dict[str, Any]) -> None:
     _validate_transport_list(manifest)
     manifest_channel_map(manifest)
     _validate_manifest_actions(manifest)
-    _require_list(manifest, "interlocks", ERR_INVALID_ENVELOPE)
+    _validate_manifest_interlocks(manifest)
 
 
 def verify_manifest_message(
@@ -485,7 +555,7 @@ def verify_manifest_message(
         raise FirmwareVerificationError(ERR_INVALID_ENVELOPE, "missing manifest object")
     manifest: dict[str, Any] = message["manifest"]
 
-    if manifest.get("v") != 1:
+    if not _is_version_one(manifest.get("v")):
         raise FirmwareVerificationError(
             ERR_INVALID_ENVELOPE, "unsupported manifest version"
         )
@@ -644,6 +714,7 @@ def verify_telemetry_message(
     accepted_manifest_hash: str,
     last_boot_id: int,
     last_seq: int,
+    last_uptime_ms: int | None,
     approved: bool = True,
     revoked: bool = False,
     accepted_channels: Mapping[str, Mapping[str, Any]] | None = None,
@@ -676,7 +747,7 @@ def verify_telemetry_message(
             )
         envelope: dict[str, Any] = message["envelope"]
 
-        if envelope.get("v") != 1:
+        if not _is_version_one(envelope.get("v")):
             raise FirmwareVerificationError(
                 ERR_INVALID_ENVELOPE, "unsupported envelope version"
             )
@@ -755,6 +826,15 @@ def verify_telemetry_message(
             raise FirmwareVerificationError(
                 ERR_SEQUENCE_REPLAY, f"seq {seq} <= {last_seq}"
             )
+        if (
+            boot_id == last_boot_id
+            and last_uptime_ms is not None
+            and uptime < last_uptime_ms
+        ):
+            raise FirmwareVerificationError(
+                ERR_UPTIME_REGRESSION,
+                f"device_uptime_ms {uptime} < {last_uptime_ms} within boot {boot_id}",
+            )
 
         grade = GRADE_ATTESTED if posture in PRODUCTION_POSTURES else GRADE_ATTESTED_DEV
         return TelemetryVerification(
@@ -781,6 +861,7 @@ def verify_fault_message(
     accepted_manifest_hash: str,
     last_boot_id: int,
     last_seq: int,
+    last_uptime_ms: int | None,
     approved: bool = True,
     revoked: bool = False,
 ) -> FirmwareFaultVerification:
@@ -827,7 +908,7 @@ def verify_fault_message(
             raise FirmwareVerificationError(
                 ERR_INVALID_ENVELOPE, "fault object has unexpected fields"
             )
-        if fault.get("v") != 1:
+        if not _is_version_one(fault.get("v")):
             raise FirmwareVerificationError(
                 ERR_INVALID_ENVELOPE, "unsupported fault version"
             )
@@ -900,6 +981,15 @@ def verify_fault_message(
         if seq <= last_seq:
             raise FirmwareVerificationError(
                 ERR_SEQUENCE_REPLAY, f"seq {seq} <= {last_seq}"
+            )
+        if (
+            boot_id == last_boot_id
+            and last_uptime_ms is not None
+            and uptime < last_uptime_ms
+        ):
+            raise FirmwareVerificationError(
+                ERR_UPTIME_REGRESSION,
+                f"device_uptime_ms {uptime} < {last_uptime_ms} within boot {boot_id}",
             )
 
         grade = GRADE_ATTESTED if posture in PRODUCTION_POSTURES else GRADE_ATTESTED_DEV

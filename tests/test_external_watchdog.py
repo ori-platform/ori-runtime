@@ -79,7 +79,6 @@ def _write_runtime_config(tmp_path: Path, hal_block: str = "") -> Path:
             skills:
               - name: test-skill
                 version: "0.1.0"
-                config: {{}}
 
             reasoning:
               default_tier: local

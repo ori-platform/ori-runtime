@@ -538,7 +538,10 @@ class _Site:
                 {
                     str(row[0])
                     for row in ledger.execute(
-                        "SELECT last_failure FROM evidence_delivery_ledger"
+                        # A courier refusal or deferral, else the transport outcome.
+                        "SELECT CASE WHEN courier_answer IN ('refused', 'queue_full')"
+                        " THEN courier_answer ELSE last_failure END"
+                        " FROM evidence_delivery_ledger"
                     )
                 }
             )

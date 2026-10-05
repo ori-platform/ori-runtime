@@ -58,8 +58,6 @@ sensors:
 skills:
   - name: pc-system-health
     version: '0.1.0'
-    config:
-      owner_name: "My Linux Laptop"
 
 reasoning:
   default_tier: rule                   # use 'local' when SLM model is installed

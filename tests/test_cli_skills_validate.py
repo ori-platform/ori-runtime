@@ -595,7 +595,7 @@ def test_directory_malformed_yaml_json(tmp_path: Path, monkeypatch, capsys) -> N
     captured = capsys.readouterr()
     assert rc == EXIT_FAILED
     doc = _read_json(captured)
-    results = {r.get("name", "broken-skill"): r for r in doc["results"]}
+    results = {r["name"]: r for r in doc["results"]}
     assert results["good-skill"]["status"] == "valid"
     assert results["broken-skill"]["status"] == "invalid"
     _assert_no_traceback(captured)

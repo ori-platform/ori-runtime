@@ -109,6 +109,7 @@ def verify(case_name: str, **overrides):
         "accepted_manifest_hash": envelope["capability_hash"],
         "last_boot_id": 0,
         "last_seq": 0,
+        "last_uptime_ms": None,
     }
     kwargs.update(overrides)
     return verify_telemetry_message(telemetry_message(case_name), **kwargs)
@@ -297,6 +298,7 @@ class TestGoldenVectors:
             accepted_manifest_hash=SEALED_HASH,
             last_boot_id=0,
             last_seq=0,
+            last_uptime_ms=None,
         )
         assert result.grade == "rejected"
         assert result.error_code == "signature_verification_failed"
@@ -351,6 +353,7 @@ class TestGoldenFaultVectors:
             accepted_manifest_hash=fault["capability_hash"],
             last_boot_id=0,
             last_seq=0,
+            last_uptime_ms=None,
         )
         assert result.accepted, f"{name} was not accepted: {result.error_code}"
         # Posture drives the trust grade: a development-posture device
@@ -376,6 +379,7 @@ class TestGoldenFaultVectors:
             accepted_manifest_hash=fault["capability_hash"],
             last_boot_id=0,
             last_seq=0,
+            last_uptime_ms=None,
         )
         assert result.grade == "rejected"
 
@@ -422,6 +426,7 @@ class TestGoldenFaultVectors:
             accepted_manifest_hash=SEALED_HASH,
             last_boot_id=0,
             last_seq=0,
+            last_uptime_ms=None,
         )
         assert result.grade == "rejected"
         assert result.error_code == "invalid_envelope"
@@ -437,6 +442,7 @@ class TestGoldenFaultVectors:
             accepted_manifest_hash=SEALED_HASH,
             last_boot_id=0,
             last_seq=0,
+            last_uptime_ms=None,
         )
         assert result.grade == "rejected"
         assert result.error_code == "invalid_envelope"
@@ -454,6 +460,7 @@ class TestGoldenFaultVectors:
             accepted_manifest_hash=SEALED_HASH,
             last_boot_id=0,
             last_seq=0,
+            last_uptime_ms=None,
         )
         assert result.accepted
 
@@ -517,6 +524,7 @@ class TestFailClosed:
                 accepted_manifest_hash=SEALED_HASH,
                 last_boot_id=0,
                 last_seq=0,
+                last_uptime_ms=None,
             ).error_code
 
         bare = good["signature"][len("ed25519:") :]
@@ -538,6 +546,7 @@ class TestFailClosed:
             accepted_manifest_hash=SEALED_HASH,
             last_boot_id=0,
             last_seq=0,
+            last_uptime_ms=None,
         )
         assert result.error_code == "unsupported_alg"
 
@@ -552,6 +561,7 @@ class TestFailClosed:
             accepted_manifest_hash=SEALED_HASH,
             last_boot_id=0,
             last_seq=0,
+            last_uptime_ms=None,
         )
         assert result.error_code == "invalid_reading"
 
@@ -564,6 +574,7 @@ class TestFailClosed:
             accepted_manifest_hash=SEALED_HASH,
             last_boot_id=0,
             last_seq=0,
+            last_uptime_ms=None,
             accepted_channels={
                 "other": {
                     "sensor_type": "current",
@@ -583,6 +594,7 @@ class TestFailClosed:
             accepted_manifest_hash=SEALED_HASH,
             last_boot_id=0,
             last_seq=0,
+            last_uptime_ms=None,
             accepted_channels={
                 "ch0": {
                     "sensor_type": "voltage",
@@ -602,6 +614,7 @@ class TestFailClosed:
             accepted_manifest_hash=DEV_HASH,
             last_boot_id=0,
             last_seq=0,
+            last_uptime_ms=None,
             accepted_channels={
                 "ch0": {
                     "sensor_type": "current",
@@ -628,6 +641,7 @@ class TestFailClosed:
             accepted_manifest_hash=SEALED_HASH,
             last_boot_id=0,
             last_seq=0,
+            last_uptime_ms=None,
         )
         assert result.accepted
         assert result.grade == "attested"
@@ -656,6 +670,7 @@ class TestFailClosed:
             accepted_manifest_hash=SEALED_HASH,
             last_boot_id=0,
             last_seq=0,
+            last_uptime_ms=None,
         )
         assert result.accepted
         assert result.detail == detail
@@ -670,6 +685,7 @@ class TestFailClosed:
             accepted_manifest_hash=SEALED_HASH,
             last_boot_id=0,
             last_seq=0,
+            last_uptime_ms=None,
         )
         assert result.error_code == "invalid_envelope"
 
@@ -692,6 +708,7 @@ class TestFailClosed:
                 accepted_manifest_hash=SEALED_HASH,
                 last_boot_id=0,
                 last_seq=0,
+                last_uptime_ms=None,
             )
             assert result.accepted
             assert result.code == "ingress_degraded"
@@ -716,6 +733,7 @@ class TestFailClosed:
                 accepted_manifest_hash=SEALED_HASH,
                 last_boot_id=0,
                 last_seq=0,
+                last_uptime_ms=None,
             )
             assert result.accepted
             assert result.code == "storage_degraded"
@@ -733,6 +751,7 @@ class TestFailClosed:
                 accepted_manifest_hash=SEALED_HASH,
                 last_boot_id=0,
                 last_seq=0,
+                last_uptime_ms=None,
             )
             assert not result.accepted, code
             assert result.error_code == "invalid_envelope"
@@ -760,6 +779,7 @@ class TestFailClosed:
                 accepted_manifest_hash=SEALED_HASH,
                 last_boot_id=0,
                 last_seq=0,
+                last_uptime_ms=None,
             )
             assert result.accepted, f"{code}/{detail}"
             assert result.detail == detail
@@ -790,6 +810,7 @@ class TestFailClosed:
                 accepted_manifest_hash=SEALED_HASH,
                 last_boot_id=0,
                 last_seq=0,
+                last_uptime_ms=None,
             )
             assert result.accepted, detail
 
@@ -845,6 +866,7 @@ class TestFailClosed:
                 accepted_manifest_hash=SEALED_HASH,
                 last_boot_id=0,
                 last_seq=0,
+                last_uptime_ms=None,
             )
             assert result.accepted, detail
 
@@ -857,6 +879,7 @@ class TestFailClosed:
             accepted_manifest_hash=SEALED_HASH,
             last_boot_id=0,
             last_seq=0,
+            last_uptime_ms=None,
         )
         assert result.grade == "rejected"
         assert result.error_code == "invalid_envelope"
@@ -1088,7 +1111,9 @@ class TestRegistrationLifecycle:
         await self._register(gate)
         await gate.approve_device(DEV_DEVICE, actor="test-operator", reason="test")
         # Actually advance it, so a reset would be visible.
-        await gate._store.advance_firmware_freshness(DEV_DEVICE, boot_id=3, seq=99)
+        await gate._store.advance_firmware_freshness(
+            DEV_DEVICE, boot_id=3, seq=99, uptime_ms=0
+        )
         row_before = await gate._store.get_firmware_device(DEV_DEVICE)
         assert row_before["last_seq"] == 99
 
@@ -1154,7 +1179,9 @@ class TestRegistrationLifecycle:
             manifest_message=manifest_message("manifest_full_sealed"),
         )
         await gate.approve_device(SEALED_DEVICE, actor="test-operator", reason="test")
-        await gate._store.advance_firmware_freshness(SEALED_DEVICE, boot_id=7, seq=1234)
+        await gate._store.advance_firmware_freshness(
+            SEALED_DEVICE, boot_id=7, seq=1234, uptime_ms=0
+        )
         before = await gate._store.get_firmware_device(SEALED_DEVICE)
 
         await gate.register_device(
@@ -2226,7 +2253,9 @@ class TestLifecycleSequences:
         # Give the device a command-sequence history to protect.
         assert await gate._store.allocate_firmware_command_seq(DEV_DEVICE) == 1
         assert await gate._store.allocate_firmware_command_seq(DEV_DEVICE) == 2
-        await gate._store.advance_firmware_freshness(DEV_DEVICE, boot_id=4, seq=900)
+        await gate._store.advance_firmware_freshness(
+            DEV_DEVICE, boot_id=4, seq=900, uptime_ms=0
+        )
         await gate.revoke_device(DEV_DEVICE, actor="op", reason="key compromised")
 
         # Re-provisioning a revoked identity is refused: reinstate first,
@@ -2285,7 +2314,9 @@ class TestLifecycleSequences:
         # The contrast with the key-change case above: same key, so the
         # replay window must NOT re-open.
         await self._registered_and_active(gate, "manifest_full_sealed")
-        await gate._store.advance_firmware_freshness(SEALED_DEVICE, boot_id=4, seq=900)
+        await gate._store.advance_firmware_freshness(
+            SEALED_DEVICE, boot_id=4, seq=900, uptime_ms=0
+        )
         await gate.register_device(
             device_id=SEALED_DEVICE,
             public_key_b64=PUBLIC_KEY_B64,

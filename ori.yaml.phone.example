@@ -43,10 +43,6 @@ sensors:
 skills:
   - name: energy-anomaly-detector
     version: "0.1.0"
-    config:
-      country_code: NG
-      tariff_per_kwh: 225.0
-      currency_code: NGN
 
 reasoning:
   default_tier: local
