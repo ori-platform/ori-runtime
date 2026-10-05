@@ -402,6 +402,10 @@ class _ApprovalProgress:
     def __init__(self) -> None:
         self.proposal_id: str | None = None
         self.acted: ActionResult | None = None
+        # The decision `acted` carries out, and whether its record is queued:
+        # a failure between the two must still leave the decision recorded.
+        self.decision: str | None = None
+        self.decision_queued = False
         self.started_at_ms: int | None = None
         self.approval_receipt: AlertSendReceipt | None = None
 
@@ -1743,6 +1747,15 @@ class ActionDispatcher:
                 progress.proposal_id,
             )
             if progress.acted is not None:
+                if not progress.decision_queued:
+                    self._record_decision_after_failure(
+                        context=context,
+                        result=result,
+                        action=action,
+                        progress=progress,
+                        approval_timeout_seconds=approval_timeout_seconds,
+                        safe_default_action=self._vet_safe_default(safe_default_action),
+                    )
                 return progress.acted
             resolved = await self._resolve_failed_approval(
                 action,
@@ -1764,6 +1777,41 @@ class ActionDispatcher:
                 approval_receipt=progress.approval_receipt,
             )
             return resolved
+
+    def _record_decision_after_failure(
+        self,
+        *,
+        context: SkillContext,
+        result: ReasoningResult,
+        action: str,
+        progress: _ApprovalProgress,
+        approval_timeout_seconds: int,
+        safe_default_action: str,
+    ) -> None:
+        """Queue the decision an act already carried out, or count it lost."""
+        assert progress.acted is not None
+        try:
+            self._defer_tier_c_decision(
+                store=self._resolve_state_store(context),
+                context=context,
+                result=result,
+                action=action,
+                action_result=progress.acted,
+                operator_decision=progress.decision or "approval_error",
+                approval_started_at=progress.started_at_ms,
+                approval_timeout_seconds=approval_timeout_seconds,
+                safe_default_action=safe_default_action,
+                approval_receipt=progress.approval_receipt,
+            )
+        except Exception:
+            logger.exception(
+                "ActionDispatcher: the decision for action=%r proposal_id=%s "
+                "could not be queued; counted lost",
+                action,
+                progress.proposal_id,
+            )
+            self._note_decision_lost()
+        progress.decision_queued = True
 
     def _defer_tier_c_decision(
         self,
@@ -3733,6 +3781,7 @@ class ActionDispatcher:
                 # the authority given, `executed` what happened.
                 action_taken = "refused_late_approval"
                 executed = False
+                progress.decision = "approved"
                 progress.acted = ActionResult(
                     action_name=action,
                     tier=tier,
@@ -3748,6 +3797,7 @@ class ActionDispatcher:
                 inner = await self._execute_immediately(action, tier, context)
                 action_taken = inner.action_taken
                 executed = inner.executed
+                progress.decision = "approved"
                 progress.acted = ActionResult(
                     action_name=action,
                     tier=tier,
@@ -3767,6 +3817,9 @@ class ActionDispatcher:
                 action_taken = inner.action_taken
                 executed = inner.executed
                 safe_default_used = inner.executed
+                progress.decision = (
+                    _APPROVAL_END_DECISION[approval_end] if timed_out else "rejected"
+                )
                 progress.acted = ActionResult(
                     action_name=action,
                     tier=tier,
@@ -3884,6 +3937,7 @@ class ActionDispatcher:
                 report=True,
                 on_lost=self._note_decision_lost,
             )
+            progress.decision_queued = True
             return action_result
         finally:
             if self._status_indicator is not None:
