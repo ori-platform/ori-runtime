@@ -297,6 +297,7 @@ class FirmwareTelemetryGate:
             accepted_manifest_hash=row["capability_hash"],
             last_boot_id=row["last_boot_id"],
             last_seq=row["last_seq"],
+            last_uptime_ms=row["last_uptime_ms"],
             approved=row["approved"],
             revoked=row["revoked"],
             accepted_channels=row["channel_map"],
@@ -309,6 +310,7 @@ class FirmwareTelemetryGate:
             verification.device_id,
             boot_id=verification.boot_id,
             seq=verification.seq,
+            uptime_ms=verification.device_uptime_ms,
         )
         if not advanced:
             # A concurrent writer advanced the mark first: this message
@@ -393,6 +395,7 @@ class FirmwareTelemetryGate:
             accepted_manifest_hash=row["capability_hash"],
             last_boot_id=row["last_boot_id"],
             last_seq=row["last_seq"],
+            last_uptime_ms=row["last_uptime_ms"],
             approved=row["approved"],
             revoked=row["revoked"],
         )
@@ -404,6 +407,7 @@ class FirmwareTelemetryGate:
             verification.device_id,
             boot_id=verification.boot_id,
             seq=verification.seq,
+            uptime_ms=verification.device_uptime_ms,
         )
         if not advanced:
             verification = FirmwareFaultVerification(

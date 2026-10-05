@@ -1088,7 +1088,9 @@ class TestRegistrationLifecycle:
         await self._register(gate)
         await gate.approve_device(DEV_DEVICE, actor="test-operator", reason="test")
         # Actually advance it, so a reset would be visible.
-        await gate._store.advance_firmware_freshness(DEV_DEVICE, boot_id=3, seq=99)
+        await gate._store.advance_firmware_freshness(
+            DEV_DEVICE, boot_id=3, seq=99, uptime_ms=0
+        )
         row_before = await gate._store.get_firmware_device(DEV_DEVICE)
         assert row_before["last_seq"] == 99
 
@@ -1154,7 +1156,9 @@ class TestRegistrationLifecycle:
             manifest_message=manifest_message("manifest_full_sealed"),
         )
         await gate.approve_device(SEALED_DEVICE, actor="test-operator", reason="test")
-        await gate._store.advance_firmware_freshness(SEALED_DEVICE, boot_id=7, seq=1234)
+        await gate._store.advance_firmware_freshness(
+            SEALED_DEVICE, boot_id=7, seq=1234, uptime_ms=0
+        )
         before = await gate._store.get_firmware_device(SEALED_DEVICE)
 
         await gate.register_device(
@@ -2226,7 +2230,9 @@ class TestLifecycleSequences:
         # Give the device a command-sequence history to protect.
         assert await gate._store.allocate_firmware_command_seq(DEV_DEVICE) == 1
         assert await gate._store.allocate_firmware_command_seq(DEV_DEVICE) == 2
-        await gate._store.advance_firmware_freshness(DEV_DEVICE, boot_id=4, seq=900)
+        await gate._store.advance_firmware_freshness(
+            DEV_DEVICE, boot_id=4, seq=900, uptime_ms=0
+        )
         await gate.revoke_device(DEV_DEVICE, actor="op", reason="key compromised")
 
         # Re-provisioning a revoked identity is refused: reinstate first,
@@ -2285,7 +2291,9 @@ class TestLifecycleSequences:
         # The contrast with the key-change case above: same key, so the
         # replay window must NOT re-open.
         await self._registered_and_active(gate, "manifest_full_sealed")
-        await gate._store.advance_firmware_freshness(SEALED_DEVICE, boot_id=4, seq=900)
+        await gate._store.advance_firmware_freshness(
+            SEALED_DEVICE, boot_id=4, seq=900, uptime_ms=0
+        )
         await gate.register_device(
             device_id=SEALED_DEVICE,
             public_key_b64=PUBLIC_KEY_B64,

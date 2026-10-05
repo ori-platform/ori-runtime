@@ -515,6 +515,7 @@ CREATE TABLE IF NOT EXISTS firmware_device_registry (
     last_cmd_seq      INTEGER NOT NULL DEFAULT 0,
     last_provision_seq INTEGER NOT NULL DEFAULT 0,
     last_runtime_seq  INTEGER NOT NULL DEFAULT 0,
+    last_uptime_ms    INTEGER,
     revoked           INTEGER NOT NULL DEFAULT 0,
     revoked_at_ms     INTEGER
 );
@@ -1435,6 +1436,10 @@ class StateStore:
             "firmware_device_registry",
             "last_runtime_seq",
             "INTEGER NOT NULL DEFAULT 0",
+        )
+        # NULL until the first message after upgrade seeds it.
+        self._add_column_if_missing_on_conn(
+            conn, "firmware_device_registry", "last_uptime_ms", "INTEGER"
         )
         for col, typedef in (
             ("proposal_id", "TEXT    NOT NULL DEFAULT ''"),
@@ -5676,7 +5681,8 @@ class StateStore:
             SELECT device_id, public_key_b64, alg, posture, capability_hash,
                    manifest_json, channel_map_json, board_profile, approved,
                    provisioned_at_ms, last_boot_id, last_seq, last_provision_seq,
-                   revoked, revoked_at_ms, anchor_epoch_id, key_epoch_id
+                   revoked, revoked_at_ms, anchor_epoch_id, key_epoch_id,
+                   last_uptime_ms
             FROM firmware_device_registry WHERE device_id = ?
             """,
             (device_id,),
@@ -5701,6 +5707,7 @@ class StateStore:
             "revoked_at_ms": int(row[14]) if row[14] is not None else None,
             "anchor_epoch_id": row[15],
             "key_epoch_id": row[16],
+            "last_uptime_ms": int(row[17]) if row[17] is not None else None,
         }
 
     async def approve_firmware_device(
@@ -5816,7 +5823,8 @@ class StateStore:
                    anchor_epoch_id = ?,
                    key_epoch_id = ?,
                    last_boot_id = CASE WHEN ? THEN 0 ELSE last_boot_id END,
-                   last_seq = CASE WHEN ? THEN 0 ELSE last_seq END
+                   last_seq = CASE WHEN ? THEN 0 ELSE last_seq END,
+                   last_uptime_ms = CASE WHEN ? THEN NULL ELSE last_uptime_ms END
              WHERE device_id = ? AND revoked = 0
             """,
             (
@@ -5828,6 +5836,7 @@ class StateStore:
                 pending["board_profile"],
                 pending["anchor_epoch_id"],
                 pending["key_epoch_id"],
+                1 if key_epoch_changed else 0,
                 1 if key_epoch_changed else 0,
                 1 if key_epoch_changed else 0,
                 device_id,
@@ -6722,30 +6731,32 @@ class StateStore:
             raise
 
     async def advance_firmware_freshness(
-        self, device_id: str, *, boot_id: int, seq: int
+        self, device_id: str, *, boot_id: int, seq: int, uptime_ms: int
     ) -> bool:
         """Advance the replay high-water mark, strictly monotonically.
 
         The WHERE clause is the atomicity guarantee: a concurrent or
         replayed writer whose (boot_id, seq) does not strictly advance
-        the stored mark updates zero rows, and the caller must treat
-        that as a replay."""
+        the stored mark, or whose uptime goes back within one boot,
+        updates zero rows, and the caller must treat that as a replay."""
         return await self._run_write(
-            self._advance_firmware_freshness_sync, device_id, boot_id, seq
+            self._advance_firmware_freshness_sync, device_id, boot_id, seq, uptime_ms
         )
 
     def _advance_firmware_freshness_sync(
-        self, device_id: str, boot_id: int, seq: int
+        self, device_id: str, boot_id: int, seq: int, uptime_ms: int
     ) -> bool:
         assert self._conn is not None
         cur = self._conn.execute(
             """
             UPDATE firmware_device_registry
-            SET last_boot_id = ?, last_seq = ?
+            SET last_boot_id = ?, last_seq = ?, last_uptime_ms = ?
             WHERE device_id = ? AND revoked = 0 AND approved = 1
               AND ? >= last_boot_id AND ? > last_seq
+              AND (? > last_boot_id OR last_uptime_ms IS NULL
+                   OR ? >= last_uptime_ms)
             """,
-            (boot_id, seq, device_id, boot_id, seq),
+            (boot_id, seq, uptime_ms, device_id, boot_id, seq, boot_id, uptime_ms),
         )
         self._conn.commit()
         return cur.rowcount > 0
