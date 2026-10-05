@@ -1000,7 +1000,11 @@ class SkillLoader:
 
         return Skill(
             name=raw.get("name", ""),
-            version=str(raw.get("version", "0.0.0")),
+            version=(
+                raw["version"]
+                if isinstance(raw.get("version"), str) and raw["version"]
+                else "0.0.0"
+            ),
             author=raw.get("author", ""),
             sensors_required=raw.get("sensors_required") or [],
             triggers=triggers,
@@ -1421,7 +1425,16 @@ class SkillLoader:
         """Validate core metadata presence for runtime-loadable skills."""
         skill_dir_name = skill_dir.name
         name = str(raw.get("name") or "").strip()
-        version = str(raw.get("version") or "").strip()
+        raw_version = raw.get("version")
+        if raw_version is None:
+            version = ""
+        elif isinstance(raw_version, str):
+            version = raw_version.strip()
+        else:
+            raise SkillValidationError(
+                f"Skill {name!r}: version must be a string or absent, "
+                f"got {type(raw_version).__name__}: {raw_version!r}"
+            )
         author = str(raw.get("author") or "").strip()
         triggers = raw.get("triggers")
 
