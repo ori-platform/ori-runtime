@@ -795,18 +795,19 @@ class EvidenceDeliveryLedger:
             )
         }
         if "courier_answer" not in columns:
-            self._connection.execute("BEGIN IMMEDIATE")
             self._connection.execute(
                 "ALTER TABLE evidence_delivery_ledger ADD COLUMN courier_answer TEXT"
             )
-            self._connection.execute(
-                """
-                UPDATE evidence_delivery_ledger
-                   SET courier_answer = last_failure, last_failure = NULL
-                 WHERE last_failure IN ('refused', 'queue_full')
-                """
-            )
-            self._connection.execute("COMMIT")
+        # On every open, not only the first: a release rolled back to records
+        # the courier's answer in last_failure, and a roll-forward must carry
+        # it over or the episode it opened is reopened by the next refusal.
+        self._connection.execute(
+            """
+            UPDATE evidence_delivery_ledger
+               SET courier_answer = last_failure, last_failure = NULL
+             WHERE last_failure IN ('refused', 'queue_full')
+            """
+        )
         if "courier_answer_at_ms" not in columns:
             self._connection.execute(
                 "ALTER TABLE evidence_delivery_ledger"

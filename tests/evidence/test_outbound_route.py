@@ -1164,3 +1164,35 @@ async def test_an_unknown_answer_cannot_be_stored_in_a_fresh_ledger(rig):
 
     with pytest.raises(sqlite3.IntegrityError):
         rig.executor.run(corrupt)
+
+
+def _with_signed_at(message: dict[str, Any], value: Any) -> dict[str, Any]:
+    tampered = json.loads(json.dumps(message))
+    tampered["auth"]["signed_at_ms"] = value
+    return tampered
+
+
+@pytest.mark.parametrize(
+    "value", ["1787000003100", 1787000003100.0, True], ids=["string", "float", "bool"]
+)
+async def test_an_authenticated_time_that_is_not_an_integer_is_refused(rig, value):
+    sealed = rig.seal(1)
+    router = _router(rig)
+    signed = _answer(sealed["envelope_digest"], "refused", "malformed", 1787000003100)
+    routed = await router.handle_ack(_with_signed_at(signed, value))
+    assert routed.outcome == ROUTED_REFUSED
+    assert "invalid_signed_at_ms" in routed.reason
+    assert rig.envelope(int(sealed["local_seq"]))["courier_answer"] is None
+
+
+async def test_a_malformed_time_cannot_reorder_a_delayed_older_answer(rig):
+    """The older answer cannot regain control through arrival order."""
+    sealed = rig.seal(1)
+    local_seq = int(sealed["local_seq"])
+    router = _router(rig)
+    digest = sealed["envelope_digest"]
+    await router.handle_ack(_answer(digest, "queued", "", 1787000003200))
+    older = _answer(digest, "refused", "malformed", 1787000003100)
+    await router.handle_ack(_with_signed_at(older, "1787000003100"))
+    assert rig.envelope(local_seq)["courier_answer"] == "queued"
+    assert rig.failures() == []

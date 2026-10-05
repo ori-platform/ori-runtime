@@ -532,3 +532,26 @@ def test_canonical_json_keeps_operational_telemetry_range() -> None:
     assert _canonical_json({"value": 5e-05}) == '{"value":5e-05}'
     assert _canonical_json({"value": 1e-05}) == '{"value":1e-05}'
     assert _canonical_json({"value": 1e300}) == '{"value":1e+300}'
+
+
+@pytest.mark.parametrize(
+    "value", ["1000", 1000.0, True, None], ids=["str", "float", "bool", "none"]
+)
+def test_both_verifiers_refuse_a_signed_time_that_is_not_an_integer(value):
+    from ori.security.gateway_messages import (
+        GatewayMessageAuthConfig,
+        GatewayMessageAuthenticator,
+        GatewayMessageAuthError,
+    )
+
+    auth = GatewayMessageAuthenticator(GatewayMessageAuthConfig(shared_secret="s"))
+    signed = auth.sign(
+        {"device_id": "d", "request_id": "r"}, message_type="m", signed_at_ms=1000
+    )
+    signed["auth"]["signed_at_ms"] = value
+    with pytest.raises(GatewayMessageAuthError, match="invalid_signed_at_ms"):
+        auth.verify(signed, message_type="m", expected_device_id="d", now_ms_value=1000)
+    broadcast = auth.sign({"site": "x"}, message_type="m", signed_at_ms=1000)
+    broadcast["auth"]["signed_at_ms"] = value
+    with pytest.raises(GatewayMessageAuthError, match="invalid_signed_at_ms"):
+        auth.verify_broadcast(broadcast, message_type="m", now_ms_value=1000)

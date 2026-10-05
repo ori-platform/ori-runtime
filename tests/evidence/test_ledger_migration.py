@@ -277,3 +277,49 @@ async def test_an_unknown_stored_answer_fails_closed_after_upgrade(tmp_path):
             )
     finally:
         attestor.close()
+
+
+async def test_a_courier_answer_a_rolled_back_release_recorded_is_carried_over(
+    tmp_path,
+):
+    """The carry-over holds on every open, not only the first."""
+    db = tmp_path / "evidence.db"
+    _previous_release_store(db)
+    attestor = FirstPartyEvidenceAttestor(
+        db_path=str(db),
+        key_path=str(tmp_path / "evidence.key"),
+        device_secret=SECRET,
+        device_id=DEVICE,
+    )
+    assert await attestor.start() is True
+    attestor.close()
+    # The previous release, rolled back to, records a refusal the way it does:
+    # in last_failure, with the columns this release added left untouched.
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "INSERT INTO evidence_delivery_ledger (local_seq, event_id, chain_seq,"
+            " device_id, anchor_epoch_id, key_id, envelope_json, envelope_digest,"
+            " chain_row_digest, sealed_at_ms, attempts, last_failure)"
+            " VALUES (1, 'evt-1', 1, ?, 'e', 'k', '{}', 'd1', 'c1', 1, 2, 'refused')",
+            (DEVICE,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    attestor = FirstPartyEvidenceAttestor(
+        db_path=str(db),
+        key_path=str(tmp_path / "evidence.key"),
+        device_secret=SECRET,
+        device_id=DEVICE,
+    )
+    assert await attestor.start() is True
+    attestor.close()
+    conn = sqlite3.connect(str(db))
+    try:
+        row = conn.execute(
+            "SELECT courier_answer, last_failure FROM evidence_delivery_ledger"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row == ("refused", None)
