@@ -61,6 +61,12 @@ PROTOCOL_DEFINITIONS: Mapping[str, ProtocolDefinition] = MappingProxyType(
 # source of truth.
 SUPPORTED_SENSOR_PROTOCOLS: frozenset[str] = frozenset(PROTOCOL_DEFINITIONS)
 
+# Sensors served by an MqttCachedAdapter subclass; a test holds this equal to
+# the registry's classes so a new MQTT adapter cannot miss the session rule.
+MQTT_FAMILY_PROTOCOLS: frozenset[str] = frozenset(
+    {"mqtt", "mqtt_perception", "victron", "lorawan", "zigbee"}
+)
+
 
 class UnknownProtocolError(ValueError):
     """Raised when a sensor protocol is not registered in the runtime."""

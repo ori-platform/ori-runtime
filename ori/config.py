@@ -23,7 +23,11 @@ from ori.hal.config_schema import (
     validate_document,
     validate_schema,
 )
-from ori.hal.protocol_registry import SUPPORTED_SENSOR_PROTOCOLS, protocol_schemas
+from ori.hal.protocol_registry import (
+    MQTT_FAMILY_PROTOCOLS,
+    SUPPORTED_SENSOR_PROTOCOLS,
+    protocol_schemas,
+)
 from ori.reasoning.approval_bounds import (
     MAX_PROPOSAL_LIFETIME_S,
     approval_timeout_accepted,
@@ -802,6 +806,8 @@ class Config:
         # each of them; a sweep over the aliases as well anchored nothing.
         for sensor in sensors:
             mqtt_cfg = sensor.metadata.get("mqtt")
+            if sensor.protocol in MQTT_FAMILY_PROTOCOLS:
+                _refuse_persistent_mqtt_session(sensor.id, sensor.metadata)
             tls = mqtt_cfg.get("tls") if isinstance(mqtt_cfg, dict) else None
             if isinstance(tls, dict):
                 for key in ("ca_certfile", "certfile", "keyfile"):
@@ -1367,6 +1373,31 @@ def _validate_coap_sensor_metadata(metadata: dict[str, Any], section: str) -> No
         )
     if float(metadata.get("timeout_s", 0)) <= 0:
         raise ConfigValidationError(f"{section}.timeout_s: must be > 0.")
+
+
+_CLEAN_SESSION_SPELLINGS = ("clean_session", "mqtt_clean_session")
+
+
+def _refuse_persistent_mqtt_session(sensor_id: str, metadata: dict[str, Any]) -> None:
+    """A sensor's MQTT session is clean; a persistent one is refused by name."""
+    mqtt_cfg = metadata.get("mqtt")
+    places: list[tuple[str, Any]] = [
+        (key, metadata[key]) for key in _CLEAN_SESSION_SPELLINGS if key in metadata
+    ]
+    if isinstance(mqtt_cfg, dict):
+        places += [
+            (f"mqtt.{key}", mqtt_cfg[key])
+            for key in _CLEAN_SESSION_SPELLINGS
+            if key in mqtt_cfg
+        ]
+    for key, value in places:
+        if value is not True:
+            raise ConfigValidationError(
+                f"sensors[{sensor_id}].{key}: {value!r} is refused; an MQTT sensor "
+                "uses a clean session. A broker queues messages for a persistent "
+                "session and delivers them on reconnect, and the freshness bound "
+                "cannot time a queued message from its publication."
+            )
 
 
 def _parse_skills(data: Any) -> list[SkillConfig]:

@@ -201,7 +201,7 @@ NOT_JSON_NUMBERS = ["NaN", "Infinity", "-Infinity", "1e400"]
 @pytest.mark.parametrize(
     ("adapter_type", "config", "sensor_id", "valid", "value", "wrap"), ADAPTERS
 )
-async def test_a_number_json_does_not_have_never_replaces_the_cached_value(
+async def test_a_number_json_does_not_have_withdraws_the_cached_value(
     adapter_type: type,
     config: dict[str, Any],
     sensor_id: str,
@@ -209,16 +209,23 @@ async def test_a_number_json_does_not_have_never_replaces_the_cached_value(
     value: float,
     wrap: Any,
 ) -> None:
-    """Python's json reads NaN, Infinity and 1e400; none of them is JSON."""
+    """Python's json reads NaN, Infinity and 1e400; none of them is JSON.
+
+    Each is refused, and the refusal withdraws the value it would have
+    replaced: the earlier value is not served as current.
+    """
     available, module = _patched()
     with available, module:
         adapter, client, topic = await _connected(adapter_type, config)
         try:
-            await _delivered(client, topic, valid)
             for token in NOT_JSON_NUMBERS:
+                await _delivered(client, topic, valid)
+                assert (await adapter.read(sensor_id)).value == pytest.approx(value)
                 await _delivered(client, topic, wrap(token).encode())
-            reading = await adapter.read(sensor_id)
-            assert reading.value == pytest.approx(value)
+                with pytest.raises(AdapterReadError, match="was refused"):
+                    await adapter.read(sensor_id)
+            await _delivered(client, topic, valid)
+            assert (await adapter.read(sensor_id)).value == pytest.approx(value)
         finally:
             await adapter.close()
 
@@ -237,7 +244,7 @@ async def test_a_perception_timestamp_json_does_not_have_is_refused(token: str) 
                 '"timestamp_ms": ' + token + "}"
             )
             await _delivered(client, topic, body.encode())
-            with pytest.raises(AdapterReadError, match="no perception message"):
+            with pytest.raises(AdapterReadError, match="was refused"):
                 await adapter.read("ppe-hardhat-cam-01")
         finally:
             await adapter.close()
@@ -284,7 +291,7 @@ class _LostConnection:
 @pytest.mark.parametrize(
     ("adapter_type", "config", "sensor_id", "valid", "value", "wrap"), ADAPTERS
 )
-async def test_a_stopped_listener_makes_the_sensor_silent(
+async def test_a_lost_connection_is_silent_then_reconnects(
     adapter_type: type,
     config: dict[str, Any],
     sensor_id: str,
@@ -292,28 +299,48 @@ async def test_a_stopped_listener_makes_the_sensor_silent(
     value: float,
     wrap: Any,
 ) -> None:
-    """Once the listener stops, the cached value is refused rather than served."""
+    """A lost broker refuses reads and opens the breaker; the reconnect resumes.
+
+    The cached value does not survive the connection it arrived on, so reads
+    refuse after reconnecting until a new value arrives, which closes the
+    breaker at once.
+    """
     available, module = _patched()
-    with available, module:
+    with available, module, patch("ori.hal.mqtt_base.reconnect_delay", lambda _a: 0):
         adapter, client, topic = await _connected(adapter_type, config)
         try:
             await _delivered(client, topic, valid)
             assert (await adapter.read(sensor_id)).value == pytest.approx(value)
+            listener = adapter._listener_task
+            gate = asyncio.Event()
+            original_open = adapter._open_client
+
+            async def held_open() -> None:
+                await gate.wait()
+                await original_open()
+
+            adapter._open_client = held_open
             await client._queue.put(_LostConnection())
             for _ in range(5):
                 await asyncio.sleep(0)
-            listener = adapter._listener_task
-            assert listener is not None and listener.done(), (
-                "the listener survived its stream"
-            )
             threshold = adapter._breaker.failure_threshold
             for _ in range(threshold):
-                with pytest.raises(AdapterReadError, match="listener is not running"):
+                with pytest.raises(AdapterReadError, match="connection is down"):
                     await adapter.read(sensor_id)
-            # The refusal counts against the breaker, so a dead listener opens
-            # it like any other failing sensor.
             with pytest.raises(AdapterReadError, match="circuit breaker OPEN"):
                 await adapter.read(sensor_id)
+
+            gate.set()
+            for _ in range(10):
+                await asyncio.sleep(0)
+            assert adapter._listener_task is listener and not listener.done()
+            fresh = adapter._client
+            assert fresh is not client and isinstance(fresh, _FakeClient)
+            assert fresh.subscriptions == client.subscriptions
+            with pytest.raises(AdapterReadError, match="circuit breaker OPEN"):
+                await adapter.read(sensor_id)
+            await _delivered(fresh, topic, valid)
+            assert (await adapter.read(sensor_id)).value == pytest.approx(value)
         finally:
             await adapter.close()
 
@@ -391,3 +418,30 @@ def test_a_usable_reading_passes() -> None:
     refuse_unusable_reading(_reading())
     refuse_unusable_reading(_reading(value=0, timestamp=2**63 - 1, quality=1.0))
     refuse_unusable_reading(_reading(value=-(2**63)))
+
+
+@pytest.mark.parametrize(
+    ("adapter_type", "config", "sensor_id", "valid", "value", "wrap"), ADAPTERS
+)
+async def test_no_value_survives_the_connection_it_arrived_on(
+    adapter_type: type,
+    config: dict[str, Any],
+    sensor_id: str,
+    valid: Any,
+    value: float,
+    wrap: Any,
+) -> None:
+    """After a reconnect, with the breaker never opened, the old value is gone."""
+    available, module = _patched()
+    with available, module, patch("ori.hal.mqtt_base.reconnect_delay", lambda _a: 0):
+        adapter, client, topic = await _connected(adapter_type, config)
+        try:
+            await _delivered(client, topic, valid)
+            await client._queue.put(_LostConnection())
+            for _ in range(10):
+                await asyncio.sleep(0)
+            assert adapter._link_up and adapter._client is not client
+            with pytest.raises(AdapterReadError, match="no .* cached yet"):
+                await adapter.read(sensor_id)
+        finally:
+            await adapter.close()

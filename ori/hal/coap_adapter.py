@@ -80,6 +80,8 @@ class CoapAdapter(BaseAdapter):
         self._allowed_hosts: set[str] = set()
         self._cached_reading: SensorReading | None = None
         self._cached_arrival: float | None = None
+        # why the last answered response was refused; cleared by an accepted one
+        self._refused: str | None = None
         self._poll_task: asyncio.Task[None] | None = None
         self._breaker: HardwareCircuitBreaker | None = None
         self._context: Any = None
@@ -142,6 +144,7 @@ class CoapAdapter(BaseAdapter):
             self._payload = payload
             self._allowed_hosts = allowed
             self._breaker = HardwareCircuitBreaker(self.adapter_name, config)
+            self._breaker.probe_every(poll_interval_ms / 1000.0)
             self._validate_target()
 
             try:
@@ -160,6 +163,11 @@ class CoapAdapter(BaseAdapter):
         if not self._connected:
             raise AdapterReadError("CoapAdapter: not connected — call connect() first")
         if self._cached_reading is None:
+            if self._refused is not None:
+                raise AdapterReadError(
+                    f"CoapAdapter: the last response was refused ({self._refused}); "
+                    "no current value"
+                )
             raise AdapterReadError(
                 "CoapAdapter: no data available yet (polling in progress)"
             )
@@ -184,6 +192,12 @@ class CoapAdapter(BaseAdapter):
     async def close(self) -> None:
         async with self._closing():
             await self._teardown()
+
+    def _withdraw(self, reason: str) -> None:
+        """A refused response withdraws the value it would have replaced."""
+        self._cached_reading = None
+        self._cached_arrival = None
+        self._refused = reason
 
     async def _teardown(self) -> None:
         """Stop the poll loop and drop the context, finished or not.
@@ -253,8 +267,15 @@ class CoapAdapter(BaseAdapter):
                     f"CoapAdapter: request failed for uri={self._uri}: {exc}"
                 ) from exc
 
-            payload = self._decode_payload(response.payload)
-            value = self._extract(payload, self._json_path)
+            # The endpoint answered: a payload that cannot be read is refused,
+            # and withdraws the value it would have replaced.
+            try:
+                value = self._extract(
+                    self._decode_payload(response.payload), self._json_path
+                )
+            except AdapterReadError as exc:
+                self._withdraw(str(exc))
+                raise
             self._cached_arrival = cache_arrival()
             self._cached_reading = SensorReading(
                 sensor_id=self._sensor_id or self._sensor_type,
@@ -271,6 +292,8 @@ class CoapAdapter(BaseAdapter):
                 },
                 raw=bytes(response.payload),
             )
+            self._refused = None
+            self._breaker.record_fresh_value()
 
     async def _shutdown_context(self) -> None:
         context = self._context
