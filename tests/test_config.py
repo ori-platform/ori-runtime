@@ -6433,3 +6433,49 @@ class TestSiblingReadersDoNotEscape:
 
         by_name = {check.name: check for check in checks}
         assert by_name["config.load"].status == "fail"
+
+
+def test_skill_version_rejects_non_string(tmp_path):
+    """skills[].version must be a string or absent — not str() of a mapping."""
+    path = _write_yaml(
+        tmp_path,
+        """
+        device:
+          id: dev-1
+          name: Lab Node
+          location: lab
+        sensors: []
+        skills:
+          - name: trip-relay
+            version: {actions: [trip_relay]}
+            config: {}
+        """,
+    )
+    with pytest.raises(ConfigValidationError) as exc:
+        Config.load(path)
+    msg = str(exc.value)
+    assert "version" in msg
+    assert "trip-relay" in msg
+
+
+def test_skill_version_accepts_string_and_absent(tmp_path):
+    path = _write_yaml(
+        tmp_path,
+        """
+        device:
+          id: dev-1
+          name: Lab Node
+          location: lab
+        sensors: []
+        skills:
+          - name: trip-relay
+            version: "1.2.3"
+            config: {}
+          - name: other
+            config: {}
+        """,
+    )
+    cfg = Config.load(path)
+    by_name = {s.name: s for s in cfg.skills}
+    assert by_name["trip-relay"].version == "1.2.3"
+    assert by_name["other"].version == ""

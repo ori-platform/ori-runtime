@@ -9,6 +9,8 @@ import pytest
 
 from ori.cli import EXIT_FAILED, EXIT_OK, EXIT_UNUSABLE, main
 from ori.skills.loader import (
+    SkillValidationError,
+    SkillLoader,
     _ACTION_ALLOWED_KEYS,
     _TRIGGER_ALLOWED_KEYS,
 )
@@ -645,3 +647,42 @@ def test_single_skill_unreadable_file_json(tmp_path: Path, monkeypatch, capsys) 
     assert doc["status"] == "error"
     assert "could not read" in doc["error"]
     _assert_no_traceback(captured)
+
+
+def test_skill_version_rejects_non_string(tmp_path, monkeypatch):
+    """skill.yaml version must be a string or absent — not str() of a mapping."""
+    monkeypatch.setattr(
+        "ori.skills.loader.SkillLoader._is_core_bundled_skill",
+        lambda self, path: True,
+    )
+    skill_dir = tmp_path / "bad-version"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "skill.yaml").write_text(
+        textwrap.dedent(
+            """\
+            name: trip-relay
+            version: {actions: [trip_relay]}
+            author: test
+            signature: bundled
+            sensors_required:
+              - type: current_clamp
+                protocol: i2c
+            triggers:
+              - name: over_threshold
+                condition: "value > 5.0"
+                action_tier: A
+            actions:
+              available:
+                - name: alert_whatsapp
+                  tier: A
+              defaults:
+                over_threshold: [alert_whatsapp]
+            """
+        ),
+        encoding="utf-8",
+    )
+    loader = SkillLoader()
+    with pytest.raises(SkillValidationError) as exc:
+        loader.load_one(skill_dir)
+    assert "trip-relay" in str(exc.value)
+    assert "version" in str(exc.value)
