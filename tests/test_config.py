@@ -3700,6 +3700,9 @@ actions:
         message = str(caught.value)
         assert f"skills[0] (skill-x).config.{key}" in message
         assert "on its trigger in skill.yaml" in message
+        from ori.config import _TRIGGER_OWNED_SKILL_KEYS
+
+        assert f"`{_TRIGGER_OWNED_SKILL_KEYS[key]}`" in message
 
     def test_each_trigger_owned_key_names_a_real_trigger_key(self):
         from ori.config import _TRIGGER_OWNED_SKILL_KEYS
