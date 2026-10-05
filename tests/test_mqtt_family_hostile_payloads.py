@@ -498,14 +498,67 @@ async def test_a_broker_that_never_answers_leaves_nothing_open() -> None:
                         "mqtt": {"timeout": 0.3},
                     }
                 )
-        assert built, "no client was built"
-        for client in built:
-            assert client._client.socket() is None, "paho's socket was left open"
-            task = getattr(client, "_misc_task", None)
-            if task is not None:
-                for _ in range(10):
-                    await asyncio.sleep(0)
-                assert task.done(), "aiomqtt's misc task was left running"
+        await _assert_abandoned(built, aiomqtt)
+    finally:
+        await adapter.close()
+        for writer in held:
+            writer.close()
+        server.close()
+        await server.wait_closed()
+
+
+async def _assert_abandoned(built: list[Any], aiomqtt: Any) -> None:
+    assert built, "no client was built"
+    for client in built:
+        assert client._client.socket() is None, "paho's socket was left open"
+        assert hasattr(client, "_misc_task"), (
+            f"aiomqtt {getattr(aiomqtt, '__version__', '?')} no longer has "
+            "_misc_task; _abandon_half_open must be revisited for it"
+        )
+        task = client._misc_task
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert task is None or task.done(), "aiomqtt's misc task was left running"
+
+
+async def test_a_connect_cancelled_mid_handshake_leaves_nothing_open() -> None:
+    """close() while the broker has not answered: the cancel reaches the handshake."""
+    aiomqtt = pytest.importorskip("aiomqtt")
+    held: list[asyncio.StreamWriter] = []
+    accepted = asyncio.Event()
+
+    async def accept_and_hold(_reader: Any, writer: asyncio.StreamWriter) -> None:
+        held.append(writer)
+        accepted.set()
+
+    server = await asyncio.start_server(accept_and_hold, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    built: list[Any] = []
+
+    class Recording(aiomqtt.Client):  # type: ignore[misc, valid-type]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            built.append(self)
+
+    adapter = MqttAdapter()
+    try:
+        with patch("ori.hal.mqtt_base._aiomqtt", SimpleNamespace(Client=Recording)):
+            connecting = asyncio.create_task(
+                adapter.connect(
+                    {
+                        **mqtt_config(),
+                        "broker_host": "127.0.0.1",
+                        "port": port,
+                        "mqtt": {"timeout": 30},
+                    }
+                )
+            )
+            await asyncio.wait_for(accepted.wait(), 5)
+            await asyncio.sleep(0.05)
+            connecting.cancel()
+            with pytest.raises(BaseException):
+                await connecting
+        await _assert_abandoned(built, aiomqtt)
     finally:
         await adapter.close()
         for writer in held:
