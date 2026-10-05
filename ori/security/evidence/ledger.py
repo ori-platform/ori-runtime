@@ -2100,6 +2100,11 @@ class EvidenceDeliveryLedger:
                 f"{failure!r} is not a recognised failure reason; reasons are a "
                 "closed set so transport detail cannot reach this database"
             )
+        if failure in COURIER_ANSWERS:
+            raise DeliveryLedgerError(
+                f"{failure!r} is the courier's answer, recorded by "
+                "apply_courier_answer; last_failure is the transport outcome"
+            )
         self._connection.execute(
             """
             UPDATE evidence_delivery_ledger

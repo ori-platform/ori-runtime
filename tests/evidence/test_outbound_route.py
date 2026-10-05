@@ -1053,3 +1053,37 @@ async def test_a_courier_answer_survives_the_publish_in_either_order(
         assert len(rig.failures()) == expected, "one row per refusal episode"
     finally:
         await _stop(shutdown, task)
+
+
+@pytest.mark.parametrize("answer", ["refused", "queue_full"])
+async def test_a_courier_answer_is_not_a_transport_outcome(rig, answer):
+    from ori.security.evidence.ledger import DeliveryLedgerError
+
+    sealed = rig.seal(1)
+    with pytest.raises(DeliveryLedgerError, match="courier's answer"):
+        await rig.outbox.record_attempt(
+            int(sealed["local_seq"]), at_ms=1, failure=answer
+        )
+
+
+async def test_an_answer_that_fails_halfway_leaves_no_failure_row(rig):
+    """The gap row and the answer commit together or not at all."""
+    sealed = rig.seal(1)
+    local_seq = int(sealed["local_seq"])
+
+    def arm() -> None:
+        rig.ledger._connection.execute(
+            """
+            CREATE TRIGGER fail_answer BEFORE UPDATE OF courier_answer
+            ON evidence_delivery_ledger
+            BEGIN SELECT RAISE(ABORT, 'injected'); END
+            """
+        )
+
+    rig.executor.run(arm)
+    with pytest.raises(Exception, match="injected"):
+        await rig.outbox.apply_courier_answer(local_seq, answer="refused", at_ms=1)
+    assert rig.failures() == []
+    rig.executor.run(lambda: rig.ledger._connection.execute("DROP TRIGGER fail_answer"))
+    assert await rig.outbox.apply_courier_answer(local_seq, answer="refused", at_ms=2)
+    assert len(rig.failures()) == 1
