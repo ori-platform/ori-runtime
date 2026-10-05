@@ -314,10 +314,32 @@ async def test_a_refusal_episode_is_recorded_once_while_retries_continue(rig):
     assert rig.envelope(local_seq)["attempts"] == 3
     assert (await rig.outbox.awaiting_custody()) != [], "still retained for retry"
 
-    # A carriage that went out cleanly ends the episode; a later refusal is new.
+    # A republish is not an answer: the episode continues across it.
     await rig.outbox.record_attempt(local_seq, at_ms=1787000003300, failure=None)
+    assert rig.envelope(local_seq)["last_failure"] == "refused"
     await router.handle_ack(refusal(1787000003400))
+    assert len(rig.failures()) == 1
+
+    # A different answer from the courier ends it; a later refusal is new.
+    await router.handle_ack(
+        _ack(
+            ARTIFACT_DELIVERY_ENVELOPE,
+            sealed["envelope_digest"],
+            outcome="refused",
+            reason="queue_full",
+            signed_at_ms=1787000003500,
+        )
+    )
+    await router.handle_ack(refusal(1787000003600))
     assert len(rig.failures()) == 2
+
+
+async def test_a_publish_clears_a_transport_failure(rig):
+    sealed = rig.seal(1)
+    local_seq = int(sealed["local_seq"])
+    await rig.outbox.record_attempt(local_seq, at_ms=1, failure="unreachable")
+    await rig.outbox.record_attempt(local_seq, at_ms=2, failure=None)
+    assert rig.envelope(local_seq)["last_failure"] is None
 
 
 @pytest.mark.parametrize("reason", ["malformed", "binding_mismatch"])
@@ -925,3 +947,64 @@ async def test_stop_flushes_the_shutdown_checkpoint_while_routes_are_up():
         "flushed_while_shutting_down": False,
     }
     assert runtime._shutdown_event.is_set()
+
+
+class _AnsweringClient(_FakeClient):
+    """A courier that answers every envelope, before or after the publish returns."""
+
+    def __init__(self, answer: dict[str, Any], *, before_return: bool) -> None:
+        super().__init__()
+        self.answer = answer
+        self.before_return = before_return
+        self.loop = asyncio.get_running_loop()
+
+    def publish(self, topic, payload, qos=0, retain=False):
+        super().publish(topic, payload, qos, retain)
+        if not topic.endswith("/outbound"):
+            return
+        if self.before_return:
+            self.deliver(self.answer)
+        else:
+            self.loop.call_later(0.05, self.deliver, self.answer)
+
+
+@pytest.mark.parametrize("before_return", [True, False], ids=["first", "after"])
+@pytest.mark.parametrize("reason", ["queue_full", "malformed", "binding_mismatch"])
+async def test_a_courier_answer_survives_the_publish_in_either_order(
+    rig, monkeypatch, reason, before_return
+):
+    sealed = rig.seal(1)
+    local_seq = int(sealed["local_seq"])
+    stored = "queue_full" if reason == "queue_full" else "refused"
+    # The publisher's own write is the slow one, so an answer delivered during
+    # the publish lands before it.
+    original = BoundOutboundQueue.record_attempt
+
+    async def slow_publish_write(self, seq, *, at_ms, failure):
+        if failure is None:
+            await asyncio.sleep(0.2)
+        return await original(self, seq, at_ms=at_ms, failure=failure)
+
+    monkeypatch.setattr(BoundOutboundQueue, "record_attempt", slow_publish_write)
+    clock = {"now": 1787000004000}
+    answer = _ack(
+        ARTIFACT_DELIVERY_ENVELOPE,
+        sealed["envelope_digest"],
+        outcome="refused",
+        reason=reason,
+    )
+    client = _AnsweringClient(answer, before_return=before_return)
+    publisher = _publisher(rig, client, now=lambda: clock["now"])
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(publisher.serve_until(shutdown))
+    try:
+        for carried in (1, 2, 3):
+            await _until(lambda: len(_carried(client)) == carried)
+            await asyncio.sleep(0.4)
+            assert rig.envelope(local_seq)["last_failure"] == stored
+            clock["now"] += int(RETRY_BACKOFF_MAX_S * 1000)
+            publisher.nudge()
+        expected = 0 if reason == "queue_full" else 1
+        assert len(rig.failures()) == expected, "one row per refusal episode"
+    finally:
+        await _stop(shutdown, task)

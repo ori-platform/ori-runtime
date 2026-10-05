@@ -75,6 +75,8 @@ FAILURE_REASONS = frozenset(
         "internal_error",
     }
 )
+# The reasons only a courier's acknowledgement writes.
+COURIER_ANSWERS = frozenset({"refused", "queue_full"})
 
 _DELIVERY_SCHEMA = """
 CREATE TABLE IF NOT EXISTS evidence_delivery_ledger (
@@ -2069,13 +2071,20 @@ class EvidenceDeliveryLedger:
                 f"{failure!r} is not a recognised failure reason; reasons are a "
                 "closed set so transport detail cannot reach this database"
             )
+        # A publish that went out clears a transport failure, never the
+        # courier's answer: that answer may already have landed for this very
+        # publish, and only the courier's next answer replaces it.
         self._connection.execute(
             """
             UPDATE evidence_delivery_ledger
-               SET attempts = attempts + 1, last_attempt_ms = ?, last_failure = ?
+               SET attempts = attempts + 1, last_attempt_ms = ?,
+                   last_failure = CASE
+                       WHEN ? IS NULL AND last_failure IN (?, ?) THEN last_failure
+                       ELSE ?
+                   END
              WHERE local_seq = ?
             """,
-            (int(at_ms), failure, int(local_seq)),
+            (int(at_ms), failure, *sorted(COURIER_ANSWERS), failure, int(local_seq)),
         )
 
     def record_delivery_failure(
