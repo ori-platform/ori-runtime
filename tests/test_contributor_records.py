@@ -284,6 +284,7 @@ async def test_a_coalesced_row_from_the_previous_release_is_a_legacy_contributor
     [
         ("bogus", {}, "unknown action record kind"),
         ("dispatch", {"contributed_to": "k"}, "names no holder"),
+        ("dispatch", {"contributed_to": None}, "is a contributor"),
         ("contributor_legacy", {"contributed_to": None}, "only ever migrated"),
         ("contributor", {"executed": True}, "performs nothing"),
         ("contributor", {"approved": True}, "performs nothing"),
@@ -423,5 +424,110 @@ async def test_reconciliation_refuses_a_contributor_found_pending(
             (row,),
         ).fetchone()
         assert tuple(status) == ("refused", "not_a_dispatch_record")
+    finally:
+        await store.close()
+
+
+async def test_a_roll_forward_reclassifies_joined_rows_a_rolled_back_release_wrote(
+    tmp_path: Path,
+) -> None:
+    """The migration holds on every open, not only the first."""
+    db = tmp_path / "state.db"
+    store = StateStore(str(db))
+    await store.open()
+    await store.close()
+    # The previous release, running after a rollback, writes a joined row as an
+    # ordinary one and marks it for attestation. Raw SQL stands in for it; the
+    # fresh table's CHECK refuses that shape, so it is dropped for the write.
+    conn = sqlite3.connect(str(db))
+    conn.execute("PRAGMA ignore_check_constraints = ON")
+    conn.execute(
+        "INSERT INTO action_log (action_name, tier, executed, action_taken,"
+        " trigger_name, timestamp, attestation_status, record_kind)"
+        " VALUES ('trip_relay', 'C', 1, 'coalesced', 't', 1, 'pending', 'dispatch')"
+    )
+    conn.commit()
+    conn.close()
+    store = StateStore(str(db))
+    await store.open()
+    try:
+        assert store._conn is not None
+        row = store._conn.execute(
+            "SELECT record_kind, attestation_status, attestation_reason"
+            " FROM action_log WHERE action_taken = 'coalesced'"
+        ).fetchone()
+        assert tuple(row) == ("contributor_legacy", "refused", "legacy_contributor")
+        index = store._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index'"
+            " AND name = 'idx_action_log_record_key'"
+        ).fetchone()
+        assert index is not None
+        assert (await store.get_actions_needing_attestation()) == []
+    finally:
+        await store.close()
+
+
+async def test_a_holder_still_running_is_not_reported_missing(tmp_path: Path) -> None:
+    store, dispatcher, (_signer, release, calls) = await _rig(tmp_path, True)
+    try:
+        holder = asyncio.create_task(
+            dispatcher.dispatch(
+                action="trip_relay",
+                tier="D",
+                context=_context(store, _Skill("protector", "D", ["trip_relay"])),
+                result=_reasoning(),
+            )
+        )
+        while not calls:
+            await asyncio.sleep(0)
+        await dispatcher.dispatch(
+            action="trip_relay",
+            tier="C",
+            context=_context(store, _Skill("watcher", "C", ["trip_relay"])),
+            result=_reasoning(),
+        )
+        await asyncio.sleep(0.05)
+        # The holder is still driving its executor: neither row is written yet.
+        assert _rows(store) == []
+        assert (await store.get_attestation_summary())[
+            "contributor_links_unresolved"
+        ] == 0
+        release.set()
+        await asyncio.wait_for(holder, PROMPT)
+        await dispatcher.drain_records(timeout=PROMPT)
+        kinds = [r["record_kind"] for r in _rows(store)]
+        assert kinds == ["dispatch", "contributor"], "the holder's row is first"
+        assert (await store.get_attestation_summary())[
+            "contributor_links_unresolved"
+        ] == 0
+    finally:
+        await store.close()
+
+
+async def test_a_dispatch_cancelled_at_the_gate_leaves_no_record_unsettled(
+    tmp_path: Path,
+) -> None:
+    """Its record has no result to write, and must not wedge the writer."""
+    store, dispatcher, (_signer, _release, calls) = await _rig(tmp_path, True)
+    try:
+        gate = dispatcher._resource_gate
+        assert gate is not None
+        await gate._lock.acquire()
+        task = asyncio.create_task(
+            dispatcher.dispatch(
+                action="trip_relay",
+                tier="D",
+                context=_context(store, _Skill("protector", "D", ["trip_relay"])),
+                result=_reasoning(),
+            )
+        )
+        await asyncio.sleep(0.02)
+        assert dispatcher.record_backlog()["unsettled"] >= 1
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        gate._lock.release()
+        await dispatcher.drain_records(timeout=PROMPT)
+        assert dispatcher.record_backlog()["unsettled"] == 0
+        assert calls == []
     finally:
         await store.close()

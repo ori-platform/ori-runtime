@@ -113,3 +113,39 @@ async def test_a_decision_queued_once_is_not_queued_again() -> None:
         )
     await d.drain_records()
     store.log_tier_c_decision.assert_awaited_once()
+
+
+async def test_a_cancellation_after_the_act_still_records_the_decision_and_the_act() -> (
+    None
+):
+    import asyncio
+
+    d, store, ctx = _dispatcher_and_context()
+    escalating = asyncio.Event()
+
+    async def hang(*_args: Any, **_kwargs: Any) -> Any:
+        escalating.set()
+        await asyncio.Event().wait()
+
+    with (
+        patch.object(d, "_listen_for_response", new=AsyncMock(return_value=None)),
+        patch.object(d, "_escalate_to_secondary", new=hang),
+    ):
+        task = asyncio.create_task(
+            d.dispatch(
+                "terminate_process",
+                ActionTier.HARD_PHYSICAL,
+                ctx,
+                _result(action_tier="C"),
+                safe_default_action="log_to_dashboard",
+                approval_timeout_seconds=10,
+            )
+        )
+        await asyncio.wait_for(escalating.wait(), 2)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    await d.drain_records()
+    store.log_tier_c_decision.assert_awaited_once()
+    recorded = [c.args[0] for c in store.log_action_for_event.await_args_list]
+    acts = [r for r in recorded if r.action_name == "terminate_process"]
+    assert acts and acts[-1].executed is True and acts[-1].safe_default_used is True

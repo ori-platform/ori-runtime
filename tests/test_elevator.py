@@ -1623,6 +1623,65 @@ class TestReasonAndDispatch:
         assert logged.reasoning_status == "incomplete"
         assert logged.model == "post_action_fallback"
 
+    async def test_a_coalesced_tier_b_post_action_is_not_reported_as_failed(
+        self, tmp_path
+    ):
+        """Joining an act another dispatch holds is not a failed act."""
+        from ori.network.events import ActionResult as _ActionResult
+
+        store = StateStore(db_path=str(tmp_path / "tier-b-coalesced.db"))
+        await store.open()
+        try:
+
+            async def ok_executor(_action, _context):
+                return True
+
+            dispatcher = ActionDispatcher()
+            dispatcher.register_executor("coap_command", ok_executor)
+            dispatcher.register_executor("alert_whatsapp", ok_executor)
+            original = dispatcher.dispatch
+
+            async def dispatch(*args, **kwargs):
+                if kwargs.get("action") == "coap_command":
+                    return _ActionResult(
+                        action_name="coap_command",
+                        tier="B",
+                        executed=False,
+                        approved=None,
+                        action_taken="coalesced",
+                        timestamp=1,
+                    )
+                return await original(*args, **kwargs)
+
+            dispatcher.dispatch = dispatch  # type: ignore[method-assign]
+            local_llm = AsyncMock()
+            local_llm.reason.return_value = ReasoningResult(
+                text="Shared act explained.",
+                tier="local_slm",
+                model="qwen.gguf",
+                tokens_used=1,
+                latency_ms=1,
+                action_tier="B",
+            )
+            elevator = IntelligenceElevator(local_llm=local_llm)
+            await elevator.reason_and_dispatch(
+                _event(value=5.0), _tier_b_post_action_skill(), store, dispatcher
+            )
+            await dispatcher.drain_records()
+            conn = store._conn
+            assert conn is not None
+            rows = await store._run(
+                lambda: conn.execute(
+                    "SELECT reasoning_status, response FROM reasoning_log"
+                ).fetchall()
+            )
+            assert all(
+                r["response"] != "Action failed. Explanation skipped." for r in rows
+            )
+            assert all(r["reasoning_status"] != "skipped" for r in rows)
+        finally:
+            await store.close()
+
     async def test_tier_b_post_action_failure_records_action_and_skips_reasoning(
         self, tmp_path
     ):

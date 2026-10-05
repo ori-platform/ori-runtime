@@ -190,7 +190,8 @@ CREATE TABLE IF NOT EXISTS action_log (
     contributed_to    TEXT,
     timestamp         INTEGER NOT NULL,
     CHECK (
-        (record_kind = 'dispatch' AND contributed_to IS NULL)
+        (record_kind = 'dispatch' AND contributed_to IS NULL
+            AND action_taken != 'coalesced')
         OR (record_kind = 'contributor' AND executed = 0 AND approved IS NULL
             AND action_taken = 'coalesced' AND authority_json IS NULL
             AND contributed_to IS NOT NULL
@@ -1202,6 +1203,8 @@ def _check_action_record_shape(
     if record_kind == RECORD_DISPATCH:
         if contributed_to is not None:
             raise ValueError("a dispatch record names no holder it contributed to")
+        if action_taken == "coalesced":
+            raise ValueError("a dispatch that joined another's act is a contributor")
         return
     if record_kind == RECORD_CONTRIBUTOR_LEGACY:
         raise ValueError(
@@ -2013,17 +2016,17 @@ class StateStore:
         conn.commit()
 
     def _add_action_record_kind(self, conn: sqlite3.Connection) -> None:
-        """record_kind on an action log created before it.
+        """record_kind on an action log, held on every open, not only the first.
 
-        A joined row the previous release wrote recorded a request that
-        performed nothing, so it becomes a contributor, with no holder link
-        because none was kept; nothing is invented to make one. Added columns
-        cannot carry the table's CHECKs, so the writer and the readers hold
-        the shape on such a database.
+        A joined row records a request that performed nothing, so it is a
+        contributor; one the previous release wrote has no holder link, and
+        nothing is invented to make one. This runs on every open because a
+        rolled-back release keeps writing joined rows as ordinary ones, and a
+        roll-forward must reclassify those too. A legacy row still awaiting
+        attestation is settled refused as history, not reported as corrupt.
+        Added columns cannot carry the table's CHECKs, so the writer and the
+        readers hold the shape on such a database.
         """
-        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(action_log)")}
-        if "record_kind" in columns:
-            return
         self._add_column_if_missing_on_conn(
             conn, "action_log", "record_kind", "TEXT NOT NULL DEFAULT 'dispatch'"
         )
@@ -2035,7 +2038,17 @@ class StateStore:
         )
         conn.execute(
             "UPDATE action_log SET record_kind = 'contributor_legacy'"
-            " WHERE action_taken = 'coalesced'"
+            " WHERE action_taken = 'coalesced' AND record_kind = 'dispatch'"
+        )
+        conn.execute(
+            "UPDATE action_log SET attestation_status = 'refused',"
+            " attestation_reason = 'legacy_contributor'"
+            " WHERE record_kind = 'contributor_legacy'"
+            " AND attestation_status IN ('pending', 'failed')"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_action_log_record_key"
+            " ON action_log(record_key)"
         )
 
     def _add_column_if_missing_on_conn(
@@ -3203,19 +3216,18 @@ class StateStore:
         )
         # A contributor names the holder it joined; a holder row that never
         # appeared is lost evidence of the act, reported rather than repaired.
-        # A minute's grace lets the holder's own deferred write land.
+        # The contributor's row is written after its holder's, so no grace is
+        # needed for a holder still deciding.
         unresolved = conn.execute(
             """
             SELECT COUNT(*) FROM action_log AS c
             WHERE c.record_kind = 'contributor'
-              AND c.timestamp <= ?
               AND NOT EXISTS (
                   SELECT 1 FROM action_log AS h
                   WHERE h.record_kind = 'dispatch'
                     AND h.record_key = c.contributed_to
               )
-            """,
-            (now_ms() - 60_000,),
+            """
         ).fetchone()
         return {
             "status_counts": status_counts,

@@ -1336,6 +1336,11 @@ class IntelligenceElevator:
                     getattr(rule_result, "rule_name", ""),
                 )
                 break
+            if getattr(action_result, "action_taken", "") == "coalesced":
+                # Joined an act another dispatch holds on the same resource.
+                # The act is that dispatch's to perform and record; this
+                # request performed nothing, which is not a failure of it.
+                continue
             if action_tiers.get(action) == "B" and not bool(
                 getattr(action_result, "executed", True)
             ):

@@ -930,6 +930,41 @@ class ActionDispatcher:
         if not pending.done():
             pending.set_result(action_result)
 
+    def _record_after_holder(
+        self,
+        joined: ActionResult,
+        context: SkillContext,
+        record: asyncio.Future[ActionResult] | None,
+        holder: Any,
+    ) -> None:
+        """Hand a contributor's row to the writer once its holder's row is handed over.
+
+        The writer takes records in the order they become writable, so the
+        holder's row is written first, and a holder still deciding or still
+        driving its executor never appears missing. The joiner itself does not
+        wait: it has already returned.
+        """
+        if record is None:
+            return
+        _stamp_correlation_id(joined, context)
+        holder_record = (
+            holder.contributors[0].record_future
+            if holder is not None and holder.contributors
+            else None
+        )
+        if not isinstance(holder_record, asyncio.Future) or holder_record.done():
+            if not record.done():
+                record.set_result(joined)
+            return
+        self._held_by_executor.add(id(record))
+
+        def settle(_finished: Any) -> None:
+            self._held_by_executor.discard(id(record))
+            if not record.done():
+                record.set_result(joined)
+
+        holder_record.add_done_callback(settle)
+
     async def _log_tier_d_override_for(
         self, meta: _RecordMeta, action: str, context: SkillContext
     ) -> None:
@@ -1282,6 +1317,7 @@ class ActionDispatcher:
                 correlation_id=str(getattr(result, "correlation_id", "") or ""),
                 tier_d_granted=tier == ActionTier.SAFETY_CRITICAL,
                 record_key=meta.key if meta is not None else "",
+                record_future=record,
             )
             awaits_operator = tier == ActionTier.HARD_PHYSICAL or (
                 tier == ActionTier.SOFT_PHYSICAL
@@ -1314,16 +1350,15 @@ class ActionDispatcher:
                 if meta is not None and holder_key:
                     meta.kind = "contributor"
                     meta.contributed_to = holder_key
-                    await self._record(joined, context, record)
+                    self._record_after_holder(joined, context, record, holder)
                 else:
-                    # No holder key to link to: nothing truthful can be written,
-                    # so the row is not written and the loss is counted.
+                    # Every dispatch reserves a key, so this is unreachable; if it
+                    # were not, nothing truthful could be written for the join.
                     logger.error(
                         "ActionDispatcher: action=%r joined a holder with no "
                         "record key; its contributor record is not written",
                         action,
                     )
-                    self._note_decision_lost()
                 return joined
 
             if not decision.may_execute:
@@ -1450,13 +1485,18 @@ class ActionDispatcher:
                     action,
                     tier,
                 )
-            action_result = ActionResult(
-                action_name=action,
-                tier=tier,
-                executed=False,
-                approved=None,
-                action_taken="",
-                timestamp=now_ms(),
+            acted = getattr(exc, "ori_acted", None)
+            action_result = (
+                acted
+                if isinstance(acted, ActionResult)
+                else ActionResult(
+                    action_name=action,
+                    tier=tier,
+                    executed=False,
+                    approved=None,
+                    action_taken="",
+                    timestamp=now_ms(),
+                )
             )
             if (
                 tier == ActionTier.SAFETY_CRITICAL
@@ -1783,6 +1823,22 @@ class ActionDispatcher:
             )
         except (Exception, asyncio.CancelledError) as exc:
             if _cancelled_here(exc):
+                if progress.acted is not None:
+                    # The act already ran: its decision is recorded, or counted
+                    # lost, before the cancellation leaves, and the act itself
+                    # travels with it so the row says what happened.
+                    if not progress.decision_queued:
+                        self._record_decision_after_failure(
+                            context=context,
+                            result=result,
+                            action=action,
+                            progress=progress,
+                            approval_timeout_seconds=approval_timeout_seconds,
+                            safe_default_action=self._vet_safe_default(
+                                safe_default_action
+                            ),
+                        )
+                    setattr(exc, "ori_acted", progress.acted)  # noqa: B010
                 raise
             logger.exception(
                 "ActionDispatcher: approval workflow failed for action=%r "
