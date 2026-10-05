@@ -223,3 +223,57 @@ async def test_a_courier_answer_moves_out_of_last_failure_on_upgrade(tmp_path):
         (2, "queue_full", None),
         (3, None, "unreachable"),
     ]
+
+
+async def test_an_unknown_stored_answer_fails_closed_after_upgrade(tmp_path):
+    """An added column has no CHECK, so the ledger validates stored answers itself."""
+    from ori.security.evidence.ledger import DeliveryLedgerError
+
+    db = tmp_path / "evidence.db"
+    _previous_release_store(db)
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "INSERT INTO evidence_delivery_ledger (local_seq, event_id, chain_seq,"
+            " device_id, anchor_epoch_id, key_id, envelope_json, envelope_digest,"
+            " chain_row_digest, sealed_at_ms, attempts)"
+            " VALUES (1, 'evt-1', 1, ?, 'e', 'k', '{}', 'd1', 'c1', 1, 1)",
+            (DEVICE,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    attestor = FirstPartyEvidenceAttestor(
+        db_path=str(db),
+        key_path=str(tmp_path / "evidence.key"),
+        device_secret=SECRET,
+        device_id=DEVICE,
+    )
+    assert await attestor.start() is True
+    attestor.close()
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute("UPDATE evidence_delivery_ledger SET courier_answer = 'accepted'")
+        conn.commit()
+    finally:
+        conn.close()
+
+    attestor = FirstPartyEvidenceAttestor(
+        db_path=str(db),
+        key_path=str(tmp_path / "evidence.key"),
+        device_secret=SECRET,
+        device_id=DEVICE,
+    )
+    assert await attestor.start() is True
+    try:
+        ledger = attestor._ledger
+        assert ledger is not None
+        assert ledger.courier_answer_faults() == 1
+        outbound = attestor.outbound
+        assert outbound is not None
+        with pytest.raises(DeliveryLedgerError, match="does not recognise"):
+            await outbound.apply_courier_answer(
+                1, answer="refused", at_ms=5, answered_at_ms=5
+            )
+    finally:
+        attestor.close()

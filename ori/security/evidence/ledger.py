@@ -32,6 +32,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -63,6 +64,8 @@ RECEIPT_ACCEPTED = "accepted"
 # missing in transit — the contract calls that an evidence/v3 attestation gap,
 # recorded against the action row, and duplicating it here would report one
 # failure as two in different registers.
+logger = logging.getLogger(__name__)
+
 FAILURE_SEND = "send_failed"
 FAILURE_REASONS = frozenset(
     {
@@ -99,7 +102,10 @@ CREATE TABLE IF NOT EXISTS evidence_delivery_ledger (
     attempts          INTEGER NOT NULL DEFAULT 0,
     last_attempt_ms   INTEGER,
     last_failure      TEXT,
-    courier_answer    TEXT,
+    courier_answer    TEXT
+        CHECK (courier_answer IS NULL
+               OR courier_answer IN ('queued', 'queue_full', 'refused')),
+    courier_answer_at_ms INTEGER,
     CHECK (custody_state IN ('none', 'held')),
     CHECK (receipt_state IN ('none', 'accepted')),
     -- Both directions, because a half-written state is as wrong as a forbidden
@@ -774,11 +780,13 @@ class EvidenceDeliveryLedger:
         self._boot_id: int | None = None
 
     def _add_courier_answer_column(self) -> None:
-        """`courier_answer` on a ledger created before the column existed.
+        """`courier_answer` and its ordering time, on a ledger created before them.
 
         The courier's standing answer used to share `last_failure` with the
         transport outcome; a row the previous release left there is carried
         over so a refusal episode in progress is not reopened by the upgrade.
+        An added column carries no CHECK, so stored answers are validated here
+        and on every write instead.
         """
         columns = {
             str(row["name"])
@@ -799,6 +807,30 @@ class EvidenceDeliveryLedger:
                 """
             )
             self._connection.execute("COMMIT")
+        if "courier_answer_at_ms" not in columns:
+            self._connection.execute(
+                "ALTER TABLE evidence_delivery_ledger"
+                " ADD COLUMN courier_answer_at_ms INTEGER"
+            )
+        placeholders = ", ".join("?" for _ in COURIER_ANSWERS)
+        row = self._connection.execute(
+            "SELECT COUNT(*) FROM evidence_delivery_ledger"
+            " WHERE courier_answer IS NOT NULL"
+            f" AND courier_answer NOT IN ({placeholders})",
+            tuple(sorted(COURIER_ANSWERS)),
+        ).fetchone()
+        self._courier_answer_faults = int(row[0])
+        if self._courier_answer_faults:
+            logger.critical(
+                "[evidence] %d delivery ledger row(s) hold a courier answer this "
+                "release does not recognise; their acknowledgements are refused "
+                "until the rows are repaired",
+                self._courier_answer_faults,
+            )
+
+    def courier_answer_faults(self) -> int:
+        """Rows found at open holding a courier answer outside the closed set."""
+        return self._courier_answer_faults
 
     def _add_outbox_withdrawal_column(self) -> None:
         """`withdrawn_at_ms` on an outbox created before the column existed.
@@ -2114,7 +2146,9 @@ class EvidenceDeliveryLedger:
             (int(at_ms), failure, int(local_seq)),
         )
 
-    def apply_courier_answer(self, local_seq: int, *, answer: str, at_ms: int) -> bool:
+    def apply_courier_answer(
+        self, local_seq: int, *, answer: str, at_ms: int, answered_at_ms: int
+    ) -> bool:
         """Record the courier's answer on an envelope; True when it opens a refusal.
 
         One transaction, so concurrent answers cannot both see no refusal and
@@ -2129,10 +2163,24 @@ class EvidenceDeliveryLedger:
         try:
             self._require_sealed(local_seq)
             row = self._connection.execute(
-                "SELECT courier_answer FROM evidence_delivery_ledger WHERE local_seq = ?",
+                "SELECT courier_answer, courier_answer_at_ms"
+                " FROM evidence_delivery_ledger WHERE local_seq = ?",
                 (int(local_seq),),
             ).fetchone()
-            opens = answer == "refused" and row["courier_answer"] != "refused"
+            stored = row["courier_answer"]
+            if stored is not None and stored not in COURIER_ANSWERS:
+                raise DeliveryLedgerError(
+                    f"local_seq {local_seq} holds courier answer {stored!r}, which "
+                    "this release does not recognise; refused rather than read as "
+                    "no answer"
+                )
+            stored_at = row["courier_answer_at_ms"]
+            if stored_at is not None and int(answered_at_ms) <= int(stored_at):
+                # Older than, or the same as, the answer already standing: a
+                # delayed acknowledgement does not move the answer back.
+                self._connection.execute("COMMIT")
+                return False
+            opens = answer == "refused" and stored != "refused"
             if opens:
                 self._connection.execute(
                     """
@@ -2144,20 +2192,20 @@ class EvidenceDeliveryLedger:
                 )
             if answer == "queued":
                 self._connection.execute(
-                    "UPDATE evidence_delivery_ledger SET courier_answer = ?"
-                    " WHERE local_seq = ?",
-                    (answer, int(local_seq)),
+                    "UPDATE evidence_delivery_ledger SET courier_answer = ?,"
+                    " courier_answer_at_ms = ? WHERE local_seq = ?",
+                    (answer, int(answered_at_ms), int(local_seq)),
                 )
             else:
                 # A deferral or a refusal counts as an attempt, as it always has.
                 self._connection.execute(
                     """
                     UPDATE evidence_delivery_ledger
-                       SET courier_answer = ?, attempts = attempts + 1,
-                           last_attempt_ms = ?
+                       SET courier_answer = ?, courier_answer_at_ms = ?,
+                           attempts = attempts + 1, last_attempt_ms = ?
                      WHERE local_seq = ?
                     """,
-                    (answer, int(at_ms), int(local_seq)),
+                    (answer, int(answered_at_ms), int(at_ms), int(local_seq)),
                 )
             self._connection.execute("COMMIT")
         except BaseException:

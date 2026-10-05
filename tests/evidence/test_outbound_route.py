@@ -1082,8 +1082,85 @@ async def test_an_answer_that_fails_halfway_leaves_no_failure_row(rig):
 
     rig.executor.run(arm)
     with pytest.raises(Exception, match="injected"):
-        await rig.outbox.apply_courier_answer(local_seq, answer="refused", at_ms=1)
+        await rig.outbox.apply_courier_answer(
+            local_seq, answer="refused", at_ms=1, answered_at_ms=1
+        )
     assert rig.failures() == []
     rig.executor.run(lambda: rig.ledger._connection.execute("DROP TRIGGER fail_answer"))
-    assert await rig.outbox.apply_courier_answer(local_seq, answer="refused", at_ms=2)
+    assert await rig.outbox.apply_courier_answer(
+        local_seq, answer="refused", at_ms=2, answered_at_ms=2
+    )
     assert len(rig.failures()) == 1
+
+
+def _answer(
+    digest: str, outcome: str, reason: str, signed_at_ms: int
+) -> dict[str, Any]:
+    return _ack(
+        ARTIFACT_DELIVERY_ENVELOPE,
+        digest,
+        outcome=outcome,
+        reason=reason,
+        signed_at_ms=signed_at_ms,
+    )
+
+
+async def test_a_delayed_older_refusal_does_not_overturn_a_newer_queued(rig):
+    sealed = rig.seal(1)
+    local_seq = int(sealed["local_seq"])
+    router = _router(rig)
+    digest = sealed["envelope_digest"]
+    await router.handle_ack(_answer(digest, "queued", "", 1787000003200))
+    await router.handle_ack(_answer(digest, "refused", "malformed", 1787000003100))
+    row = rig.envelope(local_seq)
+    assert (row["courier_answer"], row["courier_answer_at_ms"]) == (
+        "queued",
+        1787000003200,
+    )
+    assert rig.failures() == []
+
+
+async def test_a_delayed_older_queued_does_not_end_a_newer_refusal(rig):
+    sealed = rig.seal(1)
+    local_seq = int(sealed["local_seq"])
+    router = _router(rig)
+    digest = sealed["envelope_digest"]
+    await router.handle_ack(_answer(digest, "refused", "malformed", 1787000003200))
+    await router.handle_ack(_answer(digest, "queued", "", 1787000003100))
+    await router.handle_ack(_answer(digest, "refused", "malformed", 1787000003300))
+    assert rig.envelope(local_seq)["courier_answer"] == "refused"
+    assert len(rig.failures()) == 1, "the older queued did not end the episode"
+
+
+@pytest.mark.parametrize("first", ["older", "newer"])
+async def test_concurrent_answers_leave_the_newest_standing(rig, first):
+    sealed = rig.seal(1)
+    local_seq = int(sealed["local_seq"])
+    router = _router(rig)
+    digest = sealed["envelope_digest"]
+    older = _answer(digest, "queued", "", 1787000003100)
+    newer = _answer(digest, "refused", "malformed", 1787000003200)
+    pair = [older, newer] if first == "older" else [newer, older]
+    await asyncio.gather(*(router.handle_ack(a) for a in pair))
+    row = rig.envelope(local_seq)
+    assert (row["courier_answer"], row["courier_answer_at_ms"]) == (
+        "refused",
+        1787000003200,
+    )
+    assert len(rig.failures()) == 1
+
+
+async def test_an_unknown_answer_cannot_be_stored_in_a_fresh_ledger(rig):
+    import sqlite3
+
+    sealed = rig.seal(1)
+
+    def corrupt() -> None:
+        rig.ledger._connection.execute(
+            "UPDATE evidence_delivery_ledger SET courier_answer = 'accepted'"
+            " WHERE local_seq = ?",
+            (int(sealed["local_seq"]),),
+        )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        rig.executor.run(corrupt)
