@@ -251,7 +251,9 @@ def _abandon_half_open(client: Any) -> None:
             try:
                 close()
             except Exception:
-                pass
+                # Best effort on an abandoned client: the socket may already
+                # be closed, and the misc task below is cancelled regardless.
+                continue
     task = getattr(client, "_misc_task", None)
     if isinstance(task, asyncio.Task) and not task.done():
         task.cancel()

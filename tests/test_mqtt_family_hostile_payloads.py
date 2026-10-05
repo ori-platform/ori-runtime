@@ -556,8 +556,8 @@ async def test_a_connect_cancelled_mid_handshake_leaves_nothing_open() -> None:
             await asyncio.wait_for(accepted.wait(), 5)
             await asyncio.sleep(0.05)
             connecting.cancel()
-            with pytest.raises(BaseException):
-                await connecting
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(connecting, 5)
         await _assert_abandoned(built, aiomqtt)
     finally:
         await adapter.close()
