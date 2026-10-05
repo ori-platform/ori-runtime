@@ -183,15 +183,17 @@ CREATE TABLE IF NOT EXISTS action_log (
     -- holder it joined, which is not proof the holder's row was written.
     -- 'contributor_legacy' is a joined row written before the link existed.
     -- attestation_status is added by migration, so a contributor's empty
-    -- status is held by the writer and the attestation update, not here.
+    -- status is held by the writer and the attestation update, not here. A
+    -- dispatch claiming 'coalesced' is refused by the writer, not here: a
+    -- release rolled back to writes its joined rows that way, and every open
+    -- reclassifies them.
     record_kind       TEXT    NOT NULL DEFAULT 'dispatch'
         CHECK (record_kind IN ('dispatch', 'contributor', 'contributor_legacy')),
     record_key        TEXT    NOT NULL DEFAULT '',
     contributed_to    TEXT,
     timestamp         INTEGER NOT NULL,
     CHECK (
-        (record_kind = 'dispatch' AND contributed_to IS NULL
-            AND action_taken != 'coalesced')
+        (record_kind = 'dispatch' AND contributed_to IS NULL)
         OR (record_kind = 'contributor' AND executed = 0 AND approved IS NULL
             AND action_taken = 'coalesced' AND authority_json IS NULL
             AND contributed_to IS NOT NULL

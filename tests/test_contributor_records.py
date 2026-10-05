@@ -436,15 +436,14 @@ async def test_a_roll_forward_reclassifies_joined_rows_a_rolled_back_release_wro
     store = StateStore(str(db))
     await store.open()
     await store.close()
-    # The previous release, running after a rollback, writes a joined row as an
-    # ordinary one and marks it for attestation. Raw SQL stands in for it; the
-    # fresh table's CHECK refuses that shape, so it is dropped for the write.
+    # The previous release, running after a rollback, writes a joined row with
+    # its own INSERT, which names none of the new columns, and marks it for
+    # attestation. The table this release created must accept that write.
     conn = sqlite3.connect(str(db))
-    conn.execute("PRAGMA ignore_check_constraints = ON")
     conn.execute(
         "INSERT INTO action_log (action_name, tier, executed, action_taken,"
-        " trigger_name, timestamp, attestation_status, record_kind)"
-        " VALUES ('trip_relay', 'C', 1, 'coalesced', 't', 1, 'pending', 'dispatch')"
+        " trigger_name, timestamp, attestation_status)"
+        " VALUES ('trip_relay', 'C', 1, 'coalesced', 't', 1, 'pending')"
     )
     conn.commit()
     conn.close()
@@ -529,5 +528,36 @@ async def test_a_dispatch_cancelled_at_the_gate_leaves_no_record_unsettled(
         await dispatcher.drain_records(timeout=PROMPT)
         assert dispatcher.record_backlog()["unsettled"] == 0
         assert calls == []
+    finally:
+        await store.close()
+
+
+async def test_only_a_dispatch_row_resolves_a_contributor_link(tmp_path: Path) -> None:
+    """A contributor's own key is not a holder; a chain of contributors resolves nothing."""
+    from ori.network.events import ActionResult
+
+    joined = ActionResult(
+        action_name="trip_relay",
+        tier="C",
+        executed=False,
+        approved=None,
+        action_taken="coalesced",
+        timestamp=1,
+    )
+    store = StateStore(str(tmp_path / "state.db"))
+    await store.open()
+    try:
+        await store.log_action(
+            joined,
+            "t",
+            record_kind="contributor",
+            record_key="k1",
+            contributed_to="gone",
+        )
+        await store.log_action(
+            joined, "t", record_kind="contributor", record_key="k2", contributed_to="k1"
+        )
+        summary = await store.get_attestation_summary()
+        assert summary["contributor_links_unresolved"] == 2
     finally:
         await store.close()
