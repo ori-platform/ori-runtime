@@ -380,3 +380,48 @@ async def test_a_holder_row_that_never_appeared_is_reported(tmp_path: Path) -> N
         assert summary["contributor_links_unresolved"] == 1
     finally:
         await store.close()
+
+
+async def test_reconciliation_refuses_a_contributor_found_pending(
+    tmp_path: Path,
+) -> None:
+    """Never signed, never skipped silently: refused and reported."""
+    from ori.network.events import ActionResult
+    from ori.runtime import OriRuntime
+
+    store = StateStore(str(tmp_path / "state.db"))
+    await store.open()
+    try:
+        row = await store.log_action(
+            ActionResult(
+                action_name="trip_relay",
+                tier="C",
+                executed=False,
+                approved=None,
+                action_taken="coalesced",
+                timestamp=1,
+            ),
+            "t",
+            record_kind="contributor",
+            record_key="mine",
+            contributed_to="holder",
+        )
+        assert store._conn is not None
+        # A corrupt row: nothing the runtime writes ever marks a contributor.
+        store._conn.execute(
+            "UPDATE action_log SET attestation_status = 'pending' WHERE id = ?", (row,)
+        )
+        store._conn.commit()
+        signer = _Signer()
+        runtime = OriRuntime(config_path="ori.yaml")
+        runtime._state_store = store
+        runtime._evidence_attestor = signer  # type: ignore[assignment]
+        await runtime._reconcile_pending_attestations()
+        assert signer.signed == []
+        status = store._conn.execute(
+            "SELECT attestation_status, attestation_reason FROM action_log WHERE id = ?",
+            (row,),
+        ).fetchone()
+        assert tuple(status) == ("refused", "not_a_dispatch_record")
+    finally:
+        await store.close()
