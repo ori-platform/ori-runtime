@@ -219,6 +219,7 @@ def test_every_evidence_message_resolves_statically():
 
 REVIEWED_OPERATOR_MESSAGES = frozenset(
     {
+        "[evidence] %d delivery ledger row(s) hold a courier answer this release does not recognise; their acknowledgements are refused until the rows are repaired",
         # Reviewed: an action_log id, a tier letter, and a reason drawn from
         # this module's own closed set describing why a licence could not be
         # replayed. No private component, endpoint, key or holder appears, and
