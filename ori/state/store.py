@@ -2052,6 +2052,21 @@ class StateStore:
             "CREATE INDEX IF NOT EXISTS idx_action_log_record_key"
             " ON action_log(record_key)"
         )
+        # A key names one row. Rows a rolled-back release wrote carry the
+        # default '' and stay outside the constraint. Keys already duplicated
+        # are reported, not a reason to refuse the store: Tier D does not wait
+        # on evidence, and the unresolved count treats such a key as no link.
+        try:
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_action_log_record_key_unique"
+                " ON action_log(record_key) WHERE record_key <> ''"
+            )
+        except sqlite3.IntegrityError:
+            logger.critical(
+                "[action_log] record keys are duplicated, so a contributor's link "
+                "cannot name one holder row; those links are counted unresolved "
+                "until the rows are repaired"
+            )
 
     def _add_column_if_missing_on_conn(
         self,
@@ -3219,16 +3234,17 @@ class StateStore:
         # A contributor names the holder it joined; a holder row that never
         # appeared is lost evidence of the act, reported rather than repaired.
         # The contributor's row is written after its holder's, so no grace is
-        # needed for a holder still deciding.
+        # needed for a holder still deciding. A link resolves to exactly one
+        # dispatch row, never to whichever of several shares the key.
         unresolved = conn.execute(
             """
             SELECT COUNT(*) FROM action_log AS c
             WHERE c.record_kind = 'contributor'
-              AND NOT EXISTS (
-                  SELECT 1 FROM action_log AS h
+              AND (
+                  SELECT COUNT(*) FROM action_log AS h
                   WHERE h.record_kind = 'dispatch'
                     AND h.record_key = c.contributed_to
-              )
+              ) <> 1
             """
         ).fetchone()
         return {

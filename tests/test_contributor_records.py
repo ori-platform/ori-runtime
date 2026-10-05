@@ -456,11 +456,16 @@ async def test_a_roll_forward_reclassifies_joined_rows_a_rolled_back_release_wro
             " FROM action_log WHERE action_taken = 'coalesced'"
         ).fetchone()
         assert tuple(row) == ("contributor_legacy", "refused", "legacy_contributor")
-        index = store._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'index'"
-            " AND name = 'idx_action_log_record_key'"
-        ).fetchone()
-        assert index is not None
+        indexes = {
+            r[0]
+            for r in store._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            )
+        }
+        assert {
+            "idx_action_log_record_key",
+            "idx_action_log_record_key_unique",
+        } <= indexes
         assert (await store.get_actions_needing_attestation()) == []
     finally:
         await store.close()
@@ -559,5 +564,106 @@ async def test_only_a_dispatch_row_resolves_a_contributor_link(tmp_path: Path) -
         )
         summary = await store.get_attestation_summary()
         assert summary["contributor_links_unresolved"] == 2
+    finally:
+        await store.close()
+
+
+def _dispatch_row(key: str) -> Any:
+    from ori.network.events import ActionResult
+
+    return ActionResult(
+        action_name="trip_relay",
+        tier="D",
+        executed=True,
+        approved=None,
+        action_taken="trip_relay",
+        timestamp=1,
+    ), key
+
+
+def _joined_row() -> Any:
+    from ori.network.events import ActionResult
+
+    return ActionResult(
+        action_name="trip_relay",
+        tier="C",
+        executed=False,
+        approved=None,
+        action_taken="coalesced",
+        timestamp=1,
+    )
+
+
+async def test_a_record_key_names_one_row(tmp_path: Path) -> None:
+    """A non-empty key is unique; the rollback default '' is not constrained."""
+    db = tmp_path / "state.db"
+    store = StateStore(str(db))
+    await store.open()
+    await store.close()
+    conn = sqlite3.connect(str(db))
+    for _ in range(2):
+        # The previous release's own INSERT names no record_key.
+        conn.execute(
+            "INSERT INTO action_log (action_name, tier, executed, action_taken,"
+            " trigger_name, timestamp) VALUES ('trip_relay', 'D', 1, 'trip_relay',"
+            " 't', 1)"
+        )
+    conn.commit()
+    conn.close()
+    store = StateStore(str(db))
+    await store.open()
+    try:
+        result, key = _dispatch_row("holder")
+        await store.log_action(result, "t", record_kind="dispatch", record_key=key)
+        with pytest.raises(sqlite3.IntegrityError):
+            await store.log_action(result, "t", record_kind="dispatch", record_key=key)
+        await store.log_action(
+            _joined_row(),
+            "t",
+            record_kind="contributor",
+            record_key="joiner",
+            contributed_to="holder",
+        )
+        summary = await store.get_attestation_summary()
+        assert summary["contributor_links_unresolved"] == 0
+        assert store._conn is not None
+        empty = store._conn.execute(
+            "SELECT COUNT(*) FROM action_log WHERE record_key = ''"
+        ).fetchone()[0]
+        assert empty == 2
+    finally:
+        await store.close()
+
+
+async def test_a_key_already_duplicated_resolves_no_link_and_still_opens(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Duplicates written before the constraint are reported, never a refused store."""
+    db = tmp_path / "state.db"
+    store = StateStore(str(db))
+    await store.open()
+    await store.close()
+    conn = sqlite3.connect(str(db))
+    conn.execute("DROP INDEX idx_action_log_record_key_unique")
+    for kind, key, link, taken, executed in (
+        ("dispatch", "holder", None, "trip_relay", 1),
+        ("dispatch", "holder", None, "trip_relay", 1),
+        ("contributor", "joiner", "holder", "coalesced", 0),
+    ):
+        conn.execute(
+            "INSERT INTO action_log (action_name, tier, executed, action_taken,"
+            " trigger_name, timestamp, record_kind, record_key, contributed_to)"
+            " VALUES ('trip_relay', 'C', ?, ?, 't', 1, ?, ?, ?)",
+            (executed, taken, kind, key, link),
+        )
+    conn.commit()
+    conn.close()
+    store = StateStore(str(db))
+    with caplog.at_level("CRITICAL", logger="ori.state.store"):
+        await store.open()
+    try:
+        assert any("duplicated" in r.getMessage() for r in caplog.records)
+        summary = await store.get_attestation_summary()
+        assert summary["contributor_links_unresolved"] == 1
     finally:
         await store.close()
