@@ -276,10 +276,9 @@ sensors:
 skills:
   - name: energy-anomaly-detector
     version: '0.2.1'
-    # The one deployment setting a skill entry takes. Everything else a skill
-    # reads, its Tier C safe default included, is in its own skill.yaml.
-    config:
-      approval_timeout_seconds: 300
+    # A skill entry names the skill and its version. Everything a skill reads,
+    # its Tier C approval timeout and safe default included, is in its own
+    # skill.yaml.
 
 
 reasoning:

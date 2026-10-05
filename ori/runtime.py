@@ -409,25 +409,6 @@ STALE_SENSOR_MAX_CHECK_INTERVAL_S = 30.0
 HEALTH_SOCKET_DEFAULT_PATH = "/run/ori/health.sock"
 
 
-def _resolve_dispatcher_approval_timeout(
-    skills_cfg: list[Any],
-    default_timeout_s: int = 300,
-) -> int:
-    """Choose dispatcher fallback timeout deterministically across all skills."""
-    resolved = int(default_timeout_s)
-    for sc in skills_cfg:
-        raw = getattr(sc, "config", {}).get("approval_timeout_seconds")
-        if raw is None:
-            continue
-        try:
-            candidate = int(raw)
-        except (TypeError, ValueError):
-            continue
-        if candidate > resolved:
-            resolved = candidate
-    return max(1, resolved)
-
-
 def adapter_connect_config(sensor_cfg: SensorConfig, config: Config) -> dict[str, Any]:
     """Build the dict handed to an adapter's ``connect()``.
 
@@ -1052,13 +1033,11 @@ class OriRuntime:
             )
         _secondary_contact: str = config.actions.secondary_contact or ""
 
-        # Dispatcher-level fallback timeout (used only when trigger-level timeout
-        # is unavailable): select the maximum declared skill timeout.
-        _approval_timeout = _resolve_dispatcher_approval_timeout(config.skills, 300)
         # The deployment settings that can change Tier C admission, bound into
-        # every proposal's authority snapshot through its policy digest.
+        # every proposal's authority snapshot through its policy digest. A
+        # proposal's lifetime is its trigger's, from skill.yaml, bounded by the
+        # release maximum; no deployment setting shortens it today.
         self._tier_c_deployment_inputs = {
-            "approval_timeout_seconds": int(_approval_timeout),
             "relay_enabled": bool(relay_enabled),
         }
 
@@ -1161,7 +1140,6 @@ class OriRuntime:
             config={
                 "operator_contact": _operator_contact,
                 "secondary_contact": _secondary_contact,
-                "approval_timeout_seconds": _approval_timeout,
                 "primary_alert_channel": primary_alert_channel,
                 "device_timezone": config.device.timezone,
                 "device_location": config.device.location,

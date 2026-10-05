@@ -185,7 +185,7 @@ class TestLoadExample:
     def test_skill_config_fields(self):
         cfg = Config.load(EXAMPLE_YAML)
         skill_cfg = cfg.skills[0].config
-        assert skill_cfg == {"approval_timeout_seconds": 300}
+        assert skill_cfg == {}
 
     def test_reasoning_fields(self):
         cfg = Config.load(EXAMPLE_YAML)
@@ -3691,7 +3691,12 @@ actions:
 
     @pytest.mark.parametrize(
         "key",
-        ["safe_default_action", "action_tier", "requires_approval_for_soft_actions"],
+        [
+            "safe_default_action",
+            "action_tier",
+            "requires_approval_for_soft_actions",
+            "approval_timeout_seconds",
+        ],
     )
     def test_trigger_owned_keys_are_refused(self, tmp_path, key):
         path = self._skill(tmp_path, f"    config:\n      {key}: C")
@@ -3731,26 +3736,11 @@ actions:
         ):
             Config.load(path)
 
-    def test_approval_timeout_is_the_one_key_and_reaches_the_dispatcher(self, tmp_path):
-        from ori.runtime import _resolve_dispatcher_approval_timeout
-
-        cfg = Config.load(
-            self._skill(tmp_path, "    config:\n      approval_timeout_seconds: 120")
-        )
-        assert cfg.skills[0].config == {"approval_timeout_seconds": 120}
-        assert _resolve_dispatcher_approval_timeout(cfg.skills, 60) == 120
-
-    @pytest.mark.parametrize("value", ["0", "1.5", "'120'", "true"])
-    def test_approval_timeout_is_still_validated(self, tmp_path, value):
-        path = self._skill(
-            tmp_path, f"    config:\n      approval_timeout_seconds: {value}"
-        )
-        with pytest.raises(ConfigValidationError, match="approval_timeout_seconds"):
-            Config.load(path)
-
     @pytest.mark.parametrize(
         "body",
         [
+            "    config: {}",
+            "    config:",
             "    config: [1]",
             "    config: text",
             "    config: false",
@@ -3758,18 +3748,21 @@ actions:
             "    config: 0",
         ],
     )
-    def test_config_must_be_a_mapping(self, tmp_path, body):
-        with pytest.raises(ConfigValidationError, match="config must be a mapping"):
+    def test_a_skill_entry_carries_no_config(self, tmp_path, body):
+        with pytest.raises(ConfigValidationError, match="config is not accepted"):
             Config.load(self._skill(tmp_path, body))
 
-    def test_empty_config_is_accepted(self, tmp_path):
-        cfg = Config.load(self._skill(tmp_path, "    config:"))
+    def test_a_skill_entry_is_name_and_version(self, tmp_path):
+        cfg = Config.load(self._skill(tmp_path, ""))
+        assert (cfg.skills[0].name, cfg.skills[0].version) == ("skill-x", "1.0")
         assert cfg.skills[0].config == {}
 
     @pytest.mark.parametrize("key", ["actions", "triggers", "defaults", "tier"])
     def test_skill_entry_keys_are_closed(self, tmp_path, key):
         path = self._skill(tmp_path, f"    {key}: x")
-        with pytest.raises(ConfigValidationError, match="name, version and config"):
+        with pytest.raises(
+            ConfigValidationError, match="names the skill and its version only"
+        ):
             Config.load(path)
 
 
