@@ -177,3 +177,19 @@ async def test_a_coap_value_that_overflows_withdraws_the_cached_value(
             await source.adapter._poll_once()
         with pytest.raises(AdapterReadError, match="refused"):
             await source.adapter.read(SENSOR)
+
+
+@pytest.mark.parametrize("factory", UNBOUNDED)
+async def test_a_retained_replay_never_reaches_the_safety_registry(
+    factory: Callable[[], Any], clock: _Clock, tmp_path: Path
+) -> None:
+    """An on-change source has no silence bound, so a replay must not be a value."""
+    async with _runtime(tmp_path) as harness, _running(factory) as source:
+        await source.replay(HAZARD)
+        for _ in range(3):
+            await _poll(harness, source.adapter)
+        assert harness.observed == []
+        assert SENSOR not in harness.runtime._sensor_last_seen_ms
+        await source.send(CLEAR)
+        await _poll(harness, source.adapter)
+        assert len(harness.observed) == 1

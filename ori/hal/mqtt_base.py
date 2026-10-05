@@ -260,7 +260,8 @@ def _abandon_half_open(client: Any) -> None:
 class MqttCachedAdapter(BaseAdapter):
     """Reusable base for MQTT adapters that subscribe and cache latest values."""
 
-    # Reads past the silence bound are refused and retained replays ignored.
+    # Reads past the silence bound are refused. Retained replays are ignored
+    # by every adapter, bounded or not.
     # False for a publish-on-change or duty-cycled producer, where silence is
     # not staleness, until a keepalive or reporting guarantee bounds it.
     SILENCE_BOUNDED: ClassVar[bool] = True
@@ -355,8 +356,7 @@ class MqttCachedAdapter(BaseAdapter):
                 "would time each one from its delivery, not its publication."
             )
         # Always clean, so nothing queued for this client is delivered on
-        # (re)connect. A retained message still is: silence-bounded adapters
-        # ignore it, and on-change adapters accept it as their current value.
+        # (re)connect. A retained message still is, and every adapter ignores it.
         kwargs["clean_session"] = True
         if transport not in (None, ""):
             kwargs["transport"] = str(transport)
@@ -617,9 +617,12 @@ class MqttCachedAdapter(BaseAdapter):
         try:
             async for message in self._client.messages:
                 topic = str(message.topic)
-                if self.SILENCE_BOUNDED and getattr(message, "retain", False):
+                if getattr(message, "retain", False):
                     # A retained message is replayed on subscribe with no age
                     # the receiver can know; only a live delivery is a reading.
+                    # This holds for an on-change source too: its cache clears
+                    # on a link drop, and a replay given a fresh arrival would
+                    # be served as current with no silence bound to expire it.
                     logger.info(
                         "%s: ignoring retained message on topic=%s",
                         self.adapter_name,
