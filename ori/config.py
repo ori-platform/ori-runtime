@@ -1371,9 +1371,13 @@ _SKILL_ENTRY_KEYS = frozenset({"name", "version", "config"})
 # The one deployment setting the runtime reads from a skill entry. Every other
 # skill setting is the skill's own, declared in its skill.yaml.
 _SKILL_CONFIG_KEYS = frozenset({"approval_timeout_seconds"})
-_TRIGGER_OWNED_SKILL_KEYS = frozenset(
-    {"safe_default_action", "action_tier", "requires_approval_for_soft_actions"}
-)
+# Deployment keys that look like trigger authority -> the skill.yaml trigger
+# key that actually holds it (a test ties each target to the trigger grammar).
+_TRIGGER_OWNED_SKILL_KEYS: dict[str, str] = {
+    "safe_default_action": "safe_default_action",
+    "action_tier": "action_tier",
+    "requires_approval_for_soft_actions": "requires_approval",
+}
 
 
 def _parse_skills(data: Any) -> list[SkillConfig]:
@@ -1417,9 +1421,9 @@ def _validate_skill_config(cfg: Any, context: str) -> None:
             continue
         if key in _TRIGGER_OWNED_SKILL_KEYS:
             raise ConfigValidationError(
-                f"{context}.config.{key} is not a deployment setting: it is "
-                "declared on the skill's trigger in skill.yaml, and ori.yaml "
-                "cannot set it."
+                f"{context}.config.{key} is not a deployment setting: a skill "
+                f"declares it as `{_TRIGGER_OWNED_SKILL_KEYS[key]}` on its "
+                "trigger in skill.yaml, and ori.yaml cannot set it."
             )
         if key == "secondary_contact_number":
             raise ConfigValidationError(

@@ -3699,7 +3699,16 @@ actions:
             Config.load(path)
         message = str(caught.value)
         assert f"skills[0] (skill-x).config.{key}" in message
-        assert "declared on the skill's trigger in skill.yaml" in message
+        assert "on its trigger in skill.yaml" in message
+
+    def test_each_trigger_owned_key_names_a_real_trigger_key(self):
+        from ori.config import _TRIGGER_OWNED_SKILL_KEYS
+        from ori.skills.loader import _TRIGGER_ALLOWED_KEYS
+
+        assert set(_TRIGGER_OWNED_SKILL_KEYS.values()) <= _TRIGGER_ALLOWED_KEYS
+        assert _TRIGGER_OWNED_SKILL_KEYS["requires_approval_for_soft_actions"] == (
+            "requires_approval"
+        )
 
     @pytest.mark.parametrize(
         "key",
@@ -3736,7 +3745,16 @@ actions:
         with pytest.raises(ConfigValidationError, match="approval_timeout_seconds"):
             Config.load(path)
 
-    @pytest.mark.parametrize("body", ["    config: [1]", "    config: text"])
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "    config: [1]",
+            "    config: text",
+            "    config: false",
+            "    config: ''",
+            "    config: 0",
+        ],
+    )
     def test_config_must_be_a_mapping(self, tmp_path, body):
         with pytest.raises(ConfigValidationError, match="config must be a mapping"):
             Config.load(self._skill(tmp_path, body))
