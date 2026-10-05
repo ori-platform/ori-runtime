@@ -714,7 +714,7 @@ def verify_telemetry_message(
     accepted_manifest_hash: str,
     last_boot_id: int,
     last_seq: int,
-    last_uptime_ms: int | None = None,
+    last_uptime_ms: int | None,
     approved: bool = True,
     revoked: bool = False,
     accepted_channels: Mapping[str, Mapping[str, Any]] | None = None,
@@ -861,7 +861,7 @@ def verify_fault_message(
     accepted_manifest_hash: str,
     last_boot_id: int,
     last_seq: int,
-    last_uptime_ms: int | None = None,
+    last_uptime_ms: int | None,
     approved: bool = True,
     revoked: bool = False,
 ) -> FirmwareFaultVerification:

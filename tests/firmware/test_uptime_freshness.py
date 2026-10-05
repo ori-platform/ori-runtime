@@ -375,3 +375,90 @@ async def test_a_message_version_that_only_equals_one_is_refused(
             _signed("fault", fault), received_at_ms=1
         )
     assert not verification.accepted and verification.error_code == "invalid_envelope"
+
+
+def test_the_verifiers_refuse_a_regression_themselves() -> None:
+    """The verifier is an entry point of its own, not only the store's check."""
+    from ori.security.firmware.telemetry import (
+        verify_fault_message,
+        verify_telemetry_message,
+    )
+    from tests.firmware.test_telemetry import (
+        PUBLIC_KEY_B64,
+        SEALED_HASH,
+        telemetry_message,
+    )
+
+    envelope = CASES["telemetry_single_reading"]["input"]
+    common = {
+        "anchor_device_id": envelope["device_id"],
+        "anchor_public_key_b64": PUBLIC_KEY_B64,
+        "anchor_posture": envelope["posture"],
+        "accepted_manifest_hash": envelope["capability_hash"],
+        "last_boot_id": envelope["boot_id"],
+        "last_seq": envelope["seq"] - 1,
+    }
+    behind = verify_telemetry_message(
+        telemetry_message("telemetry_single_reading"),
+        last_uptime_ms=envelope["device_uptime_ms"] + 1,
+        **common,
+    )
+    assert behind.error_code == ERR_UPTIME_REGRESSION
+    level = verify_telemetry_message(
+        telemetry_message("telemetry_single_reading"),
+        last_uptime_ms=envelope["device_uptime_ms"],
+        **common,
+    )
+    assert level.accepted
+
+    fault = signed_fault_message(seq=130_486)
+    result = verify_fault_message(
+        fault,
+        anchor_device_id=SEALED_DEVICE,
+        anchor_public_key_b64=PUBLIC_KEY_B64,
+        anchor_posture="sealed_flash",
+        accepted_manifest_hash=SEALED_HASH,
+        last_boot_id=41,
+        last_seq=130_485,
+        last_uptime_ms=925_001,
+    )
+    assert result.error_code == ERR_UPTIME_REGRESSION
+
+
+async def test_a_mark_differing_only_in_key_epoch_is_not_compared(
+    gate: FirmwareTelemetryGate, store: StateStore
+) -> None:
+    """A re-key landing on the same boot and seq leaves the old uptime behind."""
+    assert await _telemetry_code(gate, boot_id=5, seq=10, uptime=86_400_000) is None
+    assert store._conn is not None
+    store._conn.execute(
+        "UPDATE firmware_device_registry SET key_epoch_id = 'rotated'"
+        " WHERE device_id = ?",
+        (SEALED_DEVICE,),
+    )
+    store._conn.commit()
+    row = await store.get_firmware_device(SEALED_DEVICE)
+    assert row is not None and (row["last_boot_id"], row["last_seq"]) == (5, 10)
+    assert row["last_uptime_ms"] is None
+    assert await store.advance_firmware_freshness(
+        SEALED_DEVICE, boot_id=5, seq=11, uptime_ms=100
+    )
+
+
+async def test_a_device_unapproved_before_the_advance_is_named(
+    gate: FirmwareTelemetryGate, store: StateStore
+) -> None:
+    assert await _telemetry_code(gate, boot_id=5, seq=10, uptime=5000) is None
+
+    async def revoke_and_reinstate() -> None:
+        assert await gate.revoke_device(SEALED_DEVICE, actor="op", reason="check")
+        assert await gate.reinstate_device(SEALED_DEVICE, actor="op", reason="check")
+
+    code = await _lost(
+        gate,
+        store,
+        ahead={"boot_id": 5, "seq": 11, "uptime": 6000},
+        behind={"boot_id": 5, "seq": 12, "uptime": 7000},
+        between=revoke_and_reinstate,
+    )
+    assert code == "device_not_approved"
