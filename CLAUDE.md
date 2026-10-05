@@ -837,10 +837,7 @@ skills:
   - name: energy-anomaly-detector
     version: "0.2.1"
     config:
-      energy_cost_naira: 225
-      approval_timeout_seconds: 300
-      safe_default_action: log_to_dashboard
-      secondary_contact_number: ${SECONDARY_WHATSAPP}
+      approval_timeout_seconds: 300 # the only deployment skill setting
 
 security:
   enforce_production_posture: false # staging/production profiles cannot opt out

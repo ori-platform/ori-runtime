@@ -185,8 +185,7 @@ class TestLoadExample:
     def test_skill_config_fields(self):
         cfg = Config.load(EXAMPLE_YAML)
         skill_cfg = cfg.skills[0].config
-        assert skill_cfg["approval_timeout_seconds"] == 300
-        assert skill_cfg["safe_default_action"] == "log_to_dashboard"
+        assert skill_cfg == {"approval_timeout_seconds": 300}
 
     def test_reasoning_fields(self):
         cfg = Config.load(EXAMPLE_YAML)
@@ -3684,58 +3683,73 @@ actions:
   primary_alert_channel: sms
 """
 
-    def test_valid_action_tiers_accepted(self, tmp_path):
-        for tier in ("A", "B", "C", "D"):
-            yaml_path = _write_yaml(
-                tmp_path,
-                self._base_yaml(
-                    f"  - name: skill-x\n    version: '1.0'\n"
-                    f"    config:\n      action_tier: {tier}"
-                ),
-            )
-            cfg = Config.load(yaml_path)
-            assert cfg.skills[0].config["action_tier"] == tier
-
-    def test_invalid_action_tier_rejected(self, tmp_path):
-        yaml_path = _write_yaml(
+    def _skill(self, tmp_path, body: str):
+        return _write_yaml(
             tmp_path,
-            self._base_yaml(
-                "  - name: skill-x\n    version: '1.0'\n"
-                "    config:\n      action_tier: Z"
-            ),
+            self._base_yaml(f"  - name: skill-x\n    version: '1.0'\n{body}"),
         )
-        with pytest.raises(ConfigValidationError, match="action_tier"):
-            Config.load(yaml_path)
 
-    def test_nested_action_tier_validated(self, tmp_path):
-        yaml_path = _write_yaml(
-            tmp_path,
-            self._base_yaml(
-                "  - name: skill-x\n    version: '1.0'\n"
-                "    config:\n      triggers:\n        - action_tier: X"
-            ),
-        )
-        with pytest.raises(ConfigValidationError, match="action_tier"):
-            Config.load(yaml_path)
+    @pytest.mark.parametrize(
+        "key",
+        ["safe_default_action", "action_tier", "requires_approval_for_soft_actions"],
+    )
+    def test_trigger_owned_keys_are_refused(self, tmp_path, key):
+        path = self._skill(tmp_path, f"    config:\n      {key}: C")
+        with pytest.raises(ConfigValidationError) as caught:
+            Config.load(path)
+        message = str(caught.value)
+        assert f"skills[0] (skill-x).config.{key}" in message
+        assert "declared on the skill's trigger in skill.yaml" in message
 
-    def test_skill_config_known_keys(self, tmp_path):
-        yaml_path = _write_yaml(
-            tmp_path,
-            self._base_yaml(
-                "  - name: skill-x\n    version: '1.0'\n"
-                "    config:\n"
-                "      requires_approval_for_soft_actions: true\n"
-                "      approval_timeout_seconds: 120\n"
-                "      safe_default_action: log_to_dashboard\n"
-                "      secondary_contact_number: '+234800000000'"
-            ),
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "secondary_contact_number",
+            "energy_cost_naira",
+            "owner_name",
+            "tariff_per_kwh",
+            "battery_sensor_id",
+            "triggers",
+        ],
+    )
+    def test_unread_keys_are_refused(self, tmp_path, key):
+        path = self._skill(tmp_path, f"    config:\n      {key}: x")
+        with pytest.raises(
+            ConfigValidationError, match=rf"skills\[0\] \(skill-x\)\.config\.{key}"
+        ):
+            Config.load(path)
+
+    def test_approval_timeout_is_the_one_key_and_reaches_the_dispatcher(self, tmp_path):
+        from ori.runtime import _resolve_dispatcher_approval_timeout
+
+        cfg = Config.load(
+            self._skill(tmp_path, "    config:\n      approval_timeout_seconds: 120")
         )
-        cfg = Config.load(yaml_path)
-        sc = cfg.skills[0].config
-        assert sc["requires_approval_for_soft_actions"] is True
-        assert sc["approval_timeout_seconds"] == 120
-        assert sc["safe_default_action"] == "log_to_dashboard"
-        assert sc["secondary_contact_number"] == "+234800000000"
+        assert cfg.skills[0].config == {"approval_timeout_seconds": 120}
+        assert _resolve_dispatcher_approval_timeout(cfg.skills, 60) == 120
+
+    @pytest.mark.parametrize("value", ["0", "1.5", "'120'", "true"])
+    def test_approval_timeout_is_still_validated(self, tmp_path, value):
+        path = self._skill(
+            tmp_path, f"    config:\n      approval_timeout_seconds: {value}"
+        )
+        with pytest.raises(ConfigValidationError, match="approval_timeout_seconds"):
+            Config.load(path)
+
+    @pytest.mark.parametrize("body", ["    config: [1]", "    config: text"])
+    def test_config_must_be_a_mapping(self, tmp_path, body):
+        with pytest.raises(ConfigValidationError, match="config must be a mapping"):
+            Config.load(self._skill(tmp_path, body))
+
+    def test_empty_config_is_accepted(self, tmp_path):
+        cfg = Config.load(self._skill(tmp_path, "    config:"))
+        assert cfg.skills[0].config == {}
+
+    @pytest.mark.parametrize("key", ["actions", "triggers", "defaults", "tier"])
+    def test_skill_entry_keys_are_closed(self, tmp_path, key):
+        path = self._skill(tmp_path, f"    {key}: x")
+        with pytest.raises(ConfigValidationError, match="name, version and config"):
+            Config.load(path)
 
 
 # ─── ReasoningConfig ──────────────────────────────────────────────────────────
@@ -6433,3 +6447,15 @@ class TestSiblingReadersDoNotEscape:
 
         by_name = {check.name: check for check in checks}
         assert by_name["config.load"].status == "fail"
+
+
+def test_secondary_contact_number_names_the_real_setting(tmp_path):
+    path = _write_yaml(
+        tmp_path,
+        TestSkillValidation()._base_yaml(
+            "  - name: skill-x\n    version: '1.0'\n"
+            "    config:\n      secondary_contact_number: '+2348000000000'"
+        ),
+    )
+    with pytest.raises(ConfigValidationError, match="actions.secondary_contact"):
+        Config.load(path)

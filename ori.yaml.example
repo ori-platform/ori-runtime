@@ -276,12 +276,10 @@ sensors:
 skills:
   - name: energy-anomaly-detector
     version: '0.2.1'
+    # The one deployment setting a skill entry takes. Everything else a skill
+    # reads, its Tier C safe default included, is in its own skill.yaml.
     config:
-      energy_cost_naira: 225         # N/kWh — update with current rate
-      owner_name: "Ikeja Office"
       approval_timeout_seconds: 300
-      safe_default_action: log_to_dashboard
-      # secondary_contact_number: "${SECONDARY_WHATSAPP}"
 
 
 reasoning:
