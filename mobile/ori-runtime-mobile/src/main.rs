@@ -993,13 +993,13 @@ fn verify_config_signature(raw_yaml: &YamlValue) -> Result<(), String> {
 
     let signature_bytes = base64_decode(signature_b64, "config signature")?;
     let public_key_bytes = base64_decode(&public_key_b64, "config trust anchor")?;
-    let verifying_key = VerifyingKey::from_bytes(
+    let verifying_key = admit_public_key(
         public_key_bytes
             .as_slice()
             .try_into()
             .map_err(|_| "config trust anchor must decode to 32 bytes".to_string())?,
     )
-    .map_err(|error| format!("invalid Ed25519 trust anchor: {error}"))?;
+    .map_err(|clause| format!("config signature trust anchor is refused: {clause}"))?;
     let ed25519_signature = Signature::from_slice(&signature_bytes)
         .map_err(|error| format!("invalid Ed25519 signature: {error}"))?;
     verifying_key
@@ -1009,6 +1009,30 @@ fn verify_config_signature(raw_yaml: &YamlValue) -> Result<(), String> {
         )
         .map_err(|error| format!("config signature verification failed: {error}"))?;
     Ok(())
+}
+
+/// Admit an Ed25519 public key under ed25519-key-admission/v1, or name the
+/// clause that refuses it: non_canonical, off_curve, invalid_sign or small_order.
+/// ed25519-dalek's `from_bytes` decodes a non-canonical y and a small-order point,
+/// and its cofactorless `verify` accepts a keyless signature under some of them.
+fn admit_public_key(bytes: &[u8; 32]) -> Result<VerifyingKey, &'static str> {
+    // y is the low 255 bits; it is canonical only below p = 2^255 - 19.
+    let mut y = *bytes;
+    y[31] &= 0x7f;
+    let p_minus_one_tail = y[1..31].iter().all(|b| *b == 0xff) && y[31] == 0x7f;
+    if p_minus_one_tail && y[0] >= 0xed {
+        return Err("non_canonical");
+    }
+    let key = VerifyingKey::from_bytes(bytes).map_err(|_| "off_curve")?;
+    // `to_bytes` returns the input as given; re-encoding the decoded point is
+    // what shows a sign bit set on x = 0, since y is already canonical here.
+    if key.to_edwards().compress().to_bytes() != *bytes {
+        return Err("invalid_sign");
+    }
+    if key.is_weak() {
+        return Err("small_order");
+    }
+    Ok(key)
 }
 
 fn canonical_config_signature_payload(raw_yaml: &YamlValue) -> Result<Vec<u8>, String> {
@@ -1136,6 +1160,78 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn le_hex(hex: &str) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        for (i, byte) in out.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap();
+        }
+        out
+    }
+
+    fn signed_config(anchor_env: &str, signature: &[u8]) -> YamlValue {
+        let text = format!(
+            "device:\n  id: phone-01\nsecurity:\n  config_signature:\n    trust_anchor_env: {anchor_env}\n\
+             config_signature:\n  schema: {CONFIG_SIGNATURE_SCHEMA}\n  signer_id: test\n  signed_at_ms: 1\n\
+             \x20 signature: \"ed25519:{}\"\n",
+            base64::engine::general_purpose::STANDARD.encode(signature)
+        );
+        serde_yaml::from_str(&text).unwrap()
+    }
+
+    #[test]
+    fn a_config_under_a_small_order_anchor_is_refused_before_its_signature() {
+        use ed25519_dalek::Signer;
+        let honest = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+        let unsigned = signed_config("ORI_TEST_HONEST_ANCHOR", &[0u8; 64]);
+        let signature = honest.sign(&canonical_config_signature_payload(&unsigned).unwrap());
+        std::env::set_var(
+            "ORI_TEST_HONEST_ANCHOR",
+            base64::engine::general_purpose::STANDARD.encode(honest.verifying_key().to_bytes()),
+        );
+        let config = signed_config("ORI_TEST_HONEST_ANCHOR", &signature.to_bytes());
+        assert_eq!(verify_config_signature(&config), Ok(()));
+
+        // The identity as anchor, and a signature with no private key behind it:
+        // R is the base point and S is 1, which a cofactorless check accepts.
+        let mut keyless =
+            le_hex("5866666666666666666666666666666666666666666666666666666666666666").to_vec();
+        keyless.extend_from_slice(&le_hex(
+            "0100000000000000000000000000000000000000000000000000000000000000",
+        ));
+        std::env::set_var(
+            "ORI_TEST_IDENTITY_ANCHOR",
+            base64::engine::general_purpose::STANDARD.encode(le_hex(
+                "0100000000000000000000000000000000000000000000000000000000000000",
+            )),
+        );
+        let forged = signed_config("ORI_TEST_IDENTITY_ANCHOR", &keyless);
+        let refused = verify_config_signature(&forged).unwrap_err();
+        assert!(
+            refused.contains("trust anchor is refused: small_order"),
+            "{refused}"
+        );
+    }
+
+    #[test]
+    fn admission_refuses_each_clause_and_admits_an_honest_key() {
+        let honest = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]).verifying_key();
+        assert!(admit_public_key(&honest.to_bytes()).is_ok());
+        let identity = "0100000000000000000000000000000000000000000000000000000000000000";
+        let order_two = "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f";
+        let order_eight = "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05";
+        let y_is_p_plus_one = "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f";
+        let identity_with_sign = "0100000000000000000000000000000000000000000000000000000000000080";
+        for (hex, clause) in [
+            (identity, "small_order"),
+            (order_two, "small_order"),
+            (order_eight, "small_order"),
+            (y_is_p_plus_one, "non_canonical"),
+            (identity_with_sign, "invalid_sign"),
+        ] {
+            assert_eq!(admit_public_key(&le_hex(hex)).err(), Some(clause), "{hex}");
+        }
+    }
 
     const GOLDEN_BODY: &str = concat!(
         "{\"device_id\":\"phone-gateway-ikeja-01\",\"events\":[{\"context\":{\"location\":\"Ìkẹjà\"},",

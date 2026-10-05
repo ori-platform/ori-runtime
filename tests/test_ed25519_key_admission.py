@@ -15,6 +15,7 @@ import ast
 import base64
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -432,6 +433,72 @@ def test_inventory_guard_sees_the_admission_itself() -> None:
     ), "the guard no longer sees the one permitted loader; it is blind"
 
 
+# The Rust runtime decodes keys with ed25519-dalek, whose from_bytes accepts a
+# small-order point and a non-canonical y. Only its admit_public_key may call it.
+_RUST_ADMISSION = ("mobile/ori-runtime-mobile/src/main.rs", "admit_public_key")
+_RUST_LOADERS = re.compile(
+    r"\b(?:VerifyingKey|PublicKey)\s*::\s*(?:from_bytes|try_from|from_slice)\b"
+    r"|\bCompressedEdwardsY\b"
+)
+_RUST_FN = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?fn\s+(\w+)", re.MULTILINE)
+
+
+def _rust_test_spans(text: str) -> list[tuple[int, int]]:
+    """The braces of each #[cfg(test)] module, and nothing after them."""
+    spans = []
+    for match in re.finditer(r"#\[cfg\(test\)\]\s*(?:pub\s+)?mod\s+\w+\s*\{", text):
+        depth, end = 1, match.end()
+        while depth and end < len(text):
+            depth += {"{": 1, "}": -1}.get(text[end], 0)
+            end += 1
+        spans.append((match.start(), end))
+    return spans
+
+
+def _rust_loader_uses() -> list[tuple[str, str, int]]:
+    """(file, enclosing function, line) for every Rust key decode outside tests."""
+    found: list[tuple[str, str, int]] = []
+    for path in sorted((REPO / "mobile").rglob("*.rs")):
+        if "target" in path.parts:
+            continue
+        rel = path.relative_to(REPO).as_posix()
+        text = path.read_text(encoding="utf-8")
+        spans = _rust_test_spans(text)
+        for match in _RUST_LOADERS.finditer(text):
+            if any(a <= match.start() < b for a, b in spans):
+                continue
+            enclosing = [m.group(1) for m in _RUST_FN.finditer(text, 0, match.start())]
+            found.append(
+                (
+                    rel,
+                    enclosing[-1] if enclosing else "",
+                    text.count("\n", 0, match.start()) + 1,
+                )
+            )
+    return found
+
+
+def test_every_rust_public_key_decode_is_the_shared_admission() -> None:
+    outside = [
+        f"{rel}:{line} in {fn or 'module scope'}"
+        for rel, fn, line in _rust_loader_uses()
+        if (rel, fn) != _RUST_ADMISSION
+    ]
+    assert not outside, (
+        "An Ed25519 public key is decoded in the Rust runtime outside "
+        "admit_public_key, so a small-order or non-canonical key reaches "
+        "ed25519-dalek unrefused. This guard is textual: it sees "
+        f"{_RUST_LOADERS.pattern!r} outside #[cfg(test)] modules, and nothing else; "
+        f"outside: {outside}"
+    )
+
+
+def test_rust_inventory_guard_sees_the_admission_itself() -> None:
+    assert _RUST_ADMISSION in {(rel, fn) for rel, fn, _ in _rust_loader_uses()}, (
+        "the Rust guard no longer sees the one permitted decode; it is blind"
+    )
+
+
 def _le(prefix: list[int], fill: int = 0, top: int | None = None) -> bytes:
     raw = bytearray([fill] * 32)
     raw[: len(prefix)] = bytes(prefix)
@@ -654,3 +721,28 @@ def test_a_signed_payload_names_a_small_order_anchor() -> None:
     signed = {"name": "x", "signature": "ed25519:" + _b64(KEYLESS)}
     with pytest.raises(SkillSecurityError, match="trust anchor is refused"):
         verify_signed_payload(signed, _b64(IDENTITY))
+
+
+def _shipped_release_keys() -> list[tuple[str, str]]:
+    keys = []
+    for name in ("release-keys.json", "android-payload-keys.json"):
+        registry = json.loads((REPO / "ori" / "installer" / name).read_text())
+        keys += [
+            (f"{name} {k['key_id']}", k["public_key_b64"]) for k in registry["keys"]
+        ]
+    installer = (REPO / "scripts" / "install-linux.sh").read_text(encoding="utf-8")
+    pinned = re.search(
+        r'^PUBLIC_KEY_B64 = "([A-Za-z0-9+/=]+)"$', installer, re.MULTILINE
+    )
+    assert pinned, (
+        "install-linux.sh no longer pins PUBLIC_KEY_B64 where this test reads it"
+    )
+    keys.append(("install-linux.sh PUBLIC_KEY_B64", pinned.group(1)))
+    return keys
+
+
+@pytest.mark.parametrize(("where", "key_b64"), _shipped_release_keys())
+def test_every_shipped_release_key_passes_admission(where: str, key_b64: str) -> None:
+    """The installer verifies with openssl, outside admission, so the keys it pins are held here."""
+    clause = refused_public_key_clause(base64.b64decode(key_b64, validate=True))
+    assert clause is None, f"{where} is refused: {clause}"
