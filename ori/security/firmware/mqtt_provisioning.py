@@ -22,9 +22,9 @@ from typing import Any, cast
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
-    Ed25519PublicKey,
 )
 
+from ori.security.ed25519_keys import admit_public_key
 from ori.utils.time_utils import now_ms
 
 __all__ = [
@@ -478,7 +478,12 @@ class FirmwareMqttProvisioningService:
             value = verify_device_message(message, device_public_key_bytes=public_key)
         except FirmwareMqttProvisioningError as exc:
             detail = str(exc)
-            code = "bad_signature" if "signature" in detail else "malformed_response"
+            if exc.code == "invalid_device_key":
+                code = exc.code
+            elif "signature" in detail:
+                code = "bad_signature"
+            else:
+                code = "malformed_response"
             raise FirmwareMqttProvisioningError(detail, code=code) from exc
         if value.get("device_id") != issued.device_id:
             raise FirmwareMqttProvisioningError(
@@ -888,9 +893,13 @@ def verify_device_message(
     ):
         raise FirmwareMqttProvisioningError("device public key must be 32 raw bytes")
     try:
-        Ed25519PublicKey.from_public_bytes(device_public_key_bytes).verify(
-            _decode_signature(outer["signature"]), canonical
-        )
+        verifier = admit_public_key(device_public_key_bytes)
+    except ValueError as exc:
+        raise FirmwareMqttProvisioningError(
+            f"device public key is refused: {exc}", code="invalid_device_key"
+        ) from exc
+    try:
+        verifier.verify(_decode_signature(outer["signature"]), canonical)
     except InvalidSignature as exc:
         raise FirmwareMqttProvisioningError("device signature is invalid") from exc
     return value

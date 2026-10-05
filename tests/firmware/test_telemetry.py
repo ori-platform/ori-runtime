@@ -490,7 +490,13 @@ class TestFailClosed:
         assert result.error_code == "invalid_posture"
 
     def test_wrong_public_key_rejected(self) -> None:
-        other = base64.b64encode(bytes(32)).decode("ascii")
+        # An honest key that did not sign; a small-order key is refused for
+        # the key itself (tests/test_ed25519_key_admission.py).
+        other = base64.b64encode(
+            Ed25519PrivateKey.from_private_bytes(bytes([0x24]) * 32)
+            .public_key()
+            .public_bytes(Encoding.Raw, PublicFormat.Raw)
+        ).decode("ascii")
         result = verify("telemetry_single_reading", anchor_public_key_b64=other)
         assert result.error_code == "signature_verification_failed"
 

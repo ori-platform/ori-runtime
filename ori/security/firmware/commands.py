@@ -32,6 +32,8 @@ import base64
 import re
 from typing import Any
 
+from ori.security.ed25519_keys import refused_public_key_clause
+
 __all__ = [
     "FirmwareCommandSigner",
     "FirmwareCommandError",
@@ -111,6 +113,9 @@ def _require_canonical_b64_32(value: str, field: str) -> str:
         raise FirmwareCommandError(f"{field} must be canonical base64") from exc
     if len(raw) != 32 or base64.b64encode(raw).decode("ascii") != value:
         raise FirmwareCommandError(f"{field} must encode exactly 32 bytes")
+    clause = refused_public_key_clause(raw)
+    if clause is not None:
+        raise FirmwareCommandError(f"{field} is a refused Ed25519 key: {clause}")
     return value
 
 

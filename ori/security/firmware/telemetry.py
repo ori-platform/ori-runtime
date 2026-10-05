@@ -49,6 +49,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
+from ori.security.ed25519_keys import admit_public_key, refused_public_key_clause
+
 __all__ = [
     "FirmwareFaultVerification",
     "FirmwareVerificationError",
@@ -293,6 +295,11 @@ def _decode_public_key(public_key_b64: str) -> bytes:
         raise FirmwareVerificationError(
             ERR_PUBLIC_KEY_MISMATCH, "public key is not canonical 32-byte base64"
         )
+    clause = refused_public_key_clause(raw)
+    if clause is not None:
+        raise FirmwareVerificationError(
+            ERR_PUBLIC_KEY_MISMATCH, f"public key refused: {clause}"
+        )
     return raw
 
 
@@ -322,13 +329,16 @@ def _decode_wire_signature(signature: str) -> bytes:
 def _verify_signature(public_key: bytes, message: bytes, signature: bytes) -> None:
     try:
         from cryptography.exceptions import InvalidSignature
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
     except ImportError as exc:  # pragma: no cover - hard runtime dependency
         raise FirmwareVerificationError(
             ERR_SIGNATURE_FAILED, "cryptography Ed25519 support unavailable"
         ) from exc
     try:
-        Ed25519PublicKey.from_public_bytes(public_key).verify(signature, message)
+        verifier = admit_public_key(public_key)
+    except ValueError as exc:
+        raise FirmwareVerificationError(ERR_PUBLIC_KEY_MISMATCH, str(exc)) from exc
+    try:
+        verifier.verify(signature, message)
     except InvalidSignature as exc:
         raise FirmwareVerificationError(
             ERR_SIGNATURE_FAILED, "signature does not verify"

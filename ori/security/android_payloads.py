@@ -35,6 +35,7 @@ from typing import Any, NoReturn
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
+from ori.security.ed25519_keys import admit_public_key
 from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
 from ori.security.release_bundles import ReleaseKey
 
@@ -647,7 +648,7 @@ def _decode_public_key(value: object) -> Ed25519PublicKey | None:
     if len(raw) != 32 or base64.b64encode(raw).decode("ascii") != value:
         return None
     try:
-        return Ed25519PublicKey.from_public_bytes(raw)
+        return admit_public_key(raw)
     except ValueError:
         return None
 

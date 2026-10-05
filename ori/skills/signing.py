@@ -8,6 +8,7 @@ import json
 import math
 from typing import Any
 
+from ori.security.ed25519_keys import admit_public_key
 from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
 from ori.skills.sandbox import SkillSecurityError
 
@@ -181,7 +182,7 @@ def verify_signed_payload(
         )
 
     try:
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        import cryptography.hazmat.primitives.asymmetric.ed25519  # noqa: F401
     except Exception as exc:
         raise SkillSecurityError(
             "cryptography Ed25519 support is unavailable on this runtime"
@@ -189,7 +190,7 @@ def verify_signed_payload(
 
     payload_bytes = canonical_signed_payload(raw_payload)
     try:
-        key = Ed25519PublicKey.from_public_bytes(public_key_bytes)
+        key = admit_public_key(public_key_bytes)
         key.verify(signature_bytes, payload_bytes)
     except Exception as exc:
         raise SkillSecurityError(

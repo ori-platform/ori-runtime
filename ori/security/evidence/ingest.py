@@ -31,6 +31,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from ori.security.ed25519_keys import admit_public_key
 from ori.security.evidence.authority_keys import (
     PURPOSE_EPOCH,
     PURPOSE_RECEIPT,
@@ -272,12 +273,8 @@ def _select(
 def _verify_ed25519(
     key: AuthorityKey, signature: bytes, signed: bytes, label: str
 ) -> None:
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-
     try:
-        Ed25519PublicKey.from_public_bytes(bytes.fromhex(key.public_key_hex)).verify(
-            signature, signed
-        )
+        admit_public_key(bytes.fromhex(key.public_key_hex)).verify(signature, signed)
     except Exception as exc:
         raise IngestRejectedError(
             REJECT_BAD_AUTHENTICATOR, f"the {label} signature does not verify"

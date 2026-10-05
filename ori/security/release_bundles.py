@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import IO, Any, Callable, Generator, NoReturn
 
+from ori.security.ed25519_keys import admit_public_key
+
 SIGNATURE_SCHEMA = "ori.runtime_release_bundle_signature.v1"
 MANIFEST_SCHEMA = "ori.runtime_release_bundle_manifest.v1"
 SIGNATURE_DOMAIN = b"ori.runtime_release_bundle_signature.v1\0"
@@ -333,11 +335,18 @@ def verify_release_bundle(
         code="untrusted_release_key",
     )
     try:
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
-            Ed25519PublicKey,
-        )
-
-        Ed25519PublicKey.from_public_bytes(public_key).verify(
+        verifier = admit_public_key(public_key)
+    except ImportError as exc:
+        raise ReleaseBundleError(
+            "crypto_unavailable",
+            "cryptography Ed25519 support is unavailable",
+        ) from exc
+    except ValueError as exc:
+        raise ReleaseBundleError(
+            "untrusted_release_key", f"release key {key_id!r} is refused: {exc}"
+        ) from exc
+    try:
+        verifier.verify(
             signature,
             canonical_signature_message(envelope),
         )

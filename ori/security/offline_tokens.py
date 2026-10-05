@@ -17,6 +17,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Final
 
+from ori.security.ed25519_keys import admit_public_key
 from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
 from ori.skills.sandbox import SkillSecurityError
 from ori.skills.signing import canonical_signed_payload, verify_signed_payload
@@ -153,9 +154,7 @@ def v2_domain_signature_valid(payload: dict[str, Any], public_key_b64: str) -> b
     except SkillSecurityError:
         return False
     try:
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-
-        Ed25519PublicKey.from_public_bytes(key).verify(signature, preimage)
+        admit_public_key(key).verify(signature, preimage)
     except Exception:
         return False
     return True
@@ -173,9 +172,7 @@ def v1_signature_valid(payload: dict[str, Any], public_key_b64: str) -> bool:
     except SkillSecurityError:
         return False
     try:
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-
-        Ed25519PublicKey.from_public_bytes(key).verify(signature, preimage)
+        admit_public_key(key).verify(signature, preimage)
     except Exception:
         return False
     return True

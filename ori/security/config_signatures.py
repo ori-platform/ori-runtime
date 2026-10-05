@@ -16,6 +16,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from ori.security.ed25519_keys import admit_public_key
 from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
 from ori.utils.bool_utils import is_truthy
 
@@ -224,14 +225,20 @@ def _verify_ed25519_signature(
         )
 
     try:
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        import cryptography.hazmat.primitives.asymmetric.ed25519  # noqa: F401
     except Exception as exc:
         raise ConfigSignatureError(
             "cryptography Ed25519 support is unavailable on this runtime"
         ) from exc
 
     try:
-        Ed25519PublicKey.from_public_bytes(public_key_bytes).verify(
+        verifier = admit_public_key(public_key_bytes)
+    except ValueError as exc:
+        raise ConfigSignatureError(
+            f"config signature trust anchor is refused: {exc}"
+        ) from exc
+    try:
+        verifier.verify(
             signature_bytes,
             payload,
         )

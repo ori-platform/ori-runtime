@@ -20,8 +20,8 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
+from ori.security.ed25519_keys import admit_public_key
 from ori.security.evidence.canonical import CanonicalisationError, canonical_json
 
 COIL = frozenset({"energised", "de_energised"})
@@ -748,7 +748,7 @@ def st_key_selection(b: dict[str, Any], ctx: VerifierContext) -> None:
 
 def st_signature(b: dict[str, Any], sig_b64: str) -> None:
     try:
-        Ed25519PublicKey.from_public_bytes(raw_key(b["signing_key"])).verify(
+        admit_public_key(raw_key(b["signing_key"])).verify(
             base64.b64decode(sig_b64), canonical_bytes(b)
         )
     except (InvalidSignature, ValueError, binascii.Error):
@@ -1059,9 +1059,7 @@ def verify_firmware_profile(pr: Any, ctx: ProfileContext, sig_b64: str) -> None:
     if named not in candidates:
         raise BindingRefusedError("key_selection", "unknown_signer")
     try:
-        Ed25519PublicKey.from_public_bytes(named).verify(
-            base64.b64decode(sig_b64), canonical_bytes(pr)
-        )
+        admit_public_key(named).verify(base64.b64decode(sig_b64), canonical_bytes(pr))
     except (InvalidSignature, ValueError, binascii.Error):
         raise BindingRefusedError("signature", "bad_signature") from None
     if provisioning is not None and named == provisioning:
