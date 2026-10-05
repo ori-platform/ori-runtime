@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import IO, Any, Callable, Generator, NoReturn
 
-from ori.security.ed25519_keys import admit_public_key
+from ori.security.ed25519_keys import admit_public_key, refused_public_key_clause
 
 SIGNATURE_SCHEMA = "ori.runtime_release_bundle_signature.v1"
 MANIFEST_SCHEMA = "ori.runtime_release_bundle_manifest.v1"
@@ -168,12 +168,17 @@ def load_release_key_registry(path: str | Path) -> dict[str, ReleaseKey]:
         if status not in {"active", "verify_only", "revoked"}:
             _fail("untrusted_release_key", "release key status is unsupported")
         public_key_b64 = _registry_string(entry, "public_key_b64")
-        _decode_canonical_base64(
+        decoded_key = _decode_canonical_base64(
             public_key_b64,
             label="release public key",
             expected_length=32,
             code="untrusted_release_key",
         )
+        clause = refused_public_key_clause(decoded_key)
+        if clause is not None:
+            _fail(
+                "untrusted_release_key", f"release key {key_id!r} is refused: {clause}"
+            )
         registry[key_id] = ReleaseKey(
             key_id=key_id,
             public_key_b64=public_key_b64,

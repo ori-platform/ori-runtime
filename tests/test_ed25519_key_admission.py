@@ -475,3 +475,162 @@ def test_runtime_refuses_the_firmware_low_order_class(key: bytes) -> None:
     assert refused_public_key_clause(key) is not None
     with pytest.raises(RefusedPublicKeyError):
         admit_public_key(key)
+
+
+# --- refusal at each layer and load site, on its own -----------------------
+
+
+def test_device_key_decode_refuses_a_small_order_key_by_itself() -> None:
+    from ori.security.firmware.telemetry import (
+        ERR_PUBLIC_KEY_MISMATCH,
+        FirmwareVerificationError,
+        _decode_public_key,
+    )
+
+    with pytest.raises(FirmwareVerificationError) as caught:
+        _decode_public_key(_b64(IDENTITY))
+    assert caught.value.code == ERR_PUBLIC_KEY_MISMATCH
+    assert CLAUSE_SMALL_ORDER in str(caught.value)
+    _, honest = _honest()
+    assert _decode_public_key(_b64(honest)) == honest
+
+
+async def test_a_provisioning_response_under_a_small_order_key_is_named() -> None:
+    from ori.security.firmware.mqtt_provisioning import (
+        FirmwareMqttProvisioningError,
+        FirmwareMqttProvisioningService,
+    )
+    from tests.firmware.test_mqtt_provisioning import (
+        CASES,
+        PA_SEED,
+        _IssuerStore,
+        _wire_message,
+    )
+
+    store = _IssuerStore()
+    store.row = {
+        "device_id": "ori-fw-7c9f2b3a",
+        "anchor_epoch_id": "sha256:" + "aa" * 32,
+        "public_key_b64": _b64(IDENTITY),
+        "approved": True,
+        "revoked": False,
+    }
+    store.seq = 40
+    service = FirmwareMqttProvisioningService(
+        store=store, provisioner_key_bytes=PA_SEED
+    )
+    issued = await service.create_csr(
+        device_id="ori-fw-7c9f2b3a", actor="operator-17", reason="enrollment"
+    )
+    case = dict(CASES["csr_response"])
+    case["signature"] = "ed25519:" + _b64(KEYLESS)
+    with pytest.raises(FirmwareMqttProvisioningError) as caught:
+        await service.verify_response(issued, _wire_message(case))
+    assert caught.value.code == "invalid_device_key"
+
+
+def test_a_commissioning_anchor_is_refused_where_it_is_loaded() -> None:
+    from ori.security.commissioning.anchors import AnchorError, _decode_anchor
+
+    with pytest.raises(AnchorError, match=CLAUSE_SMALL_ORDER):
+        _decode_anchor("ORI_COMMISSIONING_ANCHOR_PUBLIC_KEY_B64", _b64(IDENTITY))
+    _, honest = _honest()
+    assert _decode_anchor("ORI_COMMISSIONING_ANCHOR_PUBLIC_KEY_B64", _b64(honest))
+
+
+def test_a_skill_trust_anchor_is_reported_as_the_fault() -> None:
+    from ori.skills.loader import _anchor_fault
+
+    fault = _anchor_fault(_b64(IDENTITY), "the Hub anchor")
+    assert fault is not None and CLAUSE_SMALL_ORDER in fault
+    _, honest = _honest()
+    assert _anchor_fault(_b64(honest), "the Hub anchor") is None
+
+
+def test_an_offline_token_anchor_is_named_as_refused() -> None:
+    from ori.security import offline_tokens as tokens
+    from tests.test_offline_tokens_v2_vectors import DOMAIN
+
+    verifier = tokens.OfflineTierCTokenVerifier(public_key_b64=_b64(IDENTITY))
+    result = verifier.verify_tier_c_token(
+        json.dumps(DOMAIN["cases"][0]["token"]),
+        proposal=tokens.ProposalClaims(
+            proposal_id="AB12CD34",
+            device_id="energy-monitor-ikeja-01",
+            action="trip_relay",
+            target="relay-gpio-26",
+            zone_id="zone-feeder-a",
+        ),
+    )
+    assert result.approved is False
+    assert result.reason == "trust_anchor_refused"
+
+
+def test_every_published_key_check_also_refuses_small_order_keys() -> None:
+    """A load site that refuses published keys must refuse small-order ones too."""
+    admitting = {"refused_public_key_clause", "admit_public_key"}
+    # Sites whose function admits through another helper, or checks seeds.
+    classified = {
+        ("ori/security/published_test_keys.py", "is_published_seed"): "a seed",
+        ("ori/security/evidence/authority_keys.py", "refuse_published_test_keys"): (
+            "the registry parser applies the clause to every key first"
+        ),
+        ("ori/security/android_payloads.py", "load_payload_key_registry"): (
+            "_decode_public_key admits through admit_public_key"
+        ),
+        ("ori/security/offline_tokens.py", "_anchor_is_published"): (
+            "verify_tier_c_token checks _anchor_refused_clause next"
+        ),
+    }
+    unpaired = []
+    for path in sorted((REPO / "ori").rglob("*.py")):
+        rel = path.relative_to(REPO).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for func in ast.walk(tree):
+            if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            names = {n.id for n in ast.walk(func) if isinstance(n, ast.Name)} | {
+                n.attr for n in ast.walk(func) if isinstance(n, ast.Attribute)
+            }
+            if "PUBLISHED_TEST_KEYS" not in names:
+                continue
+            if names & admitting or (rel, func.name) in classified:
+                continue
+            unpaired.append(f"{rel}:{func.lineno} {func.name}")
+    assert not unpaired, (
+        "These functions refuse a published test key but not a small-order "
+        "key, so the anchor they load is refused only later, at verification, "
+        "and reported as a bad signature. Apply refused_public_key_clause "
+        "beside the published-key check, or classify the site here with the "
+        f"helper that does: {unpaired}"
+    )
+
+
+def test_a_release_key_registry_refuses_a_small_order_key(tmp_path: Path) -> None:
+    from ori.security.release_bundles import (
+        KEY_REGISTRY_SCHEMA,
+        RELEASE_KEY_PURPOSE,
+        ReleaseBundleError,
+        load_release_key_registry,
+    )
+    from tests.test_release_bundles import KEY_ID
+
+    path = tmp_path / "keys.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": KEY_REGISTRY_SCHEMA,
+                "keys": [
+                    {
+                        "key_id": KEY_ID,
+                        "public_key_b64": _b64(IDENTITY),
+                        "purpose": RELEASE_KEY_PURPOSE,
+                        "status": "active",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ReleaseBundleError, match=CLAUSE_SMALL_ORDER):
+        load_release_key_registry(path)

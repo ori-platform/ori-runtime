@@ -13,6 +13,7 @@ refused.
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -50,6 +51,8 @@ def _point_double(point: _Point) -> _Point:
     return (e * f % _P, g * h % _P, f * g % _P, e * h % _P)
 
 
+# A device or anchor key recurs on every message; the decode is pure.
+@lru_cache(maxsize=1024)
 def refused_public_key_clause(public_key: bytes) -> str | None:
     """The clause refusing a 32-byte Ed25519 public key, or None when it is accepted."""
     if len(public_key) != 32:

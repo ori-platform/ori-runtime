@@ -17,7 +17,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Final
 
-from ori.security.ed25519_keys import admit_public_key
+from ori.security.ed25519_keys import admit_public_key, refused_public_key_clause
 from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
 from ori.skills.sandbox import SkillSecurityError
 from ori.skills.signing import canonical_signed_payload, verify_signed_payload
@@ -213,6 +213,11 @@ class OfflineTierCTokenVerifier:
         key = _public_key_bytes(self._public_key_b64)
         return key is not None and key in PUBLISHED_TEST_KEYS
 
+    def _anchor_refused_clause(self) -> str | None:
+        """The clause refusing the configured key, so it is named as the anchor's fault."""
+        key = _public_key_bytes(self._public_key_b64)
+        return None if key is None else refused_public_key_clause(key)
+
     def verify_tier_c_token(
         self, token: str, *, proposal: ProposalClaims
     ) -> TokenVerificationResult:
@@ -247,6 +252,8 @@ class OfflineTierCTokenVerifier:
             return TokenVerificationResult(False, "unknown_claim", token_id)
         if self._anchor_is_published():
             return TokenVerificationResult(False, "trust_anchor_published", token_id)
+        if self._anchor_refused_clause() is not None:
+            return TokenVerificationResult(False, "trust_anchor_refused", token_id)
         if not v2_domain_signature_valid(payload, self._public_key_b64):
             return TokenVerificationResult(False, "invalid_signature", token_id)
         scope = str(payload.get("action_scope", "") or "")

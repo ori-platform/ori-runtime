@@ -16,6 +16,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from ori.security.ed25519_keys import refused_public_key_clause
 from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
 
 COMMISSIONING_ANCHOR_ENV = "ORI_COMMISSIONING_ANCHOR_PUBLIC_KEY_B64"
@@ -56,6 +57,14 @@ def _decode_anchor(name: str, text: str) -> bytes:
             "public half here instead. This is refused at every deployment "
             "profile: a development runtime drives the same relay as a "
             "production one."
+        )
+    clause = refused_public_key_clause(raw)
+    if clause is not None:
+        raise AnchorError(
+            f"{name} is refused ({clause}): under that key a signature verifies "
+            "with no private key behind it, so it binds a binding to nobody. "
+            "Write the public half of a commissioning key generated from a "
+            "private seed."
         )
     return raw
 
@@ -111,7 +120,11 @@ def provisioning_anchor(
         raw = base64.b64decode(text, validate=True)
     except (binascii.Error, ValueError):
         return None
-    if len(raw) != 32 or raw in PUBLISHED_TEST_KEYS:
+    if (
+        len(raw) != 32
+        or raw in PUBLISHED_TEST_KEYS
+        or refused_public_key_clause(raw) is not None
+    ):
         # A published key is not authority, so it is not a provisioning anchor
         # either. The path that verifies with it refuses loudly; here it reads
         # as absent, because an absent anchor cannot collide with one.

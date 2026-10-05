@@ -54,6 +54,7 @@ from ori.reasoning.approval_bounds import (
     approval_timeout_accepted,
 )
 from ori.reasoning.rule_engine import RESERVED_CONTEXT_NAMES
+from ori.security.ed25519_keys import refused_public_key_clause
 from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
 from ori.skills.sandbox import SkillAnchorError, SkillSecurityError
 from ori.skills.signing import verify_community_skill_signature
@@ -462,6 +463,13 @@ def _anchor_fault(trust_anchor_b64: str, source: str) -> str | None:
             "triggers that act without approval. Generate a Hub signing key "
             "that has never left the producer and configure its public half "
             "instead."
+        )
+    clause = refused_public_key_clause(raw)
+    if clause is not None:
+        return (
+            f"{source} is refused ({clause}): under that key a signature "
+            "verifies with no private key behind it, so it would admit a skill "
+            "nobody signed. Configure the public half of a Hub signing key."
         )
     return None
 
