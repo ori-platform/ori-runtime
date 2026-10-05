@@ -75,8 +75,8 @@ FAILURE_REASONS = frozenset(
         "internal_error",
     }
 )
-# The reasons only a courier's acknowledgement writes.
-COURIER_ANSWERS = frozenset({"refused", "queue_full"})
+# What a courier's acknowledgement can say about an envelope this device sealed.
+COURIER_ANSWERS = frozenset({"queued", "queue_full", "refused"})
 
 _DELIVERY_SCHEMA = """
 CREATE TABLE IF NOT EXISTS evidence_delivery_ledger (
@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS evidence_delivery_ledger (
     attempts          INTEGER NOT NULL DEFAULT 0,
     last_attempt_ms   INTEGER,
     last_failure      TEXT,
+    courier_answer    TEXT,
     CHECK (custody_state IN ('none', 'held')),
     CHECK (receipt_state IN ('none', 'accepted')),
     -- Both directions, because a half-written state is as wrong as a forbidden
@@ -769,7 +770,35 @@ class EvidenceDeliveryLedger:
         self._connection.execute("PRAGMA synchronous=FULL")
         self._connection.executescript(_SCHEMA)
         self._add_outbox_withdrawal_column()
+        self._add_courier_answer_column()
         self._boot_id: int | None = None
+
+    def _add_courier_answer_column(self) -> None:
+        """`courier_answer` on a ledger created before the column existed.
+
+        The courier's standing answer used to share `last_failure` with the
+        transport outcome; a row the previous release left there is carried
+        over so a refusal episode in progress is not reopened by the upgrade.
+        """
+        columns = {
+            str(row["name"])
+            for row in self._connection.execute(
+                "PRAGMA table_info(evidence_delivery_ledger)"
+            )
+        }
+        if "courier_answer" not in columns:
+            self._connection.execute("BEGIN IMMEDIATE")
+            self._connection.execute(
+                "ALTER TABLE evidence_delivery_ledger ADD COLUMN courier_answer TEXT"
+            )
+            self._connection.execute(
+                """
+                UPDATE evidence_delivery_ledger
+                   SET courier_answer = last_failure, last_failure = NULL
+                 WHERE last_failure IN ('refused', 'queue_full')
+                """
+            )
+            self._connection.execute("COMMIT")
 
     def _add_outbox_withdrawal_column(self) -> None:
         """`withdrawn_at_ms` on an outbox created before the column existed.
@@ -2071,21 +2100,65 @@ class EvidenceDeliveryLedger:
                 f"{failure!r} is not a recognised failure reason; reasons are a "
                 "closed set so transport detail cannot reach this database"
             )
-        # A publish that went out clears a transport failure, never the
-        # courier's answer: that answer may already have landed for this very
-        # publish, and only the courier's next answer replaces it.
         self._connection.execute(
             """
             UPDATE evidence_delivery_ledger
-               SET attempts = attempts + 1, last_attempt_ms = ?,
-                   last_failure = CASE
-                       WHEN ? IS NULL AND last_failure IN (?, ?) THEN last_failure
-                       ELSE ?
-                   END
+               SET attempts = attempts + 1, last_attempt_ms = ?, last_failure = ?
              WHERE local_seq = ?
             """,
-            (int(at_ms), failure, *sorted(COURIER_ANSWERS), failure, int(local_seq)),
+            (int(at_ms), failure, int(local_seq)),
         )
+
+    def apply_courier_answer(self, local_seq: int, *, answer: str, at_ms: int) -> bool:
+        """Record the courier's answer on an envelope; True when it opens a refusal.
+
+        One transaction, so concurrent answers cannot both see no refusal and
+        both record one. The answer has its own column: the transport outcome
+        of a publish, written by the publisher, can neither erase it nor end a
+        refusal episode. An episode ends only when the courier answers
+        otherwise.
+        """
+        if answer not in COURIER_ANSWERS:
+            raise DeliveryLedgerError(f"{answer!r} is not a courier answer")
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            self._require_sealed(local_seq)
+            row = self._connection.execute(
+                "SELECT courier_answer FROM evidence_delivery_ledger WHERE local_seq = ?",
+                (int(local_seq),),
+            ).fetchone()
+            opens = answer == "refused" and row["courier_answer"] != "refused"
+            if opens:
+                self._connection.execute(
+                    """
+                    INSERT INTO evidence_delivery_gaps
+                        (kind, local_seq, reason, observed_at_ms)
+                    VALUES (?, ?, 'refused', ?)
+                    """,
+                    (FAILURE_SEND, int(local_seq), int(at_ms)),
+                )
+            if answer == "queued":
+                self._connection.execute(
+                    "UPDATE evidence_delivery_ledger SET courier_answer = ?"
+                    " WHERE local_seq = ?",
+                    (answer, int(local_seq)),
+                )
+            else:
+                # A deferral or a refusal counts as an attempt, as it always has.
+                self._connection.execute(
+                    """
+                    UPDATE evidence_delivery_ledger
+                       SET courier_answer = ?, attempts = attempts + 1,
+                           last_attempt_ms = ?
+                     WHERE local_seq = ?
+                    """,
+                    (answer, int(at_ms), int(local_seq)),
+                )
+            self._connection.execute("COMMIT")
+        except BaseException:
+            self._connection.execute("ROLLBACK")
+            raise
+        return opens
 
     def record_delivery_failure(
         self,

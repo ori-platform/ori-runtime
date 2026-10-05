@@ -182,3 +182,44 @@ async def test_a_state_store_without_the_reference_table_gains_it(tmp_path):
         } <= triggers
     finally:
         conn.close()
+
+
+async def test_a_courier_answer_moves_out_of_last_failure_on_upgrade(tmp_path):
+    db = tmp_path / "evidence.db"
+    _previous_release_store(db)
+    conn = sqlite3.connect(str(db))
+    try:
+        for seq, failure in ((1, "refused"), (2, "queue_full"), (3, "unreachable")):
+            conn.execute(
+                "INSERT INTO evidence_delivery_ledger (local_seq, event_id, chain_seq,"
+                " device_id, anchor_epoch_id, key_id, envelope_json, envelope_digest,"
+                " chain_row_digest, sealed_at_ms, attempts, last_failure)"
+                " VALUES (?, ?, ?, ?, 'e', 'k', '{}', ?, ?, 1, 1, ?)",
+                (seq, f"evt-{seq}", seq, DEVICE, f"d{seq}", f"c{seq}", failure),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    attestor = FirstPartyEvidenceAttestor(
+        db_path=str(db),
+        key_path=str(tmp_path / "evidence.key"),
+        device_secret=SECRET,
+        device_id=DEVICE,
+    )
+    assert await attestor.start() is True
+    attestor.close()
+
+    conn = sqlite3.connect(str(db))
+    try:
+        rows = conn.execute(
+            "SELECT local_seq, courier_answer, last_failure"
+            " FROM evidence_delivery_ledger ORDER BY local_seq"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert rows == [
+        (1, "refused", None),
+        (2, "queue_full", None),
+        (3, None, "unreachable"),
+    ]
