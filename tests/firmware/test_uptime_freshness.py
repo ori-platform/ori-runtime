@@ -462,3 +462,17 @@ async def test_a_device_unapproved_before_the_advance_is_named(
         between=revoke_and_reinstate,
     )
     assert code == "device_not_approved"
+
+
+def test_neither_verifier_defaults_the_stored_uptime() -> None:
+    """A caller that forgets the stored uptime must fail, not skip the check."""
+    import inspect
+
+    from ori.security.firmware.telemetry import (
+        verify_fault_message,
+        verify_telemetry_message,
+    )
+
+    for verifier in (verify_telemetry_message, verify_fault_message):
+        parameter = inspect.signature(verifier).parameters["last_uptime_ms"]
+        assert parameter.default is inspect.Parameter.empty, verifier.__name__
