@@ -137,7 +137,7 @@ class TestMqttAdapter:
             await adapter.close()
 
     @pytest.mark.asyncio
-    async def test_invalid_payload_path_is_ignored(self):
+    async def test_invalid_payload_path_is_refused(self):
         adapter = MqttAdapter()
         fake_aiomqtt = SimpleNamespace(Client=_FakeClient)
         with (
@@ -147,15 +147,15 @@ class TestMqttAdapter:
             await adapter.connect(_config())
             assert isinstance(adapter._client, _FakeClient)
 
-            # Missing reading.value path -> listener logs and skips cache write.
+            # Missing reading.value path -> the payload is refused, by name.
             await adapter._client.emit("plant/chiller/supply", b'{"bad":true}')
             await asyncio.sleep(0)
-            with pytest.raises(AdapterReadError, match="no MQTT data cached yet"):
+            with pytest.raises(AdapterReadError, match="was refused.*not found"):
                 await adapter.read("chiller-temp-01")
             await adapter.close()
 
     @pytest.mark.asyncio
-    async def test_circuit_breaker_integration(self):
+    async def test_a_silent_source_does_not_open_the_breaker(self):
         adapter = MqttAdapter()
         fake_aiomqtt = SimpleNamespace(Client=_FakeClient)
 
@@ -171,8 +171,9 @@ class TestMqttAdapter:
 
             with pytest.raises(AdapterReadError, match="no MQTT data cached yet"):
                 await adapter.read("chiller-temp-01")
-            assert adapter._breaker.state == CircuitState.OPEN
+            assert adapter._breaker.state == CircuitState.CLOSED
 
-            with pytest.raises(AdapterReadError, match="circuit breaker OPEN"):
+            # A source that has not published is not a fault to back off from.
+            with pytest.raises(AdapterReadError, match="no MQTT data cached yet"):
                 await adapter.read("chiller-temp-01")
             await adapter.close()

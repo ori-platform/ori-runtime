@@ -86,12 +86,7 @@ class MqttPerceptionAdapter(MqttCachedAdapter):
 
         async with self._breaker:
             self._require_listener()
-            cached = self._cache.get(self._topic)
-            if cached is None:
-                raise AdapterReadError(
-                    "MqttPerceptionAdapter: no perception message cached yet"
-                )
-
+        cached = self._cached_value(self._topic, "no perception message cached yet")
         self._require_fresh(self._topic)
         value, timestamp_ms, raw_payload = cached
         payload = raw_payload if isinstance(raw_payload, dict) else {}

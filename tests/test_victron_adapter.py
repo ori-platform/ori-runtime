@@ -151,7 +151,7 @@ class TestVictronAdapter:
             await adapter.close()
 
     @pytest.mark.asyncio
-    async def test_circuit_breaker_integration(self):
+    async def test_a_silent_source_does_not_open_the_breaker(self):
         adapter = VictronAdapter()
         fake_aiomqtt = SimpleNamespace(Client=_FakeClient)
 
@@ -168,9 +168,10 @@ class TestVictronAdapter:
 
             with pytest.raises(AdapterReadError, match="no MQTT data cached yet"):
                 await adapter.read("victron-01")
-            assert adapter._breaker.state == CircuitState.OPEN
+            assert adapter._breaker.state == CircuitState.CLOSED
 
-            with pytest.raises(AdapterReadError, match="circuit breaker OPEN"):
+            # A source that has not published is not a fault to back off from.
+            with pytest.raises(AdapterReadError, match="no MQTT data cached yet"):
                 await adapter.read("victron-01")
 
             await adapter.close()
