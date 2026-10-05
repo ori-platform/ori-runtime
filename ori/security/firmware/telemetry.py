@@ -485,6 +485,11 @@ def manifest_channel_map(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return out
 
 
+def _is_version_one(value: Any) -> bool:
+    """Exactly the integer 1: `True == 1` and `1.0 == 1` in Python, not on the wire."""
+    return type(value) is int and value == 1
+
+
 def _validate_manifest_interlocks(manifest: dict[str, Any]) -> None:
     interlocks = _require_list(manifest, "interlocks", ERR_INVALID_ENVELOPE)
     for index, interlock in enumerate(interlocks):
@@ -550,7 +555,7 @@ def verify_manifest_message(
         raise FirmwareVerificationError(ERR_INVALID_ENVELOPE, "missing manifest object")
     manifest: dict[str, Any] = message["manifest"]
 
-    if manifest.get("v") != 1:
+    if not _is_version_one(manifest.get("v")):
         raise FirmwareVerificationError(
             ERR_INVALID_ENVELOPE, "unsupported manifest version"
         )
@@ -742,7 +747,7 @@ def verify_telemetry_message(
             )
         envelope: dict[str, Any] = message["envelope"]
 
-        if envelope.get("v") != 1:
+        if not _is_version_one(envelope.get("v")):
             raise FirmwareVerificationError(
                 ERR_INVALID_ENVELOPE, "unsupported envelope version"
             )
@@ -903,7 +908,7 @@ def verify_fault_message(
             raise FirmwareVerificationError(
                 ERR_INVALID_ENVELOPE, "fault object has unexpected fields"
             )
-        if fault.get("v") != 1:
+        if not _is_version_one(fault.get("v")):
             raise FirmwareVerificationError(
                 ERR_INVALID_ENVELOPE, "unsupported fault version"
             )

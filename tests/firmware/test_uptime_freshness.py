@@ -164,3 +164,122 @@ async def test_an_upgraded_row_is_seeded_by_its_first_message(tmp_path: Path) ->
         )
     finally:
         await upgraded.close()
+
+
+async def test_a_boot_advanced_by_a_release_without_uptime_does_not_refuse(
+    gate: FirmwareTelemetryGate, store: StateStore
+) -> None:
+    """Rolled back, the previous release moves boot_id and seq but not uptime."""
+    assert await _telemetry_code(gate, boot_id=5, seq=10, uptime=86_400_000) is None
+    assert store._conn is not None
+    store._conn.execute(
+        "UPDATE firmware_device_registry SET last_boot_id = 6, last_seq = 21"
+        " WHERE device_id = ?",
+        (SEALED_DEVICE,),
+    )
+    store._conn.commit()
+    assert await _telemetry_code(gate, boot_id=6, seq=22, uptime=3000) is None
+    assert (
+        await _telemetry_code(gate, boot_id=6, seq=23, uptime=2999)
+        == ERR_UPTIME_REGRESSION
+    )
+
+
+async def test_a_lost_advance_is_refused_under_its_own_reason(
+    gate: FirmwareTelemetryGate, store: StateStore
+) -> None:
+    import asyncio
+
+    assert await _telemetry_code(gate, boot_id=5, seq=10, uptime=5000) is None
+    original = store.get_firmware_device
+    reads = 0
+
+    async def stale_read(device_id: str) -> Any:
+        # Both messages verify against the same mark before either advances.
+        nonlocal reads
+        reads += 1
+        row = await original(device_id)
+        await asyncio.sleep(0.05 if reads <= 2 else 0)
+        return row
+
+    store.get_firmware_device = stale_read  # type: ignore[method-assign]
+    ahead, behind = await asyncio.gather(
+        gate.ingest(_telemetry(boot_id=5, seq=11, uptime=6000), received_at_ms=1),
+        gate.ingest(_telemetry(boot_id=5, seq=12, uptime=5500), received_at_ms=1),
+    )
+    codes = sorted(str(v.error_code) for v, _ in (ahead, behind) if not v.accepted)
+    assert codes == [ERR_UPTIME_REGRESSION]
+
+
+async def test_a_manifest_change_keeps_uptime_and_a_new_key_resets_it(
+    gate: FirmwareTelemetryGate, store: StateStore
+) -> None:
+    from tests.firmware.test_telemetry import (
+        PUBLIC_KEY_B64,
+        signed_manifest_for_key,
+    )
+
+    assert await _telemetry_code(gate, boot_id=5, seq=10, uptime=5000) is None
+    sealed = {
+        "posture": "sealed_flash",
+        "secure_boot_enabled": True,
+        "flash_encryption_enabled": True,
+        "key_storage": "efuse_derived",
+    }
+    same_key = signed_manifest_for_key(
+        GOLDEN_SEED, device_id=SEALED_DEVICE, firmware_version="0.2.0", **sealed
+    )
+    await gate.register_device(
+        device_id=SEALED_DEVICE,
+        public_key_b64=PUBLIC_KEY_B64,
+        posture="sealed_flash",
+        manifest_message=same_key,
+    )
+    assert await gate.approve_device(SEALED_DEVICE, actor="op", reason="manifest")
+    row = await store.get_firmware_device(SEALED_DEVICE)
+    assert row is not None
+    assert (row["last_boot_id"], row["last_seq"], row["last_uptime_ms"]) == (
+        5,
+        10,
+        5000,
+    )
+
+    new_key = signed_manifest_for_key(
+        bytes([0x55]) * 32, device_id=SEALED_DEVICE, **sealed
+    )
+    await gate.reprovision_device(
+        device_id=SEALED_DEVICE,
+        public_key_b64=new_key["public_key_b64"],
+        posture="sealed_flash",
+        manifest_message=new_key,
+        actor="op",
+        reason="key rotation",
+    )
+    assert await gate.approve_device(SEALED_DEVICE, actor="op", reason="rotation")
+    row = await store.get_firmware_device(SEALED_DEVICE)
+    assert row is not None
+    assert (row["last_boot_id"], row["last_seq"], row["last_uptime_ms"]) == (0, 0, None)
+    assert store._conn is not None
+    stored = store._conn.execute(
+        "SELECT last_uptime_ms, last_uptime_boot_id FROM firmware_device_registry"
+        " WHERE device_id = ?",
+        (SEALED_DEVICE,),
+    ).fetchone()
+    assert tuple(stored) == (None, None)
+
+
+@pytest.mark.parametrize("family", ["envelope", "fault"])
+async def test_a_message_version_that_only_equals_one_is_refused(
+    gate: FirmwareTelemetryGate, family: str
+) -> None:
+    if family == "envelope":
+        body = copy.deepcopy(CASES["telemetry_single_reading"]["input"])
+        body.update(v=True, boot_id=5, seq=10)
+        verification, _ = await gate.ingest(_signed("envelope", body), received_at_ms=1)
+    else:
+        fault = dict(signed_fault_message(seq=10)["fault"])
+        fault.update(v=True)
+        verification = await gate.ingest_fault(
+            _signed("fault", fault), received_at_ms=1
+        )
+    assert not verification.accepted and verification.error_code == "invalid_envelope"

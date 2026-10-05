@@ -95,3 +95,9 @@ def test_a_missing_required_root_field_is_refused() -> None:
             anchor_device_id=DEVICE,
             anchor_public_key_b64=message["public_key_b64"],
         )
+
+
+@pytest.mark.parametrize("version", [True, 1.0])
+def test_a_version_that_only_equals_one_is_refused(version: Any) -> None:
+    with pytest.raises(FirmwareVerificationError, match="unsupported manifest version"):
+        _verify(v=version)
