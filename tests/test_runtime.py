@@ -55,7 +55,6 @@ from ori.runtime import (
     _maybe_autoload_dotenv,
     _message_from_context,
     _process_target_from_context,
-    _resolve_dispatcher_approval_timeout,
     _resolve_local_model_file,
     _resolve_setup_notification_channels,
     _setup_success_message,
@@ -1164,7 +1163,6 @@ def minimal_config(tmp_path: Path) -> Path:
             skills:
               - name: test-skill
                 version: "0.1.0"
-                config: {{}}
 
             reasoning:
               default_tier: local
@@ -1306,7 +1304,6 @@ async def test_a_relative_skills_dir_survives_a_runtime_working_directory(
             skills:
               - name: test-skill
                 version: "0.1.0"
-                config: {}
             reasoning:
               default_tier: rule
             gateway:
@@ -2407,23 +2404,6 @@ class TestLifecycle:
         await run_runtime_full_startup(runtime)
         # Second call, after startup has finished and the first stop returned.
         await runtime.stop()  # must be a no-op
-
-    def test_resolve_dispatcher_approval_timeout_uses_max_declared(self):
-        skills_cfg = [
-            SimpleNamespace(config={"approval_timeout_seconds": 90}),
-            SimpleNamespace(config={"approval_timeout_seconds": 600}),
-            SimpleNamespace(config={}),
-        ]
-        resolved = _resolve_dispatcher_approval_timeout(skills_cfg, 300)
-        assert resolved == 600
-
-    def test_resolve_dispatcher_approval_timeout_ignores_invalid_values(self):
-        skills_cfg = [
-            SimpleNamespace(config={"approval_timeout_seconds": "invalid"}),
-            SimpleNamespace(config={"approval_timeout_seconds": -1}),
-        ]
-        resolved = _resolve_dispatcher_approval_timeout(skills_cfg, 300)
-        assert resolved == 300
 
     async def test_start_does_not_duplicate_rotating_file_handler(
         self, minimal_config, monkeypatch
@@ -4331,7 +4311,6 @@ class TestWebhookServerStartup:
                 skills:
                   - name: test-skill
                     version: "0.1.0"
-                    config: {{}}
 
                 reasoning:
                   default_tier: local
@@ -4436,7 +4415,6 @@ class TestWebhookServerStartup:
                 skills:
                   - name: test-skill
                     version: "0.1.0"
-                    config: {{}}
 
                 reasoning:
                   default_tier: local
@@ -4533,7 +4511,6 @@ class TestWebhookServerStartup:
                 skills:
                   - name: test-skill
                     version: "0.1.0"
-                    config: {{}}
                 reasoning:
                   default_tier: local
                   local_model: ""

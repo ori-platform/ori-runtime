@@ -262,7 +262,6 @@ def startable_config(tmp_path: Path) -> Path:
             skills:
               - name: test-skill
                 version: "0.1.0"
-                config: {{}}
             reasoning:
               default_tier: local
               local_model: ""
