@@ -31,6 +31,7 @@ from typing import Any
 from ori.network.events import SensorReading
 from ori.security.firmware.telemetry import (
     ERR_BOOT_ROLLBACK,
+    ERR_DEVICE_NOT_APPROVED,
     ERR_DEVICE_REVOKED,
     ERR_KEY_CHANGE_REQUIRES_REPROVISIONING,
     ERR_KEY_EPOCH_REUSED,
@@ -70,6 +71,10 @@ class FirmwareTelemetryGate:
         """The reason a message lost the atomic advance, read against the new mark."""
         row = await self._store.get_firmware_device(verification.device_id)
         if row is not None:
+            if row["revoked"]:
+                return ERR_DEVICE_REVOKED, "device was revoked before the advance"
+            if not row["approved"]:
+                return ERR_DEVICE_NOT_APPROVED, "device is not approved"
             boot_id = int(row["last_boot_id"])
             last_uptime = row["last_uptime_ms"]
             if verification.boot_id < boot_id:

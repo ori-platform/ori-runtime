@@ -516,7 +516,7 @@ CREATE TABLE IF NOT EXISTS firmware_device_registry (
     last_provision_seq INTEGER NOT NULL DEFAULT 0,
     last_runtime_seq  INTEGER NOT NULL DEFAULT 0,
     last_uptime_ms    INTEGER,
-    last_uptime_boot_id INTEGER,
+    last_uptime_mark  TEXT,
     revoked           INTEGER NOT NULL DEFAULT 0,
     revoked_at_ms     INTEGER
 );
@@ -1155,6 +1155,11 @@ HOOK_BUSY_TIMEOUT_S = 0.05
 HOOK_BUSY_BACKOFF_S = 1.0
 
 
+def _uptime_mark(key_epoch_id: Any, boot_id: int, seq: int) -> str:
+    """The freshness mark an uptime is stored against, as the store writes it."""
+    return f"{key_epoch_id or ''}:{boot_id}:{seq}"
+
+
 class StateStore:
     """Async-safe SQLite state store.
 
@@ -1442,11 +1447,12 @@ class StateStore:
         self._add_column_if_missing_on_conn(
             conn, "firmware_device_registry", "last_uptime_ms", "INTEGER"
         )
-        # The boot the stored uptime belongs to. A release without these
-        # columns advances last_boot_id alone, so an uptime is compared only
-        # when it was stored for the boot now recorded.
+        # The mark the stored uptime was written with: key epoch, boot and
+        # seq. A writer that moves any of them without the uptime (a release
+        # without these columns, after a rollback) leaves it incomparable, and
+        # the next message re-seeds it.
         self._add_column_if_missing_on_conn(
-            conn, "firmware_device_registry", "last_uptime_boot_id", "INTEGER"
+            conn, "firmware_device_registry", "last_uptime_mark", "TEXT"
         )
         for col, typedef in (
             ("proposal_id", "TEXT    NOT NULL DEFAULT ''"),
@@ -5689,7 +5695,7 @@ class StateStore:
                    manifest_json, channel_map_json, board_profile, approved,
                    provisioned_at_ms, last_boot_id, last_seq, last_provision_seq,
                    revoked, revoked_at_ms, anchor_epoch_id, key_epoch_id,
-                   last_uptime_ms, last_uptime_boot_id
+                   last_uptime_ms, last_uptime_mark
             FROM firmware_device_registry WHERE device_id = ?
             """,
             (device_id,),
@@ -5714,10 +5720,11 @@ class StateStore:
             "revoked_at_ms": int(row[14]) if row[14] is not None else None,
             "anchor_epoch_id": row[15],
             "key_epoch_id": row[16],
-            # Only an uptime stored for the boot now recorded is comparable.
+            # Only an uptime stored with the mark now recorded is comparable.
             "last_uptime_ms": (
                 int(row[17])
-                if row[17] is not None and row[18] is not None and row[18] == row[10]
+                if row[17] is not None
+                and row[18] == _uptime_mark(row[16], int(row[10]), int(row[11]))
                 else None
             ),
         }
@@ -5837,8 +5844,8 @@ class StateStore:
                    last_boot_id = CASE WHEN ? THEN 0 ELSE last_boot_id END,
                    last_seq = CASE WHEN ? THEN 0 ELSE last_seq END,
                    last_uptime_ms = CASE WHEN ? THEN NULL ELSE last_uptime_ms END,
-                   last_uptime_boot_id =
-                       CASE WHEN ? THEN NULL ELSE last_uptime_boot_id END
+                   last_uptime_mark =
+                       CASE WHEN ? THEN NULL ELSE last_uptime_mark END
              WHERE device_id = ? AND revoked = 0
             """,
             (
@@ -6766,18 +6773,22 @@ class StateStore:
             """
             UPDATE firmware_device_registry
             SET last_boot_id = ?, last_seq = ?, last_uptime_ms = ?,
-                last_uptime_boot_id = ?
+                last_uptime_mark =
+                    COALESCE(key_epoch_id, '') || ':' || ? || ':' || ?
             WHERE device_id = ? AND revoked = 0 AND approved = 1
               AND ? >= last_boot_id AND ? > last_seq
               AND (? > last_boot_id OR last_uptime_ms IS NULL
-                   OR last_uptime_boot_id IS NOT last_boot_id
+                   OR last_uptime_mark IS NOT
+                      COALESCE(key_epoch_id, '') || ':' || last_boot_id
+                      || ':' || last_seq
                    OR ? >= last_uptime_ms)
             """,
             (
                 boot_id,
                 seq,
                 uptime_ms,
-                boot_id,
+                int(boot_id),
+                int(seq),
                 device_id,
                 boot_id,
                 seq,

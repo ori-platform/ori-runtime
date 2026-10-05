@@ -185,30 +185,122 @@ async def test_a_boot_advanced_by_a_release_without_uptime_does_not_refuse(
     )
 
 
+def _stale_once(store: StateStore, stale: dict) -> None:
+    """The next read returns *stale*: the mark the message verified against."""
+    original = store.get_firmware_device
+    calls = {"n": 0}
+
+    async def read(device_id: str) -> Any:
+        calls["n"] += 1
+        return stale if calls["n"] == 1 else await original(device_id)
+
+    store.get_firmware_device = read  # type: ignore[method-assign]
+
+
+async def _lost(
+    gate: FirmwareTelemetryGate,
+    store: StateStore,
+    *,
+    ahead: dict[str, int],
+    behind: dict[str, int],
+    fault: bool = False,
+    between: Any = None,
+) -> str | None:
+    """`behind` verifies against the mark before `ahead` committed, then loses."""
+    stale = await store.get_firmware_device(SEALED_DEVICE)
+    assert stale is not None
+    assert await _telemetry_code(gate, **ahead) is None
+    if between is not None:
+        await between()
+    _stale_once(store, stale)
+    if fault:
+        return await _fault_code(gate, **behind)
+    return await _telemetry_code(gate, **behind)
+
+
+@pytest.mark.parametrize("fault", [False, True], ids=["telemetry", "fault"])
 async def test_a_lost_advance_is_refused_under_its_own_reason(
+    gate: FirmwareTelemetryGate, store: StateStore, fault: bool
+) -> None:
+    assert await _telemetry_code(gate, boot_id=5, seq=10, uptime=5000) is None
+    code = await _lost(
+        gate,
+        store,
+        ahead={"boot_id": 5, "seq": 11, "uptime": 6000},
+        behind={"boot_id": 5, "seq": 12, "uptime": 5500},
+        fault=fault,
+    )
+    assert code == ERR_UPTIME_REGRESSION
+
+
+async def test_a_lost_advance_behind_a_newer_boot_is_a_boot_rollback(
     gate: FirmwareTelemetryGate, store: StateStore
 ) -> None:
-    import asyncio
-
     assert await _telemetry_code(gate, boot_id=5, seq=10, uptime=5000) is None
-    original = store.get_firmware_device
-    reads = 0
-
-    async def stale_read(device_id: str) -> Any:
-        # Both messages verify against the same mark before either advances.
-        nonlocal reads
-        reads += 1
-        row = await original(device_id)
-        await asyncio.sleep(0.05 if reads <= 2 else 0)
-        return row
-
-    store.get_firmware_device = stale_read  # type: ignore[method-assign]
-    ahead, behind = await asyncio.gather(
-        gate.ingest(_telemetry(boot_id=5, seq=11, uptime=6000), received_at_ms=1),
-        gate.ingest(_telemetry(boot_id=5, seq=12, uptime=5500), received_at_ms=1),
+    code = await _lost(
+        gate,
+        store,
+        ahead={"boot_id": 6, "seq": 11, "uptime": 100},
+        behind={"boot_id": 5, "seq": 12, "uptime": 6000},
     )
-    codes = sorted(str(v.error_code) for v, _ in (ahead, behind) if not v.accepted)
-    assert codes == [ERR_UPTIME_REGRESSION]
+    assert code == "boot_rollback"
+
+
+async def test_a_lost_advance_on_a_spent_seq_is_a_replay(
+    gate: FirmwareTelemetryGate, store: StateStore
+) -> None:
+    assert await _telemetry_code(gate, boot_id=5, seq=10, uptime=5000) is None
+    code = await _lost(
+        gate,
+        store,
+        ahead={"boot_id": 5, "seq": 11, "uptime": 6000},
+        behind={"boot_id": 5, "seq": 11, "uptime": 5500},
+    )
+    assert code == "sequence_replay"
+
+
+async def test_a_device_revoked_before_the_advance_is_named(
+    gate: FirmwareTelemetryGate, store: StateStore
+) -> None:
+    assert await _telemetry_code(gate, boot_id=5, seq=10, uptime=5000) is None
+
+    async def revoke() -> None:
+        assert await gate.revoke_device(SEALED_DEVICE, actor="op", reason="lost")
+
+    code = await _lost(
+        gate,
+        store,
+        ahead={"boot_id": 5, "seq": 11, "uptime": 6000},
+        behind={"boot_id": 5, "seq": 12, "uptime": 7000},
+        between=revoke,
+    )
+    assert code == "device_revoked"
+
+
+async def test_a_key_rotated_by_a_release_without_uptime_does_not_refuse(
+    gate: FirmwareTelemetryGate, store: StateStore
+) -> None:
+    """Rolled back, the previous release re-keys and the device restarts at the same boot."""
+    assert await _telemetry_code(gate, boot_id=3, seq=10, uptime=86_400_000) is None
+    assert store._conn is not None
+    store._conn.execute(
+        "UPDATE firmware_device_registry SET key_epoch_id = 'rotated',"
+        " last_boot_id = 3, last_seq = 1 WHERE device_id = ?",
+        (SEALED_DEVICE,),
+    )
+    store._conn.commit()
+    row = await store.get_firmware_device(SEALED_DEVICE)
+    assert row is not None and row["last_uptime_ms"] is None
+    stale = store._conn.execute(
+        "SELECT COUNT(*) FROM firmware_device_registry WHERE device_id = ?"
+        " AND last_uptime_mark IS NOT"
+        " COALESCE(key_epoch_id, '') || ':' || last_boot_id || ':' || last_seq",
+        (SEALED_DEVICE,),
+    ).fetchone()
+    assert tuple(stale) == (1,)
+    assert await store.advance_firmware_freshness(
+        SEALED_DEVICE, boot_id=3, seq=2, uptime_ms=2000
+    )
 
 
 async def test_a_manifest_change_keeps_uptime_and_a_new_key_resets_it(
@@ -261,7 +353,7 @@ async def test_a_manifest_change_keeps_uptime_and_a_new_key_resets_it(
     assert (row["last_boot_id"], row["last_seq"], row["last_uptime_ms"]) == (0, 0, None)
     assert store._conn is not None
     stored = store._conn.execute(
-        "SELECT last_uptime_ms, last_uptime_boot_id FROM firmware_device_registry"
+        "SELECT last_uptime_ms, last_uptime_mark FROM firmware_device_registry"
         " WHERE device_id = ?",
         (SEALED_DEVICE,),
     ).fetchone()
