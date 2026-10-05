@@ -665,5 +665,69 @@ async def test_a_key_already_duplicated_resolves_no_link_and_still_opens(
         assert any("duplicated" in r.getMessage() for r in caplog.records)
         summary = await store.get_attestation_summary()
         assert summary["contributor_links_unresolved"] == 1
+        # Every later write is still held to one row per key.
+        result, _ = _dispatch_row("fresh")
+        await store.log_action(result, "t", record_kind="dispatch", record_key="fresh")
+        with pytest.raises(sqlite3.IntegrityError):
+            await store.log_action(
+                result, "t", record_kind="dispatch", record_key="fresh"
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            await store.log_action(
+                result, "t", record_kind="dispatch", record_key="holder"
+            )
+        assert store._conn is not None
+        with pytest.raises(sqlite3.IntegrityError):
+            store._conn.execute(
+                "UPDATE action_log SET record_key = 'fresh' WHERE record_key = 'joiner'"
+            )
+        store._conn.rollback()
+        counts = dict(
+            store._conn.execute(
+                "SELECT record_key, COUNT(*) FROM action_log"
+                " WHERE record_key IN ('fresh', 'holder') GROUP BY record_key"
+            ).fetchall()
+        )
+        assert counts == {"fresh": 1, "holder": 2}
+    finally:
+        await store.close()
+
+
+async def test_a_repaired_store_takes_the_index_and_drops_the_fallback(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "state.db"
+    store = StateStore(str(db))
+    await store.open()
+    await store.close()
+    conn = sqlite3.connect(str(db))
+    conn.execute("DROP INDEX idx_action_log_record_key_unique")
+    for _ in range(2):
+        conn.execute(
+            "INSERT INTO action_log (action_name, tier, executed, action_taken,"
+            " trigger_name, timestamp, record_key)"
+            " VALUES ('trip_relay', 'D', 1, 'trip_relay', 't', 1, 'dup')"
+        )
+    conn.commit()
+    conn.close()
+    store = StateStore(str(db))
+    await store.open()
+    await store.close()
+    conn = sqlite3.connect(str(db))
+    conn.execute("DELETE FROM action_log WHERE id = (SELECT MAX(id) FROM action_log)")
+    conn.commit()
+    conn.close()
+    store = StateStore(str(db))
+    await store.open()
+    try:
+        assert store._conn is not None
+        names = {
+            r[0]
+            for r in store._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type IN ('index', 'trigger')"
+            )
+        }
+        assert "idx_action_log_record_key_unique" in names
+        assert not {n for n in names if n.startswith("trg_action_log_record_key")}
     finally:
         await store.close()

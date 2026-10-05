@@ -1227,6 +1227,37 @@ def _check_action_record_shape(
         )
 
 
+# Where duplicated keys already stop the unique index from being built, these
+# hold every later insert and key update to a key no other row carries.
+_RECORD_KEY_UNIQUE_TRIGGER_NAMES = (
+    "trg_action_log_record_key_unique_insert",
+    "trg_action_log_record_key_unique_update",
+)
+_RECORD_KEY_UNIQUE_TRIGGERS = (
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_action_log_record_key_unique_insert
+    BEFORE INSERT ON action_log
+    WHEN NEW.record_key <> ''
+         AND EXISTS (SELECT 1 FROM action_log WHERE record_key = NEW.record_key)
+    BEGIN
+        SELECT RAISE(ABORT, 'action_log.record_key is already in use');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_action_log_record_key_unique_update
+    BEFORE UPDATE OF record_key ON action_log
+    WHEN NEW.record_key <> ''
+         AND EXISTS (
+             SELECT 1 FROM action_log
+             WHERE record_key = NEW.record_key AND id <> OLD.id
+         )
+    BEGIN
+        SELECT RAISE(ABORT, 'action_log.record_key is already in use');
+    END
+    """,
+)
+
+
 class StateStore:
     """Async-safe SQLite state store.
 
@@ -2056,6 +2087,8 @@ class StateStore:
         # default '' and stay outside the constraint. Keys already duplicated
         # are reported, not a reason to refuse the store: Tier D does not wait
         # on evidence, and the unresolved count treats such a key as no link.
+        # Every later write is still held to one row per key, by triggers
+        # where the index cannot be built.
         try:
             conn.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_action_log_record_key_unique"
@@ -2065,8 +2098,13 @@ class StateStore:
             logger.critical(
                 "[action_log] record keys are duplicated, so a contributor's link "
                 "cannot name one holder row; those links are counted unresolved "
-                "until the rows are repaired"
+                "until the rows are repaired, and no new key may reuse one"
             )
+            for statement in _RECORD_KEY_UNIQUE_TRIGGERS:
+                conn.execute(statement)
+        else:
+            for name in _RECORD_KEY_UNIQUE_TRIGGER_NAMES:
+                conn.execute(f"DROP TRIGGER IF EXISTS {name}")
 
     def _add_column_if_missing_on_conn(
         self,
