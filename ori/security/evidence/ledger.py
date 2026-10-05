@@ -785,6 +785,8 @@ class EvidenceDeliveryLedger:
         The courier's standing answer used to share `last_failure` with the
         transport outcome; a row the previous release left there is carried
         over so a refusal episode in progress is not reopened by the upgrade.
+        That release never records `queued`, so a rollback cannot end an
+        episode; the carry-over preserves what it did record and nothing more.
         An added column carries no CHECK, so stored answers are validated here
         and on every write instead.
         """
@@ -798,21 +800,30 @@ class EvidenceDeliveryLedger:
             self._connection.execute(
                 "ALTER TABLE evidence_delivery_ledger ADD COLUMN courier_answer TEXT"
             )
-        # On every open, not only the first: a release rolled back to records
-        # the courier's answer in last_failure, and a roll-forward must carry
-        # it over or the episode it opened is reopened by the next refusal.
-        self._connection.execute(
-            """
-            UPDATE evidence_delivery_ledger
-               SET courier_answer = last_failure, last_failure = NULL
-             WHERE last_failure IN ('refused', 'queue_full')
-            """
-        )
         if "courier_answer_at_ms" not in columns:
             self._connection.execute(
                 "ALTER TABLE evidence_delivery_ledger"
                 " ADD COLUMN courier_answer_at_ms INTEGER"
             )
+        # On every open, not only the first: a release rolled back to records
+        # the courier's answer in last_failure, and a roll-forward must carry
+        # it over or the episode it opened is reopened by the next refusal.
+        # The answer and its ordering time move in one statement, and the time
+        # never goes back: the carried answer is later than the one standing,
+        # so a delayed acknowledgement signed between them must not displace it.
+        self._connection.execute(
+            """
+            UPDATE evidence_delivery_ledger
+               SET courier_answer = last_failure,
+                   last_failure = NULL,
+                   courier_answer_at_ms = CASE
+                       WHEN courier_answer_at_ms IS NULL THEN last_attempt_ms
+                       WHEN last_attempt_ms IS NULL THEN courier_answer_at_ms
+                       ELSE MAX(courier_answer_at_ms, last_attempt_ms)
+                   END
+             WHERE last_failure IN ('refused', 'queue_full')
+            """
+        )
         placeholders = ", ".join("?" for _ in COURIER_ANSWERS)
         row = self._connection.execute(
             "SELECT COUNT(*) FROM evidence_delivery_ledger"
