@@ -797,7 +797,7 @@ skill does not do is declare that it happened. That is the supported way to ship
 a trigger whose physical action awaits commissioning.
 
 **There is no deployment override of a skill's action lists.** A `skills:` entry
-in `ori.yaml` carries `name`, `version` and `config`, and nothing else; no
+in `ori.yaml` carries `name` and `version`, and nothing else; no
 setting replaces `actions.defaults`. Binding a protective action to a trigger is
 a change to the runtime and to the site's commissioned binding. Any comment or
 document suggesting a configuration route to actuation is describing a mechanism
@@ -836,11 +836,6 @@ sensors:
 skills:
   - name: energy-anomaly-detector
     version: "0.2.1"
-    config:
-      energy_cost_naira: 225
-      approval_timeout_seconds: 300
-      safe_default_action: log_to_dashboard
-      secondary_contact_number: ${SECONDARY_WHATSAPP}
 
 security:
   enforce_production_posture: false # staging/production profiles cannot opt out

@@ -185,8 +185,7 @@ class TestLoadExample:
     def test_skill_config_fields(self):
         cfg = Config.load(EXAMPLE_YAML)
         skill_cfg = cfg.skills[0].config
-        assert skill_cfg["approval_timeout_seconds"] == 300
-        assert skill_cfg["safe_default_action"] == "log_to_dashboard"
+        assert skill_cfg == {}
 
     def test_reasoning_fields(self):
         cfg = Config.load(EXAMPLE_YAML)
@@ -3684,58 +3683,87 @@ actions:
   primary_alert_channel: sms
 """
 
-    def test_valid_action_tiers_accepted(self, tmp_path):
-        for tier in ("A", "B", "C", "D"):
-            yaml_path = _write_yaml(
-                tmp_path,
-                self._base_yaml(
-                    f"  - name: skill-x\n    version: '1.0'\n"
-                    f"    config:\n      action_tier: {tier}"
-                ),
-            )
-            cfg = Config.load(yaml_path)
-            assert cfg.skills[0].config["action_tier"] == tier
-
-    def test_invalid_action_tier_rejected(self, tmp_path):
-        yaml_path = _write_yaml(
+    def _skill(self, tmp_path, body: str):
+        return _write_yaml(
             tmp_path,
-            self._base_yaml(
-                "  - name: skill-x\n    version: '1.0'\n"
-                "    config:\n      action_tier: Z"
-            ),
+            self._base_yaml(f"  - name: skill-x\n    version: '1.0'\n{body}"),
         )
-        with pytest.raises(ConfigValidationError, match="action_tier"):
-            Config.load(yaml_path)
 
-    def test_nested_action_tier_validated(self, tmp_path):
-        yaml_path = _write_yaml(
-            tmp_path,
-            self._base_yaml(
-                "  - name: skill-x\n    version: '1.0'\n"
-                "    config:\n      triggers:\n        - action_tier: X"
-            ),
-        )
-        with pytest.raises(ConfigValidationError, match="action_tier"):
-            Config.load(yaml_path)
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "safe_default_action",
+            "action_tier",
+            "requires_approval_for_soft_actions",
+            "approval_timeout_seconds",
+        ],
+    )
+    def test_trigger_owned_keys_are_refused(self, tmp_path, key):
+        path = self._skill(tmp_path, f"    config:\n      {key}: C")
+        with pytest.raises(ConfigValidationError) as caught:
+            Config.load(path)
+        message = str(caught.value)
+        assert f"skills[0] (skill-x).config.{key}" in message
+        assert "on its trigger in skill.yaml" in message
+        from ori.config import _TRIGGER_OWNED_SKILL_KEYS
 
-    def test_skill_config_known_keys(self, tmp_path):
-        yaml_path = _write_yaml(
-            tmp_path,
-            self._base_yaml(
-                "  - name: skill-x\n    version: '1.0'\n"
-                "    config:\n"
-                "      requires_approval_for_soft_actions: true\n"
-                "      approval_timeout_seconds: 120\n"
-                "      safe_default_action: log_to_dashboard\n"
-                "      secondary_contact_number: '+234800000000'"
-            ),
+        assert f"`{_TRIGGER_OWNED_SKILL_KEYS[key]}`" in message
+
+    def test_each_trigger_owned_key_names_a_real_trigger_key(self):
+        from ori.config import _TRIGGER_OWNED_SKILL_KEYS
+        from ori.skills.loader import _TRIGGER_ALLOWED_KEYS
+
+        assert set(_TRIGGER_OWNED_SKILL_KEYS.values()) <= _TRIGGER_ALLOWED_KEYS
+        assert _TRIGGER_OWNED_SKILL_KEYS["requires_approval_for_soft_actions"] == (
+            "requires_approval"
         )
-        cfg = Config.load(yaml_path)
-        sc = cfg.skills[0].config
-        assert sc["requires_approval_for_soft_actions"] is True
-        assert sc["approval_timeout_seconds"] == 120
-        assert sc["safe_default_action"] == "log_to_dashboard"
-        assert sc["secondary_contact_number"] == "+234800000000"
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "secondary_contact_number",
+            "energy_cost_naira",
+            "owner_name",
+            "tariff_per_kwh",
+            "battery_sensor_id",
+            "triggers",
+        ],
+    )
+    def test_unread_keys_are_refused(self, tmp_path, key):
+        path = self._skill(tmp_path, f"    config:\n      {key}: x")
+        with pytest.raises(
+            ConfigValidationError, match=rf"skills\[0\] \(skill-x\)\.config\.{key}"
+        ):
+            Config.load(path)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "    config: {}",
+            "    config:",
+            "    config: [1]",
+            "    config: text",
+            "    config: false",
+            "    config: ''",
+            "    config: 0",
+        ],
+    )
+    def test_a_skill_entry_carries_no_config(self, tmp_path, body):
+        with pytest.raises(ConfigValidationError, match="config is not accepted"):
+            Config.load(self._skill(tmp_path, body))
+
+    def test_a_skill_entry_is_name_and_version(self, tmp_path):
+        cfg = Config.load(self._skill(tmp_path, ""))
+        assert (cfg.skills[0].name, cfg.skills[0].version) == ("skill-x", "1.0")
+        assert cfg.skills[0].config == {}
+
+    @pytest.mark.parametrize("key", ["actions", "triggers", "defaults", "tier"])
+    def test_skill_entry_keys_are_closed(self, tmp_path, key):
+        path = self._skill(tmp_path, f"    {key}: x")
+        with pytest.raises(
+            ConfigValidationError, match="names the skill and its version only"
+        ):
+            Config.load(path)
 
 
 # ─── ReasoningConfig ──────────────────────────────────────────────────────────
@@ -6433,3 +6461,15 @@ class TestSiblingReadersDoNotEscape:
 
         by_name = {check.name: check for check in checks}
         assert by_name["config.load"].status == "fail"
+
+
+def test_secondary_contact_number_names_the_real_setting(tmp_path):
+    path = _write_yaml(
+        tmp_path,
+        TestSkillValidation()._base_yaml(
+            "  - name: skill-x\n    version: '1.0'\n"
+            "    config:\n      secondary_contact_number: '+2348000000000'"
+        ),
+    )
+    with pytest.raises(ConfigValidationError, match="actions.secondary_contact"):
+        Config.load(path)

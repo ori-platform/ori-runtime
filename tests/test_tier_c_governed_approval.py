@@ -85,7 +85,7 @@ def _facts(binding: str = "sha256:" + "b" * 64) -> TierCAuthorityFacts:
             "open_protected_circuit": "relay-gpio-26",
             "close_protected_circuit": "relay-gpio-26",
         },
-        deployment_inputs={"approval_timeout_seconds": 300, "relay_enabled": True},
+        deployment_inputs={"relay_enabled": True},
     )
 
 
@@ -1141,7 +1141,7 @@ class TestTheRuntimeFactsProvider:
         runtime._commissioning_state.in_force = binding
         runtime._safety_registry = None
         runtime._shipped_profile_digest = "c" * 64
-        runtime._tier_c_deployment_inputs = {"approval_timeout_seconds": 300}
+        runtime._tier_c_deployment_inputs = {"relay_enabled": True}
 
         facts = runtime._tier_c_authority_facts()
         assert facts is not None

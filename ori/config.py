@@ -28,10 +28,6 @@ from ori.hal.protocol_registry import (
     SUPPORTED_SENSOR_PROTOCOLS,
     protocol_schemas,
 )
-from ori.reasoning.approval_bounds import (
-    MAX_PROPOSAL_LIFETIME_S,
-    approval_timeout_accepted,
-)
 from ori.security.config_signatures import (
     CONFIG_REQUIRE_SIGNED_ENV,
     DEFAULT_CONFIG_TRUST_ANCHOR_ENV,
@@ -46,8 +42,6 @@ from ori.utils.net_utils import is_loopback_host
 from ori.utils.path_utils import path_is_relative_to, shown
 
 logger = logging.getLogger(__name__)
-
-_VALID_ACTION_TIERS = {"A", "B", "C", "D"}
 
 _SENSOR_ENVELOPE_SCHEMA = validate_schema(
     {
@@ -1400,6 +1394,17 @@ def _refuse_persistent_mqtt_session(sensor_id: str, metadata: dict[str, Any]) ->
             )
 
 
+_SKILL_ENTRY_KEYS = frozenset({"name", "version"})
+# Deployment keys that look like trigger authority -> the skill.yaml trigger
+# key that actually holds it (a test ties each target to the trigger grammar).
+_TRIGGER_OWNED_SKILL_KEYS: dict[str, str] = {
+    "safe_default_action": "safe_default_action",
+    "action_tier": "action_tier",
+    "requires_approval_for_soft_actions": "requires_approval",
+    "approval_timeout_seconds": "approval_timeout_seconds",
+}
+
+
 def _parse_skills(data: Any) -> list[SkillConfig]:
     if not isinstance(data, list):
         raise ConfigValidationError("'skills' must be a list.")
@@ -1408,46 +1413,52 @@ def _parse_skills(data: Any) -> list[SkillConfig]:
     for i, item in enumerate(data):
         if not isinstance(item, dict):
             raise ConfigValidationError(f"skills[{i}] must be a mapping.")
-
-        skill_cfg: dict = item.get("config") or {}
-        _validate_skill_config(skill_cfg, f"skills[{i}]")
+        name = _require_str(item, "name", f"skills[{i}]")
+        context = f"skills[{i}] ({name})"
+        if "config" in item:
+            _refuse_skill_config(item["config"], context)
+        unknown = sorted(str(key) for key in set(item) - _SKILL_ENTRY_KEYS)
+        if unknown:
+            raise ConfigValidationError(
+                f"{context} carries {unknown}; a skill entry names the skill and "
+                "its version only, and no deployment setting replaces a skill's "
+                "actions."
+            )
 
         skills.append(
             SkillConfig(
-                name=_require_str(item, "name", f"skills[{i}]"),
+                name=name,
                 version=str(item.get("version", "")),
-                config=skill_cfg,
+                config={},
             )
         )
     return skills
 
 
-def _validate_skill_config(cfg: dict, context: str) -> None:
-    """Recursively validate action_tier values within a skill config dict."""
-    if not isinstance(cfg, dict):
-        return
-
-    for key, value in cfg.items():
-        if key == "action_tier":
-            if value not in _VALID_ACTION_TIERS:
+def _refuse_skill_config(cfg: Any, context: str) -> None:
+    """A skill entry carries no settings; name where each one actually lives."""
+    if isinstance(cfg, dict):
+        for key in sorted(str(k) for k in cfg):
+            if key in _TRIGGER_OWNED_SKILL_KEYS:
                 raise ConfigValidationError(
-                    f"{context}.config.action_tier must be one of "
-                    f"{sorted(_VALID_ACTION_TIERS)}, got: {value!r}"
+                    f"{context}.config.{key} is not a deployment setting: a "
+                    f"skill declares it as `{_TRIGGER_OWNED_SKILL_KEYS[key]}` on "
+                    "its trigger in skill.yaml, and ori.yaml cannot set it."
                 )
-        if key == "approval_timeout_seconds" and not approval_timeout_accepted(value):
-            # A deployment may shorten a Tier C proposal's lifetime and never
-            # extend it past the release maximum; a fraction is refused, not
-            # rounded.
+            if key == "secondary_contact_number":
+                raise ConfigValidationError(
+                    f"{context}.config.{key} is read by nothing; the escalation "
+                    "contact is actions.secondary_contact."
+                )
             raise ConfigValidationError(
-                f"{context}.config.approval_timeout_seconds must be an integer "
-                f"from 1 to {MAX_PROPOSAL_LIFETIME_S}, got: {value!r}"
+                f"{context}.config.{key} is read by nothing; every skill setting "
+                "is the skill's own, in its skill.yaml."
             )
-        if isinstance(value, dict):
-            _validate_skill_config(value, f"{context}.config.{key}")
-        if isinstance(value, list):
-            for j, entry in enumerate(value):
-                if isinstance(entry, dict):
-                    _validate_skill_config(entry, f"{context}.config.{key}[{j}]")
+    raise ConfigValidationError(
+        f"{context}.config is not accepted: a skill entry names the skill and its "
+        "version only, and every skill setting is the skill's own, in its "
+        "skill.yaml."
+    )
 
 
 def _parse_reasoning(data: Any) -> ReasoningConfig:

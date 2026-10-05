@@ -59,7 +59,6 @@ Then edit `ori.yaml` and replace the placeholders:
 | `device.name`                | Human-readable device name   | `My Linux Laptop` |
 | `device.location`            | Your city and country        | `Lagos, Nigeria`  |
 | `device.timezone`            | IANA timezone                | `Africa/Lagos`    |
-| `skills[].config.owner_name` | Display name for alerts      | `My Linux Laptop` |
 
 **All other fields have working defaults** — you do not need to change them to get started.
 

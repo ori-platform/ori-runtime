@@ -1,10 +1,10 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
-"""`approval_timeout_seconds` is bounded at load, in ori.yaml and in skill.yaml.
+"""`approval_timeout_seconds` is a skill.yaml trigger setting, bounded at load.
 
-A deployment may shorten a Tier C proposal's lifetime and never extend it past
-the release maximum; a fraction, zero and a string are refused rather than
-rounded or clamped.
+A trigger may set a Tier C proposal's lifetime up to the release maximum; a
+fraction, zero and a string are refused rather than rounded or clamped. A
+deployment cannot set it: ori.yaml refuses it on a skill entry.
 """
 
 from __future__ import annotations
@@ -26,19 +26,11 @@ def _first_party_loader() -> SkillLoader:
     return loader
 
 
-@pytest.mark.parametrize("value", [1, 120, MAX_PROPOSAL_LIFETIME_S])
-def test_ori_yaml_accepts_a_lifetime_within_the_release_bound(value: int) -> None:
-    skills = _parse_skills(
-        [{"name": "s", "version": "1", "config": {"approval_timeout_seconds": value}}]
-    )
-    assert skills[0].config["approval_timeout_seconds"] == value
-
-
-@pytest.mark.parametrize(
-    "value", [0, MAX_PROPOSAL_LIFETIME_S + 1, 86400, 30.5, "300", True, None]
-)
-def test_ori_yaml_refuses_a_lifetime_outside_the_release_bound(value: Any) -> None:
-    with pytest.raises(ConfigValidationError, match="approval_timeout_seconds"):
+@pytest.mark.parametrize("value", [1, 120, MAX_PROPOSAL_LIFETIME_S, 0, "300"])
+def test_ori_yaml_refuses_a_lifetime_on_a_skill_entry(value: Any) -> None:
+    with pytest.raises(
+        ConfigValidationError, match="declares it as `approval_timeout_seconds`"
+    ):
         _parse_skills(
             [
                 {
