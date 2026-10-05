@@ -4,6 +4,7 @@
 import asyncio
 import base64
 import logging
+import secrets
 import textwrap
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -52,7 +53,11 @@ else:  # pragma: no cover - environment without cryptography support
 # A syntactically valid anchor for tests about a *skill's* faults. A stand-in
 # that is not a well-formed anchor makes the deployment-level check answer
 # first, and the test then proves nothing about the skill.
-_A_WELL_FORMED_ANCHOR = base64.b64encode(b"a" * 32).decode("ascii")
+_A_WELL_FORMED_ANCHOR = base64.b64encode(
+    Ed25519PrivateKey.from_private_bytes(secrets.token_bytes(32))
+    .public_key()
+    .public_bytes(Encoding.Raw, PublicFormat.Raw)
+).decode("ascii")
 
 
 def _first_party_loader(**kwargs) -> SkillLoader:

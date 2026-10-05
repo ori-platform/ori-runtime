@@ -61,8 +61,8 @@ def _decode_anchor(name: str, text: str) -> bytes:
     clause = refused_public_key_clause(raw)
     if clause is not None:
         raise AnchorError(
-            f"{name} is refused ({clause}): under that key a signature verifies "
-            "with no private key behind it, so it binds a binding to nobody. "
+            f"{name} is refused ({clause}): it is not an Ed25519 public key a "
+            "private key can stand behind, so it can authenticate no binding. "
             "Write the public half of a commissioning key generated from a "
             "private seed."
         )

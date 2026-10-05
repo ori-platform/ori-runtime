@@ -8,7 +8,7 @@ import json
 import math
 from typing import Any
 
-from ori.security.ed25519_keys import admit_public_key
+from ori.security.ed25519_keys import admit_public_key, refused_public_key_clause
 from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
 from ori.skills.sandbox import SkillSecurityError
 
@@ -181,6 +181,12 @@ def verify_signed_payload(
             "and configure its public half instead."
         )
 
+    clause = refused_public_key_clause(public_key_bytes)
+    if clause is not None:
+        raise SkillSecurityError(
+            f"{context_label} verification trust anchor is refused ({clause}): "
+            "it is not an Ed25519 public key a private key can stand behind."
+        )
     try:
         import cryptography.hazmat.primitives.asymmetric.ed25519  # noqa: F401
     except Exception as exc:

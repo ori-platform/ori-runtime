@@ -467,9 +467,9 @@ def _anchor_fault(trust_anchor_b64: str, source: str) -> str | None:
     clause = refused_public_key_clause(raw)
     if clause is not None:
         return (
-            f"{source} is refused ({clause}): under that key a signature "
-            "verifies with no private key behind it, so it would admit a skill "
-            "nobody signed. Configure the public half of a Hub signing key."
+            f"{source} is refused ({clause}): it is not an Ed25519 public key a "
+            "private key can stand behind, so it can authenticate no skill. "
+            "Configure the public half of a Hub signing key."
         )
     return None
 

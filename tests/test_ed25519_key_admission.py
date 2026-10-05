@@ -218,9 +218,8 @@ def test_skill_signature_refuses_a_small_order_anchor() -> None:
     payload = {"name": "skill", "version": "1.0.0"}
     assert _library_accepts(IDENTITY, canonical_signed_payload(payload))
     signed = {**payload, "signature": "ed25519:" + _b64(KEYLESS)}
-    with pytest.raises(SkillSecurityError) as caught:
+    with pytest.raises(SkillSecurityError, match="trust anchor is refused"):
         verify_signed_payload(signed, _b64(IDENTITY))
-    assert isinstance(caught.value.__cause__, RefusedPublicKeyError)
 
     private, public = _honest()
     good = {
@@ -602,7 +601,10 @@ def test_every_published_key_check_also_refuses_small_order_keys() -> None:
         "key, so the anchor they load is refused only later, at verification, "
         "and reported as a bad signature. Apply refused_public_key_clause "
         "beside the published-key check, or classify the site here with the "
-        f"helper that does: {unpaired}"
+        "helper that does. This guard sees only a function that names "
+        "PUBLISHED_TEST_KEYS directly: an aliased import, the _B64 tuple, a "
+        "lambda, or a clause applied only later at verification pass it. "
+        f"Unpaired: {unpaired}"
     )
 
 
@@ -634,3 +636,21 @@ def test_a_release_key_registry_refuses_a_small_order_key(tmp_path: Path) -> Non
     )
     with pytest.raises(ReleaseBundleError, match=CLAUSE_SMALL_ORDER):
         load_release_key_registry(path)
+
+
+def test_a_small_order_provisioning_anchor_reads_as_absent() -> None:
+    from ori.security.commissioning.anchors import provisioning_anchor
+
+    security = {"config_signature": {"trust_anchor_env": "ORI_TEST_ANCHOR"}}
+    _, honest = _honest()
+    assert provisioning_anchor(security, {"ORI_TEST_ANCHOR": _b64(honest)}) == honest
+    assert provisioning_anchor(security, {"ORI_TEST_ANCHOR": _b64(IDENTITY)}) is None
+
+
+def test_a_signed_payload_names_a_small_order_anchor() -> None:
+    from ori.skills.sandbox import SkillSecurityError
+    from ori.skills.signing import verify_signed_payload
+
+    signed = {"name": "x", "signature": "ed25519:" + _b64(KEYLESS)}
+    with pytest.raises(SkillSecurityError, match="trust anchor is refused"):
+        verify_signed_payload(signed, _b64(IDENTITY))

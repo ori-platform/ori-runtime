@@ -6,8 +6,12 @@ from __future__ import annotations
 import base64
 import json
 import runpy
+import secrets
 from pathlib import Path
 from typing import Any
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from ori.security.release_bundles import (
     KEY_REGISTRY_SCHEMA,
@@ -29,7 +33,14 @@ def _registry(path: Path, *, status: str = "active") -> None:
                 "keys": [
                     {
                         "key_id": KEY_ID,
-                        "public_key_b64": base64.b64encode(bytes(32)).decode(),
+                        # A real key: the registry refuses a small-order one.
+                        "public_key_b64": base64.b64encode(
+                            Ed25519PrivateKey.from_private_bytes(
+                                secrets.token_bytes(32)
+                            )
+                            .public_key()
+                            .public_bytes(Encoding.Raw, PublicFormat.Raw)
+                        ).decode(),
                         "purpose": RELEASE_KEY_PURPOSE,
                         "status": status,
                     }

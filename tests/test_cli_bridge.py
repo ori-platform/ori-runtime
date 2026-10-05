@@ -7,12 +7,15 @@ import copy
 import hashlib
 import json
 import os
+import secrets
 import sqlite3
 import textwrap
 from pathlib import Path
 
 import pytest
 import yaml
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from ori import cli_bridge
 from ori.network.events import ActionResult, OriEvent, SensorReading
@@ -1928,7 +1931,12 @@ def test_cli_bridge_skills_list_reports_a_usable_anchor_as_usable(
     admit one.
     """
     monkeypatch.setenv(
-        "ORI_HUB_ROOT_PUBLIC_KEY_B64", base64.b64encode(b"k" * 32).decode("ascii")
+        "ORI_HUB_ROOT_PUBLIC_KEY_B64",
+        base64.b64encode(
+            Ed25519PrivateKey.from_private_bytes(secrets.token_bytes(32))
+            .public_key()
+            .public_bytes(Encoding.Raw, PublicFormat.Raw)
+        ).decode("ascii"),
     )
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
