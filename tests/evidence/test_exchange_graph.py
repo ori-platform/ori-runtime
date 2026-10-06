@@ -548,6 +548,12 @@ VECTOR_CONSUMERS = {
         "test_sensor_config_schema.py"
         "::test_protocol_definition_conforms_to_the_vendored_contract_vectors",
     ),
+    # The Android runtime's Rust admission reads the same file in its own test
+    # (mobile/ori-runtime-mobile, admission_matches_the_contract_corpus).
+    ("ed25519_key_admission", "vectors-v1"): (
+        "test_ed25519_key_admission.py::test_admission_matches_the_contract_corpus",
+        "test_ed25519_key_admission.py::test_every_keyless_signature_is_refused_for_its_key",
+    ),
 }
 
 #: Vendored vectors this runtime cannot exercise yet.
