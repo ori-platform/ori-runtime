@@ -175,6 +175,7 @@ class _Operator:
         # the corpus's monotonic clock, never real time.
         proposal_id = self._h.listening_for()
         queue = self._h.replies.setdefault(proposal_id, asyncio.Queue())
+        self._h.listens[proposal_id] = self._h.listens.get(proposal_id, 0) + 1
         return await queue.get()
 
 
@@ -211,6 +212,9 @@ class Replay:
         self.actuations = 0
         self.proposed: set[str] = set()
         self.replies: dict[str, asyncio.Queue[Any]] = {}
+        # How many times the workflow has waited for a reply to each proposal,
+        # so a step can tell that a reply was taken and the wait resumed.
+        self.listens: dict[str, int] = {}
         self.tasks: dict[str, asyncio.Task[Any]] = {}
         self.results: dict[str, Any] = {}
         self.next_ids: list[str] = []
@@ -327,7 +331,9 @@ class Replay:
             self.dispatcher._tier_c_comms_available = lambda: False  # type: ignore[method-assign]
 
             async def console(**kwargs: Any) -> str | None:
-                queue = self.replies.setdefault(kwargs["proposal_id"], asyncio.Queue())
+                proposal_id = kwargs["proposal_id"]
+                queue = self.replies.setdefault(proposal_id, asyncio.Queue())
+                self.listens[proposal_id] = self.listens.get(proposal_id, 0) + 1
                 return await queue.get()
 
             self.dispatcher._listen_for_local_console_response = console  # type: ignore[method-assign]
@@ -399,7 +405,14 @@ class Replay:
         )
         self.tasks[proposal_id] = task
         for _ in range(400):
-            if proposal_id in self.proposed or task.done():
+            # Proposed and announced, or waiting for its reply (an SMS or
+            # console proposal is announced by a path that records nothing
+            # here), or already finished.
+            if (
+                proposal_id in self.proposed
+                or self.listens.get(proposal_id, 0) > 0
+                or task.done()
+            ):
                 break
             await asyncio.sleep(0.005)
         if task.done():
@@ -745,7 +758,16 @@ async def _run(replay: Replay, sequence: dict[str, Any], caplog: Any) -> list[st
                 unrepresented += await _check(replay, step, main, caplog)
                 continue
             notices_before = len(replay.operator.notices)  # type: ignore[union-attr]
+            listens_before = replay.listens.get(target, 0)
             await replay.replies.setdefault(target, asyncio.Queue()).put(reply)
+
+            def listening_again() -> bool:
+                # The workflow took the reply and is waiting for the next one:
+                # nothing further will move until another reply arrives.
+                return (
+                    replay.listens.get(target, 0) > listens_before
+                    and replay.replies[target].empty()
+                )
 
             async def moved() -> bool:
                 state = await replay.state_of(target)
@@ -754,6 +776,7 @@ async def _run(replay: Replay, sequence: dict[str, Any], caplog: Any) -> list[st
                     state != adm.PROPOSED
                     or (t is not None and t.done())
                     or len(replay.operator.notices) > notices_before  # type: ignore[union-attr]
+                    or listening_again()
                 )
 
             await _until(moved)
@@ -764,7 +787,7 @@ async def _run(replay: Replay, sequence: dict[str, Any], caplog: Any) -> list[st
                 # an admitted one holds at the harness's dispatch gate, and a
                 # proposal left open keeps listening until the wait is up.
                 t = replay.tasks.get(target)
-                if t is None or t.done():
+                if t is None or t.done() or listening_again():
                     return True
                 return await replay.state_of(target) in adm.ADMITTED_STATES
 
@@ -848,11 +871,21 @@ async def _run(replay: Replay, sequence: dict[str, Any], caplog: Any) -> list[st
                 replay.outcome_write = "ok"
                 replay.outcome_released.set()
                 state_before = await replay.state_of(main)
+                if state_before in (
+                    adm.APPROVED_PENDING_DISPATCH,
+                    adm.DISPATCH_STARTED,
+                ):
 
-                async def landed() -> bool:
-                    return await replay.state_of(main) != state_before
+                    async def landed() -> bool:
+                        return await replay.state_of(main) != state_before
 
-                await _until(landed, seconds=6.0)
+                    await _until(landed, seconds=6.0)
+                else:
+                    # A settled outcome takes no further write. Draining the
+                    # writer shows that none is pending, without waiting out
+                    # real time for something that cannot arrive.
+                    assert replay.dispatcher is not None
+                    await replay.dispatcher.drain_records(timeout=2)
                 await _turns()
             unrepresented += await _check(replay, step, main, caplog)
             continue

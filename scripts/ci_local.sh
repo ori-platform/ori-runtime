@@ -277,7 +277,7 @@ step "Pre-commit (lint + format + hygiene)" true -- env SKIP=no-commit-to-branch
 step "Guard Capability Matrix Updated" true -- env GUARD_CAP_MATRIX_BYPASS_TEXT="${PR_BODY:-}" bash scripts/guard-capability-matrix.sh "$BASE_SHA" HEAD
 step "Guard Tier Escalation Invariants" "$SCOPE" -- pytest -q tests/test_action_dispatcher.py::TestCapabilityTierGuard tests/test_soundness_verification.py::test_tier_c_dispatch_upgrade tests/test_soundness_verification.py::test_dispatcher_never_downgrades_tier
 step "Guard Skill Capability Invariants" "$SCOPE" -- pytest -q tests/test_skill_loader.py::TestValidation::test_missing_defaults_mapping_for_trigger_raises tests/test_skill_loader.py::TestValidation::test_extra_defaults_key_without_trigger_raises
-step "Run tests with coverage" "$SCOPE" -- pytest tests/ -q --cov=ori --cov-report=term-missing --cov-report=xml -m "not hardware"
+step "Run tests" "$SCOPE" -- pytest tests/ -q -n auto --dist loadgroup --cov=ori --cov-report=term-missing --cov-report=xml -m "not hardware"
 step "Run the tests that read documents" "$DOCS_ONLY" -- pytest -q -m "not hardware" tests/evidence/test_disclosure.py tests/evidence/test_harness.py tests/test_ci_scopes.py tests/test_linux_bootstrap.py tests/test_release_publication.py
 step "Installer checks under private-group umask" "$SCOPE" -- bash -c "umask 0002 && pytest -q tests/test_linux_installer.py tests/test_installer_activation.py"
 step "System-scope installer checks (root, real venv)" "$SCOPE" -- sudo -H env ORI_REQUIRE_ROOT_TESTS=1 "$(which python)" -m pytest tests/test_installer_system_scope.py -q

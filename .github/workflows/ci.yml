@@ -293,15 +293,18 @@ jobs:
           sudo apt-get install -y --no-install-recommends mosquitto
           sudo systemctl stop mosquitto || true
 
-      - name: Run tests with coverage
+      - name: Run tests
         if: steps.scope.outputs.run == 'true'
         env:
           ORI_REQUIRE_MQTT_BROKER: "1"
+          # Coverage is measured once, on the version whose report is uploaded.
+          COVERAGE: ${{ matrix.python-version == '3.11' && '--cov=ori --cov-report=term-missing --cov-report=xml' || '' }}
         run: |
-          pytest tests/ -v \
-            --cov=ori \
-            --cov-report=term-missing \
-            --cov-report=xml \
+          # One worker per core; tests that build from the repository share one
+          # worker through xdist_group("repo_build"), held by test_parallel_safety.
+          # shellcheck disable=SC2086
+          pytest tests/ -q -n auto --dist loadgroup --durations=25 \
+            ${COVERAGE} \
             -m "not hardware"
 
       - name: Run the tests that read documents

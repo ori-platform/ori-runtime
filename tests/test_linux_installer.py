@@ -3634,6 +3634,7 @@ def test_unexpected_staging_reference_is_refused(tmp_path: Path) -> None:
 
 
 @pytest.mark.slow
+@pytest.mark.xdist_group("repo_build")
 def test_real_packaged_commands_start_from_the_final_release(tmp_path: Path) -> None:
     """Run the actual packaged CLIs, not synthetic stand-ins.
 

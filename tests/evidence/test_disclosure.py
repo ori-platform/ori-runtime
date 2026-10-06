@@ -810,6 +810,7 @@ def _wheel_metadata(wheel: pathlib.Path) -> str:
     return _wheel_member(wheel, "METADATA")
 
 
+@pytest.mark.xdist_group("repo_build")
 def test_the_built_wheel_carries_no_compiled_artifact(built_wheel):
     """A compiled extension carries symbols and a filename no text audit finds."""
     compiled = [
@@ -820,6 +821,7 @@ def test_the_built_wheel_carries_no_compiled_artifact(built_wheel):
     assert not compiled, f"compiled artifacts ship in the wheel: {compiled}"
 
 
+@pytest.mark.xdist_group("repo_build")
 def test_the_built_wheel_names_no_foreign_evidence_implementation(built_wheel):
     """First-party evidence modules are expected; anything else is vendored."""
     offenders = [
@@ -853,6 +855,7 @@ def test_every_registry_entry_suppresses_a_real_check():
     )
 
 
+@pytest.mark.xdist_group("repo_build")
 def test_the_first_party_registry_is_not_stale(built_wheel):
     """A registry naming files that no longer ship would silently widen itself.
 
@@ -864,6 +867,7 @@ def test_the_first_party_registry_is_not_stale(built_wheel):
     assert not missing, f"registered first-party modules no longer ship: {missing}"
 
 
+@pytest.mark.xdist_group("repo_build")
 def test_wheel_metadata_and_record_disclose_nothing_structural(built_wheel):
     """Structural fields only: RECORD paths, and METADATA's declared fields.
 
@@ -1208,6 +1212,7 @@ def test_wheelhouse_distributions_disclose_nothing():
 
 
 @pytest.mark.disclosure_release
+@pytest.mark.xdist_group("repo_build")
 def test_built_wheel_discloses_nothing_supplied(built_wheel):
     terms = _supplied_denylist()
     if not terms:
@@ -2349,6 +2354,7 @@ def test_the_audit_never_passes_what_the_runtime_refuses(tmp_path, monkeypatch):
     assert passed, "no case passed review, so the differential checked nothing"
 
 
+@pytest.mark.xdist_group("repo_build")
 def test_the_wheel_carries_the_shipped_registry_byte_for_byte(built_wheel):
     """The deliverable carries the authority's export, unaltered, and it passes review."""
     with zipfile.ZipFile(built_wheel) as archive:
@@ -2405,6 +2411,7 @@ print(json.dumps({
 """
 
 
+@pytest.mark.xdist_group("repo_build")
 def test_the_installed_wheel_loads_the_shipped_registry(built_wheel, tmp_path):
     """The wheel, installed alone into a fresh venv, resolves the registry from itself.
 

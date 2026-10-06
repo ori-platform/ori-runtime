@@ -485,10 +485,14 @@ def test_the_venv_probe_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
     assert recorded["stdin"] == subprocess.DEVNULL
 
 
-def test_the_probe_leaves_nothing_behind(tmp_path: Path) -> None:
-    before = set(Path(tempfile.gettempdir()).glob("ori-venv-probe-*"))
+def test_the_probe_leaves_nothing_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The probe's own temporary root, so another worker's probe in the shared
+    # system temp directory cannot appear or vanish between the two reads.
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     prerequisites.venv_capable()
-    assert set(Path(tempfile.gettempdir()).glob("ori-venv-probe-*")) == before
+    assert not list(tmp_path.glob("ori-venv-probe-*"))
 
 
 # --- Raspberry Pi OS, the primary production platform ---------------------
