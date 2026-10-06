@@ -1118,7 +1118,11 @@ class TestRegistrationLifecycle:
         await gate.approve_device(DEV_DEVICE, actor="test-operator", reason="test")
         # Actually advance it, so a reset would be visible.
         await gate._store.advance_firmware_freshness(
-            DEV_DEVICE, boot_id=3, seq=99, uptime_ms=0
+            DEV_DEVICE,
+            boot_id=3,
+            seq=99,
+            uptime_ms=0,
+            verified_against=await gate._store.get_firmware_device(DEV_DEVICE),
         )
         row_before = await gate._store.get_firmware_device(DEV_DEVICE)
         assert row_before["last_seq"] == 99
@@ -1186,7 +1190,11 @@ class TestRegistrationLifecycle:
         )
         await gate.approve_device(SEALED_DEVICE, actor="test-operator", reason="test")
         await gate._store.advance_firmware_freshness(
-            SEALED_DEVICE, boot_id=7, seq=1234, uptime_ms=0
+            SEALED_DEVICE,
+            boot_id=7,
+            seq=1234,
+            uptime_ms=0,
+            verified_against=await gate._store.get_firmware_device(SEALED_DEVICE),
         )
         before = await gate._store.get_firmware_device(SEALED_DEVICE)
 
@@ -2260,7 +2268,11 @@ class TestLifecycleSequences:
         assert await gate._store.allocate_firmware_command_seq(DEV_DEVICE) == 1
         assert await gate._store.allocate_firmware_command_seq(DEV_DEVICE) == 2
         await gate._store.advance_firmware_freshness(
-            DEV_DEVICE, boot_id=4, seq=900, uptime_ms=0
+            DEV_DEVICE,
+            boot_id=4,
+            seq=900,
+            uptime_ms=0,
+            verified_against=await gate._store.get_firmware_device(DEV_DEVICE),
         )
         await gate.revoke_device(DEV_DEVICE, actor="op", reason="key compromised")
 
@@ -2321,7 +2333,11 @@ class TestLifecycleSequences:
         # replay window must NOT re-open.
         await self._registered_and_active(gate, "manifest_full_sealed")
         await gate._store.advance_firmware_freshness(
-            SEALED_DEVICE, boot_id=4, seq=900, uptime_ms=0
+            SEALED_DEVICE,
+            boot_id=4,
+            seq=900,
+            uptime_ms=0,
+            verified_against=await gate._store.get_firmware_device(SEALED_DEVICE),
         )
         await gate.register_device(
             device_id=SEALED_DEVICE,

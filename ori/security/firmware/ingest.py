@@ -14,6 +14,9 @@ Trust boundary rules enforced here:
 * The freshness high-water mark advances through the store's guarded
   UPDATE; if a concurrent writer got there first, the message is
   reported as ``sequence_replay`` even though its signature verified.
+* The advance is bound to the anchor the message was verified against.
+  If a promotion, rotation or re-registration moved the anchor in
+  between, the message is verified again against the anchor now held.
 * Heartbeat envelopes advance freshness and liveness but produce no
   readings and must never reach reasoning or actions.
 * The device claims order and origin; the runtime claims time. Reading
@@ -26,7 +29,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 from ori.network.events import SensorReading
 from ori.security.firmware.telemetry import (
@@ -49,12 +52,20 @@ from ori.security.firmware.telemetry import (
     verify_manifest_message,
     verify_telemetry_message,
 )
+from ori.state.store import FIRMWARE_ANCHOR_COLUMNS
 
 logger = logging.getLogger(__name__)
 
 __all__ = ["FirmwareTelemetryGate"]
 
 ERR_ANCHOR_MISSING = "anchor_missing"
+# Verifies against the current anchor, but the anchor moved under every advance.
+ERR_ANCHOR_UNSTABLE = "anchor_unstable"
+
+# Advances one message may lose to an anchor moving under it.
+_MAX_VERIFICATIONS = 3
+
+_V = TypeVar("_V", TelemetryVerification, FirmwareFaultVerification)
 
 
 def _now_ms() -> int:
@@ -92,6 +103,51 @@ class FirmwareTelemetryGate:
                     f"{last_uptime} within boot {boot_id}"
                 )
         return ERR_SEQUENCE_REPLAY, "high-water mark advanced by a newer message"
+
+    async def _verify_and_advance(
+        self,
+        device_id: str,
+        verify: Callable[[dict[str, Any]], _V],
+        rejected: Callable[[str, str], _V],
+    ) -> tuple[_V, dict[str, Any] | None]:
+        """Verify against the stored anchor and advance freshness under it.
+
+        Returns the verification and, when it was accepted and the mark
+        advanced, the row it was verified against.
+        """
+        row = await self._store.get_firmware_device(device_id) if device_id else None
+        attempts = 0
+        while True:
+            if row is None:
+                return rejected(
+                    ERR_ANCHOR_MISSING, "no provisioning anchor for device"
+                ), None
+            verification = verify(row)
+            if not verification.accepted:
+                return verification, None
+            if attempts >= _MAX_VERIFICATIONS:
+                return rejected(
+                    ERR_ANCHOR_UNSTABLE,
+                    f"the anchor changed under each of {attempts} advances",
+                ), None
+            if await self._store.advance_firmware_freshness(
+                verification.device_id,
+                boot_id=verification.boot_id,
+                seq=verification.seq,
+                uptime_ms=verification.device_uptime_ms,
+                verified_against=row,
+            ):
+                return verification, row
+            attempts += 1
+            current = await self._store.get_firmware_device(device_id)
+            if current is not None and all(
+                current[column] == row[column] for column in FIRMWARE_ANCHOR_COLUMNS
+            ):
+                # The mark moved: the message is refused against the mark it
+                # now faces, under that reason.
+                code, detail = await self._freshness_refusal(verification)
+                return rejected(code, detail), None
+            row = current
 
     async def register_device(
         self,
@@ -307,50 +363,31 @@ class FirmwareTelemetryGate:
         if isinstance(envelope, dict) and isinstance(envelope.get("device_id"), str):
             device_id = envelope["device_id"]
 
-        row = await self._store.get_firmware_device(device_id) if device_id else None
-        if row is None:
-            verification = TelemetryVerification(
+        def verify(row: dict[str, Any]) -> TelemetryVerification:
+            return verify_telemetry_message(
+                message,
+                anchor_device_id=row["device_id"],
+                anchor_public_key_b64=row["public_key_b64"],
+                anchor_posture=row["posture"],
+                accepted_manifest_hash=row["capability_hash"],
+                last_boot_id=row["last_boot_id"],
+                last_seq=row["last_seq"],
+                last_uptime_ms=row["last_uptime_ms"],
+                approved=row["approved"],
+                revoked=row["revoked"],
+                accepted_channels=row["channel_map"],
+            )
+
+        def rejected(code: str, detail: str) -> TelemetryVerification:
+            return TelemetryVerification(
                 grade=GRADE_REJECTED,
                 device_id=device_id,
-                error_code=ERR_ANCHOR_MISSING,
-                error_detail="no provisioning anchor for device",
-            )
-            self._log_rejection(verification)
-            return verification, []
-
-        verification = verify_telemetry_message(
-            message,
-            anchor_device_id=row["device_id"],
-            anchor_public_key_b64=row["public_key_b64"],
-            anchor_posture=row["posture"],
-            accepted_manifest_hash=row["capability_hash"],
-            last_boot_id=row["last_boot_id"],
-            last_seq=row["last_seq"],
-            last_uptime_ms=row["last_uptime_ms"],
-            approved=row["approved"],
-            revoked=row["revoked"],
-            accepted_channels=row["channel_map"],
-        )
-        if not verification.accepted:
-            self._log_rejection(verification)
-            return verification, []
-
-        advanced = await self._store.advance_firmware_freshness(
-            verification.device_id,
-            boot_id=verification.boot_id,
-            seq=verification.seq,
-            uptime_ms=verification.device_uptime_ms,
-        )
-        if not advanced:
-            # A concurrent writer advanced the mark first: the message is
-            # refused against the mark it now faces, under that reason.
-            code, detail = await self._freshness_refusal(verification)
-            verification = TelemetryVerification(
-                grade=GRADE_REJECTED,
-                device_id=verification.device_id,
                 error_code=code,
                 error_detail=detail,
             )
+
+        verification, row = await self._verify_and_advance(device_id, verify, rejected)
+        if row is None:
             self._log_rejection(verification)
             return verification, []
 
@@ -406,47 +443,30 @@ class FirmwareTelemetryGate:
         if isinstance(fault, dict) and isinstance(fault.get("device_id"), str):
             device_id = fault["device_id"]
 
-        row = await self._store.get_firmware_device(device_id) if device_id else None
-        if row is None:
-            verification = FirmwareFaultVerification(
+        def verify(row: dict[str, Any]) -> FirmwareFaultVerification:
+            return verify_fault_message(
+                message,
+                anchor_device_id=row["device_id"],
+                anchor_public_key_b64=row["public_key_b64"],
+                anchor_posture=row["posture"],
+                accepted_manifest_hash=row["capability_hash"],
+                last_boot_id=row["last_boot_id"],
+                last_seq=row["last_seq"],
+                last_uptime_ms=row["last_uptime_ms"],
+                approved=row["approved"],
+                revoked=row["revoked"],
+            )
+
+        def rejected(code: str, detail: str) -> FirmwareFaultVerification:
+            return FirmwareFaultVerification(
                 grade=GRADE_REJECTED,
                 device_id=device_id,
-                error_code=ERR_ANCHOR_MISSING,
-                error_detail="no provisioning anchor for device",
-            )
-            self._log_fault_rejection(verification)
-            return verification
-
-        verification = verify_fault_message(
-            message,
-            anchor_device_id=row["device_id"],
-            anchor_public_key_b64=row["public_key_b64"],
-            anchor_posture=row["posture"],
-            accepted_manifest_hash=row["capability_hash"],
-            last_boot_id=row["last_boot_id"],
-            last_seq=row["last_seq"],
-            last_uptime_ms=row["last_uptime_ms"],
-            approved=row["approved"],
-            revoked=row["revoked"],
-        )
-        if not verification.accepted:
-            self._log_fault_rejection(verification)
-            return verification
-
-        advanced = await self._store.advance_firmware_freshness(
-            verification.device_id,
-            boot_id=verification.boot_id,
-            seq=verification.seq,
-            uptime_ms=verification.device_uptime_ms,
-        )
-        if not advanced:
-            code, detail = await self._freshness_refusal(verification)
-            verification = FirmwareFaultVerification(
-                grade=GRADE_REJECTED,
-                device_id=verification.device_id,
                 error_code=code,
                 error_detail=detail,
             )
+
+        verification, row = await self._verify_and_advance(device_id, verify, rejected)
+        if row is None:
             self._log_fault_rejection(verification)
             return verification
 

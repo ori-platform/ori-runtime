@@ -208,12 +208,16 @@ async def run_step(store: StateStore, step: dict) -> None:
             DEVICE_ID, actor=ACTOR, reason=REASON
         )
     elif op == "advance_freshness":
+        # The anchor the step's message would have been verified against.
+        row = await store.get_firmware_device(DEVICE_ID)
+        assert row is not None
         outcome = await store.advance_firmware_freshness(
             # The shared vectors carry no uptime; 0 never regresses.
             DEVICE_ID,
             boot_id=step["boot_id"],
             seq=step["seq"],
             uptime_ms=0,
+            verified_against=row,
         )
     elif op == "allocate_cmd_seq":
         outcome = await store.allocate_firmware_command_seq(DEVICE_ID)

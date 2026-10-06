@@ -1260,6 +1260,18 @@ _RECORD_KEY_UNIQUE_TRIGGERS = (
 )
 
 
+# The registry columns a firmware message is verified against. A freshness
+# advance commits only while each still holds the value verification read.
+FIRMWARE_ANCHOR_COLUMNS = (
+    "public_key_b64",
+    "posture",
+    "capability_hash",
+    "channel_map_json",
+    "anchor_epoch_id",
+    "key_epoch_id",
+)
+
+
 def _uptime_mark(key_epoch_id: Any, boot_id: int, seq: int) -> str:
     """The freshness mark an uptime is stored against, as the store writes it."""
     return f"{key_epoch_id or ''}:{boot_id}:{seq}"
@@ -5928,6 +5940,7 @@ class StateStore:
             "capability_hash": row[4],
             "manifest": json.loads(row[5]),
             "channel_map": json.loads(row[6]),
+            "channel_map_json": row[6],
             "board_profile": row[7],
             "approved": bool(row[8]),
             "provisioned_at_ms": int(row[9]),
@@ -6971,22 +6984,45 @@ class StateStore:
             raise
 
     async def advance_firmware_freshness(
-        self, device_id: str, *, boot_id: int, seq: int, uptime_ms: int
+        self,
+        device_id: str,
+        *,
+        boot_id: int,
+        seq: int,
+        uptime_ms: int,
+        verified_against: dict[str, Any],
     ) -> bool:
         """Advance the replay high-water mark, strictly monotonically.
 
         The WHERE clause is the atomicity guarantee: a concurrent or
         replayed writer whose (boot_id, seq) does not strictly advance
         the stored mark, or whose uptime goes back within one boot,
-        updates zero rows, and the caller must treat that as a replay."""
+        updates zero rows, and the caller must treat that as a replay.
+        So does one whose anchor, `verified_against`, is no longer the
+        registry's: the message must be verified again."""
         return await self._run_write(
-            self._advance_firmware_freshness_sync, device_id, boot_id, seq, uptime_ms
+            self._advance_firmware_freshness_sync,
+            device_id,
+            boot_id,
+            seq,
+            uptime_ms,
+            tuple(verified_against[column] for column in FIRMWARE_ANCHOR_COLUMNS),
         )
 
     def _advance_firmware_freshness_sync(
-        self, device_id: str, boot_id: int, seq: int, uptime_ms: int
+        self,
+        device_id: str,
+        boot_id: int,
+        seq: int,
+        uptime_ms: int,
+        anchor: tuple[Any, ...],
     ) -> bool:
         assert self._conn is not None
+        if len(anchor) != len(FIRMWARE_ANCHOR_COLUMNS) or any(
+            not isinstance(value, str) for value in anchor
+        ):
+            raise ValueError("verified_against must carry every anchor column")
+        bound = "".join(f" AND {column} = ?" for column in FIRMWARE_ANCHOR_COLUMNS)
         cur = self._conn.execute(
             """
             UPDATE firmware_device_registry
@@ -7000,7 +7036,8 @@ class StateStore:
                       COALESCE(key_epoch_id, '') || ':' || last_boot_id
                       || ':' || last_seq
                    OR ? >= last_uptime_ms)
-            """,
+            """
+            + bound,
             (
                 boot_id,
                 seq,
@@ -7012,6 +7049,7 @@ class StateStore:
                 seq,
                 boot_id,
                 uptime_ms,
+                *anchor,
             ),
         )
         self._conn.commit()
