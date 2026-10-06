@@ -127,15 +127,18 @@ class MqttFirmwareCommandPublisher:
         A client that failed a publication may still hold it, unwritten,
         behind its network loop, after whatever authority signed it was
         withdrawn. A graceful disconnect would write it first, so the socket
-        is shut before anything else: nothing pending reaches the wire.
-        ``disconnect`` then only marks the client as leaving, and the loop
-        stops off the event loop. Nothing awaits, so cancellation cannot
-        skip it.
+        is shut before anything else: nothing pending reaches the wire. The
+        client never reconnects on its own (see ``_default_client_factory``),
+        so no new socket follows. The shutdown is a plain socket call; the
+        disconnect and loop stop, which take paho's locks, run off the event
+        loop. Nothing awaits, so cancellation cannot skip it.
         """
         if self._client is client:
             self._client = None
-        _abort_output(client)
-        stopped = asyncio.get_running_loop().run_in_executor(None, client.loop_stop)
+        _shut_socket(client)
+        stopped = asyncio.get_running_loop().run_in_executor(
+            None, _disconnect_and_stop, client
+        )
         stopped.add_done_callback(_consume)
 
     async def publish_provisioning_approval(
@@ -420,7 +423,7 @@ def _topic(device_id: str, leaf: str) -> str:
     return f"ori/fw/{device_id}/{leaf}"
 
 
-def _abort_output(client: Any) -> None:
+def _shut_socket(client: Any) -> None:
     sock_of = getattr(client, "socket", None)
     sock: Any = sock_of() if callable(sock_of) else None
     if sock is not None:
@@ -428,10 +431,13 @@ def _abort_output(client: Any) -> None:
             sock.shutdown(socket.SHUT_RDWR)
         except OSError:
             pass
+
+
+def _disconnect_and_stop(client: Any) -> None:
     try:
         client.disconnect()
-    except Exception:
-        logger.debug("[firmware-commands] disconnect of a retired client failed")
+    finally:
+        client.loop_stop()
 
 
 def _consume(future: Any) -> None:
@@ -451,4 +457,8 @@ def _default_client_factory(**kwargs: Any) -> Any:
     callback_api_version = getattr(mqtt, "CallbackAPIVersion", None)
     if callback_api_version is not None:
         kwargs.setdefault("callback_api_version", callback_api_version.VERSION2)
+    # A lost connection is never resumed: paho would resend what the client
+    # still held, after the runtime reported it failed. The publisher
+    # replaces a disconnected client instead.
+    kwargs["reconnect_on_failure"] = False
     return mqtt.Client(**kwargs)

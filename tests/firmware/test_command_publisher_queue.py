@@ -356,6 +356,9 @@ class _Gate:
         self.publish.set()
         self.returned = threading.Event()
         self.returned.set()
+        self.reconnect = threading.Event()
+        self.reconnect.set()
+        self.reconnecting = threading.Event()
 
 
 def _gated_paho(monkeypatch: pytest.MonkeyPatch, gate: _Gate) -> Any:
@@ -370,6 +373,12 @@ def _gated_paho(monkeypatch: pytest.MonkeyPatch, gate: _Gate) -> Any:
         def loop_write(self) -> Any:
             gate.write.wait(10.0)
             return super().loop_write()
+
+        def reconnect(self) -> Any:
+            if not gate.reconnect.is_set():
+                gate.reconnecting.set()
+                gate.reconnect.wait(10.0)
+            return super().reconnect()
 
         def disconnect(self, *args: Any, **kwargs: Any) -> Any:
             # disconnect wakes the network loop. Let it run first, so a
@@ -488,6 +497,61 @@ async def test_a_publication_cancelled_inside_publish_is_not_sent(
         finally:
             gate.publish.set()
             gate.returned.set()
+            gate.write.set()
+            device.loop_stop()
+            device.disconnect()
+            await publisher.close()
+
+
+@pytest.mark.parametrize("ending", ["timeout", "cancelled"])
+@pytest.mark.parametrize("family", sorted(FAMILIES))
+async def test_a_reconnect_underway_does_not_resend_a_failed_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, family: str, ending: str
+) -> None:
+    """The connection drops with the publication queued; a reconnect would resend it.
+
+    paho reconnects on its own unless told not to, and a reconnect already
+    running has no socket for retirement to shut. The reconnect is held at
+    its start, the publication fails, and then the reconnect is released.
+    """
+    import socket
+
+    gate = _Gate()
+    original = _gated_paho(monkeypatch, gate)
+    port = _free_port()
+    received: list[bytes] = []
+    with _broker_on(tmp_path, port):
+        device = await _listen(original, port, received)
+        publisher = MqttFirmwareCommandPublisher(
+            broker_url=f"mqtt://127.0.0.1:{port}",
+            runtime_device_id="runtime-01",
+            publish_timeout_s=3.0 if ending == "timeout" else 10.0,
+        )
+        try:
+            await publisher.connect()
+            client = publisher._client
+            assert client is not None
+            gate.reconnect.clear()
+            gate.write.clear()
+            task = asyncio.ensure_future(_publish(publisher, family, b"stale"))
+            await asyncio.sleep(0.3)  # queued, not yet written
+            client.socket().shutdown(socket.SHUT_RDWR)  # the connection drops
+            gate.write.set()  # the loop meets the dead socket
+            # A client that reconnects on its own is inside reconnect by now.
+            await asyncio.sleep(1.8)
+            if ending == "timeout":
+                with pytest.raises(FirmwareCommandPublishError):
+                    await task
+            else:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            # The device is revoked; then the reconnect runs.
+            gate.reconnect.set()
+            await asyncio.sleep(1.5)
+            assert received == []
+        finally:
+            gate.reconnect.set()
             gate.write.set()
             device.loop_stop()
             device.disconnect()
