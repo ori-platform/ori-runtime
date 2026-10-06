@@ -1,0 +1,235 @@
+# Copyright 2026 Ori Nexus Systems LTD
+# SPDX-License-Identifier: Apache-2.0
+
+"""A firmware publication that failed is never delivered later.
+
+A QoS 1 client queues what it cannot send and sends it on reconnect. For a
+signed command, approval or liveness message that means delivery after the
+authority that signed it may have been withdrawn, so the publisher refuses
+to hand anything to a disconnected client and discards a client that failed
+a publication, queue and all.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import subprocess
+import time
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Any, Iterator
+
+import pytest
+
+from ori.gateway.firmware_commands import (
+    FirmwareCommandPublishError,
+    MqttFirmwareCommandPublisher,
+)
+from tests.test_dispatch_never_waits_on_delivery import _free_port, _mosquitto
+
+DEVICE = "ori-fw-7c9f2b3a"
+FAMILIES = {
+    "command": ("publish_command", "cmd"),
+    "approval": ("publish_provisioning_approval", "provision"),
+    "liveness": ("publish_runtime_liveness", "runtime"),
+}
+
+
+@contextmanager
+def _broker_on(root: Path, port: int) -> Iterator[None]:
+    binary = _mosquitto()
+    if binary is None:
+        if os.environ.get("ORI_REQUIRE_MQTT_BROKER") == "1":
+            pytest.fail("ORI_REQUIRE_MQTT_BROKER=1 and mosquitto is not installed")
+        pytest.skip("mosquitto is not installed")
+    config = root / f"mosquitto-{port}.conf"
+    config.write_text(
+        f"listener {port} 127.0.0.1\nallow_anonymous true\npersistence false\n"
+    )
+    process = subprocess.Popen(
+        [binary, "-c", str(config)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        import socket
+
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            with socket.socket() as probe:
+                if probe.connect_ex(("127.0.0.1", port)) == 0:
+                    break
+            time.sleep(0.05)
+        yield
+    finally:
+        process.terminate()
+        process.wait(5.0)
+
+
+async def _publish(publisher: MqttFirmwareCommandPublisher, family: str, body: bytes):
+    method, _ = FAMILIES[family]
+    await getattr(publisher, method)(DEVICE, body)
+
+
+@pytest.mark.parametrize("family", sorted(FAMILIES))
+async def test_a_failed_publication_is_not_delivered_on_reconnect(
+    tmp_path: Path, family: str
+) -> None:
+    import paho.mqtt.client as mqtt
+
+    port = _free_port()
+    publisher = MqttFirmwareCommandPublisher(
+        broker_url=f"mqtt://127.0.0.1:{port}",
+        runtime_device_id="runtime-01",
+        publish_timeout_s=2.0,
+    )
+    with _broker_on(tmp_path, port):
+        await publisher.connect()
+    # The broker is gone. The runtime is told the publication failed; this is
+    # where an operator revokes the device.
+    await asyncio.sleep(0.3)
+    with pytest.raises(FirmwareCommandPublishError):
+        await _publish(publisher, family, b"stale")
+
+    received: list[bytes] = []
+    with _broker_on(tmp_path, port):
+        device = mqtt.Client(
+            callback_api_version=getattr(mqtt, "CallbackAPIVersion").VERSION2,
+            client_id="device",
+        )
+        device.on_message = lambda _c, _u, message: received.append(message.payload)
+        device.connect("127.0.0.1", port)
+        device.subscribe(f"ori/fw/{DEVICE}/#", qos=1)
+        device.loop_start()
+        try:
+            await asyncio.sleep(0.3)
+            await _publish(publisher, family, b"fresh")
+            deadline = time.monotonic() + 10.0
+            while b"fresh" not in received and time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
+            # Give anything still queued in a stale client time to arrive.
+            await asyncio.sleep(1.5)
+        finally:
+            device.loop_stop()
+            device.disconnect()
+            await publisher.close()
+
+    assert received == [b"fresh"]
+
+
+class _Info:
+    def __init__(self, rc: int, waited: Any) -> None:
+        self.rc = rc
+        self._waited = waited
+
+    def wait_for_publish(self, timeout: float) -> bool:
+        if isinstance(self._waited, Exception):
+            raise self._waited
+        return bool(self._waited)
+
+
+class _Client:
+    def __init__(self, *, connected: bool, rc: int = 0, waited: Any = True) -> None:
+        self.connected = connected
+        self.rc = rc
+        self.waited = waited
+        self.published: list[str] = []
+        self.stopped = False
+
+    def username_pw_set(self, *_: Any) -> None:
+        pass
+
+    def tls_set_context(self, *_: Any) -> None:
+        pass
+
+    def connect(self, *_: Any) -> None:
+        pass
+
+    def loop_start(self) -> None:
+        pass
+
+    def loop_stop(self) -> None:
+        self.stopped = True
+
+    def disconnect(self) -> None:
+        self.connected = False
+
+    def is_connected(self) -> bool:
+        return self.connected
+
+    def publish(self, topic: str, payload: bytes, qos: int, retain: bool) -> _Info:
+        self.published.append(topic)
+        return _Info(self.rc, self.waited)
+
+
+def _publisher(clients: list[_Client]) -> MqttFirmwareCommandPublisher:
+    made = iter(clients)
+    return MqttFirmwareCommandPublisher(
+        broker_url="mqtt://localhost",
+        runtime_device_id="runtime-01",
+        client_factory=lambda **_: next(made),
+        publish_timeout_s=0.05,
+    )
+
+
+async def test_nothing_is_handed_to_a_disconnected_client() -> None:
+    lost = _Client(connected=False)
+    still_down = _Client(connected=False)
+    publisher = _publisher([lost, still_down])
+    await publisher.connect()
+
+    with pytest.raises(FirmwareCommandPublishError, match="nothing was queued"):
+        await publisher.publish_command(DEVICE, b"command")
+
+    assert lost.published == [] and still_down.published == []
+    assert lost.stopped, "a disconnected client is replaced, not left to reconnect"
+
+
+async def test_a_disconnected_client_is_replaced_without_waiting() -> None:
+    lost = _Client(connected=False)
+    fresh = _Client(connected=True)
+    publisher = _publisher([lost, fresh])
+    await publisher.connect()
+
+    await publisher.publish_command(DEVICE, b"command")
+
+    assert lost.published == [] and lost.stopped
+    assert fresh.published == [f"ori/fw/{DEVICE}/cmd"]
+    await publisher.close()
+
+
+@pytest.mark.parametrize(
+    ("rc", "waited"),
+    [(4, True), (0, False), (0, RuntimeError("message publish failed"))],
+    ids=["rc", "timeout", "raised"],
+)
+async def test_a_client_that_failed_a_publication_is_discarded(
+    rc: int, waited: Any
+) -> None:
+    failing = _Client(connected=True, rc=rc, waited=waited)
+    fresh = _Client(connected=True)
+    publisher = _publisher([failing, fresh])
+    await publisher.connect()
+
+    with pytest.raises(FirmwareCommandPublishError):
+        await publisher.publish_command(DEVICE, b"stale")
+    assert failing.stopped and not failing.connected
+
+    await publisher.publish_command(DEVICE, b"fresh")
+    assert failing.published == [f"ori/fw/{DEVICE}/cmd"]
+    assert fresh.published == [f"ori/fw/{DEVICE}/cmd"]
+    await publisher.close()
+
+
+async def test_a_publisher_that_cannot_reconnect_refuses() -> None:
+    def refuse(**_: Any) -> Any:
+        raise ConnectionRefusedError("broker down")
+
+    publisher = MqttFirmwareCommandPublisher(
+        broker_url="mqtt://localhost",
+        runtime_device_id="runtime-01",
+        client_factory=refuse,
+    )
+    with pytest.raises(FirmwareCommandPublishError, match="not connected"):
+        await publisher.publish_command(DEVICE, b"command")

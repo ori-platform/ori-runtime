@@ -255,6 +255,9 @@ class _FakeClient:
     def connect(self, *a, **k):
         pass
 
+    def is_connected(self):
+        return True
+
     def loop_start(self):
         pass
 

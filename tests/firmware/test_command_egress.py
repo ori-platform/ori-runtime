@@ -218,6 +218,9 @@ class _FakeClient:
     def connect(self, host, port, keepalive):
         self.connected = (host, port, keepalive)
 
+    def is_connected(self):
+        return self.connected is not None and not self.disconnected
+
     def loop_start(self):
         self.loop_started = True
 
@@ -275,14 +278,22 @@ async def test_mqtt_publisher_uses_retained_provision_and_nonretained_command() 
 
 
 async def test_mqtt_publisher_refuses_bad_topic_or_unconnected_publish() -> None:
+    def refuse(**_: Any) -> Any:
+        raise ConnectionRefusedError("broker down")
+
+    unreachable = MqttFirmwareCommandPublisher(
+        broker_url="mqtt://localhost",
+        runtime_device_id="runtime-01",
+        client_factory=refuse,
+    )
+    with pytest.raises(FirmwareCommandPublishError, match="not connected"):
+        await unreachable.publish_command("ori-fw-7c9f2b3a", b"command")
+
     publisher = MqttFirmwareCommandPublisher(
         broker_url="mqtt://localhost",
         runtime_device_id="runtime-01",
         client_factory=lambda **_: _FakeClient(),
     )
-    with pytest.raises(FirmwareCommandPublishError, match="not connected"):
-        await publisher.publish_command("ori-fw-7c9f2b3a", b"command")
-
     await publisher.connect()
     with pytest.raises(FirmwareCommandPublishError, match="device_id"):
         await publisher.publish_command("bad/device", b"command")

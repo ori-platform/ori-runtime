@@ -22,6 +22,7 @@ import asyncio
 import base64
 import os
 import re
+import time
 from typing import Any, Callable, cast
 
 from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_url
@@ -78,8 +79,13 @@ class MqttFirmwareCommandPublisher:
         self._client_factory = client_factory or _default_client_factory
         self._publish_timeout_s = float(publish_timeout_s)
         self._client: Any = None
+        self._lock = asyncio.Lock()
 
     async def connect(self) -> None:
+        async with self._lock:
+            await self._connect_locked()
+
+    async def _connect_locked(self) -> None:
         client = self._client_factory(client_id=f"ori-fw-cmd-{self._runtime_device_id}")
         if self._broker.username:
             client.username_pw_set(self._broker.username, self._broker.password)
@@ -92,16 +98,30 @@ class MqttFirmwareCommandPublisher:
         )
         await asyncio.to_thread(client.loop_start)
         self._client = client
+        # Publishing waits for the session: a publish before the broker's
+        # acknowledgement would be refused as disconnected.
+        deadline = time.monotonic() + self._publish_timeout_s
+        while not client.is_connected() and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
 
     async def close(self) -> None:
-        client = self._client
-        self._client = None
-        if client is None:
-            return
-        try:
-            await asyncio.to_thread(client.loop_stop)
-        finally:
-            await asyncio.to_thread(client.disconnect)
+        async with self._lock:
+            client = self._client
+            self._client = None
+        if client is not None:
+            await _stop_client(client)
+
+    async def _discard(self, client: Any) -> None:
+        """Drop a client whose publication failed, and its queue with it.
+
+        The client holds a QoS 1 message it could not deliver and would send
+        it on reconnect, after whatever authority signed it may have been
+        withdrawn. A fresh client is connected for the next publication.
+        """
+        async with self._lock:
+            if self._client is client:
+                self._client = None
+        await _stop_client(client)
 
     async def publish_provisioning_approval(
         self, device_id: str, message: bytes
@@ -136,28 +156,51 @@ class MqttFirmwareCommandPublisher:
         )
 
     async def _publish(self, topic: str, message: bytes, *, retain: bool) -> None:
-        client = self._client
-        if client is None:
-            raise FirmwareCommandPublishError(
-                "firmware command publisher is not connected"
-            )
         if not isinstance(message, bytes) or not message:
             raise FirmwareCommandPublishError("firmware command payload must be bytes")
-        info = await asyncio.to_thread(
-            client.publish,
-            topic,
-            payload=message,
-            qos=self._qos,
-            retain=retain,
-        )
-        rc = int(getattr(info, "rc", 0))
-        if rc != 0:
-            raise FirmwareCommandPublishError(f"MQTT publish failed rc={rc}")
-        wait_for_publish = getattr(info, "wait_for_publish", None)
-        if callable(wait_for_publish):
-            ok = await asyncio.to_thread(wait_for_publish, self._publish_timeout_s)
-            if ok is False:
-                raise FirmwareCommandPublishError("MQTT publish timed out")
+        # A publication that fails is never delivered later by this process:
+        # nothing is handed to a disconnected client, which would queue it,
+        # and a client that took a message and failed it is discarded. A
+        # disconnected client is replaced at once rather than left to its
+        # own reconnect backoff.
+        async with self._lock:
+            stale = self._client
+            if stale is not None and not stale.is_connected():
+                self._client = None
+                await _stop_client(stale)
+            if self._client is None:
+                try:
+                    await self._connect_locked()
+                except Exception as exc:
+                    raise FirmwareCommandPublishError(
+                        "firmware command publisher is not connected"
+                    ) from exc
+            client = self._client
+        if client is None or not client.is_connected():
+            raise FirmwareCommandPublishError(
+                "firmware command publisher is not connected; nothing was queued"
+            )
+        try:
+            info = await asyncio.to_thread(
+                client.publish,
+                topic,
+                payload=message,
+                qos=self._qos,
+                retain=retain,
+            )
+            rc = int(getattr(info, "rc", 0))
+            if rc != 0:
+                raise FirmwareCommandPublishError(f"MQTT publish failed rc={rc}")
+            wait_for_publish = getattr(info, "wait_for_publish", None)
+            if callable(wait_for_publish):
+                ok = await asyncio.to_thread(wait_for_publish, self._publish_timeout_s)
+                if ok is False:
+                    raise FirmwareCommandPublishError("MQTT publish timed out")
+        except Exception as exc:
+            await self._discard(client)
+            if isinstance(exc, FirmwareCommandPublishError):
+                raise
+            raise FirmwareCommandPublishError(f"MQTT publish failed: {exc}") from exc
 
 
 class FirmwareCommandService:
@@ -359,6 +402,16 @@ def _topic(device_id: str, leaf: str) -> str:
     return f"ori/fw/{device_id}/{leaf}"
 
 
+async def _stop_client(client: Any) -> None:
+    try:
+        await asyncio.to_thread(client.loop_stop)
+    finally:
+        await asyncio.to_thread(client.disconnect)
+
+
 def _default_client_factory(**kwargs: Any) -> Any:
     assert mqtt is not None
+    callback_api_version = getattr(mqtt, "CallbackAPIVersion", None)
+    if callback_api_version is not None:
+        kwargs.setdefault("callback_api_version", callback_api_version.VERSION2)
     return mqtt.Client(**kwargs)
