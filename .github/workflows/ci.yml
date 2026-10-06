@@ -71,7 +71,7 @@ jobs:
           reason: running the tests that read documents
 
       - name: Start the phone payload build in the background
-        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests' && matrix.python-version == '3.12'
+        if: steps.scope.outputs.run == 'true' && matrix.role == 'checks'
         # It compiles while dependencies install; the phone tests' own cargo
         # build then waits on cargo's lock for it instead of building on a worker.
         run: |
@@ -316,8 +316,8 @@ jobs:
           COVERAGE: ${{ matrix.python-version == '3.13' && '--cov=ori --cov-report=term-missing --cov-report=xml' || '' }}
           COVERAGE_CORE: sysmon
           # The phone delivery tests exercise the Rust payload, not the
-          # interpreter, so one Python version runs them.
-          ORI_SKIP_PHONE_E2E: ${{ matrix.python-version != '3.12' && '1' || '' }}
+          # interpreter; the checks entry runs them beside these suites.
+          ORI_SKIP_PHONE_E2E: "1"
         run: |
           # One worker per core; tests that build from the repository share one
           # worker through xdist_group("repo_build"), held by test_parallel_safety.
@@ -411,6 +411,12 @@ jobs:
               sys.exit(1)
           print('All bundled skills loaded cleanly.')
           "
+
+      - name: Run the phone delivery tests
+        if: steps.scope.outputs.run == 'true' && matrix.role == 'checks'
+        # Run here rather than in the test entries: they exercise the Rust
+        # payload, and this entry otherwise finishes well before the suites.
+        run: pytest tests/test_runtime_mobile_delivery_e2e.py -q -n auto --durations=10
 
       - name: Release wheel smoke test
         if: steps.scope.outputs.run == 'true' && matrix.role == 'checks'
