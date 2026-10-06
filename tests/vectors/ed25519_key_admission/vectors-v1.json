@@ -2,7 +2,7 @@
   "vector_set": "ed25519-key-admission/v1",
   "contract": "ed25519-key-admission/v1",
   "purpose": "Cross-language agreement on which 32-byte Ed25519 public keys an Ori verifier admits, that a signature made with no private key is refused for its key, and that a key shifted by a point of small order is refused although its seed signs under it.",
-  "derivation": "public_keys carry the encodings of the public_keys cases of evidence-exchange/vectors/authority-key-registry-v2.json, in order, with that corpus's verdicts except for keys of mixed order, which v2 admits and this contract refuses; keyless_signatures pair each small-order key with one message and the signature R = base point, S = 1. mixed_order cases are the base point plus a point of order 2 and of order 8, and the key derived from seed_hex under RFC 8032 section 5.1.5 plus torsion_point_hex. torsion_shift_signatures sign one message under that shifted key with the unshifted key's scalar, using the first nonce, SHA-512 of the seed's prefix, the message and a 4-byte little-endian counter, whose challenge is a multiple of 8.",
+  "derivation": "public_keys carry the encodings of the public_keys cases of evidence-exchange/vectors/authority-key-registry-v2.json, in order, with that corpus's verdicts except for keys of mixed order, which v2 admits and this contract refuses; keyless_signatures pair each small-order key with one message and the signature R = base point, S = 1. mixed_order cases are the base point plus a point of order 2 and of order 8, and the key derived from seed_hex under RFC 8032 section 5.1.5 plus torsion_point_hex. torsion_shift_signatures sign one message under that shifted key with the unshifted key's scalar, using the first nonce, SHA-512 of the seed's prefix, the message and a 4-byte little-endian counter, whose challenge is a multiple of 8 both as the full SHA-512 integer and reduced modulo L.",
   "public_keys": [
     {
       "public_key_hex": "0000000000000000000000000000000000000000000000000000000000000000",
@@ -625,10 +625,10 @@
     {
       "public_key_hex": "3a0ba61be5057d1d12fb9ca9dc1132531d51260914857021f83d6a0b63a4df5a",
       "message_hex": "6120646f63756d656e74207369676e6564207769746820746865206f726967696e616c206b657927732070726976617465207363616c6172",
-      "signature_hex": "e1a9a60c9e5d0068892173a368835d51552726f8f213a7f4effb6014bd52ff30640a35955ad4915b2efd8019b39b12fc4f5bddf9eae4988ab9199558bc3b0e0f",
+      "signature_hex": "96995b0ef37a1d4ce98c0b8ab8814b37175b1a4f669c7137e2c57c8f631c75faabccb3dd9240842d82437131c17c2fde6fdc43f5baa29916fb9f785e8e97940e",
       "expected": "refused",
       "clause": "mixed_order",
-      "why": "made with the private scalar of the unshifted key; the cofactorless equation accepts it under the shifted key"
+      "why": "made with the private scalar of the unshifted key; the cofactorless equation accepts it under the shifted key, with the full challenge and with it reduced modulo L"
     }
   ]
 }

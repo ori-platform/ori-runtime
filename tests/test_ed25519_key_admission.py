@@ -835,7 +835,8 @@ def test_every_keyless_signature_is_refused_for_its_key(case: dict[str, str]) ->
 #
 # The shifted key's holder is the unshifted key's: signing with that scalar and
 # the shifted key in the challenge verifies cofactorlessly whenever the
-# challenge is a multiple of 8. So a check that knows a key by its bytes (a
+# challenge is a multiple of 8. The forgeries below are for the library, which
+# reduces the challenge modulo L; RFC 8032 section 5.1.7 uses the full hash. So a check that knows a key by its bytes (a
 # published key, a collision, a key not to be reused) is passed by shifting.
 # The arithmetic below is affine and shares nothing with ori.security.
 
@@ -891,7 +892,7 @@ def _shifted(seed: bytes) -> bytes:
 
 
 def _forge_under_shift(seed: bytes, message: bytes) -> bytes:
-    """A signature by *seed*'s scalar that verifies under its shifted key."""
+    """A signature by *seed*'s scalar that the library verifies under its shifted key."""
     digest = hashlib.sha512(seed).digest()
     scalar = int.from_bytes(digest[:32], "little") & ((1 << 254) - 8) | (1 << 254)
     shifted = _shifted(seed)

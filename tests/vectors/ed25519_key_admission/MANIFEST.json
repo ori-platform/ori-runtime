@@ -5,6 +5,6 @@
   "contract_version": "v1",
   "note": "Vendored copies of the normative vectors. The runtime must produce and accept the bytes they describe, so they are its conformance fixtures. Digests detect a local edit; the source commit is the provenance trail.",
   "files": {
-    "vectors-v1.json": "80925a8a2407ab63dd86381d2b5cffc5c98eb5dff8260d937baf184dd2f6f2e6"
+    "vectors-v1.json": "2f92bebd0de8fcfe3477c0e344f81cad90c6624373cb316ca49ad727377b7efd"
   }
 }
