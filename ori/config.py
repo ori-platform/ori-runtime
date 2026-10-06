@@ -1689,9 +1689,9 @@ def _parse_gateway(data: Any) -> GatewayConfig:
         raise ConfigValidationError(
             "gateway.firmware_commands.publish_timeout_s must be a number"
         ) from exc
-    if publish_timeout_s <= 0:
+    if not math.isfinite(publish_timeout_s) or publish_timeout_s <= 0:
         raise ConfigValidationError(
-            "gateway.firmware_commands.publish_timeout_s must be > 0"
+            "gateway.firmware_commands.publish_timeout_s must be a finite number > 0"
         )
     runtime_command_key_env = str(
         firmware_commands.get("runtime_command_key_env", "") or ""

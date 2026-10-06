@@ -196,8 +196,11 @@ class _FakePublishInfo:
     def __init__(self) -> None:
         self.waited: float | None = None
 
-    def wait_for_publish(self, timeout: float) -> bool:
+    def wait_for_publish(self, timeout: float) -> None:
+        # As paho's: None whether or not the broker acknowledged.
         self.waited = timeout
+
+    def is_published(self) -> bool:
         return True
 
 

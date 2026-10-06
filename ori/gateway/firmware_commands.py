@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
+import math
 import os
 import re
 import time
@@ -37,6 +39,8 @@ from ori.security.firmware.liveness import (
     SupervisedDevice,
 )
 from ori.security.published_test_keys import is_published_seed
+
+logger = logging.getLogger(__name__)
 
 mqtt: Any
 try:
@@ -71,8 +75,13 @@ class MqttFirmwareCommandPublisher:
             raise RuntimeError("paho-mqtt is not installed")
         if int(qos) != 1:
             raise ValueError("firmware command MQTT binding requires QoS 1")
-        if publish_timeout_s <= 0:
-            raise ValueError("publish_timeout_s must be positive")
+        if (
+            isinstance(publish_timeout_s, bool)
+            or not isinstance(publish_timeout_s, (int, float))
+            or not math.isfinite(publish_timeout_s)
+            or publish_timeout_s <= 0
+        ):
+            raise ValueError("publish_timeout_s must be a finite positive number")
         self._broker = parse_gateway_broker_url(broker_url, tls_config=tls_config)
         self._runtime_device_id = str(runtime_device_id)
         self._qos = int(qos)
@@ -111,17 +120,23 @@ class MqttFirmwareCommandPublisher:
         if client is not None:
             await _stop_client(client)
 
-    async def _discard(self, client: Any) -> None:
-        """Drop a client whose publication failed, and its queue with it.
+    def _retire(self, client: Any) -> None:
+        """Stop a client from sending anything more, without awaiting.
 
-        The client holds a QoS 1 message it could not deliver and would send
-        it on reconnect, after whatever authority signed it may have been
-        withdrawn. A fresh client is connected for the next publication.
+        A client that failed a publication holds a QoS 1 message it would
+        send on reconnect, after whatever authority signed it may have been
+        withdrawn. Nothing here awaits, so cancellation cannot skip it:
+        ``disconnect`` ends reconnects and resends at once, and the network
+        loop is stopped off the event loop.
         """
-        async with self._lock:
-            if self._client is client:
-                self._client = None
-        await _stop_client(client)
+        if self._client is client:
+            self._client = None
+        try:
+            client.disconnect()
+        except Exception:
+            logger.debug("[firmware-commands] disconnect of a retired client failed")
+        stopped = asyncio.get_running_loop().run_in_executor(None, client.loop_stop)
+        stopped.add_done_callback(_consume)
 
     async def publish_provisioning_approval(
         self, device_id: str, message: bytes
@@ -166,8 +181,7 @@ class MqttFirmwareCommandPublisher:
         async with self._lock:
             stale = self._client
             if stale is not None and not stale.is_connected():
-                self._client = None
-                await _stop_client(stale)
+                self._retire(stale)
             if self._client is None:
                 try:
                     await self._connect_locked()
@@ -191,14 +205,18 @@ class MqttFirmwareCommandPublisher:
             rc = int(getattr(info, "rc", 0))
             if rc != 0:
                 raise FirmwareCommandPublishError(f"MQTT publish failed rc={rc}")
-            wait_for_publish = getattr(info, "wait_for_publish", None)
-            if callable(wait_for_publish):
-                ok = await asyncio.to_thread(wait_for_publish, self._publish_timeout_s)
-                if ok is False:
-                    raise FirmwareCommandPublishError("MQTT publish timed out")
-        except Exception as exc:
-            await self._discard(client)
-            if isinstance(exc, FirmwareCommandPublishError):
+            # wait_for_publish returns None whether or not the broker
+            # acknowledged; only is_published says which.
+            await asyncio.to_thread(info.wait_for_publish, self._publish_timeout_s)
+            if not info.is_published():
+                raise FirmwareCommandPublishError("MQTT publish timed out")
+        except BaseException as exc:
+            # Cancellation included: an outer timeout must not leave the
+            # message queued in a live client.
+            self._retire(client)
+            if isinstance(exc, (FirmwareCommandPublishError, asyncio.CancelledError)):
+                raise
+            if not isinstance(exc, Exception):
                 raise
             raise FirmwareCommandPublishError(f"MQTT publish failed: {exc}") from exc
 
@@ -400,6 +418,11 @@ def _topic(device_id: str, leaf: str) -> str:
             f"device_id is not a valid MQTT fleet identifier: {device_id!r}"
         )
     return f"ori/fw/{device_id}/{leaf}"
+
+
+def _consume(future: Any) -> None:
+    if not future.cancelled() and future.exception() is not None:
+        logger.debug("[firmware-commands] stopping a retired client failed")
 
 
 async def _stop_client(client: Any) -> None:

@@ -233,9 +233,14 @@ async def test_rejected_telemetry_does_not_establish_supervision(store) -> None:
 
 
 class _FakeInfo:
+    """As paho's: the wait returns None, and is_published says whether."""
+
     rc = 0
 
     def wait_for_publish(self, timeout):
+        return None
+
+    def is_published(self):
         return True
 
 

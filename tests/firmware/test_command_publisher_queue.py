@@ -37,7 +37,7 @@ FAMILIES = {
 
 
 @contextmanager
-def _broker_on(root: Path, port: int) -> Iterator[None]:
+def _broker_on(root: Path, port: int) -> Iterator[subprocess.Popen[bytes]]:
     binary = _mosquitto()
     if binary is None:
         if os.environ.get("ORI_REQUIRE_MQTT_BROKER") == "1":
@@ -61,9 +61,10 @@ def _broker_on(root: Path, port: int) -> Iterator[None]:
                 if probe.connect_ex(("127.0.0.1", port)) == 0:
                     break
             time.sleep(0.05)
-        yield
+        yield process
     finally:
-        process.terminate()
+        if process.poll() is None:
+            process.kill()
         process.wait(5.0)
 
 
@@ -118,14 +119,100 @@ async def test_a_failed_publication_is_not_delivered_on_reconnect(
     assert received == [b"fresh"]
 
 
+async def _only_fresh_arrives(
+    tmp_path: Path, port: int, publisher: MqttFirmwareCommandPublisher, family: str
+) -> list[bytes]:
+    """Restart the broker, publish a fresh message, and return what arrived."""
+    import paho.mqtt.client as mqtt
+
+    received: list[bytes] = []
+    with _broker_on(tmp_path, port):
+        device = mqtt.Client(
+            callback_api_version=getattr(mqtt, "CallbackAPIVersion").VERSION2,
+            client_id="device",
+        )
+        device.on_message = lambda _c, _u, message: received.append(message.payload)
+        device.connect("127.0.0.1", port)
+        device.subscribe(f"ori/fw/{DEVICE}/#", qos=1)
+        device.loop_start()
+        try:
+            # Past paho's first reconnect: a stale client left alive would
+            # be back on the broker and resending before the fresh message.
+            await asyncio.sleep(3.0)
+            await _publish(publisher, family, b"fresh")
+            deadline = time.monotonic() + 10.0
+            while b"fresh" not in received and time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
+            await asyncio.sleep(0.5)
+        finally:
+            device.loop_stop()
+            device.disconnect()
+            await publisher.close()
+    return received
+
+
+@pytest.mark.parametrize("family", sorted(FAMILIES))
+async def test_an_unacknowledged_publication_is_not_resent_on_reconnect(
+    tmp_path: Path, family: str
+) -> None:
+    """The broker takes the bytes and never acknowledges; three publish at once."""
+    import signal
+
+    port = _free_port()
+    publisher = MqttFirmwareCommandPublisher(
+        broker_url=f"mqtt://127.0.0.1:{port}",
+        runtime_device_id="runtime-01",
+        publish_timeout_s=1.0,
+    )
+    with _broker_on(tmp_path, port) as broker:
+        await publisher.connect()
+        broker.send_signal(signal.SIGSTOP)
+        outcomes = await asyncio.gather(
+            *(_publish(publisher, family, b"stale") for _ in range(3)),
+            return_exceptions=True,
+        )
+        assert all(isinstance(o, FirmwareCommandPublishError) for o in outcomes)
+        # This is where the device is revoked; the broker dies holding nothing.
+        broker.kill()
+
+    assert await _only_fresh_arrives(tmp_path, port, publisher, family) == [b"fresh"]
+
+
+@pytest.mark.parametrize("family", sorted(FAMILIES))
+async def test_a_cancelled_publication_is_not_resent_on_reconnect(
+    tmp_path: Path, family: str
+) -> None:
+    """An outer timeout cancels the publication, as the liveness scheduler does."""
+    import signal
+
+    port = _free_port()
+    publisher = MqttFirmwareCommandPublisher(
+        broker_url=f"mqtt://127.0.0.1:{port}",
+        runtime_device_id="runtime-01",
+        publish_timeout_s=5.0,
+    )
+    with _broker_on(tmp_path, port) as broker:
+        await publisher.connect()
+        broker.send_signal(signal.SIGSTOP)
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(_publish(publisher, family, b"stale"), 0.5)
+        broker.kill()
+
+    assert await _only_fresh_arrives(tmp_path, port, publisher, family) == [b"fresh"]
+
+
 class _Info:
+    """As paho's: the wait returns None, and is_published says whether."""
+
     def __init__(self, rc: int, waited: Any) -> None:
         self.rc = rc
         self._waited = waited
 
-    def wait_for_publish(self, timeout: float) -> bool:
-        if isinstance(self._waited, Exception):
+    def wait_for_publish(self, timeout: float) -> None:
+        if isinstance(self._waited, BaseException):
             raise self._waited
+
+    def is_published(self) -> bool:
         return bool(self._waited)
 
 
@@ -201,8 +288,13 @@ async def test_a_disconnected_client_is_replaced_without_waiting() -> None:
 
 @pytest.mark.parametrize(
     ("rc", "waited"),
-    [(4, True), (0, False), (0, RuntimeError("message publish failed"))],
-    ids=["rc", "timeout", "raised"],
+    [
+        (4, True),
+        (0, False),
+        (0, RuntimeError("message publish failed")),
+        (0, asyncio.CancelledError()),
+    ],
+    ids=["rc", "timeout", "raised", "cancelled"],
 )
 async def test_a_client_that_failed_a_publication_is_discarded(
     rc: int, waited: Any
@@ -212,8 +304,14 @@ async def test_a_client_that_failed_a_publication_is_discarded(
     publisher = _publisher([failing, fresh])
     await publisher.connect()
 
-    with pytest.raises(FirmwareCommandPublishError):
+    expected = (
+        asyncio.CancelledError
+        if isinstance(waited, asyncio.CancelledError)
+        else FirmwareCommandPublishError
+    )
+    with pytest.raises(expected):
         await publisher.publish_command(DEVICE, b"stale")
+    await asyncio.sleep(0.05)  # the network loop is stopped off the event loop
     assert failing.stopped and not failing.connected
 
     await publisher.publish_command(DEVICE, b"fresh")
@@ -233,3 +331,14 @@ async def test_a_publisher_that_cannot_reconnect_refuses() -> None:
     )
     with pytest.raises(FirmwareCommandPublishError, match="not connected"):
         await publisher.publish_command(DEVICE, b"command")
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("nan"), float("inf"), True])
+def test_the_publish_timeout_must_be_finite_and_positive(timeout: Any) -> None:
+    with pytest.raises(ValueError, match="finite positive"):
+        MqttFirmwareCommandPublisher(
+            broker_url="mqtt://localhost",
+            runtime_device_id="runtime-01",
+            client_factory=lambda **_: _Client(connected=True),
+            publish_timeout_s=timeout,
+        )

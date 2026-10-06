@@ -5482,7 +5482,8 @@ actions:
                 )
             )
 
-    def test_rejects_invalid_firmware_command_timeout(self, tmp_path):
+    @pytest.mark.parametrize("timeout", ["0", "-1", ".nan", ".inf"])
+    def test_rejects_invalid_firmware_command_timeout(self, tmp_path, timeout):
         with pytest.raises(
             ConfigValidationError, match="firmware_commands.publish_timeout_s"
         ):
@@ -5494,7 +5495,7 @@ actions:
                         "    enabled: true\n"
                         "    runtime_command_key_env: ORI_FW_RUNTIME_COMMAND_KEY\n"
                         "    provisioner_key_env: ORI_FW_PROVISIONER_KEY\n"
-                        "    publish_timeout_s: 0\n"
+                        f"    publish_timeout_s: {timeout}\n"
                     ),
                 )
             )
