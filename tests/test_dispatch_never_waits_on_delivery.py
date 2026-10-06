@@ -1608,9 +1608,20 @@ class TestTheInFlightSlots:
     async def test_a_reconnect_keeps_the_slots_it_holds(self, tmp_path: Path) -> None:
         async with _site(tmp_path) as site:
             subscriber, client = await _serving(site)
-            site.lock("evidence.db")
+            # The routes are held by an event, not a database lock: a lock is
+            # released by SQLite's busy timeout, and a slow reconnect would
+            # then free a slot the test is asserting is still held.
+            held = asyncio.Event()
+            real_route = subscriber._router.route
+
+            async def held_route(payload: Any) -> Any:
+                await held.wait()
+                return await real_route(payload)
+
+            subscriber._router.route = held_route  # type: ignore[method-assign]
             _deliver(client, range(1, INBOUND_IN_FLIGHT_BOUND + 1))
             await _until(lambda: subscriber._in_flight == INBOUND_IN_FLIGHT_BOUND)
+            assert subscriber._in_flight == INBOUND_IN_FLIGHT_BOUND
             with patch.object(evidence_inbound, "_RECONNECT_MIN_S", 0.01):
                 subscriber._signal_lost()
                 await _until(lambda: subscriber.connected is False)
@@ -1619,7 +1630,8 @@ class TestTheInFlightSlots:
             _deliver(client, range(100, 101))
             await _until(lambda: subscriber.shed_count == 1)
             assert subscriber.shed_count == 1
-            site.release()
+            held.set()
+            await _until(lambda: subscriber._in_flight == 0)
 
     async def test_an_inbound_flood_takes_no_slot_from_courier_acknowledgements(
         self, tmp_path: Path
