@@ -37,18 +37,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from ori.security.ed25519_keys import (
-    CLAUSE_INVALID_SIGN as CLAUSE_INVALID_SIGN,
-)
-from ori.security.ed25519_keys import (
-    CLAUSE_NON_CANONICAL as CLAUSE_NON_CANONICAL,
-)
-from ori.security.ed25519_keys import (
-    CLAUSE_OFF_CURVE as CLAUSE_OFF_CURVE,
-)
-from ori.security.ed25519_keys import (
-    CLAUSE_SMALL_ORDER as CLAUSE_SMALL_ORDER,
-)
 from ori.security.ed25519_keys import refused_public_key_clause
 from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
 
