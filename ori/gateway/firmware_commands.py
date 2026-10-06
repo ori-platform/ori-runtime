@@ -211,6 +211,15 @@ class FirmwareCommandService:
             runtime_public_key_b64=self._runtime_public_key_b64,
             provisioner_private_key_bytes=self._provisioner_key_bytes,
         )
+        # The checks above span several reads. The approval is retained, so
+        # it is published only if the anchor it names still holds, in one.
+        if not await self._store.firmware_command_authority_holds(
+            device_id, verified_against=row
+        ):
+            raise FirmwareCommandError(
+                f"device {device_id!r} authority changed before the approval "
+                "was published; nothing was published"
+            )
         await self._publisher.publish_provisioning_approval(row["device_id"], message)
         return message
 

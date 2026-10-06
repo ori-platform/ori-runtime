@@ -304,7 +304,16 @@ class FirmwareLivenessSigner:
                 f"{device_id}: not supervised — no accepted telemetry for this "
                 f"boot and manifest epoch within the supervision window"
             )
-        runtime_seq = await self._store.allocate_firmware_runtime_seq(device_id)
+        try:
+            runtime_seq = await self._store.allocate_firmware_runtime_seq(
+                device_id, capability_hash=capability_hash
+            )
+        except PermissionError as exc:
+            raise FirmwareLivenessError(
+                f"{device_id}: revoked, unapproved or re-manifested "
+                "since telemetry was accepted; this runtime no longer holds the "
+                "authority to assert supervision"
+            ) from exc
         liveness = build_liveness_bytes(
             boot_id=boot_id,
             capability_hash=capability_hash,

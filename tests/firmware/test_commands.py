@@ -23,7 +23,7 @@ from ori.security.firmware.commands import (
     build_command_bytes,
 )
 from ori.security.firmware.ingest import FirmwareTelemetryGate
-from ori.state.store import StateStore
+from ori.state.store import FIRMWARE_ANCHOR_COLUMNS, StateStore
 
 VECTORS = json.loads(
     (
@@ -147,12 +147,19 @@ async def _confirm_active(store, device_id: str) -> None:
 class TestSequenceAllocation:
     async def test_strictly_increasing_per_device(self, store) -> None:
         device_id = await provision(store)
-        seqs = [await store.allocate_firmware_command_seq(device_id) for _ in range(5)]
+        row = await store.get_firmware_device(device_id)
+        seqs = [
+            await store.allocate_firmware_command_seq(device_id, verified_against=row)
+            for _ in range(5)
+        ]
         assert seqs == [1, 2, 3, 4, 5]
 
     async def test_unknown_device_refused(self, store) -> None:
         with pytest.raises(KeyError):
-            await store.allocate_firmware_command_seq("ori-fw-missing")
+            await store.allocate_firmware_command_seq(
+                "ori-fw-missing",
+                verified_against=dict.fromkeys(FIRMWARE_ANCHOR_COLUMNS, ""),
+            )
 
     async def test_sign_command_end_to_end(self, store) -> None:
         device_id = await provision(store)
@@ -231,7 +238,11 @@ class TestSequenceAllocation:
             )
 
         # No sequence was consumed by any refusal above.
-        assert await store.allocate_firmware_command_seq(device_id) == 1
+        row = await store.get_firmware_device(device_id)
+        assert (
+            await store.allocate_firmware_command_seq(device_id, verified_against=row)
+            == 1
+        )
 
     async def test_sign_refuses_unapproved_and_revoked(self, store) -> None:
         gate = FirmwareTelemetryGate(store)

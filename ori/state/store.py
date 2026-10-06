@@ -1272,6 +1272,38 @@ FIRMWARE_ANCHOR_COLUMNS = (
 )
 
 
+# The identity is in service: withdrawal stops whatever is bound to this.
+_FIRMWARE_IN_SERVICE_SQL = """
+    AND revoked = 0 AND approved = 1
+"""
+
+# In service, and its epoch confirmed by the evidence store: what a grant or a
+# command needs (ori-specs device-provisioning/v1.md).
+_FIRMWARE_AUTHORITY_SQL = (
+    _FIRMWARE_IN_SERVICE_SQL
+    + """
+    AND EXISTS (
+        SELECT 1 FROM firmware_confirmation_outbox c
+         WHERE c.device_id = firmware_device_registry.device_id
+           AND c.anchor_epoch_id = firmware_device_registry.anchor_epoch_id
+           AND c.status = 'confirmed'
+    )
+"""
+)
+
+
+def _firmware_anchor_values(verified_against: Any) -> tuple[str, ...]:
+    """The anchor a decision was made under, refused unless complete."""
+    anchor = tuple(verified_against[column] for column in FIRMWARE_ANCHOR_COLUMNS)
+    if any(not isinstance(value, str) for value in anchor):
+        raise ValueError("verified_against must carry every anchor column")
+    return anchor
+
+
+def _firmware_anchor_sql() -> str:
+    return "".join(f" AND {column} = ?" for column in FIRMWARE_ANCHOR_COLUMNS)
+
+
 def _uptime_mark(key_epoch_id: Any, boot_id: int, seq: int) -> str:
     """The freshness mark an uptime is stored against, as the store writes it."""
     return f"{key_epoch_id or ''}:{boot_id}:{seq}"
@@ -6463,7 +6495,9 @@ class StateStore:
         self._conn.commit()
         return "reprovisioned"
 
-    async def allocate_firmware_runtime_seq(self, device_id: str) -> int:
+    async def allocate_firmware_runtime_seq(
+        self, device_id: str, *, capability_hash: str
+    ) -> int:
         """Allocate the next strictly increasing runtime-liveness sequence
         for a device (firmware-commands/v1 runtime liveness).
 
@@ -6475,13 +6509,23 @@ class StateStore:
         runtime unreachable and keep doing so. Recovery would need a device
         reboot, which is not something a runtime restart may require.
 
-        Raises KeyError for unknown devices.
+        The allocation lands only while the identity is unrevoked and
+        approved at the `capability_hash` the liveness message names.
+        Confirmation is not required: liveness operates authority already
+        granted, which fails stable through an evidence-store outage.
+
+        Raises KeyError for unknown devices, ValueError when the counter is
+        exhausted, and PermissionError when that authority no longer holds.
         """
+        if not isinstance(capability_hash, str) or not capability_hash:
+            raise ValueError("capability_hash must name the supervised manifest")
         return await self._run_write(
-            self._allocate_firmware_runtime_seq_sync, device_id
+            self._allocate_firmware_runtime_seq_sync, device_id, capability_hash
         )
 
-    def _allocate_firmware_runtime_seq_sync(self, device_id: str) -> int:
+    def _allocate_firmware_runtime_seq_sync(
+        self, device_id: str, capability_hash: str
+    ) -> int:
         assert self._conn is not None
         cur = self._conn.execute(
             """
@@ -6489,23 +6533,31 @@ class StateStore:
                SET last_runtime_seq = last_runtime_seq + 1
              WHERE device_id = ?
                AND last_runtime_seq < 9007199254740991
-            """,
-            (device_id,),
+               AND capability_hash = ?
+            """
+            + _FIRMWARE_IN_SERVICE_SQL,
+            (device_id, capability_hash),
         )
         if cur.rowcount != 1:
-            self._conn.rollback()
-            # The UPDATE misses for two different reasons and they are not
-            # the same failure: an unknown device is a caller error, an
-            # exhausted counter is the end of the sequence space.
-            exists = self._conn.execute(
-                "SELECT 1 FROM firmware_device_registry WHERE device_id = ?",
+            # The UPDATE misses for three reasons and they are not the same
+            # failure: an unknown device is a caller error, an exhausted
+            # counter is the end of the sequence space, and anything else is
+            # authority this runtime no longer holds.
+            current = self._conn.execute(
+                "SELECT last_runtime_seq FROM firmware_device_registry "
+                "WHERE device_id = ?",
                 (device_id,),
             ).fetchone()
-            if exists is None:
+            self._conn.rollback()
+            if current is None:
                 raise KeyError(f"unknown firmware device: {device_id!r}")
-            raise ValueError(
-                f"runtime_seq exhausted for {device_id!r}; "
-                "the device cannot accept a higher value in this boot"
+            if int(current[0]) >= 9007199254740991:
+                raise ValueError(
+                    f"runtime_seq exhausted for {device_id!r}; "
+                    "the device cannot accept a higher value in this boot"
+                )
+            raise PermissionError(
+                "firmware liveness authority changed before allocation"
             )
         row = self._conn.execute(
             "SELECT last_runtime_seq FROM firmware_device_registry WHERE device_id = ?",
@@ -6522,35 +6574,79 @@ class StateStore:
         self._conn.commit()
         return int(row[0])
 
-    async def allocate_firmware_command_seq(self, device_id: str) -> int:
+    async def allocate_firmware_command_seq(
+        self, device_id: str, *, verified_against: dict[str, Any]
+    ) -> int:
         """Allocate the next strictly increasing command sequence for a
         provisioned device (firmware-commands contract: one strictly
         increasing cmd_seq per device, continuing across command-key
         rotation and never reused — including for retries of lost
-        commands). Raises KeyError for unknown devices."""
+        commands).
+
+        The allocation is the command's authority commit: it lands only
+        while the identity is unrevoked, approved and confirmed at the
+        anchor, `verified_against`, the command was built from. Raises
+        KeyError for unknown devices and PermissionError when that
+        authority no longer holds."""
         return await self._run_write(
-            self._allocate_firmware_command_seq_sync, device_id
+            self._allocate_firmware_command_seq_sync,
+            device_id,
+            _firmware_anchor_values(verified_against),
         )
 
-    def _allocate_firmware_command_seq_sync(self, device_id: str) -> int:
+    def _allocate_firmware_command_seq_sync(
+        self, device_id: str, anchor: tuple[str, ...]
+    ) -> int:
         assert self._conn is not None
         cur = self._conn.execute(
             """
             UPDATE firmware_device_registry
             SET last_cmd_seq = last_cmd_seq + 1
             WHERE device_id = ?
-            """,
-            (device_id,),
+            """
+            + _firmware_anchor_sql()
+            + _FIRMWARE_AUTHORITY_SQL,
+            (device_id, *anchor),
         )
         if cur.rowcount != 1:
+            known = self._conn.execute(
+                "SELECT 1 FROM firmware_device_registry WHERE device_id = ?",
+                (device_id,),
+            ).fetchone()
             self._conn.rollback()
-            raise KeyError(f"unknown firmware device: {device_id!r}")
+            if known is None:
+                raise KeyError(f"unknown firmware device: {device_id!r}")
+            raise PermissionError(
+                "firmware command authority changed before allocation"
+            )
         row = self._conn.execute(
             "SELECT last_cmd_seq FROM firmware_device_registry WHERE device_id = ?",
             (device_id,),
         ).fetchone()
         self._conn.commit()
         return int(row[0])
+
+    async def firmware_command_authority_holds(
+        self, device_id: str, *, verified_against: dict[str, Any]
+    ) -> bool:
+        """Whether the identity is still unrevoked, approved and confirmed
+        at the anchor `verified_against`, in one read."""
+        return await self._run_read(
+            self._firmware_command_authority_holds_sync,
+            device_id,
+            _firmware_anchor_values(verified_against),
+        )
+
+    def _firmware_command_authority_holds_sync(
+        self, conn: sqlite3.Connection, device_id: str, anchor: tuple[str, ...]
+    ) -> bool:
+        row = conn.execute(
+            "SELECT 1 FROM firmware_device_registry WHERE device_id = ?"
+            + _firmware_anchor_sql()
+            + _FIRMWARE_AUTHORITY_SQL,
+            (device_id, *anchor),
+        ).fetchone()
+        return row is not None
 
     async def allocate_firmware_provision_seq(
         self,
@@ -7006,7 +7102,7 @@ class StateStore:
             boot_id,
             seq,
             uptime_ms,
-            tuple(verified_against[column] for column in FIRMWARE_ANCHOR_COLUMNS),
+            _firmware_anchor_values(verified_against),
         )
 
     def _advance_firmware_freshness_sync(
@@ -7018,11 +7114,7 @@ class StateStore:
         anchor: tuple[Any, ...],
     ) -> bool:
         assert self._conn is not None
-        if len(anchor) != len(FIRMWARE_ANCHOR_COLUMNS) or any(
-            not isinstance(value, str) for value in anchor
-        ):
-            raise ValueError("verified_against must carry every anchor column")
-        bound = "".join(f" AND {column} = ?" for column in FIRMWARE_ANCHOR_COLUMNS)
+        bound = _firmware_anchor_sql()
         cur = self._conn.execute(
             """
             UPDATE firmware_device_registry

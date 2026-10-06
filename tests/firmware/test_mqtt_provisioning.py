@@ -313,7 +313,14 @@ async def test_provision_seq_is_independent_durable_and_survives_revocation(
         )
         == 1
     )
-    assert await store.allocate_firmware_command_seq("ori-fw-01") == 1
+    command_anchor = await store.get_firmware_device("ori-fw-01")
+    assert command_anchor is not None
+    assert (
+        await store.allocate_firmware_command_seq(
+            "ori-fw-01", verified_against=command_anchor
+        )
+        == 1
+    )
     assert store._conn is not None
     store._conn.execute(
         "UPDATE firmware_device_registry SET revoked = 1 WHERE device_id = ?",

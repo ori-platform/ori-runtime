@@ -297,7 +297,17 @@ class FirmwareCommandSigner:
                 f"manifest does not grant runtime_commanded authority for "
                 f"({action!r}, {channel!r}) on device {device_id!r}"
             )
-        cmd_seq = await self._store.allocate_firmware_command_seq(device_id)
+        # The allocation re-checks everything above in its own commit, so a
+        # revocation, rotation or promotion that lands meanwhile stops it.
+        try:
+            cmd_seq = await self._store.allocate_firmware_command_seq(
+                device_id, verified_against=row
+            )
+        except PermissionError as exc:
+            raise FirmwareCommandError(
+                f"device {device_id!r} authority changed before the command "
+                "was sequenced; nothing was signed"
+            ) from exc
         command = build_command_bytes(
             action=action,
             capability_hash=row["capability_hash"],

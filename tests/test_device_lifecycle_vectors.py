@@ -220,7 +220,16 @@ async def run_step(store: StateStore, step: dict) -> None:
             verified_against=row,
         )
     elif op == "allocate_cmd_seq":
-        outcome = await store.allocate_firmware_command_seq(DEVICE_ID)
+        # The corpus models the counter. A command is sequenced only under a
+        # cross-store confirmed anchor, which the coordinator would supply.
+        row = await store.get_firmware_device(DEVICE_ID)
+        assert row is not None
+        await store.resolve_firmware_confirmation(
+            DEVICE_ID, row["anchor_epoch_id"], status="confirmed", at_ms=1
+        )
+        outcome = await store.allocate_firmware_command_seq(
+            DEVICE_ID, verified_against=row
+        )
     elif op == "assert_active":
         row = await store.get_firmware_device(DEVICE_ID)
         assert row is not None

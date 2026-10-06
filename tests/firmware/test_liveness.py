@@ -47,7 +47,10 @@ class FakeStore:
     def __init__(self) -> None:
         self.seqs: dict[str, int] = {}
 
-    async def allocate_firmware_runtime_seq(self, device_id: str) -> int:
+    async def allocate_firmware_runtime_seq(
+        self, device_id: str, *, capability_hash: str
+    ) -> int:
+        del capability_hash
         if device_id not in self.seqs:
             raise KeyError(device_id)
         self.seqs[device_id] += 1
@@ -322,8 +325,8 @@ def _register_sync(store, device_id: str) -> None:
         """
         INSERT INTO firmware_device_registry
             (device_id, public_key_b64, posture, capability_hash,
-             provisioned_at_ms)
-        VALUES (?, 'x', 'sealed_flash', ?, 0)
+             provisioned_at_ms, approved, anchor_epoch_id)
+        VALUES (?, 'x', 'sealed_flash', ?, 0, 1, 'epoch')
         """,
         (device_id, HASH),
     )
@@ -331,7 +334,7 @@ def _register_sync(store, device_id: str) -> None:
 
 
 async def _register(store, device_id: str) -> None:
-    """Minimal registry row; liveness only needs the device to exist."""
+    """Minimal registry row in service: approved and unrevoked."""
     await store._run_write(_register_sync, store, device_id)
 
 
@@ -350,7 +353,10 @@ async def test_real_store_sequence_survives_reopen(tmp_path) -> None:
     store = StateStore(db_path=db)
     await store.open()
     await _register(store, DEVICE)
-    first = [await store.allocate_firmware_runtime_seq(DEVICE) for _ in range(3)]
+    first = [
+        await store.allocate_firmware_runtime_seq(DEVICE, capability_hash=HASH)
+        for _ in range(3)
+    ]
     assert first == [1, 2, 3]
     await store.close()
 
@@ -360,7 +366,10 @@ async def test_real_store_sequence_survives_reopen(tmp_path) -> None:
     reopened = StateStore(db_path=db)
     await reopened.open()
     try:
-        assert await reopened.allocate_firmware_runtime_seq(DEVICE) == 4
+        assert (
+            await reopened.allocate_firmware_runtime_seq(DEVICE, capability_hash=HASH)
+            == 4
+        )
     finally:
         await reopened.close()
 
@@ -383,7 +392,10 @@ async def test_real_store_migrates_a_database_without_the_column(tmp_path) -> No
     migrated = StateStore(db_path=db)
     await migrated.open()
     try:
-        assert await migrated.allocate_firmware_runtime_seq(DEVICE) == 1
+        assert (
+            await migrated.allocate_firmware_runtime_seq(DEVICE, capability_hash=HASH)
+            == 1
+        )
     finally:
         await migrated.close()
 
@@ -396,13 +408,15 @@ async def test_real_store_distinguishes_unknown_device_from_exhaustion(
     await store.open()
     try:
         with pytest.raises(KeyError):
-            await store.allocate_firmware_runtime_seq("ori-fw-nosuch")
+            await store.allocate_firmware_runtime_seq(
+                "ori-fw-nosuch", capability_hash=HASH
+            )
 
         await _register(store, DEVICE)
         await store._run_write(_set_seq_sync, store, DEVICE, 9007199254740991)
         # Exhaustion is not a caller error and must not look like one.
         with pytest.raises(ValueError) as exc:
-            await store.allocate_firmware_runtime_seq(DEVICE)
+            await store.allocate_firmware_runtime_seq(DEVICE, capability_hash=HASH)
         assert not isinstance(exc.value, KeyError)
     finally:
         await store.close()

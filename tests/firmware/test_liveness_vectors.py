@@ -122,7 +122,7 @@ def signer() -> FirmwareLivenessSigner:
         never touched on this path. Anything else is a defect, and this
         makes it one that fails loudly."""
 
-        async def allocate_firmware_runtime_seq(self, device_id):
+        async def allocate_firmware_runtime_seq(self, device_id, *, capability_hash):
             raise AssertionError(
                 "sign_liveness_bytes must not allocate a sequence number"
             )
