@@ -342,10 +342,16 @@ cover everything that would otherwise make them different acts: `resource_key`,
 command parameter that materially changes what happens. A `coap_command` to one
 URI with a different payload is not the same act.
 
-Each contributor keeps its own authority and provenance in the record. Joining
-merges execution, never licensing — and a Tier D trigger that joined a shared
-attempt still degrades safety status if that attempt fails or is delayed. Its
-obligation is not discharged by someone else's failure.
+Joining merges execution, never licensing. The holder's row is the only record
+of the physical act and the only one attested, under the holder's own
+authority. A joiner is recorded as a contributor: `record_kind = 'contributor'`,
+not executed, no approval, no authority snapshot, never attested, and
+`contributed_to` naming the `record_key` the holder reserved before acting. It
+is written after the holder's row and returns without waiting on the holder's
+outcome. A failed or uncertain shared attempt is visible on the holder's row
+and through the holder's own handling; nothing yet degrades safety status on a
+joiner's behalf when the attempt it joined fails, so that remains a gap, not a
+property.
 
 Coalescing spans the in-flight attempt only. Once the record retires, a later
 request for the same outcome is a new act: a repeat trip after a repeat

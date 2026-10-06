@@ -28,7 +28,9 @@ import secrets
 import sqlite3
 import string
 import time
+import uuid
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any, Final
 
 from ori.actions.alert_delivery import (
@@ -396,12 +398,25 @@ def _cancelled_here(exc: BaseException) -> bool:
     return task is None or task.cancelling() > 0
 
 
+@dataclass
+class _RecordMeta:
+    """What one dispatch's action-log row records, fixed before it acts."""
+
+    key: str
+    kind: str = "dispatch"
+    contributed_to: str | None = None
+
+
 class _ApprovalProgress:
     """What an approval workflow has done so far, for its failure path."""
 
     def __init__(self) -> None:
         self.proposal_id: str | None = None
         self.acted: ActionResult | None = None
+        # The decision `acted` carries out, and whether its record is queued:
+        # a failure between the two must still leave the decision recorded.
+        self.decision: str | None = None
+        self.decision_queued = False
         self.started_at_ms: int | None = None
         self.approval_receipt: AlertSendReceipt | None = None
 
@@ -915,6 +930,52 @@ class ActionDispatcher:
         if not pending.done():
             pending.set_result(action_result)
 
+    def _record_after_holder(
+        self,
+        joined: ActionResult,
+        context: SkillContext,
+        record: asyncio.Future[ActionResult] | None,
+        holder: Any,
+    ) -> None:
+        """Hand a contributor's row to the writer once its holder's row is handed over.
+
+        The writer takes records in the order they become writable, so the
+        holder's row is written first, and a holder still deciding or still
+        driving its executor never appears missing. The joiner itself does not
+        wait: it has already returned.
+        """
+        if record is None:
+            return
+        _stamp_correlation_id(joined, context)
+        holder_record = (
+            holder.contributors[0].record_future
+            if holder is not None and holder.contributors
+            else None
+        )
+        if not isinstance(holder_record, asyncio.Future) or holder_record.done():
+            if not record.done():
+                record.set_result(joined)
+            return
+        self._held_by_executor.add(id(record))
+
+        def settle(_finished: Any) -> None:
+            self._held_by_executor.discard(id(record))
+            if not record.done():
+                record.set_result(joined)
+
+        holder_record.add_done_callback(settle)
+
+    async def _log_tier_d_override_for(
+        self, meta: _RecordMeta, action: str, context: SkillContext
+    ) -> None:
+        """The override entry of an autonomous Tier D dispatch, never a contributor's.
+
+        Read when written, after the act settles: a request that joined an act
+        another dispatch held dispatched nothing autonomously.
+        """
+        if meta.kind == "dispatch":
+            await self._log_tier_d_override(action, context)
+
     async def _log_tier_d_override(self, action: str, context: SkillContext) -> None:
         """Record an autonomous Tier D dispatch in the override log."""
         store = self._resolve_state_store(context)
@@ -1163,17 +1224,18 @@ class ActionDispatcher:
             asyncio.get_running_loop().create_future()
         )
         record = opened
+        meta = _RecordMeta(key=uuid.uuid4().hex)
         if tier == ActionTier.SAFETY_CRITICAL:
             # Deferred on the same settled result as the row, and registered
             # first, so it is written after the act and ahead of the row:
             # a record submitted now would race the executor for the store.
             self._defer_record(
-                lambda: self._log_tier_d_override(action, context),
+                lambda: self._log_tier_d_override_for(meta, action, context),
                 after=opened,
                 label=f"override_log autonomous_tier_d action={action}",
             )
         self._defer_record(
-            lambda: self._log_action(opened.result(), context, durable=True),
+            lambda: self._log_action(opened.result(), context, durable=True, meta=meta),
             after=opened,
             label=lambda: _record_label(opened.result()),
             report=True,
@@ -1187,6 +1249,7 @@ class ActionDispatcher:
                 safe_default_action,
                 timeout_value,
                 record,
+                meta,
             )
         finally:
             # A path that left without a result has nothing to record, as when
@@ -1207,6 +1270,7 @@ class ActionDispatcher:
         safe_default_action: str,
         timeout_value: int,
         record: asyncio.Future[ActionResult] | None,
+        meta: _RecordMeta | None = None,
     ) -> ActionResult:
         """Admit *action* against its resource, run it, and record the attempt."""
         # Resource admission. Contention is decided on the resource an action
@@ -1252,6 +1316,8 @@ class ActionDispatcher:
                 dispatch_tier=tier,
                 correlation_id=str(getattr(result, "correlation_id", "") or ""),
                 tier_d_granted=tier == ActionTier.SAFETY_CRITICAL,
+                record_key=meta.key if meta is not None else "",
+                record_future=record,
             )
             awaits_operator = tier == ActionTier.HARD_PHYSICAL or (
                 tier == ActionTier.SOFT_PHYSICAL
@@ -1263,19 +1329,36 @@ class ActionDispatcher:
 
             if decision.admission == Admission.JOINED:
                 # One physical act stands for several contributors. Execution is
-                # merged; licensing is not, and this contributor keeps its own.
+                # merged; authority never is. This request performed nothing and
+                # holds no licence, so it is recorded as a contributor naming the
+                # holder it joined, never attested, and returns without waiting
+                # on the holder's outcome, which is the holder's to record.
                 holder = decision.token
-                if holder is not None:
-                    await holder.done.wait()
+                holder_key = (
+                    holder.contributors[0].record_key
+                    if holder is not None and holder.contributors
+                    else ""
+                )
                 joined = ActionResult(
                     action_name=action,
                     tier=tier,
-                    executed=bool(getattr(holder, "result", False)),
+                    executed=False,
                     approved=None,
                     action_taken="coalesced",
                     timestamp=now_ms(),
                 )
-                await self._record(joined, context, record)
+                if meta is not None and holder_key:
+                    meta.kind = "contributor"
+                    meta.contributed_to = holder_key
+                    self._record_after_holder(joined, context, record, holder)
+                else:
+                    # Every dispatch reserves a key, so this is unreachable; if it
+                    # were not, nothing truthful could be written for the join.
+                    logger.error(
+                        "ActionDispatcher: action=%r joined a holder with no "
+                        "record key; its contributor record is not written",
+                        action,
+                    )
                 return joined
 
             if not decision.may_execute:
@@ -1402,13 +1485,18 @@ class ActionDispatcher:
                     action,
                     tier,
                 )
-            action_result = ActionResult(
-                action_name=action,
-                tier=tier,
-                executed=False,
-                approved=None,
-                action_taken="",
-                timestamp=now_ms(),
+            acted = getattr(exc, "ori_acted", None)
+            action_result = (
+                acted
+                if isinstance(acted, ActionResult)
+                else ActionResult(
+                    action_name=action,
+                    tier=tier,
+                    executed=False,
+                    approved=None,
+                    action_taken="",
+                    timestamp=now_ms(),
+                )
             )
             if (
                 tier == ActionTier.SAFETY_CRITICAL
@@ -1735,6 +1823,22 @@ class ActionDispatcher:
             )
         except (Exception, asyncio.CancelledError) as exc:
             if _cancelled_here(exc):
+                if progress.acted is not None:
+                    # The act already ran: its decision is recorded, or counted
+                    # lost, before the cancellation leaves, and the act itself
+                    # travels with it so the row says what happened.
+                    if not progress.decision_queued:
+                        self._record_decision_after_failure(
+                            context=context,
+                            result=result,
+                            action=action,
+                            progress=progress,
+                            approval_timeout_seconds=approval_timeout_seconds,
+                            safe_default_action=self._vet_safe_default(
+                                safe_default_action
+                            ),
+                        )
+                    setattr(exc, "ori_acted", progress.acted)  # noqa: B010
                 raise
             logger.exception(
                 "ActionDispatcher: approval workflow failed for action=%r "
@@ -1743,6 +1847,15 @@ class ActionDispatcher:
                 progress.proposal_id,
             )
             if progress.acted is not None:
+                if not progress.decision_queued:
+                    self._record_decision_after_failure(
+                        context=context,
+                        result=result,
+                        action=action,
+                        progress=progress,
+                        approval_timeout_seconds=approval_timeout_seconds,
+                        safe_default_action=self._vet_safe_default(safe_default_action),
+                    )
                 return progress.acted
             resolved = await self._resolve_failed_approval(
                 action,
@@ -1764,6 +1877,41 @@ class ActionDispatcher:
                 approval_receipt=progress.approval_receipt,
             )
             return resolved
+
+    def _record_decision_after_failure(
+        self,
+        *,
+        context: SkillContext,
+        result: ReasoningResult,
+        action: str,
+        progress: _ApprovalProgress,
+        approval_timeout_seconds: int,
+        safe_default_action: str,
+    ) -> None:
+        """Queue the decision an act already carried out, or count it lost."""
+        assert progress.acted is not None
+        try:
+            self._defer_tier_c_decision(
+                store=self._resolve_state_store(context),
+                context=context,
+                result=result,
+                action=action,
+                action_result=progress.acted,
+                operator_decision=progress.decision or "approval_error",
+                approval_started_at=progress.started_at_ms,
+                approval_timeout_seconds=approval_timeout_seconds,
+                safe_default_action=safe_default_action,
+                approval_receipt=progress.approval_receipt,
+            )
+        except Exception:
+            logger.exception(
+                "ActionDispatcher: the decision for action=%r proposal_id=%s "
+                "could not be queued; counted lost",
+                action,
+                progress.proposal_id,
+            )
+            self._note_decision_lost()
+        progress.decision_queued = True
 
     def _defer_tier_c_decision(
         self,
@@ -3733,6 +3881,7 @@ class ActionDispatcher:
                 # the authority given, `executed` what happened.
                 action_taken = "refused_late_approval"
                 executed = False
+                progress.decision = "approved"
                 progress.acted = ActionResult(
                     action_name=action,
                     tier=tier,
@@ -3748,6 +3897,7 @@ class ActionDispatcher:
                 inner = await self._execute_immediately(action, tier, context)
                 action_taken = inner.action_taken
                 executed = inner.executed
+                progress.decision = "approved"
                 progress.acted = ActionResult(
                     action_name=action,
                     tier=tier,
@@ -3767,6 +3917,9 @@ class ActionDispatcher:
                 action_taken = inner.action_taken
                 executed = inner.executed
                 safe_default_used = inner.executed
+                progress.decision = (
+                    _APPROVAL_END_DECISION[approval_end] if timed_out else "rejected"
+                )
                 progress.acted = ActionResult(
                     action_name=action,
                     tier=tier,
@@ -3884,6 +4037,7 @@ class ActionDispatcher:
                 report=True,
                 on_lost=self._note_decision_lost,
             )
+            progress.decision_queued = True
             return action_result
         finally:
             if self._status_indicator is not None:
@@ -4468,6 +4622,7 @@ class ActionDispatcher:
         context: SkillContext,
         *,
         durable: bool = False,
+        meta: _RecordMeta | None = None,
     ) -> None:
         """Persist *action_result* to the ``action_log`` table.
 
@@ -4548,8 +4703,17 @@ class ActionDispatcher:
             if firmware_registration is not None
             else ""
         )
-        authority_json = _authority_snapshot_json(
-            action_result, context, trigger_name=matched_trigger, binding_seq=None
+        record_kind = meta.kind if meta is not None else "dispatch"
+        if record_kind != "dispatch":
+            # A contributor performed nothing and holds no licence: it is not a
+            # runtime_action and is never a candidate for attestation.
+            attest = False
+        authority_json = (
+            _authority_snapshot_json(
+                action_result, context, trigger_name=matched_trigger, binding_seq=None
+            )
+            if record_kind == "dispatch"
+            else None
         )
         binding_seq: int | None = None
         capability = ACTION_REGISTRY.get(action_result.action_name)
@@ -4584,13 +4748,22 @@ class ActionDispatcher:
                     attestation_pending=attest,
                     binding_seq=binding_seq,
                     authority_json=authority_json,
+                    record_kind=record_kind,
+                    record_key=meta.key if meta is not None else "",
+                    contributed_to=meta.contributed_to if meta is not None else None,
                 )
             else:
                 # This insert cannot store the licence with the row, so the row
                 # is never marked for attestation: signing a licence the log
                 # does not hold would leave reconciliation nothing to replay.
                 attest = False
-                action_row_id = await store.log_action(action_result, trigger_name)
+                action_row_id = await store.log_action(
+                    action_result,
+                    trigger_name,
+                    record_kind=record_kind,
+                    record_key=meta.key if meta is not None else "",
+                    contributed_to=meta.contributed_to if meta is not None else None,
+                )
         except Exception:
             # A durable record is the writer's to retry or count lost; any
             # failure swallowed here would read to it as a record written.

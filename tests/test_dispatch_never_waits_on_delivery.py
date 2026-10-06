@@ -1386,6 +1386,8 @@ class TestTheInFlightSlots:
             subscriber, client = await _serving(site)
             _deliver(client, range(1, 6))
             await _until(lambda: len(client.acked) == 5)
+            # The ack is sent inside the route and the slot released after it.
+            await _until(lambda: subscriber._in_flight == 0)
             assert subscriber._in_flight == 0
             assert sorted(client.acked) == [1, 2, 3, 4, 5]
 

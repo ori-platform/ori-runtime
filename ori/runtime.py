@@ -181,6 +181,7 @@ from ori.security.evidence.first_party import (
     RegistrationUnreadableError,
 )
 from ori.security.evidence.ledger import DEFAULT_CHECKPOINT_INTERVAL_S
+from ori.security.evidence.policy import safe_failure_reason
 from ori.security.evidence.registration import (
     RECONCILE_INTERVAL_S,
     RegistrationOffer,
@@ -3210,6 +3211,26 @@ class OriRuntime:
             return
         repaired = 0
         for row in rows:
+            if row.get("record_kind", "dispatch") != "dispatch":
+                # Only a dispatch is ever marked for attestation; a non-dispatch
+                # row here is a corrupt record, refused and reported, never
+                # signed and never silently skipped.
+                logger.critical(
+                    "[evidence] action_log id=%s is a %r record marked for "
+                    "attestation; refused",
+                    row.get("id"),
+                    row.get("record_kind"),
+                )
+                try:
+                    await self._state_store.set_action_attestation(
+                        int(row["id"]), status="refused", reason="not_a_dispatch_record"
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[evidence] could not refuse action_log row (%s)",
+                        safe_failure_reason(exc),
+                    )
+                continue
             # Cross-store confirmation gate: firmware-sourced evidence is
             # accepted only once the source device's active epoch is
             # confirmed in the evidence store. The coordinator reconciles the
@@ -3599,6 +3620,17 @@ class OriRuntime:
                 health["last_attested_action_id"] = summary["last_attested_action_id"]
                 health["attestation_gap_count"] = summary["attestation_gap_count"]
                 health["status_counts"] = summary["status_counts"]
+                unresolved = int(summary.get("contributor_links_unresolved", 0))
+                if unresolved != getattr(self, "_contributor_links_unresolved", 0):
+                    self._contributor_links_unresolved = unresolved
+                    if unresolved:
+                        # The holder a contributor joined left no row: the act's
+                        # own record was lost. Reported, never back-filled.
+                        logger.error(
+                            "[evidence] %d contributor record(s) name a holder "
+                            "whose action-log row was never written",
+                            unresolved,
+                        )
             except Exception:
                 logger.warning("[evidence] attestation summary read failed")
         return health

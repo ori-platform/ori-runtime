@@ -176,7 +176,31 @@ CREATE TABLE IF NOT EXISTS action_log (
     -- Why attestation reached a terminal state, when it did. Empty while a row
     -- is pending, signed, reconciled, or transiently failed.
     attestation_reason TEXT   NOT NULL DEFAULT '',
-    timestamp         INTEGER NOT NULL
+    -- What the row records. 'dispatch' is a dispatch's own attempt at its
+    -- action, whatever its outcome. 'contributor' is a request that joined an
+    -- act another dispatch held: it performed nothing, holds no licence and is
+    -- never attested, and contributed_to names the holder's record_key, the
+    -- holder it joined, which is not proof the holder's row was written.
+    -- 'contributor_legacy' is a joined row written before the link existed.
+    -- attestation_status is added by migration, so a contributor's empty
+    -- status is held by the writer and the attestation update, not here. A
+    -- dispatch claiming 'coalesced' is refused by the writer, not here: a
+    -- release rolled back to writes its joined rows that way, and every open
+    -- reclassifies them.
+    record_kind       TEXT    NOT NULL DEFAULT 'dispatch'
+        CHECK (record_kind IN ('dispatch', 'contributor', 'contributor_legacy')),
+    record_key        TEXT    NOT NULL DEFAULT '',
+    contributed_to    TEXT,
+    timestamp         INTEGER NOT NULL,
+    CHECK (
+        (record_kind = 'dispatch' AND contributed_to IS NULL)
+        OR (record_kind = 'contributor' AND executed = 0 AND approved IS NULL
+            AND action_taken = 'coalesced' AND authority_json IS NULL
+            AND contributed_to IS NOT NULL
+            AND contributed_to != '')
+        OR (record_kind = 'contributor_legacy' AND contributed_to IS NULL
+            AND action_taken = 'coalesced')
+    )
 );
 
 CREATE TABLE IF NOT EXISTS tier_c_decision_log (
@@ -1155,6 +1179,87 @@ HOOK_BUSY_TIMEOUT_S = 0.05
 HOOK_BUSY_BACKOFF_S = 1.0
 
 
+RECORD_DISPATCH = "dispatch"
+RECORD_CONTRIBUTOR = "contributor"
+RECORD_CONTRIBUTOR_LEGACY = "contributor_legacy"
+RECORD_KINDS = frozenset(
+    {RECORD_DISPATCH, RECORD_CONTRIBUTOR, RECORD_CONTRIBUTOR_LEGACY}
+)
+
+
+def _check_action_record_shape(
+    record_kind: str,
+    *,
+    executed: bool,
+    approved: Any,
+    action_taken: str,
+    authority_json: Any,
+    attestation_status: str,
+    contributed_to: Any,
+) -> None:
+    """Refuse an action row whose fields disagree with what it says it records.
+
+    The table's CHECK holds this on a database created with the columns; this
+    holds it on one they were added to, and gives the refusal a reason.
+    """
+    if record_kind not in RECORD_KINDS:
+        raise ValueError(f"unknown action record kind {record_kind!r}")
+    if record_kind == RECORD_DISPATCH:
+        if contributed_to is not None:
+            raise ValueError("a dispatch record names no holder it contributed to")
+        if action_taken == "coalesced":
+            raise ValueError("a dispatch that joined another's act is a contributor")
+        return
+    if record_kind == RECORD_CONTRIBUTOR_LEGACY:
+        raise ValueError(
+            "contributor_legacy rows are only ever migrated, never written"
+        )
+    if (
+        executed
+        or approved is not None
+        or action_taken != "coalesced"
+        or authority_json is not None
+        or attestation_status != ""
+        or not isinstance(contributed_to, str)
+        or not contributed_to
+    ):
+        raise ValueError(
+            "a contributor record performs nothing, holds no licence, is never "
+            "attested and names the holder it joined"
+        )
+
+
+# Where duplicated keys already stop the unique index from being built, these
+# hold every later insert and key update to a key no other row carries.
+_RECORD_KEY_UNIQUE_TRIGGER_NAMES = (
+    "trg_action_log_record_key_unique_insert",
+    "trg_action_log_record_key_unique_update",
+)
+_RECORD_KEY_UNIQUE_TRIGGERS = (
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_action_log_record_key_unique_insert
+    BEFORE INSERT ON action_log
+    WHEN NEW.record_key <> ''
+         AND EXISTS (SELECT 1 FROM action_log WHERE record_key = NEW.record_key)
+    BEGIN
+        SELECT RAISE(ABORT, 'action_log.record_key is already in use');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_action_log_record_key_unique_update
+    BEFORE UPDATE OF record_key ON action_log
+    WHEN NEW.record_key <> ''
+         AND EXISTS (
+             SELECT 1 FROM action_log
+             WHERE record_key = NEW.record_key AND id <> OLD.id
+         )
+    BEGIN
+        SELECT RAISE(ABORT, 'action_log.record_key is already in use');
+    END
+    """,
+)
+
+
 def _uptime_mark(key_epoch_id: Any, boot_id: int, seq: int) -> str:
     """The freshness mark an uptime is stored against, as the store writes it."""
     return f"{key_epoch_id or ''}:{boot_id}:{seq}"
@@ -1425,6 +1530,7 @@ class StateStore:
             ("attestation_seq", "INTEGER"),
         ):
             self._add_column_if_missing_on_conn(conn, "action_log", col, typedef)
+        self._add_action_record_kind(conn)
         self._add_column_if_missing_on_conn(
             conn,
             "firmware_device_registry",
@@ -1959,6 +2065,64 @@ class StateStore:
         for name in _LEGACY_OUTBOX_INDEXES:
             conn.execute(f"DROP INDEX IF EXISTS {name}")
         conn.commit()
+
+    def _add_action_record_kind(self, conn: sqlite3.Connection) -> None:
+        """record_kind on an action log, held on every open, not only the first.
+
+        A joined row records a request that performed nothing, so it is a
+        contributor; one the previous release wrote has no holder link, and
+        nothing is invented to make one. This runs on every open because a
+        rolled-back release keeps writing joined rows as ordinary ones, and a
+        roll-forward must reclassify those too. A legacy row still awaiting
+        attestation is settled refused as history, not reported as corrupt.
+        Added columns cannot carry the table's CHECKs, so the writer and the
+        readers hold the shape on such a database.
+        """
+        self._add_column_if_missing_on_conn(
+            conn, "action_log", "record_kind", "TEXT NOT NULL DEFAULT 'dispatch'"
+        )
+        self._add_column_if_missing_on_conn(
+            conn, "action_log", "record_key", "TEXT NOT NULL DEFAULT ''"
+        )
+        self._add_column_if_missing_on_conn(
+            conn, "action_log", "contributed_to", "TEXT"
+        )
+        conn.execute(
+            "UPDATE action_log SET record_kind = 'contributor_legacy'"
+            " WHERE action_taken = 'coalesced' AND record_kind = 'dispatch'"
+        )
+        conn.execute(
+            "UPDATE action_log SET attestation_status = 'refused',"
+            " attestation_reason = 'legacy_contributor'"
+            " WHERE record_kind = 'contributor_legacy'"
+            " AND attestation_status IN ('pending', 'failed')"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_action_log_record_key"
+            " ON action_log(record_key)"
+        )
+        # A key names one row. Rows a rolled-back release wrote carry the
+        # default '' and stay outside the constraint. Keys already duplicated
+        # are reported, not a reason to refuse the store: Tier D does not wait
+        # on evidence, and the unresolved count treats such a key as no link.
+        # Every later write is still held to one row per key, by triggers
+        # where the index cannot be built.
+        try:
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_action_log_record_key_unique"
+                " ON action_log(record_key) WHERE record_key <> ''"
+            )
+        except sqlite3.IntegrityError:
+            logger.critical(
+                "[action_log] record keys are duplicated, so a contributor's link "
+                "cannot name one holder row; those links are counted unresolved "
+                "until the rows are repaired, and no new key may reuse one"
+            )
+            for statement in _RECORD_KEY_UNIQUE_TRIGGERS:
+                conn.execute(statement)
+        else:
+            for name in _RECORD_KEY_UNIQUE_TRIGGER_NAMES:
+                conn.execute(f"DROP TRIGGER IF EXISTS {name}")
 
     def _add_column_if_missing_on_conn(
         self,
@@ -2864,14 +3028,20 @@ class StateStore:
         trigger_name: str,
         *,
         attestation_pending: bool = False,
+        record_kind: str = "dispatch",
+        record_key: str = "",
+        contributed_to: str | None = None,
     ) -> int:
         return await self._run_write(
             self._log_action_sync,
             result,
             trigger_name,
-            {"attestation_pending": attestation_pending}
-            if attestation_pending
-            else None,
+            {
+                "attestation_pending": attestation_pending,
+                "record_kind": record_kind,
+                "record_key": record_key,
+                "contributed_to": contributed_to,
+            },
         )
 
     async def log_action_for_event(
@@ -2891,6 +3061,9 @@ class StateStore:
         attestation_pending: bool = False,
         binding_seq: int | None = None,
         authority_json: str | None = None,
+        record_kind: str = "dispatch",
+        record_key: str = "",
+        contributed_to: str | None = None,
     ) -> int:
         """Persist action result with sensor/device context for reporting.
 
@@ -2923,6 +3096,9 @@ class StateStore:
                 "attestation_pending": attestation_pending,
                 "binding_seq": binding_seq,
                 "authority_json": authority_json,
+                "record_kind": record_kind,
+                "record_key": record_key,
+                "contributed_to": contributed_to,
             },
         )
 
@@ -2940,6 +3116,18 @@ class StateStore:
         attestation_status = (
             "pending" if context_fields.get("attestation_pending") else ""
         )
+        record_kind = str(context_fields.get("record_kind", RECORD_DISPATCH))
+        record_key = str(context_fields.get("record_key", "") or "")
+        contributed_to = context_fields.get("contributed_to")
+        _check_action_record_shape(
+            record_kind,
+            executed=bool(result.executed),
+            approved=result.approved,
+            action_taken=result.action_taken,
+            authority_json=context_fields.get("authority_json"),
+            attestation_status=attestation_status,
+            contributed_to=contributed_to,
+        )
         input_grade, input_posture = _normalise_input_evidence(
             context_fields.get("input_attestation_grade", "unattested"),
             context_fields.get("input_posture", ""),
@@ -2953,8 +3141,10 @@ class StateStore:
                  input_firmware_device_id, input_firmware_boot_id, input_firmware_seq,
                  input_firmware_registration,
                  correlation_id, trigger_name, timestamp, attestation_status,
-                 binding_seq, authority_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 binding_seq, authority_json, record_kind, record_key,
+                 contributed_to)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?)
             """,
             (
                 result.action_name,
@@ -2984,6 +3174,9 @@ class StateStore:
                     else None
                 ),
                 context_fields.get("authority_json"),
+                record_kind,
+                record_key,
+                contributed_to,
             ),
         )
         self._conn.commit()
@@ -3016,6 +3209,14 @@ class StateStore:
         assert self._conn is not None
         if status not in {"pending", "signed", "failed", "reconciled", "refused"}:
             raise ValueError(f"invalid attestation status: {status!r}")
+        kind = self._conn.execute(
+            "SELECT record_kind FROM action_log WHERE id = ?", (action_id,)
+        ).fetchone()
+        if kind is not None and kind[0] != RECORD_DISPATCH and status != "refused":
+            raise ValueError(
+                f"action_log id={action_id} is a {kind[0]} record; it performed "
+                "nothing and is never attested"
+            )
         self._conn.execute(
             "UPDATE action_log SET attestation_status = ?, attestation_seq = ?, "
             "attestation_reason = ? WHERE id = ?",
@@ -3045,7 +3246,7 @@ class StateStore:
                    input_firmware_device_id, input_firmware_boot_id, input_firmware_seq,
                    input_firmware_registration,
                    trigger_name, timestamp, attestation_status, authority_json,
-                   binding_seq
+                   binding_seq, record_kind
             FROM action_log
             WHERE attestation_status IN ('pending', 'failed')
             ORDER BY id
@@ -3086,12 +3287,29 @@ class StateStore:
         gap_count = int(
             status_counts.get("pending", 0) + status_counts.get("failed", 0)
         )
+        # A contributor names the holder it joined; a holder row that never
+        # appeared is lost evidence of the act, reported rather than repaired.
+        # The contributor's row is written after its holder's, so no grace is
+        # needed for a holder still deciding. A link resolves to exactly one
+        # dispatch row, never to whichever of several shares the key.
+        unresolved = conn.execute(
+            """
+            SELECT COUNT(*) FROM action_log AS c
+            WHERE c.record_kind = 'contributor'
+              AND (
+                  SELECT COUNT(*) FROM action_log AS h
+                  WHERE h.record_kind = 'dispatch'
+                    AND h.record_key = c.contributed_to
+              ) <> 1
+            """
+        ).fetchone()
         return {
             "status_counts": status_counts,
             "last_attested_action_id": (
                 int(last_attested[0]) if last_attested and last_attested[0] else None
             ),
             "attestation_gap_count": gap_count,
+            "contributor_links_unresolved": int(unresolved[0]),
         }
 
     async def get_action_log(self, limit: int = 50) -> list[dict]:

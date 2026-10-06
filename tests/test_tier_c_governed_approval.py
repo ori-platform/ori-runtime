@@ -1413,10 +1413,9 @@ class TestARefusedTransitionIsNeverReportedAsRecorded:
 class TestAJoinedContributorReportsTheProposedAct:
     """A second Tier C dispatch of the same outcome joins the open proposal.
 
-    What it reports is what the proposed act did. After a NO or a timeout the
-    act never ran, so the joiner is not executed, even though the safe default
-    succeeded; the safe default's success is the holder's own record, never the
-    joiner's. After a YES the act ran once, and the joiner says so.
+    The joiner is a contributor: it performed nothing and holds no approval, so
+    it is never executed, whatever the proposal's outcome. The proposed act, or
+    the safe default, is the holder's own record alone.
     """
 
     @pytest.mark.parametrize(
@@ -1475,13 +1474,17 @@ class TestAJoinedContributorReportsTheProposedAct:
             await store.close()
 
         assert joiner.action_taken == "coalesced"
-        assert joiner.executed is proposed_ran, joiner
+        assert joiner.executed is False and joiner.approved is None, joiner
+        assert joiner.proposal_id in ("", None), joiner
         approved = reply == "YES"
         assert journal.count("act:trip_relay") == (1 if approved else 0), journal
         executed_proposed = [
             row
             for row in rows
             if row["executed"] and row["action_taken"] in ("trip_relay", "coalesced")
+        ]
+        assert not [
+            r for r in rows if r["action_taken"] == "coalesced" and r["executed"]
         ]
         if approved:
             assert holder.approved is True

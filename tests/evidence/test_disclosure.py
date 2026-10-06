@@ -219,6 +219,9 @@ def test_every_evidence_message_resolves_statically():
 
 REVIEWED_OPERATOR_MESSAGES = frozenset(
     {
+        "[evidence] %d contributor record(s) name a holder whose action-log row was never written",
+        "[evidence] action_log id=%s is a %r record marked for attestation; refused",
+        "[evidence] could not refuse action_log row (%s)",
         "[evidence] %d delivery ledger row(s) hold a courier answer this release does not recognise; their acknowledgements are refused until the rows are repaired",
         # Reviewed: an action_log id, a tier letter, and a reason drawn from
         # this module's own closed set describing why a licence could not be
