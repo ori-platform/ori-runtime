@@ -1272,16 +1272,10 @@ FIRMWARE_ANCHOR_COLUMNS = (
 )
 
 
-# The identity is in service: withdrawal stops whatever is bound to this.
-_FIRMWARE_IN_SERVICE_SQL = """
+# In service, and its epoch confirmed by the evidence store: what a grant, a
+# command or a liveness assertion needs (ori-specs device-provisioning/v1.md).
+_FIRMWARE_AUTHORITY_SQL = """
     AND revoked = 0 AND approved = 1
-"""
-
-# In service, and its epoch confirmed by the evidence store: what a grant or a
-# command needs (ori-specs device-provisioning/v1.md).
-_FIRMWARE_AUTHORITY_SQL = (
-    _FIRMWARE_IN_SERVICE_SQL
-    + """
     AND EXISTS (
         SELECT 1 FROM firmware_confirmation_outbox c
          WHERE c.device_id = firmware_device_registry.device_id
@@ -1289,7 +1283,6 @@ _FIRMWARE_AUTHORITY_SQL = (
            AND c.status = 'confirmed'
     )
 """
-)
 
 
 def _firmware_anchor_values(verified_against: Any) -> tuple[str, ...]:
@@ -6509,10 +6502,10 @@ class StateStore:
         runtime unreachable and keep doing so. Recovery would need a device
         reboot, which is not something a runtime restart may require.
 
-        The allocation lands only while the identity is unrevoked and
-        approved at the `capability_hash` the liveness message names.
-        Confirmation is not required: liveness operates authority already
-        granted, which fails stable through an evidence-store outage.
+        The allocation lands only while the identity is unrevoked, approved
+        and confirmed at the `capability_hash` the liveness message names. A
+        confirmed epoch stays confirmed through an evidence-store outage; a
+        re-promoted or quarantined one is a grant awaiting confirmation.
 
         Raises KeyError for unknown devices, ValueError when the counter is
         exhausted, and PermissionError when that authority no longer holds.
@@ -6535,7 +6528,7 @@ class StateStore:
                AND last_runtime_seq < 9007199254740991
                AND capability_hash = ?
             """
-            + _FIRMWARE_IN_SERVICE_SQL,
+            + _FIRMWARE_AUTHORITY_SQL,
             (device_id, capability_hash),
         )
         if cur.rowcount != 1:
@@ -6586,7 +6579,8 @@ class StateStore:
         The allocation is the command's authority commit: it lands only
         while the identity is unrevoked, approved and confirmed at the
         anchor, `verified_against`, the command was built from. Raises
-        KeyError for unknown devices and PermissionError when that
+        KeyError for unknown devices, OverflowError when the counter is
+        exhausted, and PermissionError when that
         authority no longer holds."""
         return await self._run_write(
             self._allocate_firmware_command_seq_sync,
@@ -6603,6 +6597,7 @@ class StateStore:
             UPDATE firmware_device_registry
             SET last_cmd_seq = last_cmd_seq + 1
             WHERE device_id = ?
+              AND last_cmd_seq < 9007199254740991
             """
             + _firmware_anchor_sql()
             + _FIRMWARE_AUTHORITY_SQL,
@@ -6610,12 +6605,14 @@ class StateStore:
         )
         if cur.rowcount != 1:
             known = self._conn.execute(
-                "SELECT 1 FROM firmware_device_registry WHERE device_id = ?",
+                "SELECT last_cmd_seq FROM firmware_device_registry WHERE device_id = ?",
                 (device_id,),
             ).fetchone()
             self._conn.rollback()
             if known is None:
                 raise KeyError(f"unknown firmware device: {device_id!r}")
+            if int(known[0]) >= 9007199254740991:
+                raise OverflowError(f"cmd_seq exhausted for {device_id!r}")
             raise PermissionError(
                 "firmware command authority changed before allocation"
             )

@@ -86,7 +86,7 @@ class _FakeBus:
 
 
 async def _provision(store) -> None:
-    """Register AND approve. Without the approval every message is
+    """Register, approve and confirm. Without the approval every message is
     rejected as ``device_not_approved``, which would make the
     tampered-signature test below pass for the wrong reason."""
     gate = FirmwareTelemetryGate(store)
@@ -99,6 +99,12 @@ async def _provision(store) -> None:
     )
     assert await gate.approve_device(
         manifest["device_id"], actor="test-operator", reason="composition test"
+    )
+    # Liveness, like a command, is signed only under a confirmed epoch; stand
+    # in for the coordinator that confirms it.
+    row = await store.get_firmware_device(manifest["device_id"])
+    await store.resolve_firmware_confirmation(
+        manifest["device_id"], row["anchor_epoch_id"], status="confirmed", at_ms=1
     )
 
 

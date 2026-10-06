@@ -321,20 +321,37 @@ from ori.state.store import StateStore  # noqa: E402
 
 
 def _register_sync(store, device_id: str) -> None:
+    from ori.security.firmware.telemetry import anchor_epoch_id
+
+    # The epoch the store derives for this row, so reopening keeps it.
+    epoch = anchor_epoch_id(
+        device_id=device_id,
+        public_key_b64="x",
+        posture="sealed_flash",
+        capability_hash=HASH,
+    )
     store._conn.execute(
         """
         INSERT INTO firmware_device_registry
             (device_id, public_key_b64, posture, capability_hash,
              provisioned_at_ms, approved, anchor_epoch_id)
-        VALUES (?, 'x', 'sealed_flash', ?, 0, 1, 'epoch')
+        VALUES (?, 'x', 'sealed_flash', ?, 0, 1, ?)
         """,
-        (device_id, HASH),
+        (device_id, HASH, epoch),
+    )
+    store._conn.execute(
+        """
+        INSERT INTO firmware_confirmation_outbox
+            (device_id, anchor_epoch_id, status, created_at_ms)
+        VALUES (?, ?, 'confirmed', 0)
+        """,
+        (device_id, epoch),
     )
     store._conn.commit()
 
 
 async def _register(store, device_id: str) -> None:
-    """Minimal registry row in service: approved and unrevoked."""
+    """Minimal registry row in service: approved, unrevoked and confirmed."""
     await store._run_write(_register_sync, store, device_id)
 
 

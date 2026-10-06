@@ -308,6 +308,10 @@ class FirmwareCommandSigner:
                 f"device {device_id!r} authority changed before the command "
                 "was sequenced; nothing was signed"
             ) from exc
+        except OverflowError as exc:
+            raise FirmwareCommandError(
+                f"device {device_id!r} cmd_seq is exhausted; nothing was signed"
+            ) from exc
         command = build_command_bytes(
             action=action,
             capability_hash=row["capability_hash"],

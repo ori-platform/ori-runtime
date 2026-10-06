@@ -310,10 +310,16 @@ class FirmwareLivenessSigner:
             )
         except PermissionError as exc:
             raise FirmwareLivenessError(
-                f"{device_id}: revoked, unapproved or re-manifested "
+                f"{device_id}: revoked, unapproved, unconfirmed or re-manifested "
                 "since telemetry was accepted; this runtime no longer holds the "
                 "authority to assert supervision"
             ) from exc
+        except FirmwareLivenessError:
+            raise
+        except ValueError as exc:
+            # An exhausted counter: the device cannot accept a higher value in
+            # this boot, so this is a refusal, not a failed delivery.
+            raise FirmwareLivenessError(f"{device_id}: {exc}") from exc
         liveness = build_liveness_bytes(
             boot_id=boot_id,
             capability_hash=capability_hash,

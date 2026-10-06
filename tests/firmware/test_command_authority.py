@@ -216,14 +216,17 @@ async def test_command_authority_refuses_an_incomplete_anchor(
     assert _last_cmd_seq(store, device_id) == 0
 
 
-WITHDRAWALS = [change for change in CHANGES if change.id != "unconfirmed"]
-
-
 async def _liveness_signer(store: StateStore) -> tuple[Any, dict[str, Any]]:
-    from ori.security.firmware.liveness import FirmwareLivenessSigner
-
     device_id = await _register_device(store)
     await _confirm_active(store, device_id)
+    return await _liveness_signer_for(store, device_id)
+
+
+async def _liveness_signer_for(
+    store: StateStore, device_id: str
+) -> tuple[Any, dict[str, Any]]:
+    from ori.security.firmware.liveness import FirmwareLivenessSigner
+
     row = await store.get_firmware_device(device_id)
     assert row is not None
     supervisor = FirmwareLivenessSupervisor()
@@ -239,15 +242,25 @@ async def _liveness_signer(store: StateStore) -> tuple[Any, dict[str, Any]]:
     return signer, liveness
 
 
-async def test_liveness_fails_stable_while_confirmation_is_pending(
+async def test_liveness_fails_stable_through_an_evidence_store_outage(
     store: StateStore,
 ) -> None:
+    """A confirmed epoch cannot be moved by a failed or late resolution."""
     signer, liveness = await _liveness_signer(store)
-    await _reapprove(FirmwareTelemetryGate(store), liveness["device_id"])
+    device_id = liveness["device_id"]
+    row = await store.get_firmware_device(device_id)
+    assert row is not None
+    await store.resolve_firmware_confirmation(
+        device_id, row["anchor_epoch_id"], status="quarantined", at_ms=3
+    )
+    status = await store.get_firmware_confirmation_status(
+        device_id, row["anchor_epoch_id"]
+    )
+    assert status == "confirmed"
     assert await signer.sign_liveness(**liveness)
 
 
-@pytest.mark.parametrize("change", WITHDRAWALS)
+@pytest.mark.parametrize("change", CHANGES)
 async def test_liveness_is_not_signed_once_authority_is_gone(
     store: StateStore, change: Change
 ) -> None:
@@ -269,3 +282,77 @@ async def test_liveness_is_not_signed_once_authority_is_gone(
         (device_id,),
     ).fetchone()
     assert spent[0] == 1
+
+
+async def test_command_authority_needs_the_current_epoch_confirmed(
+    store: StateStore,
+) -> None:
+    """A confirmed predecessor does not confirm the epoch now active."""
+    device_id = await _register_device(store)
+    await _confirm_active(store, device_id)
+    await _promote_same_key_manifest(FirmwareTelemetryGate(store))
+    current = await store.get_firmware_device(device_id)
+    assert current is not None
+    status = await store.get_firmware_confirmation_status(
+        device_id, current["anchor_epoch_id"]
+    )
+    assert status == "confirmation_pending"
+
+    assert not await store.firmware_command_authority_holds(
+        device_id, verified_against=current
+    )
+    with pytest.raises(PermissionError):
+        await store.allocate_firmware_command_seq(device_id, verified_against=current)
+    with pytest.raises(PermissionError):
+        await store.allocate_firmware_runtime_seq(
+            device_id, capability_hash=current["capability_hash"]
+        )
+
+
+async def test_a_revoked_row_is_refused_even_if_still_marked_approved(
+    store: StateStore,
+) -> None:
+    device_id = await _register_device(store)
+    await _confirm_active(store, device_id)
+    current = await store.get_firmware_device(device_id)
+    assert current is not None and store._conn is not None
+    store._conn.execute(
+        "UPDATE firmware_device_registry SET revoked = 1 WHERE device_id = ?",
+        (device_id,),
+    )
+    store._conn.commit()
+
+    assert not await store.firmware_command_authority_holds(
+        device_id, verified_against=current
+    )
+    with pytest.raises(PermissionError):
+        await store.allocate_firmware_command_seq(device_id, verified_against=current)
+    with pytest.raises(PermissionError):
+        await store.allocate_firmware_runtime_seq(
+            device_id, capability_hash=current["capability_hash"]
+        )
+
+
+async def test_exhausted_counters_are_refusals_that_spend_nothing(
+    store: StateStore,
+) -> None:
+    from ori.security.firmware.liveness import FirmwareLivenessError
+
+    service, publisher, device_id = await _service(store)
+    signer, liveness = await _liveness_signer_for(store, device_id)
+    assert store._conn is not None
+    store._conn.execute(
+        "UPDATE firmware_device_registry SET last_cmd_seq = 9007199254740991,"
+        " last_runtime_seq = 9007199254740991 WHERE device_id = ?",
+        (device_id,),
+    )
+    store._conn.commit()
+
+    with pytest.raises(FirmwareCommandError, match="exhausted"):
+        await service.publish_command(
+            device_id=device_id, action="relay_open", channel="relay0"
+        )
+    with pytest.raises(FirmwareLivenessError, match="exhausted"):
+        await signer.sign_liveness(**liveness)
+    assert publisher.commands == []
+    assert _last_cmd_seq(store, device_id) == 9007199254740991
