@@ -434,67 +434,120 @@ def test_inventory_guard_sees_the_admission_itself() -> None:
 
 
 # The Rust runtime decodes keys with ed25519-dalek, whose from_bytes accepts a
-# small-order point and a non-canonical y. Only its admit_public_key may call it.
+# small-order point and a non-canonical y. Outside test modules the key type and
+# the crate path may appear only in admit_public_key and on a plain `use` line,
+# so an alias, a qualified path or a conversion inferred to the key type all
+# name the type somewhere this guard sees.
 _RUST_ADMISSION = ("mobile/ori-runtime-mobile/src/main.rs", "admit_public_key")
-_RUST_LOADERS = re.compile(
-    r"\b(?:VerifyingKey|PublicKey)\s*::\s*(?:from_bytes|try_from|from_slice)\b"
-    r"|\bCompressedEdwardsY\b"
+_RUST_KEY_NAMES = re.compile(
+    r"\b(?:VerifyingKey|ed25519_dalek|CompressedEdwardsY|EdwardsPoint)\b"
 )
 _RUST_FN = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?fn\s+(\w+)", re.MULTILINE)
 
 
-def _rust_test_spans(text: str) -> list[tuple[int, int]]:
-    """The braces of each #[cfg(test)] module, and nothing after them."""
+def _rust_code_only(text: str) -> str:
+    """Comments and string and char literals blanked, offsets and newlines kept."""
+    out = list(text)
+    i, n = 0, len(text)
+
+    def blank(start: int, end: int) -> None:
+        for k in range(start, min(end, n)):
+            if out[k] != "\n":
+                out[k] = " "
+
+    while i < n:
+        if text.startswith("//", i):
+            end = text.find("\n", i)
+            end = n if end < 0 else end
+            blank(i, end)
+            i = end
+        elif text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            end = n if end < 0 else end + 2
+            blank(i, end)
+            i = end
+        elif raw := re.match(r'r(#*)"', text[i : i + 64]):
+            close = '"' + raw.group(1)
+            end = text.find(close, i + raw.end())
+            end = n if end < 0 else end + len(close)
+            blank(i, end)
+            i = end
+        elif text[i] == '"':
+            k = i + 1
+            while k < n and text[k] != '"':
+                k += 2 if text[k] == "\\" else 1
+            blank(i, k + 1)
+            i = k + 1
+        elif char := re.match(r"'(?:\\.|[^\\'\n])'", text[i : i + 8]):
+            blank(i, i + char.end())
+            i += char.end()
+        else:
+            i += 1
+    return "".join(out)
+
+
+def _rust_test_spans(code: str) -> list[tuple[int, int]]:
+    """The braces of each #[cfg(test)] module, in code with literals blanked."""
     spans = []
-    for match in re.finditer(r"#\[cfg\(test\)\]\s*(?:pub\s+)?mod\s+\w+\s*\{", text):
+    for match in re.finditer(r"#\[cfg\(test\)\]\s*(?:pub\s+)?mod\s+\w+\s*\{", code):
         depth, end = 1, match.end()
-        while depth and end < len(text):
-            depth += {"{": 1, "}": -1}.get(text[end], 0)
+        while depth and end < len(code):
+            depth += {"{": 1, "}": -1}.get(code[end], 0)
             end += 1
         spans.append((match.start(), end))
     return spans
 
 
-def _rust_loader_uses() -> list[tuple[str, str, int]]:
-    """(file, enclosing function, line) for every Rust key decode outside tests."""
-    found: list[tuple[str, str, int]] = []
+def _rust_key_name_uses() -> list[tuple[str, str, int, str]]:
+    """(file, enclosing function, line, source line) for each key name outside tests."""
+    found = []
     for path in sorted((REPO / "mobile").rglob("*.rs")):
         if "target" in path.parts:
             continue
         rel = path.relative_to(REPO).as_posix()
-        text = path.read_text(encoding="utf-8")
-        spans = _rust_test_spans(text)
-        for match in _RUST_LOADERS.finditer(text):
+        code = _rust_code_only(path.read_text(encoding="utf-8"))
+        spans = _rust_test_spans(code)
+        for match in _RUST_KEY_NAMES.finditer(code):
             if any(a <= match.start() < b for a, b in spans):
                 continue
-            enclosing = [m.group(1) for m in _RUST_FN.finditer(text, 0, match.start())]
+            line_start = code.rfind("\n", 0, match.start()) + 1
+            line_end = code.find("\n", match.start())
+            line = code[line_start : None if line_end < 0 else line_end].strip()
+            enclosing = [m.group(1) for m in _RUST_FN.finditer(code, 0, match.start())]
             found.append(
                 (
                     rel,
                     enclosing[-1] if enclosing else "",
-                    text.count("\n", 0, match.start()) + 1,
+                    code.count("\n", 0, match.start()) + 1,
+                    line,
                 )
             )
     return found
 
 
+def _plain_use(line: str) -> bool:
+    """A `use` that names the type without renaming it or globbing the crate."""
+    return line.startswith("use ") and " as " not in line and "*" not in line
+
+
 def test_every_rust_public_key_decode_is_the_shared_admission() -> None:
     outside = [
-        f"{rel}:{line} in {fn or 'module scope'}"
-        for rel, fn, line in _rust_loader_uses()
-        if (rel, fn) != _RUST_ADMISSION
+        f"{rel}:{line_no} in {fn or 'module scope'}: {line}"
+        for rel, fn, line_no, line in _rust_key_name_uses()
+        if (rel, fn) != _RUST_ADMISSION and not _plain_use(line)
     ]
     assert not outside, (
-        "An Ed25519 public key is decoded in the Rust runtime outside "
-        "admit_public_key, so a small-order or non-canonical key reaches "
-        "ed25519-dalek unrefused. This guard is textual: it sees "
-        f"{_RUST_LOADERS.pattern!r} outside #[cfg(test)] modules, and nothing else; "
-        f"outside: {outside}"
+        "The Rust runtime names ed25519-dalek's key type outside admit_public_key, "
+        "so a small-order or non-canonical key can reach it unrefused. This guard "
+        "is textual: it sees VerifyingKey, ed25519_dalek, CompressedEdwardsY and "
+        "EdwardsPoint outside #[cfg(test)] modules and plain `use` lines, after "
+        "blanking comments and literals; a decode that never names any of them "
+        f"is invisible to it. Outside: {outside}"
     )
 
 
 def test_rust_inventory_guard_sees_the_admission_itself() -> None:
-    assert _RUST_ADMISSION in {(rel, fn) for rel, fn, _ in _rust_loader_uses()}, (
+    assert _RUST_ADMISSION in {(rel, fn) for rel, fn, _, _ in _rust_key_name_uses()}, (
         "the Rust guard no longer sees the one permitted decode; it is blind"
     )
 

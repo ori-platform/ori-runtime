@@ -1227,6 +1227,18 @@ mod tests {
             (order_two, "small_order"),
             (order_eight, "small_order"),
             (y_is_p_plus_one, "non_canonical"),
+            (
+                "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+                "non_canonical",
+            ),
+            (
+                "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "non_canonical",
+            ),
+            (
+                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "non_canonical",
+            ),
             (identity_with_sign, "invalid_sign"),
         ] {
             assert_eq!(admit_public_key(&le_hex(hex)).err(), Some(clause), "{hex}");

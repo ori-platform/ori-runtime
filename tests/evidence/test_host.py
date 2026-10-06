@@ -678,3 +678,49 @@ def test_the_boot_id_command_prints_the_module_s_own_reading(
     monkeypatch.setattr(evidence_host, "current_boot_id", lambda: "boot-0001")
     assert evidence_host.main(["boot-id"]) == 0
     assert capsys.readouterr().out == "boot-0001\n"
+
+
+def test_the_harness_admission_agrees_with_the_runtime() -> None:
+    """The harness restates the admission with the standard library; it must not drift."""
+    import random
+
+    from evidence_host import _refused_public_key_clause
+
+    from ori.security.ed25519_keys import refused_public_key_clause
+
+    p = 2**255 - 19
+    rng = random.Random(784)
+    keys = [rng.randbytes(32) for _ in range(2000)]
+    keys += [(y | (s << 255)).to_bytes(32, "little") for y in range(40) for s in (0, 1)]
+    keys += [
+        ((p - k) | (s << 255)).to_bytes(32, "little")
+        for k in range(1, 40)
+        for s in (0, 1)
+    ]
+    keys += [
+        ((p + k) | (s << 255)).to_bytes(32, "little") for k in range(19) for s in (0, 1)
+    ]
+    for key in keys:
+        assert _refused_public_key_clause(key) == refused_public_key_clause(key), (
+            key.hex()
+        )
+
+
+def test_a_small_order_registry_key_is_refused_before_openssl(tmp_path: Path) -> None:
+    """OpenSSL verifies a keyless signature under the identity, so the key is refused first."""
+    paths = _signed(tmp_path)
+    registry = json.loads(paths["registry"].read_text(encoding="utf-8"))
+    registry["keys"][0]["public_key_b64"] = base64.b64encode(
+        (1).to_bytes(32, "little")
+    ).decode()
+    paths["registry"].write_text(json.dumps(registry), encoding="utf-8")
+
+    with pytest.raises(EvidenceError, match="is refused: small_order"):
+        verify_artifact(
+            bundle=paths["bundle"],
+            signature=paths["signature"],
+            registry=paths["registry"],
+            expected_sha256=hashlib.sha256(b"bundle").hexdigest(),
+            expected_version="2.4.0-rc.5",
+            workspace=tmp_path / "work",
+        )

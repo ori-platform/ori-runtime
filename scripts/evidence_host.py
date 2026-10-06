@@ -60,6 +60,40 @@ _ARCH_ALIASES = {
 }
 
 
+# ed25519-key-admission/v1, restated with the standard library because this runs
+# before the package is installed; a test holds it to ori.security.ed25519_keys.
+_P = 2**255 - 19
+_D = (-121665 * pow(121666, _P - 2, _P)) % _P
+_SQRT_M1 = pow(2, (_P - 1) // 4, _P)
+
+
+def _refused_public_key_clause(public_key: bytes) -> str | None:
+    """The clause refusing a 32-byte Ed25519 public key, or None when it is admitted."""
+    if len(public_key) != 32:
+        return "non_canonical"
+    encoded = int.from_bytes(public_key, "little")
+    sign, y = encoded >> 255, encoded & ((1 << 255) - 1)
+    if y >= _P:
+        return "non_canonical"
+    u, v = (y * y - 1) % _P, (_D * y * y + 1) % _P
+    x = u * pow(v, 3, _P) * pow(u * pow(v, 7, _P), (_P - 5) // 8, _P) % _P
+    if v * x * x % _P != u:
+        if v * x * x % _P != (-u) % _P:
+            return "off_curve"
+        x = x * _SQRT_M1 % _P
+    if x == 0 and sign:
+        return "invalid_sign"
+    px, py, pz, pt = x, y, 1, x * y % _P
+    for _ in range(3):
+        a, b = (py - px) * (py - px) % _P, (py + px) * (py + px) % _P
+        c, d = 2 * pt * pt * _D % _P, 2 * pz * pz % _P
+        e, f, g, h = b - a, d - c, d + c, b + a
+        px, py, pz, pt = e * f % _P, g * h % _P, f * g % _P, e * h % _P
+    if px == 0 and (py - pz) % _P == 0:
+        return "small_order"
+    return None
+
+
 class EvidenceError(Exception):
     """A claim could not be established. The message is for an operator."""
 
@@ -271,6 +305,12 @@ def verify_artifact(
         _required_field(key, "public_key_b64", f"key {envelope['key_id']}"),
         f"public key for {envelope['key_id']}",
     )
+    refused = _refused_public_key_clause(public_key)
+    if refused is not None:
+        # OpenSSL verifies a keyless signature under some small-order keys.
+        raise EvidenceError(
+            f"public key for {envelope['key_id']} is refused: {refused}"
+        )
     signature_bytes = _decode_base64(encoded, "signature")
 
     public = workspace / "public.der"
