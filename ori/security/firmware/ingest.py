@@ -63,7 +63,7 @@ ERR_ANCHOR_MISSING = "anchor_missing"
 ERR_ANCHOR_UNSTABLE = "anchor_unstable"
 
 # Advances one message may lose to an anchor moving under it.
-_MAX_VERIFICATIONS = 3
+_MAX_LOST_ADVANCES = 3
 
 _V = TypeVar("_V", TelemetryVerification, FirmwareFaultVerification)
 
@@ -125,7 +125,7 @@ class FirmwareTelemetryGate:
             verification = verify(row)
             if not verification.accepted:
                 return verification, None
-            if attempts >= _MAX_VERIFICATIONS:
+            if attempts >= _MAX_LOST_ADVANCES:
                 return rejected(
                     ERR_ANCHOR_UNSTABLE,
                     f"the anchor changed under each of {attempts} advances",

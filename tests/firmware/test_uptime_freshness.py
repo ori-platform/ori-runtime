@@ -808,3 +808,25 @@ async def test_an_anchor_moved_during_the_advance_is_honoured_by_the_subscriber(
     after = await store.get_firmware_device(SEALED_DEVICE)
     expected_seq = 0 if between is _rotate_key else 10
     assert after is not None and after["last_seq"] == expected_seq
+
+
+async def test_a_move_outside_the_epochs_is_verified_again(
+    gate: FirmwareTelemetryGate, store: StateStore
+) -> None:
+    """Every bound column decides "moved", not only the epoch identifiers.
+
+    The stale row differs only in the stored channel map, which verification
+    reads parsed: it verifies, loses the advance, and must be verified again.
+    """
+    assert await _telemetry_code(gate, boot_id=5, seq=10, uptime=5000) is None
+    current = await _row(store)
+    _stale_once(
+        store, dict(current, channel_map_json=current["channel_map_json"] + " ")
+    )
+
+    verification, readings = await gate.ingest(
+        _telemetry(boot_id=5, seq=11, uptime=6000), received_at_ms=1
+    )
+
+    assert verification.accepted and readings
+    assert (await _row(store))["last_seq"] == 11
