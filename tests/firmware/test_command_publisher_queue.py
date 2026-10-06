@@ -541,11 +541,11 @@ async def test_a_reconnect_underway_does_not_resend_a_failed_publication(
             await asyncio.sleep(1.8)
             if ending == "timeout":
                 with pytest.raises(FirmwareCommandPublishError):
-                    await task
+                    _ = await task
             else:
                 task.cancel()
                 with pytest.raises(asyncio.CancelledError):
-                    await task
+                    _ = await task
             # The device is revoked; then the reconnect runs.
             gate.reconnect.set()
             await asyncio.sleep(1.5)

@@ -430,6 +430,8 @@ def _shut_socket(client: Any) -> None:
         try:
             sock.shutdown(socket.SHUT_RDWR)
         except OSError:
+            # Already shut or closed: nothing can be written through it
+            # either way, which is all retirement needs.
             pass
 
 
