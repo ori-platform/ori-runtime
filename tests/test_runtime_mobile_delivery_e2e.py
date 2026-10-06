@@ -41,10 +41,17 @@ BINARY = CRATE / "target" / "debug" / "ori-runtime-mobile"
 # Not in the repo_build group: cargo locks its target directory, so workers
 # building at once wait for one another instead of colliding, and these tests
 # spread across workers.
-pytestmark = pytest.mark.skipif(
-    shutil.which("cargo") is None,
-    reason="the Android payload's delivery behaviour needs cargo to build the binary",
-)
+pytestmark = [
+    pytest.mark.skipif(
+        shutil.which("cargo") is None,
+        reason="the Android payload's delivery behaviour needs cargo to build the binary",
+    ),
+    # CI runs these once, on one Python version: they exercise the Rust payload.
+    pytest.mark.skipif(
+        os.environ.get("ORI_SKIP_PHONE_E2E") == "1",
+        reason="run on another CI matrix entry",
+    ),
+]
 
 ed25519 = pytest.importorskip(
     "cryptography.hazmat.primitives.asymmetric.ed25519",

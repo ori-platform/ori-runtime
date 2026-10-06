@@ -70,6 +70,14 @@ jobs:
           pattern: '^(docs/|[^/]+\.md$)'
           reason: running the tests that read documents
 
+      - name: Start the phone payload build in the background
+        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests' && matrix.python-version == '3.12'
+        # It compiles while dependencies install; the phone tests' own cargo
+        # build then waits on cargo's lock for it instead of building on a worker.
+        run: |
+          cd mobile/ori-runtime-mobile
+          nohup cargo build --locked > "${RUNNER_TEMP}/phone-payload-build.log" 2>&1 &
+
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -303,8 +311,13 @@ jobs:
         if: steps.scope.outputs.run == 'true' && matrix.role == 'tests'
         env:
           ORI_REQUIRE_MQTT_BROKER: "1"
-          # Coverage is measured once, on the version whose report is uploaded.
-          COVERAGE: ${{ matrix.python-version == '3.11' && '--cov=ori --cov-report=term-missing --cov-report=xml' || '' }}
+          # Coverage is measured once, on the version whose report is uploaded,
+          # through sys.monitoring, which costs far less than a trace function.
+          COVERAGE: ${{ matrix.python-version == '3.13' && '--cov=ori --cov-report=term-missing --cov-report=xml' || '' }}
+          COVERAGE_CORE: sysmon
+          # The phone delivery tests exercise the Rust payload, not the
+          # interpreter, so one Python version runs them.
+          ORI_SKIP_PHONE_E2E: ${{ matrix.python-version != '3.12' && '1' || '' }}
         run: |
           # One worker per core; tests that build from the repository share one
           # worker through xdist_group("repo_build"), held by test_parallel_safety.
@@ -405,7 +418,7 @@ jobs:
 
       - name: Upload coverage report
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
-        if: steps.scope.outputs.run == 'true' && matrix.python-version == '3.11'
+        if: steps.scope.outputs.run == 'true' && matrix.python-version == '3.13'
         with:
           files: ./coverage.xml
           fail_ci_if_error: false
