@@ -24,6 +24,7 @@ import logging
 import math
 import os
 import re
+import socket
 import time
 from typing import Any, Callable, cast
 
@@ -121,20 +122,19 @@ class MqttFirmwareCommandPublisher:
             await _stop_client(client)
 
     def _retire(self, client: Any) -> None:
-        """Stop a client from sending anything more, without awaiting.
+        """Stop a client from writing anything more, without awaiting.
 
-        A client that failed a publication holds a QoS 1 message it would
-        send on reconnect, after whatever authority signed it may have been
-        withdrawn. Nothing here awaits, so cancellation cannot skip it:
-        ``disconnect`` ends reconnects and resends at once, and the network
-        loop is stopped off the event loop.
+        A client that failed a publication may still hold it, unwritten,
+        behind its network loop, after whatever authority signed it was
+        withdrawn. A graceful disconnect would write it first, so the socket
+        is shut before anything else: nothing pending reaches the wire.
+        ``disconnect`` then only marks the client as leaving, and the loop
+        stops off the event loop. Nothing awaits, so cancellation cannot
+        skip it.
         """
         if self._client is client:
             self._client = None
-        try:
-            client.disconnect()
-        except Exception:
-            logger.debug("[firmware-commands] disconnect of a retired client failed")
+        _abort_output(client)
         stopped = asyncio.get_running_loop().run_in_executor(None, client.loop_stop)
         stopped.add_done_callback(_consume)
 
@@ -418,6 +418,20 @@ def _topic(device_id: str, leaf: str) -> str:
             f"device_id is not a valid MQTT fleet identifier: {device_id!r}"
         )
     return f"ori/fw/{device_id}/{leaf}"
+
+
+def _abort_output(client: Any) -> None:
+    sock_of = getattr(client, "socket", None)
+    sock: Any = sock_of() if callable(sock_of) else None
+    if sock is not None:
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+    try:
+        client.disconnect()
+    except Exception:
+        logger.debug("[firmware-commands] disconnect of a retired client failed")
 
 
 def _consume(future: Any) -> None:

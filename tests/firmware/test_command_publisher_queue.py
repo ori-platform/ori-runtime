@@ -342,3 +342,153 @@ def test_the_publish_timeout_must_be_finite_and_positive(timeout: Any) -> None:
             client_factory=lambda **_: _Client(connected=True),
             publish_timeout_s=timeout,
         )
+
+
+class _Gate:
+    """Holds paho's network loop before it writes, or a publish before it queues."""
+
+    def __init__(self) -> None:
+        import threading
+
+        self.write = threading.Event()
+        self.write.set()
+        self.publish = threading.Event()
+        self.publish.set()
+        self.returned = threading.Event()
+        self.returned.set()
+
+
+def _gated_paho(monkeypatch: pytest.MonkeyPatch, gate: _Gate) -> Any:
+    """Swap paho's Client for one the gate can hold; return the original."""
+    import paho.mqtt.client as mqtt
+
+    from ori.gateway import firmware_commands
+
+    original = mqtt.Client
+
+    class Gated(original):  # type: ignore[misc, valid-type]
+        def loop_write(self) -> Any:
+            gate.write.wait(10.0)
+            return super().loop_write()
+
+        def disconnect(self, *args: Any, **kwargs: Any) -> Any:
+            # disconnect wakes the network loop. Let it run first, so a
+            # disconnect issued before the socket is shut is observed
+            # flushing whatever the client still held.
+            if not gate.write.is_set():
+                gate.write.set()
+                time.sleep(0.3)
+            return super().disconnect(*args, **kwargs)
+
+        def publish(self, *args: Any, **kwargs: Any) -> Any:
+            gate.publish.wait(10.0)
+            info = super().publish(*args, **kwargs)
+            gate.returned.wait(10.0)
+            return info
+
+    monkeypatch.setattr(firmware_commands.mqtt, "Client", Gated)
+    return original
+
+
+async def _listen(original: Any, port: int, received: list[bytes]) -> Any:
+    import paho.mqtt.client as mqtt
+
+    device = original(
+        callback_api_version=getattr(mqtt, "CallbackAPIVersion").VERSION2,
+        client_id="device",
+    )
+    device.on_message = lambda _c, _u, message: received.append(message.payload)
+    device.connect("127.0.0.1", port)
+    device.subscribe(f"ori/fw/{DEVICE}/#", qos=1)
+    device.loop_start()
+    await asyncio.sleep(0.3)
+    return device
+
+
+@pytest.mark.parametrize("ending", ["timeout", "cancelled"])
+@pytest.mark.parametrize("family", sorted(FAMILIES))
+async def test_a_live_client_does_not_drain_a_failed_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, family: str, ending: str
+) -> None:
+    """The broker is up; the publication is held behind the client's loop."""
+    gate = _Gate()
+    original = _gated_paho(monkeypatch, gate)
+    port = _free_port()
+    received: list[bytes] = []
+    with _broker_on(tmp_path, port):
+        device = await _listen(original, port, received)
+        publisher = MqttFirmwareCommandPublisher(
+            broker_url=f"mqtt://127.0.0.1:{port}",
+            runtime_device_id="runtime-01",
+            publish_timeout_s=0.5 if ending == "timeout" else 5.0,
+        )
+        try:
+            await publisher.connect()
+            gate.write.clear()
+            if ending == "timeout":
+                with pytest.raises(FirmwareCommandPublishError, match="timed out"):
+                    await _publish(publisher, family, b"stale")
+            else:
+                with pytest.raises(asyncio.TimeoutError):
+                    await asyncio.wait_for(_publish(publisher, family, b"stale"), 0.3)
+            # This is where the device is revoked; then the loop runs again.
+            gate.write.set()
+            await asyncio.sleep(1.0)
+            assert received == []
+
+            await _publish(publisher, family, b"fresh")
+            deadline = time.monotonic() + 5.0
+            while not received and time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
+            await asyncio.sleep(0.3)
+        finally:
+            gate.write.set()
+            device.loop_stop()
+            device.disconnect()
+            await publisher.close()
+    assert received == [b"fresh"]
+
+
+@pytest.mark.parametrize("position", ["before_queueing", "after_queueing"])
+@pytest.mark.parametrize("family", sorted(FAMILIES))
+async def test_a_publication_cancelled_inside_publish_is_not_sent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, family: str, position: str
+) -> None:
+    """The worker is still inside client.publish when the caller is cancelled.
+
+    After queueing, the network loop is held too, so the queued bytes are
+    still unwritten when the client is retired.
+    """
+    gate = _Gate()
+    original = _gated_paho(monkeypatch, gate)
+    port = _free_port()
+    received: list[bytes] = []
+    with _broker_on(tmp_path, port):
+        device = await _listen(original, port, received)
+        publisher = MqttFirmwareCommandPublisher(
+            broker_url=f"mqtt://127.0.0.1:{port}",
+            runtime_device_id="runtime-01",
+            publish_timeout_s=5.0,
+        )
+        try:
+            await publisher.connect()
+            if position == "before_queueing":
+                gate.publish.clear()
+            else:
+                gate.write.clear()
+                gate.returned.clear()
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(_publish(publisher, family, b"stale"), 0.3)
+            # The device is revoked; the worker and the loop then run on.
+            gate.publish.set()
+            gate.returned.set()
+            gate.write.set()
+            await asyncio.sleep(1.0)
+            assert received == []
+        finally:
+            gate.publish.set()
+            gate.returned.set()
+            gate.write.set()
+            device.loop_stop()
+            device.disconnect()
+            await publisher.close()
