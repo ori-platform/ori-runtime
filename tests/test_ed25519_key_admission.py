@@ -1239,3 +1239,91 @@ def test_a_key_and_its_negation_share_one_identity(case: dict[str, str]) -> None
         bytes.fromhex(case["signature_hex"]),
         bytes.fromhex(case["message_hex"]),
     )
+
+
+def _binding_vectors() -> dict[str, Any]:
+    return json.loads(
+        (
+            REPO / "tests/vectors/commissioned_safety_binding/binding-vectors-v2.json"
+        ).read_text(encoding="utf-8")
+    )
+
+
+def _negate_hex(public_key_hex: str) -> str:
+    return _negated(bytes.fromhex(public_key_hex)).hex()
+
+
+def test_the_binding_verifier_refuses_a_negated_anchor_collision() -> None:
+    from ori.security.commissioning.binding import (
+        BindingRefusedError,
+        VerifierContext,
+        verify_binding,
+    )
+
+    case = _binding_vectors()["cases"][0]
+    context = dict(case["verifier_context"])
+    context["provisioning_anchor_hex"] = _negate_hex(
+        context["commissioning_anchor_current_hex"]
+    )
+    with pytest.raises(BindingRefusedError) as caught:
+        verify_binding(
+            case["binding"], VerifierContext.from_corpus(context), case["signature_b64"]
+        )
+    assert caught.value.reason == "anchor_collision"
+
+
+def test_the_profile_verifier_refuses_a_negated_anchor_collision() -> None:
+    from ori.security.commissioning.binding import (
+        BindingRefusedError,
+        ProfileContext,
+        verify_firmware_profile,
+    )
+
+    case = _binding_vectors()["firmware_profile_cases"][0]
+    context = dict(case["verifier_context"])
+    context["provisioning_anchor_hex"] = _negate_hex(
+        context["commissioning_anchor_current_hex"]
+    )
+    with pytest.raises(BindingRefusedError) as caught:
+        verify_firmware_profile(
+            case["firmware_profile"],
+            ProfileContext.from_corpus(context),
+            case["signature_b64"],
+        )
+    assert caught.value.reason == "anchor_collision"
+
+
+def test_an_authority_key_and_its_negation_cannot_hold_two_purposes(
+    tmp_path: Path,
+) -> None:
+    from ori.security.evidence.authority_keys import (
+        PURPOSE_EPOCH,
+        PURPOSE_RECEIPT,
+        REGISTRY_SCHEMA,
+        RULE_CROSS_PURPOSE,
+        AuthorityKeyError,
+        derive_key_id,
+        load_authority_key_registry,
+    )
+
+    _, honest = _honest()
+    document = {
+        "schema": REGISTRY_SCHEMA,
+        "keys": [
+            {
+                "key_id": derive_key_id(raw),
+                "public_key_hex": raw.hex(),
+                "purpose": purpose,
+                "status": "active",
+            }
+            for raw, purpose in (
+                (honest, PURPOSE_RECEIPT),
+                (_negated(honest), PURPOSE_EPOCH),
+            )
+        ],
+    }
+    path = tmp_path / "registry.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(AuthorityKeyError) as caught:
+        load_authority_key_registry(path)
+    assert caught.value.rule == RULE_CROSS_PURPOSE

@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from ori.security.ed25519_keys import refused_public_key_clause
+from ori.security.ed25519_keys import key_identity, refused_public_key_clause
 from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
 
 PURPOSE_RECEIPT = "evidence_authority_receipt"
@@ -227,12 +227,15 @@ def parse_authority_key_registry(
             )
         registry[identity] = key
 
-    purposes_by_key_id: dict[str, set[str]] = {}
-    for purpose, key_id in registry:
-        purposes_by_key_id.setdefault(key_id, set()).add(purpose)
-    if any(len(held) > 1 for held in purposes_by_key_id.values()):
+    # By identity, not key_id: a key's negation is the same holder's key, so
+    # it may no more serve a second purpose than the key itself.
+    purposes_by_identity: dict[bytes, set[str]] = {}
+    for key in registry.values():
+        held_key = key_identity(bytes.fromhex(key.public_key_hex))
+        purposes_by_identity.setdefault(held_key, set()).add(key.purpose)
+    if any(len(held) > 1 for held in purposes_by_identity.values()):
         raise AuthorityKeyError(
-            RULE_CROSS_PURPOSE, "one key_id is held under two purposes"
+            RULE_CROSS_PURPOSE, "one key is held under two purposes"
         )
 
     active = Counter(

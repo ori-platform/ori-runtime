@@ -21,7 +21,7 @@ from typing import Any, Literal
 
 from cryptography.exceptions import InvalidSignature
 
-from ori.security.ed25519_keys import admit_public_key
+from ori.security.ed25519_keys import admit_public_key, key_identity
 from ori.security.evidence.canonical import CanonicalisationError, canonical_json
 
 COIL = frozenset({"energised", "de_energised"})
@@ -726,10 +726,16 @@ def _collision(ctx: VerifierContext) -> bool:
     provisioning = ctx.provisioning_anchor
     if provisioning is None:
         return False
-    return provisioning in {
+    return _same_holder(
+        provisioning,
         ctx.commissioning_anchor_current,
         ctx.commissioning_anchor_previous,
-    }
+    )
+
+
+def _same_holder(key: bytes, *others: bytes | None) -> bool:
+    """Whether *key* is one of *others* by identity: a negation is the same key."""
+    return key_identity(key) in {key_identity(o) for o in others if o is not None}
 
 
 def st_key_selection(b: dict[str, Any], ctx: VerifierContext) -> None:
@@ -758,7 +764,9 @@ def st_signature(b: dict[str, Any], sig_b64: str) -> None:
 def st_authority(b: dict[str, Any], ctx: VerifierContext) -> None:
     """Decided only over a verified signature, so it cannot be manufactured."""
     named = raw_key(b["signing_key"])
-    if ctx.provisioning_anchor is not None and named == ctx.provisioning_anchor:
+    if ctx.provisioning_anchor is not None and _same_holder(
+        named, ctx.provisioning_anchor
+    ):
         raise BindingRefusedError("authority", "wrong_authority")
     if (
         ctx.commissioning_anchor_previous is not None
@@ -1045,10 +1053,11 @@ def verify_firmware_profile(pr: Any, ctx: ProfileContext, sig_b64: str) -> None:
         raise BindingRefusedError("device_binding", "profile_channel_mismatch")
 
     provisioning = ctx.provisioning_anchor
-    if provisioning is not None and provisioning in {
+    if provisioning is not None and _same_holder(
+        provisioning,
         ctx.commissioning_anchor_current,
         ctx.commissioning_anchor_previous,
-    }:
+    ):
         raise BindingRefusedError("key_selection", "anchor_collision")
     named = raw_key(pr["signing_key"])
     candidates = {
@@ -1062,7 +1071,7 @@ def verify_firmware_profile(pr: Any, ctx: ProfileContext, sig_b64: str) -> None:
         admit_public_key(named).verify(base64.b64decode(sig_b64), canonical_bytes(pr))
     except (InvalidSignature, ValueError, binascii.Error):
         raise BindingRefusedError("signature", "bad_signature") from None
-    if provisioning is not None and named == provisioning:
+    if provisioning is not None and _same_holder(named, provisioning):
         raise BindingRefusedError("authority", "wrong_authority")
     if (
         ctx.commissioning_anchor_previous is not None
