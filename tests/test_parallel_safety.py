@@ -3,11 +3,12 @@
 
 """Tests that build from the repository share one xdist worker.
 
-CI runs the suite across workers. A build writes into the repository itself
-(`build/`, `*.egg-info`, a cargo `target/`), so two workers building at once
-collide, and only intermittently. Every test that builds, directly or through
-a fixture, carries `xdist_group("repo_build")`, and `--dist loadgroup` runs the
-group on one worker.
+CI runs the suite across workers. A wheel build writes into the repository
+itself (`build/`, `*.egg-info`), so two workers building at once collide, and
+only intermittently. Every test that builds a wheel, directly or through a
+fixture, carries `xdist_group("repo_build")`, and `--dist loadgroup` runs the
+group on one worker. A cargo build needs no group: cargo locks its target
+directory.
 """
 
 from __future__ import annotations
@@ -20,7 +21,11 @@ GROUP = "repo_build"
 
 
 def _is_build(node: ast.AST) -> bool:
-    """A literal argument list that builds a wheel or a crate."""
+    """A literal argument list that builds a wheel.
+
+    `cargo build` is not one: cargo locks its target directory, so concurrent
+    builds wait for each other rather than collide.
+    """
     if not isinstance(node, ast.List):
         return False
     words = [
@@ -29,7 +34,7 @@ def _is_build(node: ast.AST) -> bool:
         if isinstance(e, ast.Constant) and isinstance(e.value, str)
     ]
     pairs = set(zip(words, words[1:]))
-    return bool(pairs & {("-m", "build"), ("pip", "wheel"), ("cargo", "build")})
+    return bool(pairs & {("-m", "build"), ("pip", "wheel")})
 
 
 def _grouped(decorators: list[ast.expr]) -> bool:
@@ -101,9 +106,9 @@ def _ungrouped_builders() -> list[str]:
 def test_every_test_that_builds_from_the_repository_shares_one_worker() -> None:
     ungrouped = _ungrouped_builders()
     assert not ungrouped, (
-        f'Mark these with @pytest.mark.xdist_group("{GROUP}"): they build a wheel or a crate '
+        f'Mark these with @pytest.mark.xdist_group("{GROUP}"): they build a wheel '
         "from the repository, and two workers building at once collide. This guard sees "
-        "literal `-m build`, `pip wheel` and `cargo build` argument lists in a test, a test "
+        "literal `-m build` and `pip wheel` argument lists in a test, a test "
         f"method, or a same-module fixture the test takes; ungrouped: {ungrouped}"
     )
 
@@ -121,5 +126,4 @@ def test_the_guard_sees_the_builders_it_was_written_for() -> None:
     assert {
         "tests/evidence/test_disclosure.py",
         "tests/test_linux_installer.py",
-        "tests/test_runtime_mobile_delivery_e2e.py",
     } <= seen, f"the guard no longer recognises a known builder; it sees {sorted(seen)}"

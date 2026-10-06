@@ -38,13 +38,13 @@ ROOT = Path(__file__).resolve().parents[1]
 CRATE = ROOT / "mobile" / "ori-runtime-mobile"
 BINARY = CRATE / "target" / "debug" / "ori-runtime-mobile"
 
-pytestmark = [
-    pytest.mark.skipif(
-        shutil.which("cargo") is None,
-        reason="the Android payload's delivery behaviour needs cargo to build the binary",
-    ),
-    pytest.mark.xdist_group("repo_build"),
-]
+# Not in the repo_build group: cargo locks its target directory, so workers
+# building at once wait for one another instead of colliding, and these tests
+# spread across workers.
+pytestmark = pytest.mark.skipif(
+    shutil.which("cargo") is None,
+    reason="the Android payload's delivery behaviour needs cargo to build the binary",
+)
 
 ed25519 = pytest.importorskip(
     "cryptography.hazmat.primitives.asymmetric.ed25519",
