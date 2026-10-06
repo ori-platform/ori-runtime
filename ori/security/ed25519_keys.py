@@ -5,11 +5,14 @@
 
 The library verifies under any 32 bytes that decode to a point. Under a point
 of small order a signature that verifies can be made with no private key, so
-such a key binds a signature to no key holder. The refusal clauses are those
-of `ed25519-key-admission/v1`, whose corpus is vendored under
+such a key binds a signature to no key holder. Under a point of mixed order,
+a prime-order key shifted by a small-order point, the shifted key's holder is
+the unshifted key's, so a check that recognises a key by its bytes is passed
+by shifting a key it refuses. The refusal clauses are those of
+`ed25519-key-admission/v1`, whose corpus is vendored under
 `tests/vectors/ed25519_key_admission`: RFC 8032 section 5.1.3 decoding, with
-small-order points refused. A mixed-order key is not refused. Applied to a
-frozen contract ahead of its successor, this is hardening, not conformance.
+small-order and mixed-order points refused. Applied to a frozen contract ahead
+of its successor, this is hardening, not conformance.
 """
 
 from __future__ import annotations
@@ -24,11 +27,14 @@ CLAUSE_NON_CANONICAL = "non_canonical"
 CLAUSE_OFF_CURVE = "off_curve"
 CLAUSE_INVALID_SIGN = "invalid_sign"
 CLAUSE_SMALL_ORDER = "small_order"
+CLAUSE_MIXED_ORDER = "mixed_order"
 
 # RFC 8032, section 5.1.
 _P = 2**255 - 19
 _D = (-121665 * pow(121666, _P - 2, _P)) % _P
 _SQRT_M1 = pow(2, (_P - 1) // 4, _P)
+# The prime order of the base point.
+_L = 2**252 + 27742317777372353535851937790883648493
 
 _Point = tuple[int, int, int, int]
 
@@ -41,15 +47,30 @@ class RefusedPublicKeyError(ValueError):
         self.clause = clause
 
 
-def _point_double(point: _Point) -> _Point:
-    """Extended-coordinate addition of a point to itself, RFC 8032 section 5.1.4."""
-    x, y, z, t = point
-    a = (y - x) * (y - x) % _P
-    b = (y + x) * (y + x) % _P
-    c = 2 * t * t * _D % _P
-    d = 2 * z * z % _P
+def _point_add(p: _Point, q: _Point) -> _Point:
+    """Extended-coordinate point addition, RFC 8032 section 5.1.4."""
+    x1, y1, z1, t1 = p
+    x2, y2, z2, t2 = q
+    a = (y1 - x1) * (y2 - x2) % _P
+    b = (y1 + x1) * (y2 + x2) % _P
+    c = 2 * t1 * t2 * _D % _P
+    d = 2 * z1 * z2 % _P
     e, f, g, h = b - a, d - c, d + c, b + a
     return (e * f % _P, g * h % _P, f * g % _P, e * h % _P)
+
+
+def _is_identity(point: _Point) -> bool:
+    return point[0] % _P == 0 and (point[1] - point[2]) % _P == 0
+
+
+def _scalar_mul(k: int, point: _Point) -> _Point:
+    result: _Point = (0, 1, 1, 0)
+    while k:
+        if k & 1:
+            result = _point_add(result, point)
+        point = _point_add(point, point)
+        k >>= 1
+    return result
 
 
 # A device or anchor key recurs on every message; the decode is pure.
@@ -72,12 +93,12 @@ def refused_public_key_clause(public_key: bytes) -> str | None:
         x = x * _SQRT_M1 % _P
     if x == 0 and sign:
         return CLAUSE_INVALID_SIGN
-    # Order divides 8 exactly when [8]P is the identity, (X:Y:Z) = (0:1:1).
+    # The sign of x is not applied: a point and its negation have one order.
     point: _Point = (x, y, 1, x * y % _P)
-    for _ in range(3):
-        point = _point_double(point)
-    if point[0] == 0 and (point[1] - point[2]) % _P == 0:
+    if _is_identity(_scalar_mul(8, point)):
         return CLAUSE_SMALL_ORDER
+    if not _is_identity(_scalar_mul(_L, point)):
+        return CLAUSE_MIXED_ORDER
     return None
 
 

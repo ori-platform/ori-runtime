@@ -1,8 +1,8 @@
 {
   "vector_set": "ed25519-key-admission/v1",
   "contract": "ed25519-key-admission/v1",
-  "purpose": "Cross-language agreement on which 32-byte Ed25519 public keys an Ori verifier admits, and that a signature made with no private key is refused for its key.",
-  "derivation": "public_keys are byte-for-byte the public_keys cases of evidence-exchange/vectors/authority-key-registry-v2.json; keyless_signatures pair each small-order key with one message and the signature R = base point, S = 1. mixed_order cases are the base point plus a point of order 2 and of order 8.",
+  "purpose": "Cross-language agreement on which 32-byte Ed25519 public keys an Ori verifier admits, that a signature made with no private key is refused for its key, and that a key shifted by a point of small order is refused although its seed signs under it.",
+  "derivation": "public_keys carry the encodings of the public_keys cases of evidence-exchange/vectors/authority-key-registry-v2.json, in order, with that corpus's verdicts except for keys of mixed order, which v2 admits and this contract refuses; keyless_signatures pair each small-order key with one message and the signature R = base point, S = 1. mixed_order cases are the base point plus a point of order 2 and of order 8, and the key derived from seed_hex under RFC 8032 section 5.1.5 plus torsion_point_hex. torsion_shift_signatures sign one message under that shifted key with the unshifted key's scalar, using the first nonce, SHA-512 of the seed's prefix, the message and a 4-byte little-endian counter, whose challenge is a multiple of 8.",
   "public_keys": [
     {
       "public_key_hex": "0000000000000000000000000000000000000000000000000000000000000000",
@@ -426,39 +426,39 @@
     },
     {
       "public_key_hex": "0300000000000000000000000000000000000000000000000000000000000000",
-      "expected": "accepted",
-      "clause": null,
-      "why": "a valid point beside a refused encoding"
+      "expected": "refused",
+      "clause": "mixed_order",
+      "why": "a valid point beside a refused encoding; of mixed order"
     },
     {
       "public_key_hex": "0300000000000000000000000000000000000000000000000000000000000080",
-      "expected": "accepted",
-      "clause": null,
-      "why": "a valid point beside a refused encoding, bit 255 set"
+      "expected": "refused",
+      "clause": "mixed_order",
+      "why": "a valid point beside a refused encoding, bit 255 set; of mixed order"
     },
     {
       "public_key_hex": "25e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
-      "expected": "accepted",
-      "clause": null,
-      "why": "a valid point beside a refused encoding"
+      "expected": "refused",
+      "clause": "mixed_order",
+      "why": "a valid point beside a refused encoding; of mixed order"
     },
     {
       "public_key_hex": "25e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
-      "expected": "accepted",
-      "clause": null,
-      "why": "a valid point beside a refused encoding, bit 255 set"
+      "expected": "refused",
+      "clause": "mixed_order",
+      "why": "a valid point beside a refused encoding, bit 255 set; of mixed order"
     },
     {
       "public_key_hex": "28e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
-      "expected": "accepted",
-      "clause": null,
-      "why": "a valid point beside a refused encoding"
+      "expected": "refused",
+      "clause": "mixed_order",
+      "why": "a valid point beside a refused encoding; of mixed order"
     },
     {
       "public_key_hex": "28e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
-      "expected": "accepted",
-      "clause": null,
-      "why": "a valid point beside a refused encoding, bit 255 set"
+      "expected": "refused",
+      "clause": "mixed_order",
+      "why": "a valid point beside a refused encoding, bit 255 set; of mixed order"
     },
     {
       "public_key_hex": "c5176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
@@ -474,27 +474,27 @@
     },
     {
       "public_key_hex": "c8176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
-      "expected": "accepted",
-      "clause": null,
-      "why": "a valid point beside a refused encoding"
+      "expected": "refused",
+      "clause": "mixed_order",
+      "why": "a valid point beside a refused encoding; of mixed order"
     },
     {
       "public_key_hex": "c8176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
-      "expected": "accepted",
-      "clause": null,
-      "why": "a valid point beside a refused encoding, bit 255 set"
+      "expected": "refused",
+      "clause": "mixed_order",
+      "why": "a valid point beside a refused encoding, bit 255 set; of mixed order"
     },
     {
       "public_key_hex": "eaffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
-      "expected": "accepted",
-      "clause": null,
-      "why": "a valid point beside a refused encoding"
+      "expected": "refused",
+      "clause": "mixed_order",
+      "why": "a valid point beside a refused encoding; of mixed order"
     },
     {
       "public_key_hex": "eaffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-      "expected": "accepted",
-      "clause": null,
-      "why": "a valid point beside a refused encoding, bit 255 set"
+      "expected": "refused",
+      "clause": "mixed_order",
+      "why": "a valid point beside a refused encoding, bit 255 set; of mixed order"
     },
     {
       "public_key_hex": "e90b7e078a84eff6d17341885b82919c9f3637225d79b3ce1e341325f90dadbc",
@@ -536,13 +536,23 @@
   "mixed_order": [
     {
       "public_key_hex": "9599999999999999999999999999999999999999999999999999999999999999",
-      "expected": "accepted",
-      "why": "the base point plus the point of order 2: of mixed order, not refused"
+      "expected": "refused",
+      "clause": "mixed_order",
+      "why": "the base point plus the point of order 2: of mixed order"
     },
     {
       "public_key_hex": "da99e28ba529cdde35a25fba9059e78ecaee239f99755b9b1aa4f65df00803e2",
-      "expected": "accepted",
-      "why": "the base point plus a point of order 8: of mixed order, not refused"
+      "expected": "refused",
+      "clause": "mixed_order",
+      "why": "the base point plus a point of order 8: of mixed order"
+    },
+    {
+      "public_key_hex": "3a0ba61be5057d1d12fb9ca9dc1132531d51260914857021f83d6a0b63a4df5a",
+      "expected": "refused",
+      "clause": "mixed_order",
+      "seed_hex": "cdc63df6b225c10299fea10f68359d284d7f24e9708630cffa986841ce7065c7",
+      "torsion_point_hex": "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+      "why": "the key derived from seed_hex plus torsion_point_hex, a point of order 8: its seed signs under it"
     }
   ],
   "keyless_signatures": [
@@ -609,6 +619,16 @@
       "expected": "refused",
       "clause": "small_order",
       "why": "R is the base point and S is 1: no private key signed this"
+    }
+  ],
+  "torsion_shift_signatures": [
+    {
+      "public_key_hex": "3a0ba61be5057d1d12fb9ca9dc1132531d51260914857021f83d6a0b63a4df5a",
+      "message_hex": "6120646f63756d656e74207369676e6564207769746820746865206f726967696e616c206b657927732070726976617465207363616c6172",
+      "signature_hex": "e1a9a60c9e5d0068892173a368835d51552726f8f213a7f4effb6014bd52ff30640a35955ad4915b2efd8019b39b12fc4f5bddf9eae4988ab9199558bc3b0e0f",
+      "expected": "refused",
+      "clause": "mixed_order",
+      "why": "made with the private scalar of the unshifted key; the cofactorless equation accepts it under the shifted key"
     }
   ]
 }

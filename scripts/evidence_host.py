@@ -65,6 +65,7 @@ _ARCH_ALIASES = {
 _P = 2**255 - 19
 _D = (-121665 * pow(121666, _P - 2, _P)) % _P
 _SQRT_M1 = pow(2, (_P - 1) // 4, _P)
+_L = 2**252 + 27742317777372353535851937790883648493
 
 
 def _refused_public_key_clause(public_key: bytes) -> str | None:
@@ -83,15 +84,37 @@ def _refused_public_key_clause(public_key: bytes) -> str | None:
         x = x * _SQRT_M1 % _P
     if x == 0 and sign:
         return "invalid_sign"
-    px, py, pz, pt = x, y, 1, x * y % _P
-    for _ in range(3):
-        a, b = (py - px) * (py - px) % _P, (py + px) * (py + px) % _P
-        c, d = 2 * pt * pt * _D % _P, 2 * pz * pz % _P
-        e, f, g, h = b - a, d - c, d + c, b + a
-        px, py, pz, pt = e * f % _P, g * h % _P, f * g % _P, e * h % _P
-    if px == 0 and (py - pz) % _P == 0:
+    point = (x, y, 1, x * y % _P)
+    if _is_identity(_scalar_mul(8, point)):
         return "small_order"
+    if not _is_identity(_scalar_mul(_L, point)):
+        return "mixed_order"
     return None
+
+
+def _point_add(
+    p: tuple[int, int, int, int], q: tuple[int, int, int, int]
+) -> tuple[int, int, int, int]:
+    x1, y1, z1, t1 = p
+    x2, y2, z2, t2 = q
+    a, b = (y1 - x1) * (y2 - x2) % _P, (y1 + x1) * (y2 + x2) % _P
+    c, d = 2 * t1 * t2 * _D % _P, 2 * z1 * z2 % _P
+    e, f, g, h = b - a, d - c, d + c, b + a
+    return (e * f % _P, g * h % _P, f * g % _P, e * h % _P)
+
+
+def _scalar_mul(k: int, point: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    result = (0, 1, 1, 0)
+    while k:
+        if k & 1:
+            result = _point_add(result, point)
+        point = _point_add(point, point)
+        k >>= 1
+    return result
+
+
+def _is_identity(point: tuple[int, int, int, int]) -> bool:
+    return point[0] % _P == 0 and (point[1] - point[2]) % _P == 0
 
 
 class EvidenceError(Exception):

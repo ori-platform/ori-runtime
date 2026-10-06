@@ -60,6 +60,7 @@ PUBLISHED_TEST_KEYS_B64: Final[tuple[str, ...]] = (
     "ncD5PLGaHZB2WOaVbZgsExrIPb2aqvMTpJLLoaM2Swo=",
     "oJql9HpnWYAv+VX43C0qFKXJnSO+l/hkEn/5ODRVpPA=",
     "skkdlQKuKGMKK6yy4MdFEP/N0yjDNP8+E5PnWy0x59w=",
+    "wGlTlhWM04I+ailc3+2iOiKSKWq8c6XlRBNVvxzYi5Q=",
     "xoImN8fTEOxXYnvgC6JZ0lN0n0qvZERwz/vlOjX3MkI=",
     "yFOtDwzSthmuqSzuxP1Wok1kmdWEznklfkXP2BObYKc=",
     "ylfu0w5KcnTvTGSPVvWPiAsg0solcl2eXBPIPAjAmus=",

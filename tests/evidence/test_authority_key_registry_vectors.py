@@ -122,13 +122,33 @@ def test_the_corpus_exercises_every_contract_rule_the_loader_names():
 def test_every_corpus_public_key_is_decided_for_its_own_clause(tmp_path, case):
     """Each key alone in a registry otherwise valid: refused whole for the key, or accepted."""
     public_key_hex = case["public_key_hex"]
-    assert refused_public_key_clause(bytes.fromhex(public_key_hex)) == case["clause"]
+    clause = refused_public_key_clause(bytes.fromhex(public_key_hex))
     document = {
         "schema": REGISTRY_SCHEMA,
         "keys": [_entry(public_key_hex, PURPOSE_RECEIPT)],
     }
+    if case["expected"] == "accepted" and clause == "mixed_order":
+        # evidence-exchange/v2 admits a key of mixed order. The runtime refuses
+        # it under ed25519-key-admission/v1: hardening ahead of v2's successor.
+        assert _load(tmp_path, document) == RULE_REFUSED_KEY, case["why"]
+        return
+    assert clause == case["clause"]
     expected = "accepted" if case["expected"] == "accepted" else RULE_REFUSED_KEY
     assert _load(tmp_path, document) == expected, case["why"]
+
+
+def test_the_runtime_refuses_exactly_the_mixed_order_keys_v2_admits() -> None:
+    """The hardening is one clause wide: every other v2 verdict is the runtime's."""
+    hardened = [
+        c["public_key_hex"]
+        for c in CORPUS["public_keys"]
+        if c["expected"] == "accepted"
+        and refused_public_key_clause(bytes.fromhex(c["public_key_hex"])) is not None
+    ]
+    assert len(hardened) == 10
+    assert all(
+        refused_public_key_clause(bytes.fromhex(h)) == "mixed_order" for h in hardened
+    )
 
 
 def test_one_refused_key_refuses_the_whole_registry(tmp_path):

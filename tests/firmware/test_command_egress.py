@@ -174,7 +174,7 @@ def test_provisioning_approval_rejects_noncanonical_inputs() -> None:
         capability_hash="sha256:" + "ab" * 32,
         device_id="ori-fw-7c9f2b3a",
         posture="sealed_flash",
-        public_key_b64=base64.b64encode(bytes([0x01]) * 32).decode("ascii"),
+        public_key_b64=TELEMETRY_VECTORS["public_key_b64"],
         runtime_public_key_b64=_runtime_public_b64(),
         provisioner_private_key_bytes=PROVISIONER_SEED,
     )

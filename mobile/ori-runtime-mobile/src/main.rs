@@ -1012,7 +1012,8 @@ fn verify_config_signature(raw_yaml: &YamlValue) -> Result<(), String> {
 }
 
 /// Admit an Ed25519 public key under ed25519-key-admission/v1, or name the
-/// clause that refuses it: non_canonical, off_curve, invalid_sign or small_order.
+/// clause that refuses it: non_canonical, off_curve, invalid_sign, small_order
+/// or mixed_order.
 /// ed25519-dalek's `from_bytes` decodes a non-canonical y and a small-order point,
 /// and its cofactorless `verify` accepts a keyless signature under some of them.
 fn admit_public_key(bytes: &[u8; 32]) -> Result<VerifyingKey, &'static str> {
@@ -1031,6 +1032,10 @@ fn admit_public_key(bytes: &[u8; 32]) -> Result<VerifyingKey, &'static str> {
     }
     if key.is_weak() {
         return Err("small_order");
+    }
+    // A torsion component lets the unshifted key's holder sign under this one.
+    if !key.to_edwards().is_torsion_free() {
+        return Err("mixed_order");
     }
     Ok(key)
 }
@@ -1169,6 +1174,13 @@ mod tests {
         out
     }
 
+    fn hex_bytes(hex: &str) -> Vec<u8> {
+        (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
     fn signed_config(anchor_env: &str, signature: &[u8]) -> YamlValue {
         let text = format!(
             "device:\n  id: phone-01\nsecurity:\n  config_signature:\n    trust_anchor_env: {anchor_env}\n\
@@ -1242,8 +1254,22 @@ mod tests {
             );
             checked += 1;
         }
+        for case in corpus["torsion_shift_signatures"].as_array().unwrap() {
+            let public = le_hex(case["public_key_hex"].as_str().unwrap());
+            let message = hex_bytes(case["message_hex"].as_str().unwrap());
+            let signature: [u8; 64] = hex_bytes(case["signature_hex"].as_str().unwrap())
+                .try_into()
+                .unwrap();
+            // The library alone accepts the shifted key's forgery; admission does not.
+            VerifyingKey::from_bytes(&public)
+                .unwrap()
+                .verify(&message, &Signature::from_bytes(&signature))
+                .expect("the library alone accepts the torsion-shift signature");
+            assert_eq!(admit_public_key(&public).err(), Some("mixed_order"));
+            checked += 1;
+        }
         assert_eq!(
-            checked, 98,
+            checked, 100,
             "the corpus no longer has the cases this test was written for"
         );
     }
