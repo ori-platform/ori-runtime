@@ -63,6 +63,10 @@ SETS=(
   # evidence sets. Its consumer is the loader, not the evidence subsystem, so
   # it needs an independent provenance pin as well.
   "sensor-configuration/vectors:tests/vectors/sensor_configuration"
+  # Ed25519 key admission is cited by every contract that admits a public key,
+  # and both admissions here (Python and the Android runtime's Rust) are held
+  # to its corpus. Pinned on its own: it moves with no other set.
+  "ed25519-key-admission:tests/vectors/ed25519_key_admission:v1"
 )
 
 if [ -n "${ORI_SPECS_DIR:-}" ]; then

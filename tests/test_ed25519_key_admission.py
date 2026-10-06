@@ -799,3 +799,33 @@ def test_every_shipped_release_key_passes_admission(where: str, key_b64: str) ->
     """The installer verifies with openssl, outside admission, so the keys it pins are held here."""
     clause = refused_public_key_clause(base64.b64decode(key_b64, validate=True))
     assert clause is None, f"{where} is refused: {clause}"
+
+
+_CORPUS = json.loads(
+    (REPO / "tests/vectors/ed25519_key_admission/vectors-v1.json").read_text(
+        encoding="utf-8"
+    )
+)
+
+
+@pytest.mark.parametrize(
+    "case",
+    _CORPUS["public_keys"] + _CORPUS["mixed_order"],
+    ids=lambda c: (
+        c["public_key_hex"][:16] + ("-" + c["why"][:24] if c.get("why") else "")
+    ),
+)
+def test_admission_matches_the_contract_corpus(case: dict[str, str]) -> None:
+    """ed25519-key-admission/v1, vendored: each key's verdict and refusing clause."""
+    clause = refused_public_key_clause(bytes.fromhex(case["public_key_hex"]))
+    expected = case["clause"] if case["expected"] == "refused" else None
+    assert clause == expected, case.get("why")
+
+
+@pytest.mark.parametrize(
+    "case", _CORPUS["keyless_signatures"], ids=lambda c: c["public_key_hex"][:16]
+)
+def test_every_keyless_signature_is_refused_for_its_key(case: dict[str, str]) -> None:
+    with pytest.raises(RefusedPublicKeyError) as refused:
+        admit_public_key(bytes.fromhex(case["public_key_hex"]))
+    assert refused.value.clause == CLAUSE_SMALL_ORDER

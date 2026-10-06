@@ -1213,6 +1213,41 @@ mod tests {
         );
     }
 
+    // ed25519-key-admission/v1's corpus, vendored once for both admissions.
+    const ADMISSION_CORPUS: &str =
+        include_str!("../../../tests/vectors/ed25519_key_admission/vectors-v1.json");
+
+    #[test]
+    fn admission_matches_the_contract_corpus() {
+        let corpus: serde_json::Value = serde_json::from_str(ADMISSION_CORPUS).unwrap();
+        let mut checked = 0;
+        for set in ["public_keys", "mixed_order"] {
+            for case in corpus[set].as_array().unwrap() {
+                let hex = case["public_key_hex"].as_str().unwrap();
+                let expected = match case["expected"].as_str().unwrap() {
+                    "refused" => Err(case["clause"].as_str().unwrap()),
+                    _ => Ok(()),
+                };
+                let got = admit_public_key(&le_hex(hex)).map(|_| ());
+                assert_eq!(got, expected, "{hex}");
+                checked += 1;
+            }
+        }
+        for case in corpus["keyless_signatures"].as_array().unwrap() {
+            let hex = case["public_key_hex"].as_str().unwrap();
+            assert_eq!(
+                admit_public_key(&le_hex(hex)).err(),
+                Some("small_order"),
+                "{hex}"
+            );
+            checked += 1;
+        }
+        assert_eq!(
+            checked, 98,
+            "the corpus no longer has the cases this test was written for"
+        );
+    }
+
     #[test]
     fn admission_refuses_each_clause_and_admits_an_honest_key() {
         let honest = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]).verifying_key();

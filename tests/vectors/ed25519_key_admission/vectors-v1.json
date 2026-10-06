@@ -1,0 +1,614 @@
+{
+  "vector_set": "ed25519-key-admission/v1",
+  "contract": "ed25519-key-admission/v1",
+  "purpose": "Cross-language agreement on which 32-byte Ed25519 public keys an Ori verifier admits, and that a signature made with no private key is refused for its key.",
+  "derivation": "public_keys are byte-for-byte the public_keys cases of evidence-exchange/vectors/authority-key-registry-v2.json; keyless_signatures pair each small-order key with one message and the signature R = base point, S = 1. mixed_order cases are the base point plus a point of order 2 and of order 8.",
+  "public_keys": [
+    {
+      "public_key_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "expected": "refused",
+      "clause": "small_order",
+      "why": "a point of small order"
+    },
+    {
+      "public_key_hex": "0000000000000000000000000000000000000000000000000000000000000080",
+      "expected": "refused",
+      "clause": "small_order",
+      "why": "a point of small order, bit 255 set"
+    },
+    {
+      "public_key_hex": "0100000000000000000000000000000000000000000000000000000000000000",
+      "expected": "refused",
+      "clause": "small_order",
+      "why": "a point of small order"
+    },
+    {
+      "public_key_hex": "0100000000000000000000000000000000000000000000000000000000000080",
+      "expected": "refused",
+      "clause": "invalid_sign",
+      "why": "x is 0 for this y, so bit 255 set is an invalid sign encoding"
+    },
+    {
+      "public_key_hex": "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+      "expected": "refused",
+      "clause": "small_order",
+      "why": "a point of small order"
+    },
+    {
+      "public_key_hex": "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+      "expected": "refused",
+      "clause": "small_order",
+      "why": "a point of small order, bit 255 set"
+    },
+    {
+      "public_key_hex": "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+      "expected": "refused",
+      "clause": "small_order",
+      "why": "a point of small order"
+    },
+    {
+      "public_key_hex": "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+      "expected": "refused",
+      "clause": "small_order",
+      "why": "a point of small order, bit 255 set"
+    },
+    {
+      "public_key_hex": "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "small_order",
+      "why": "a point of small order"
+    },
+    {
+      "public_key_hex": "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "invalid_sign",
+      "why": "x is 0 for this y, so bit 255 set is an invalid sign encoding"
+    },
+    {
+      "public_key_hex": "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 0"
+    },
+    {
+      "public_key_hex": "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 0, bit 255 set"
+    },
+    {
+      "public_key_hex": "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 1"
+    },
+    {
+      "public_key_hex": "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 1, bit 255 set"
+    },
+    {
+      "public_key_hex": "efffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 2"
+    },
+    {
+      "public_key_hex": "efffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 2, bit 255 set"
+    },
+    {
+      "public_key_hex": "f0ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 3"
+    },
+    {
+      "public_key_hex": "f0ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 3, bit 255 set"
+    },
+    {
+      "public_key_hex": "f1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 4"
+    },
+    {
+      "public_key_hex": "f1ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 4, bit 255 set"
+    },
+    {
+      "public_key_hex": "f2ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 5"
+    },
+    {
+      "public_key_hex": "f2ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 5, bit 255 set"
+    },
+    {
+      "public_key_hex": "f3ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 6"
+    },
+    {
+      "public_key_hex": "f3ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 6, bit 255 set"
+    },
+    {
+      "public_key_hex": "f4ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 7"
+    },
+    {
+      "public_key_hex": "f4ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 7, bit 255 set"
+    },
+    {
+      "public_key_hex": "f5ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 8"
+    },
+    {
+      "public_key_hex": "f5ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 8, bit 255 set"
+    },
+    {
+      "public_key_hex": "f6ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 9"
+    },
+    {
+      "public_key_hex": "f6ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 9, bit 255 set"
+    },
+    {
+      "public_key_hex": "f7ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 10"
+    },
+    {
+      "public_key_hex": "f7ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 10, bit 255 set"
+    },
+    {
+      "public_key_hex": "f8ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 11"
+    },
+    {
+      "public_key_hex": "f8ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 11, bit 255 set"
+    },
+    {
+      "public_key_hex": "f9ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 12"
+    },
+    {
+      "public_key_hex": "f9ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 12, bit 255 set"
+    },
+    {
+      "public_key_hex": "faffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 13"
+    },
+    {
+      "public_key_hex": "faffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 13, bit 255 set"
+    },
+    {
+      "public_key_hex": "fbffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 14"
+    },
+    {
+      "public_key_hex": "fbffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 14, bit 255 set"
+    },
+    {
+      "public_key_hex": "fcffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 15"
+    },
+    {
+      "public_key_hex": "fcffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 15, bit 255 set"
+    },
+    {
+      "public_key_hex": "fdffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 16"
+    },
+    {
+      "public_key_hex": "fdffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 16, bit 255 set"
+    },
+    {
+      "public_key_hex": "feffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 17"
+    },
+    {
+      "public_key_hex": "feffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 17, bit 255 set"
+    },
+    {
+      "public_key_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 18"
+    },
+    {
+      "public_key_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "non_canonical",
+      "why": "y = p + 18, bit 255 set"
+    },
+    {
+      "public_key_hex": "0200000000000000000000000000000000000000000000000000000000000000",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y"
+    },
+    {
+      "public_key_hex": "0200000000000000000000000000000000000000000000000000000000000080",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y, bit 255 set"
+    },
+    {
+      "public_key_hex": "0700000000000000000000000000000000000000000000000000000000000000",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y"
+    },
+    {
+      "public_key_hex": "0700000000000000000000000000000000000000000000000000000000000080",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y, bit 255 set"
+    },
+    {
+      "public_key_hex": "0800000000000000000000000000000000000000000000000000000000000000",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y"
+    },
+    {
+      "public_key_hex": "0800000000000000000000000000000000000000000000000000000000000080",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y, bit 255 set"
+    },
+    {
+      "public_key_hex": "0b00000000000000000000000000000000000000000000000000000000000000",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y"
+    },
+    {
+      "public_key_hex": "0b00000000000000000000000000000000000000000000000000000000000080",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y, bit 255 set"
+    },
+    {
+      "public_key_hex": "27e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y"
+    },
+    {
+      "public_key_hex": "27e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y, bit 255 set"
+    },
+    {
+      "public_key_hex": "c6176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y"
+    },
+    {
+      "public_key_hex": "c6176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y, bit 255 set"
+    },
+    {
+      "public_key_hex": "ebffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y"
+    },
+    {
+      "public_key_hex": "ebffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y, bit 255 set"
+    },
+    {
+      "public_key_hex": "24e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y"
+    },
+    {
+      "public_key_hex": "24e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y, bit 255 set"
+    },
+    {
+      "public_key_hex": "29e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y"
+    },
+    {
+      "public_key_hex": "29e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y, bit 255 set"
+    },
+    {
+      "public_key_hex": "c4176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y"
+    },
+    {
+      "public_key_hex": "c4176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y, bit 255 set"
+    },
+    {
+      "public_key_hex": "c9176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y"
+    },
+    {
+      "public_key_hex": "c9176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+      "expected": "refused",
+      "clause": "off_curve",
+      "why": "no curve point has this y, bit 255 set"
+    },
+    {
+      "public_key_hex": "0300000000000000000000000000000000000000000000000000000000000000",
+      "expected": "accepted",
+      "clause": null,
+      "why": "a valid point beside a refused encoding"
+    },
+    {
+      "public_key_hex": "0300000000000000000000000000000000000000000000000000000000000080",
+      "expected": "accepted",
+      "clause": null,
+      "why": "a valid point beside a refused encoding, bit 255 set"
+    },
+    {
+      "public_key_hex": "25e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+      "expected": "accepted",
+      "clause": null,
+      "why": "a valid point beside a refused encoding"
+    },
+    {
+      "public_key_hex": "25e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+      "expected": "accepted",
+      "clause": null,
+      "why": "a valid point beside a refused encoding, bit 255 set"
+    },
+    {
+      "public_key_hex": "28e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+      "expected": "accepted",
+      "clause": null,
+      "why": "a valid point beside a refused encoding"
+    },
+    {
+      "public_key_hex": "28e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+      "expected": "accepted",
+      "clause": null,
+      "why": "a valid point beside a refused encoding, bit 255 set"
+    },
+    {
+      "public_key_hex": "c5176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+      "expected": "accepted",
+      "clause": null,
+      "why": "a valid point beside a refused encoding"
+    },
+    {
+      "public_key_hex": "c5176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+      "expected": "accepted",
+      "clause": null,
+      "why": "a valid point beside a refused encoding, bit 255 set"
+    },
+    {
+      "public_key_hex": "c8176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+      "expected": "accepted",
+      "clause": null,
+      "why": "a valid point beside a refused encoding"
+    },
+    {
+      "public_key_hex": "c8176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+      "expected": "accepted",
+      "clause": null,
+      "why": "a valid point beside a refused encoding, bit 255 set"
+    },
+    {
+      "public_key_hex": "eaffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "expected": "accepted",
+      "clause": null,
+      "why": "a valid point beside a refused encoding"
+    },
+    {
+      "public_key_hex": "eaffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "accepted",
+      "clause": null,
+      "why": "a valid point beside a refused encoding, bit 255 set"
+    },
+    {
+      "public_key_hex": "e90b7e078a84eff6d17341885b82919c9f3637225d79b3ce1e341325f90dadbc",
+      "expected": "accepted",
+      "clause": null,
+      "why": "published test key 0, bit 255 set"
+    },
+    {
+      "public_key_hex": "8af0b4cfbd6bb8b34e491a99e3b8d0d5026b0c16afc1873e59bdc3124f110309",
+      "expected": "accepted",
+      "clause": null,
+      "why": "published test key 3"
+    },
+    {
+      "public_key_hex": "8b747853f4578c9777406d539bd799395a6f118e0a5938b337c88926e0bac931",
+      "expected": "accepted",
+      "clause": null,
+      "why": "published test key 4"
+    },
+    {
+      "public_key_hex": "4789d0cde6ee8f5a639c2a405a162f9de7126481f822764aaceb0b62834db149",
+      "expected": "accepted",
+      "clause": null,
+      "why": "published test key 6"
+    },
+    {
+      "public_key_hex": "e4aa04a3d07a8b93bbefef23affc74f944b1e7b3ae39df53ea5674f276c69935",
+      "expected": "accepted",
+      "clause": null,
+      "why": "published test key 7"
+    },
+    {
+      "public_key_hex": "0c347defa91272b3d561b364154e2c1398b84ef6a63ff7d8d15d0ec1ac4b4608",
+      "expected": "accepted",
+      "clause": null,
+      "why": "published test key 9"
+    }
+  ],
+  "mixed_order": [
+    {
+      "public_key_hex": "9599999999999999999999999999999999999999999999999999999999999999",
+      "expected": "accepted",
+      "why": "the base point plus the point of order 2: of mixed order, not refused"
+    },
+    {
+      "public_key_hex": "da99e28ba529cdde35a25fba9059e78ecaee239f99755b9b1aa4f65df00803e2",
+      "expected": "accepted",
+      "why": "the base point plus a point of order 8: of mixed order, not refused"
+    }
+  ],
+  "keyless_signatures": [
+    {
+      "public_key_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "message_hex": "6f72692d737065637320656432353531392d6b65792d61646d697373696f6e2f7631206b65796c657373206d6573736167652030",
+      "signature_hex": "58666666666666666666666666666666666666666666666666666666666666660100000000000000000000000000000000000000000000000000000000000000",
+      "expected": "refused",
+      "clause": "small_order",
+      "why": "R is the base point and S is 1: no private key signed this"
+    },
+    {
+      "public_key_hex": "0000000000000000000000000000000000000000000000000000000000000080",
+      "message_hex": "6f72692d737065637320656432353531392d6b65792d61646d697373696f6e2f7631206b65796c657373206d6573736167652031",
+      "signature_hex": "58666666666666666666666666666666666666666666666666666666666666660100000000000000000000000000000000000000000000000000000000000000",
+      "expected": "refused",
+      "clause": "small_order",
+      "why": "R is the base point and S is 1: no private key signed this"
+    },
+    {
+      "public_key_hex": "0100000000000000000000000000000000000000000000000000000000000000",
+      "message_hex": "6f72692d737065637320656432353531392d6b65792d61646d697373696f6e2f7631206b65796c657373206d6573736167652032",
+      "signature_hex": "58666666666666666666666666666666666666666666666666666666666666660100000000000000000000000000000000000000000000000000000000000000",
+      "expected": "refused",
+      "clause": "small_order",
+      "why": "R is the base point and S is 1: no private key signed this"
+    },
+    {
+      "public_key_hex": "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+      "message_hex": "6f72692d737065637320656432353531392d6b65792d61646d697373696f6e2f7631206b65796c657373206d6573736167652033",
+      "signature_hex": "58666666666666666666666666666666666666666666666666666666666666660100000000000000000000000000000000000000000000000000000000000000",
+      "expected": "refused",
+      "clause": "small_order",
+      "why": "R is the base point and S is 1: no private key signed this"
+    },
+    {
+      "public_key_hex": "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+      "message_hex": "6f72692d737065637320656432353531392d6b65792d61646d697373696f6e2f7631206b65796c657373206d6573736167652034",
+      "signature_hex": "58666666666666666666666666666666666666666666666666666666666666660100000000000000000000000000000000000000000000000000000000000000",
+      "expected": "refused",
+      "clause": "small_order",
+      "why": "R is the base point and S is 1: no private key signed this"
+    },
+    {
+      "public_key_hex": "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+      "message_hex": "6f72692d737065637320656432353531392d6b65792d61646d697373696f6e2f7631206b65796c657373206d6573736167652035",
+      "signature_hex": "58666666666666666666666666666666666666666666666666666666666666660100000000000000000000000000000000000000000000000000000000000000",
+      "expected": "refused",
+      "clause": "small_order",
+      "why": "R is the base point and S is 1: no private key signed this"
+    },
+    {
+      "public_key_hex": "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+      "message_hex": "6f72692d737065637320656432353531392d6b65792d61646d697373696f6e2f7631206b65796c657373206d6573736167652036",
+      "signature_hex": "58666666666666666666666666666666666666666666666666666666666666660100000000000000000000000000000000000000000000000000000000000000",
+      "expected": "refused",
+      "clause": "small_order",
+      "why": "R is the base point and S is 1: no private key signed this"
+    },
+    {
+      "public_key_hex": "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "message_hex": "6f72692d737065637320656432353531392d6b65792d61646d697373696f6e2f7631206b65796c657373206d6573736167652037",
+      "signature_hex": "58666666666666666666666666666666666666666666666666666666666666660100000000000000000000000000000000000000000000000000000000000000",
+      "expected": "refused",
+      "clause": "small_order",
+      "why": "R is the base point and S is 1: no private key signed this"
+    }
+  ]
+}

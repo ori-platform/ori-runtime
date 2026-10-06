@@ -6,9 +6,10 @@
 The library verifies under any 32 bytes that decode to a point. Under a point
 of small order a signature that verifies can be made with no private key, so
 such a key binds a signature to no key holder. The refusal clauses are those
-of `evidence-exchange/v2`, *The authority key registry*: RFC 8032 section
-5.1.3 decoding, with small-order points refused. A mixed-order key is not
-refused.
+of `ed25519-key-admission/v1`, whose corpus is vendored under
+`tests/vectors/ed25519_key_admission`: RFC 8032 section 5.1.3 decoding, with
+small-order points refused. A mixed-order key is not refused. Applied to a
+frozen contract ahead of its successor, this is hardening, not conformance.
 """
 
 from __future__ import annotations
