@@ -16,7 +16,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from ori.security.ed25519_keys import refused_public_key_clause
+from ori.security.ed25519_keys import key_identity, refused_public_key_clause
 from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
 
 COMMISSIONING_ANCHOR_ENV = "ORI_COMMISSIONING_ANCHOR_PUBLIC_KEY_B64"
@@ -89,7 +89,11 @@ def load_commissioning_anchors(
             f"{COMMISSIONING_ANCHOR_PREVIOUS_ENV} is set without "
             f"{COMMISSIONING_ANCHOR_ENV}; a verify-only generation needs a current one"
         )
-    if previous is not None and previous == current:
+    if (
+        previous is not None
+        and current is not None
+        and key_identity(previous) == key_identity(current)
+    ):
         raise AnchorError(
             "the previous commissioning anchor is the current one; rotation "
             "demotes a key, it does not duplicate it"
@@ -135,7 +139,13 @@ def provisioning_anchor(
 def anchor_collision(
     anchors: CommissioningAnchors, provisioning_anchor: bytes | None
 ) -> bool:
-    """Whether any commissioning anchor is the provisioning anchor's key material."""
+    """Whether any commissioning anchor is the provisioning anchor's key material.
+
+    Compared by identity: a key's negation is the same holder's key.
+    """
     if provisioning_anchor is None:
         return False
-    return provisioning_anchor in {anchors.current, anchors.previous}
+    held = {
+        key_identity(a) for a in (anchors.current, anchors.previous) if a is not None
+    }
+    return key_identity(provisioning_anchor) in held

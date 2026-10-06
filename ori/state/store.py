@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import base64
+import binascii
 import contextlib
 import datetime
 import functools
@@ -1295,6 +1297,17 @@ def _firmware_anchor_values(verified_against: Any) -> tuple[str, ...]:
 
 def _firmware_anchor_sql() -> str:
     return "".join(f" AND {column} = ?" for column in FIRMWARE_ANCHOR_COLUMNS)
+
+
+def _firmware_key_identity(public_key_b64: str) -> bytes | None:
+    """A stored device key's identity, or None for one that does not decode."""
+    from ori.security.ed25519_keys import key_identity
+
+    try:
+        raw = base64.b64decode(public_key_b64, validate=True)
+        return key_identity(raw)
+    except (binascii.Error, ValueError):
+        return None
 
 
 def _uptime_mark(key_epoch_id: Any, boot_id: int, seq: int) -> str:
@@ -6414,23 +6427,36 @@ class StateStore:
         # overwritten the active anchor row with a pending one while the
         # registry still said approved — a split-brain, and a violation of
         # append-only history.
-        current_key_epoch = self._conn.execute(
-            "SELECT key_epoch_id FROM firmware_device_registry WHERE device_id = ?",
+        # Keys are compared by identity, not encoding: a key's negation is
+        # signed by the same scalar's holder, so it is the same key here.
+        submitted = _firmware_key_identity(public_key_b64)
+        if submitted is None:
+            raise ValueError("re-provisioning needs a decoded 32-byte public key")
+        current_key = self._conn.execute(
+            "SELECT key_epoch_id, public_key_b64 FROM firmware_device_registry "
+            "WHERE device_id = ?",
             (device_id,),
         ).fetchone()
-        if current_key_epoch is not None and current_key_epoch["key_epoch_id"] == kid:
+        if current_key is not None and (
+            current_key["key_epoch_id"] == kid
+            or _firmware_key_identity(current_key["public_key_b64"]) == submitted
+        ):
             return "refused_same_key"
 
         # Nor may a key this identity has used before come back. An old key
         # may be exactly the one that was rotated away from because it was
         # compromised; allowing its return would make rotation reversible
         # by whoever holds it.
-        reused = self._conn.execute(
-            "SELECT 1 FROM firmware_device_anchors "
-            "WHERE device_id = ? AND key_epoch_id = ?",
-            (device_id, kid),
-        ).fetchone()
-        if reused is not None:
+        used = self._conn.execute(
+            "SELECT key_epoch_id, public_key_b64 FROM firmware_device_anchors "
+            "WHERE device_id = ?",
+            (device_id,),
+        ).fetchall()
+        if any(
+            row["key_epoch_id"] == kid
+            or _firmware_key_identity(row["public_key_b64"]) == submitted
+            for row in used
+        ):
             return "refused_key_reuse"
 
         # Any existing candidate is superseded by this one.

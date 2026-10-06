@@ -102,6 +102,20 @@ def refused_public_key_clause(public_key: bytes) -> str | None:
     return None
 
 
+def key_identity(public_key: bytes) -> bytes:
+    """The bytes a key shares with its negation: y, with the sign of x cleared.
+
+    The holder of a key's scalar a holds -a, which signs under the negated key,
+    and admission refuses neither. A check that recognises a key (a published
+    key, a collision, a key not to be reused) compares this, not the encoding.
+    No other related key, [c]A for a c only its holder knows, can be recognised
+    from public material.
+    """
+    if len(public_key) != 32:
+        raise ValueError("an Ed25519 public key is 32 bytes")
+    return public_key[:31] + bytes([public_key[31] & 0x7F])
+
+
 def admit_public_key(public_key: bytes) -> Ed25519PublicKey:
     """A verifier for *public_key*, or RefusedPublicKeyError (a ValueError)."""
     if not isinstance(public_key, bytes) or len(public_key) != 32:

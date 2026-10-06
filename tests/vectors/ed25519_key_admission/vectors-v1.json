@@ -2,7 +2,7 @@
   "vector_set": "ed25519-key-admission/v1",
   "contract": "ed25519-key-admission/v1",
   "purpose": "Cross-language agreement on which 32-byte Ed25519 public keys an Ori verifier admits, that a signature made with no private key is refused for its key, and that a key shifted by a point of small order is refused although its seed signs under it.",
-  "derivation": "public_keys carry the encodings of the public_keys cases of evidence-exchange/vectors/authority-key-registry-v2.json, in order, with that corpus's verdicts except for keys of mixed order, which v2 admits and this contract refuses; keyless_signatures pair each small-order key with one message and the signature R = base point, S = 1. mixed_order cases are the base point plus a point of order 2 and of order 8, and the key derived from seed_hex under RFC 8032 section 5.1.5 plus torsion_point_hex. torsion_shift_signatures sign one message under that shifted key with the unshifted key's scalar, using the first nonce, SHA-512 of the seed's prefix, the message and a 4-byte little-endian counter, whose challenge is a multiple of 8 both as the full SHA-512 integer and reduced modulo L.",
+  "derivation": "public_keys carry the encodings of the public_keys cases of evidence-exchange/vectors/authority-key-registry-v2.json, in order, with that corpus's verdicts except for keys of mixed order, which v2 admits and this contract refuses; keyless_signatures pair each small-order key with one message and the signature R = base point, S = 1. mixed_order cases are the base point plus a point of order 2 and of order 8, and the key derived from seed_hex under RFC 8032 section 5.1.5 plus torsion_point_hex. negated_keys pair the key derived from that seed with its negation, bit 255 flipped, and sign one message under the negation with the negated scalar, using the nonce SHA-512 of the seed's prefix and the message. torsion_shift_signatures sign one message under that shifted key with the unshifted key's scalar, using the first nonce, SHA-512 of the seed's prefix, the message and a 4-byte little-endian counter, whose challenge is a multiple of 8 both as the full SHA-512 integer and reduced modulo L.",
   "public_keys": [
     {
       "public_key_hex": "0000000000000000000000000000000000000000000000000000000000000000",
@@ -619,6 +619,18 @@
       "expected": "refused",
       "clause": "small_order",
       "why": "R is the base point and S is 1: no private key signed this"
+    }
+  ],
+  "negated_keys": [
+    {
+      "seed_hex": "cdc63df6b225c10299fea10f68359d284d7f24e9708630cffa986841ce7065c7",
+      "public_key_hex": "c0695396158cd3823e6a295cdfeda23a2292296abc73a5e5441355bf1cd88b94",
+      "negated_public_key_hex": "c0695396158cd3823e6a295cdfeda23a2292296abc73a5e5441355bf1cd88b14",
+      "identity_hex": "c0695396158cd3823e6a295cdfeda23a2292296abc73a5e5441355bf1cd88b14",
+      "message_hex": "6120646f63756d656e74207369676e6564207769746820746865206e6567617465642070726976617465207363616c6172",
+      "signature_hex": "865cc92e5eecd5d9e42c5116e93a80e8e1c47d5f049c283ec56ac6040486a30c2d257c0f4e174c516d75493eeaba4ca4af0dae94ebbc952e4ca14098b01ab90d",
+      "expected": "accepted",
+      "why": "the negation flips bit 255; the seed's holder signs under it with the negated scalar, so the two share one identity"
     }
   ],
   "torsion_shift_signatures": [

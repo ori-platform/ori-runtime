@@ -67,8 +67,13 @@ PUBLISHED_TEST_KEYS_B64: Final[tuple[str, ...]] = (
     "zRSzf5VulTGU/3+3Oz2B3MVh1hp1OAlLfD4aZD7l86o=",
 )
 
+# Each key under both signs of x: its seed's holder signs under the negation
+# too, with -a, so a check that knows the key by its bytes must know both.
 PUBLISHED_TEST_KEYS: Final[frozenset[bytes]] = frozenset(
-    base64.b64decode(key) for key in PUBLISHED_TEST_KEYS_B64
+    variant
+    for key in PUBLISHED_TEST_KEYS_B64
+    for raw in (base64.b64decode(key),)
+    for variant in (raw, raw[:31] + bytes([raw[31] ^ 0x80]))
 )
 
 
