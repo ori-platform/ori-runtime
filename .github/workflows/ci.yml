@@ -24,6 +24,9 @@ jobs:
     # so neither waits on the other.
     name: ${{ matrix.role == 'checks' && 'Checks (Python 3.12)' || format('Test (Python {0})', matrix.python-version) }}
     runs-on: ubuntu-latest
+    # About three times the slowest healthy run. Without a bound a hung step
+    # holds the runner for GitHub's six-hour default.
+    timeout-minutes: 25
 
     strategy:
       fail-fast: false
@@ -302,9 +305,12 @@ jobs:
       # skip, so the proof cannot drop out of CI unnoticed.
       - name: Install the MQTT broker the redelivery proof runs against
         if: steps.scope.outputs.run == 'true' && matrix.role == 'tests'
+        # A hung mirror fails here in minutes, not at the job's bound.
+        timeout-minutes: 5
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends mosquitto
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
+            install -y --no-install-recommends mosquitto
           sudo systemctl stop mosquitto || true
 
       - name: Run tests
