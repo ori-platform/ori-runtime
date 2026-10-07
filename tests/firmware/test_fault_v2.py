@@ -14,6 +14,7 @@ import ast
 import asyncio
 import base64
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -266,37 +267,86 @@ async def test_a_failed_command_publish_is_not_retried(tmp_path: Path) -> None:
         await store.close()
 
 
-#: Every production call into command signing or publication, as
-#: (module, enclosing scope, callee). A retry, a scheduler or a second caller
-#: has to appear here first.
-COMMAND_EGRESS_CALLS = {
-    (
-        "ori/gateway/firmware_commands.py",
-        "FirmwareCommandService.publish_command",
-        "sign_command",
-    ),
-    (
-        "ori/gateway/firmware_commands.py",
-        "FirmwareCommandService.publish_command",
-        "publish_command",
-    ),
-    ("ori/runtime.py", "OriRuntime.publish_firmware_command", "publish_command"),
-    (
-        "ori/security/firmware/commands.py",
-        "FirmwareCommandSigner.sign_command",
-        "sign_command_bytes",
-    ),
-}
+#: Every production call into command signing or publication, counted per
+#: (module, enclosing scope, callee). A retry, a scheduler or a second caller,
+#: even a second call inside a known scope, changes a count.
+COMMAND_EGRESS_CALLS = Counter(
+    {
+        (
+            "ori/gateway/firmware_commands.py",
+            "FirmwareCommandService.publish_command",
+            "sign_command",
+        ): 1,
+        (
+            "ori/gateway/firmware_commands.py",
+            "FirmwareCommandService.publish_command",
+            "publish_command",
+        ): 1,
+        ("ori/runtime.py", "OriRuntime.publish_firmware_command", "publish_command"): 1,
+        (
+            "ori/security/firmware/commands.py",
+            "FirmwareCommandSigner.sign_command",
+            "sign_command_bytes",
+        ): 1,
+    }
+)
 _EGRESS_NAMES = {c for _, _, c in COMMAND_EGRESS_CALLS} | {"publish_firmware_command"}
 
+#: Every way the egress modules defer or detach work, counted per scope. These
+#: are the publisher's transport plumbing; a new one is where a delayed retry
+#: would live.
+EGRESS_MODULES = (
+    "ori/gateway/firmware_commands.py",
+    "ori/security/firmware/commands.py",
+)
+EGRESS_SCHEDULING = Counter(
+    {
+        (
+            "ori/gateway/firmware_commands.py",
+            "MqttFirmwareCommandPublisher._connect_locked",
+            "to_thread",
+        ): 2,
+        (
+            "ori/gateway/firmware_commands.py",
+            "MqttFirmwareCommandPublisher._retire",
+            "run_in_executor",
+        ): 1,
+        (
+            "ori/gateway/firmware_commands.py",
+            "MqttFirmwareCommandPublisher._retire",
+            "add_done_callback",
+        ): 1,
+        (
+            "ori/gateway/firmware_commands.py",
+            "MqttFirmwareCommandPublisher._publish",
+            "to_thread",
+        ): 2,
+        ("ori/gateway/firmware_commands.py", "_stop_client", "to_thread"): 2,
+    }
+)
+_SCHEDULING_NAMES = {
+    "call_later",
+    "call_at",
+    "call_soon",
+    "call_soon_threadsafe",
+    "create_task",
+    "ensure_future",
+    "run_in_executor",
+    "run_coroutine_threadsafe",
+    "to_thread",
+    "Thread",
+    "Timer",
+    "TaskGroup",
+    "gather",
+    "add_done_callback",
+}
 
-def test_command_egress_has_exactly_its_known_callers() -> None:
-    root = Path(__file__).resolve().parents[2]
-    found: set[tuple[str, str, str]] = set()
+
+def _calls(paths: list[Path], root: Path, names: set[str]) -> tuple[Counter, set]:
+    found: Counter = Counter()
     named: set[tuple[str, str]] = set()
-    for path in sorted((root / "ori").rglob("*.py")):
+    for path in paths:
         rel = path.relative_to(root).as_posix()
-        tree = ast.parse(path.read_text())
         scopes: list[str] = []
 
         def visit(node: ast.AST) -> None:
@@ -314,12 +364,12 @@ def test_command_egress_has_exactly_its_known_callers() -> None:
                     if isinstance(func, ast.Name)
                     else None
                 )
-                if callee in _EGRESS_NAMES:
-                    found.add((rel, ".".join(scopes), callee))
+                if callee in names:
+                    found[(rel, ".".join(scopes), callee)] += 1
             if (
                 isinstance(node, ast.Constant)
                 and isinstance(node.value, str)
-                and node.value in _EGRESS_NAMES
+                and node.value in names
             ):
                 named.add((rel, node.value))
             for child in ast.iter_child_nodes(node):
@@ -327,15 +377,38 @@ def test_command_egress_has_exactly_its_known_callers() -> None:
             if scoped:
                 scopes.pop()
 
-        visit(tree)
+        visit(ast.parse(path.read_text()))
+    return found, named
+
+
+_ROOT = Path(__file__).resolve().parents[2]
+_LIMIT = (
+    "This guard sees direct calls and string names only, not a callee reached "
+    "through an alias, a stored bound method or functools.partial."
+)
+
+
+def test_command_egress_has_exactly_its_known_callers() -> None:
+    found, named = _calls(sorted((_ROOT / "ori").rglob("*.py")), _ROOT, _EGRESS_NAMES)
     assert found == COMMAND_EGRESS_CALLS, (
-        "command egress gained or lost a caller; firmware-commands/v2 forbids any "
-        "automatic reissue, so a new caller must be shown not to retry. This "
-        "guard sees direct calls and string names only, not a callee reached "
-        f"through an alias or a stored bound method: {sorted(found ^ COMMAND_EGRESS_CALLS)}"
+        "command egress gained or lost a call site; firmware-commands/v2 forbids "
+        "any automatic reissue, so a new one must be shown not to retry. "
+        f"{_LIMIT} Difference: {sorted((found - COMMAND_EGRESS_CALLS).items())} "
+        f"added, {sorted((COMMAND_EGRESS_CALLS - found).items())} removed"
     )
     assert named == set(), (
         f"command egress named as a string, e.g. for getattr: {sorted(named)}"
+    )
+
+
+def test_the_egress_modules_defer_nothing_new() -> None:
+    found, _ = _calls([_ROOT / m for m in EGRESS_MODULES], _ROOT, _SCHEDULING_NAMES)
+    assert found == EGRESS_SCHEDULING, (
+        "the command egress modules gained or lost a timer, task, thread or "
+        "callback; a delayed reissue would need one, so a new one must be shown "
+        f"not to publish. {_LIMIT} Difference: "
+        f"{sorted((found - EGRESS_SCHEDULING).items())} added, "
+        f"{sorted((EGRESS_SCHEDULING - found).items())} removed"
     )
 
 
