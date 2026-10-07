@@ -401,6 +401,140 @@ def test_command_egress_has_exactly_its_known_callers() -> None:
     )
 
 
+#: Every callee name the two egress modules call. A thread pool, a raw client
+#: publish or any other new way to put bytes on the wire is a new name.
+EGRESS_CALLEES = frozenset(
+    {
+        "Client",
+        "FirmwareCommandError",
+        "FirmwareCommandPublishError",
+        "FirmwareCommandSigner",
+        "FirmwareLivenessSigner",
+        "Lock",
+        "RuntimeError",
+        "ValueError",
+        "_build_approval_object_bytes",
+        "_client_factory",
+        "_connect_locked",
+        "_manifest_authorizes",
+        "_publish",
+        "_refuse_published_seed",
+        "_require_approved_device",
+        "_require_canonical_b64_32",
+        "_require_fleet_id",
+        "_retire",
+        "_shut_socket",
+        "_stop_client",
+        "_topic",
+        "_validate_command_fields",
+        "add_done_callback",
+        "allocate_firmware_command_seq",
+        "any",
+        "apply_tls_context",
+        "b64decode",
+        "b64encode",
+        "build_command_bytes",
+        "build_provisioning_approval_bytes",
+        "callable",
+        "cancelled",
+        "cast",
+        "compile",
+        "debug",
+        "decode",
+        "disconnect",
+        "encode",
+        "exception",
+        "firmware_command_authority_holds",
+        "float",
+        "from_private_bytes",
+        "frozenset",
+        "get",
+        "getLogger",
+        "get_firmware_confirmation_status",
+        "get_firmware_device",
+        "get_running_loop",
+        "getattr",
+        "hasattr",
+        "int",
+        "is_connected",
+        "is_published",
+        "is_published_seed",
+        "isfinite",
+        "isinstance",
+        "len",
+        "loop_stop",
+        "match",
+        "monotonic",
+        "parse_gateway_broker_url",
+        "public_bytes",
+        "public_key",
+        "public_key_bytes",
+        "publish_command",
+        "publish_provisioning_approval",
+        "publish_runtime_liveness",
+        "refused_public_key_clause",
+        "run_in_executor",
+        "setdefault",
+        "shutdown",
+        "sign",
+        "sign_command",
+        "sign_command_bytes",
+        "sign_liveness",
+        "sleep",
+        "sock_of",
+        "str",
+        "strip",
+        "supervised_devices",
+        "to_thread",
+        "username_pw_set",
+    }
+)
+
+
+def test_the_egress_modules_call_nothing_new() -> None:
+    names: set[str] = set()
+    client_reads: set[tuple[str, str]] = set()
+    for module in EGRESS_MODULES:
+        scopes: list[str] = []
+
+        def visit(node: ast.AST) -> None:
+            scoped = isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            )
+            if scoped:
+                scopes.append(node.name)  # type: ignore[attr-defined]
+            if isinstance(node, ast.Call):
+                func = node.func
+                names.add(
+                    func.attr
+                    if isinstance(func, ast.Attribute)
+                    else func.id
+                    if isinstance(func, ast.Name)
+                    else "<computed>"
+                )
+            if (
+                isinstance(node, ast.Attribute)
+                and node.attr == "_client"
+                and (not scopes or scopes[0] != "MqttFirmwareCommandPublisher")
+            ):
+                client_reads.add((module, ".".join(scopes)))
+            for child in ast.iter_child_nodes(node):
+                visit(child)
+            if scoped:
+                scopes.pop()
+
+        visit(ast.parse((_ROOT / module).read_text()))
+    assert names <= EGRESS_CALLEES, (
+        "the command egress modules call something new; firmware-commands/v2 "
+        "forbids any automatic reissue, so a new callee must be shown not to "
+        f"publish. {_LIMIT} New: {sorted(names - EGRESS_CALLEES)}"
+    )
+    assert client_reads == set(), (
+        "only MqttFirmwareCommandPublisher may touch its MQTT client; a "
+        f"publication from elsewhere bypasses its retirement rules: {sorted(client_reads)}"
+    )
+
+
 def test_the_egress_modules_defer_nothing_new() -> None:
     found, _ = _calls([_ROOT / m for m in EGRESS_MODULES], _ROOT, _SCHEDULING_NAMES)
     assert found == EGRESS_SCHEDULING, (
