@@ -435,8 +435,6 @@ async def test_a_read_only_open_leaves_a_pre_epoch_table_as_it_was(
 def test_a_failed_epoch_rebuild_leaves_the_old_table_whole(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import ori.state.store as store_module
-
     path = tmp_path / "state.db"
     before = _unkeyed_store(path)
     schema_sql = "SELECT name, sql FROM sqlite_master ORDER BY name"
@@ -444,7 +442,7 @@ def test_a_failed_epoch_rebuild_leaves_the_old_table_whole(
     try:
         schema = conn.execute(schema_sql).fetchall()
         monkeypatch.setattr(
-            store_module, "_FIRMWARE_FAULT_EVENTS_DDL", "CREATE TABLE broken ("
+            "ori.state.store._FIRMWARE_FAULT_EVENTS_DDL", "CREATE TABLE broken ("
         )
         with pytest.raises(sqlite3.OperationalError):
             StateStore._key_firmware_fault_events_by_epoch(conn)
