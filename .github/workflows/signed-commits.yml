@@ -8,6 +8,7 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened]
+  merge_group:
 
 permissions:
   contents: read
@@ -32,9 +33,24 @@ jobs:
         run: python3 scripts/test_check_signed_commits.py
 
       - name: Check every commit's signature
+        if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 scripts/check_signed_commits.py --repo "$REPO" --pr "$PR_NUMBER" --head-sha "$HEAD_SHA"
+
+      - name: Check every commit of the queued pull request
+        # The queue's own commit is GitHub's; the commits it squashes are the
+        # pull request's, named by the queue branch.
+        if: github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+        run: |
+          python3 scripts/test_merge_group_pr.py
+          PR="$(python3 scripts/merge_group_pr.py)"
+          HEAD_SHA="$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)"
+          python3 scripts/check_signed_commits.py --repo "$REPO" --pr "$PR" --head-sha "$HEAD_SHA"

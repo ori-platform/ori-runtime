@@ -31,6 +31,7 @@ runs:
         EVENT_NAME: ${{ github.event_name }}
         PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         PUSH_BEFORE_SHA: ${{ github.event.before }}
+        MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
         PATTERN: ${{ inputs.pattern }}
         REASON: ${{ inputs.reason }}
       run: |
@@ -41,6 +42,7 @@ runs:
         case "$EVENT_NAME" in
           pull_request) base="$PR_BASE_SHA" ;;
           push) base="$PUSH_BEFORE_SHA" ;;
+          merge_group) base="$MERGE_GROUP_BASE_SHA" ;;
           *) base="" ;;
         esac
         if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then

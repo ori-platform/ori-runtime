@@ -5,16 +5,20 @@
 # commit-level gate on the way. The commit-msg hook cannot see it.
 #
 # Kept out of ci.yml so that `edited` does not re-run the test matrix every
-# time someone adjusts a title or a description.
+# time someone adjusts a title or a description. In the merge queue there is no
+# pull request in the event, so the title is read from the pull request the
+# queue branch names, and checked the same way.
 name: PR title
 
 on:
   pull_request:
     branches: [main]
     types: [opened, edited, reopened, synchronize]
+  merge_group:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   conventional:
@@ -33,6 +37,19 @@ jobs:
         # The title is read from the environment rather than interpolated into
         # the script: it is attacker-influenced text, and `${{ }}` would splice
         # it into the shell before bash ever sees a quote.
+        if: github.event_name == 'pull_request'
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: python3 scripts/check_conventional_subject.py --env PR_TITLE
+
+      - name: Check the queued pull request's title
+        if: github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+        run: |
+          python3 scripts/test_merge_group_pr.py
+          PR="$(python3 scripts/merge_group_pr.py)"
+          PR_TITLE="$(gh api "repos/$REPO/pulls/$PR" --jq .title)" \
+            python3 scripts/check_conventional_subject.py --env PR_TITLE

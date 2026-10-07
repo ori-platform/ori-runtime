@@ -285,6 +285,22 @@ def test_the_decision_skips_a_job_whose_paths_did_not_change(tmp_path: Path) -> 
         repo, tmp_path, EVENT_NAME="push", PUSH_BEFORE_SHA=base, PATTERN="^ori/"
     )
     assert run == "false", log
+    run, log = _decide(
+        repo,
+        tmp_path,
+        EVENT_NAME="merge_group",
+        MERGE_GROUP_BASE_SHA=base,
+        PATTERN="^ori/",
+    )
+    assert run == "false", log
+    run, log = _decide(
+        repo,
+        tmp_path,
+        EVENT_NAME="merge_group",
+        MERGE_GROUP_BASE_SHA=base,
+        PATTERN="^docs/",
+    )
+    assert run == "true", log
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the decision runs under bash")
@@ -294,8 +310,9 @@ def test_the_decision_skips_a_job_whose_paths_did_not_change(tmp_path: Path) -> 
         {"EVENT_NAME": "workflow_dispatch"},
         {"EVENT_NAME": "push", "PUSH_BEFORE_SHA": "0" * 40},
         {"EVENT_NAME": "pull_request", "PR_BASE_SHA": "f" * 40},
+        {"EVENT_NAME": "merge_group"},
     ],
-    ids=["no-base-event", "first-push", "unreachable-base"],
+    ids=["no-base-event", "first-push", "unreachable-base", "queue-without-base"],
 )
 def test_the_decision_fails_open_without_a_usable_base(
     tmp_path: Path, env: dict[str, str]
