@@ -1321,9 +1321,14 @@ def test_ci_installs_the_broker_and_requires_the_proof() -> None:
     # Continuations joined, so apt options or a wrapped line do not hide it.
     commands = workflow.replace("\\\n", " ")
     assert re.search(
-        r"apt-get\b[^\n]*\binstall\b[^\n]*--no-install-recommends\s+mosquitto\b",
-        commands,
-    ), "CI no longer installs the broker the redelivery proof runs against"
+        r"apt-get\b[^\n]*\binstall\b[^\n]*--download-only\s+mosquitto\b", commands
+    ), "CI no longer fetches the broker the redelivery proof runs against"
+    assert re.search(r"dpkg -i [^\n]*broker-debs/\*\.deb", commands), (
+        "CI no longer installs the fetched broker packages"
+    )
+    assert "command -v mosquitto" in commands, (
+        "CI no longer fails the install step when no broker binary results"
+    )
     assert 'ORI_REQUIRE_MQTT_BROKER: "1"' in workflow
 
 

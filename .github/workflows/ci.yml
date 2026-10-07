@@ -303,15 +303,41 @@ jobs:
       # The inbound evidence route's redelivery proof runs against a real
       # broker. With the flag below the test fails where it would otherwise
       # skip, so the proof cannot drop out of CI unnoticed.
-      - name: Install the MQTT broker the redelivery proof runs against
+      # The broker's packages are cached per runner image, so a cache hit
+      # installs without touching an apt mirror; only a new image downloads.
+      - name: Key the MQTT broker packages to this runner image
+        id: broker-key
         if: steps.scope.outputs.run == 'true' && matrix.role == 'tests'
-        # A hung mirror fails here in minutes, not at the job's bound.
-        timeout-minutes: 5
+        run: echo "key=mosquitto-${ImageOS}-${ImageVersion}-$(uname -m)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore the MQTT broker packages
+        id: broker-cache
+        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/broker-debs
+          key: ${{ steps.broker-key.outputs.key }}
+
+      - name: Download the MQTT broker packages
+        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests' && steps.broker-cache.outputs.cache-hit != 'true'
+        # A slow or hung mirror fails here, not at the job's bound.
+        timeout-minutes: 10
         run: |
+          mkdir -p ~/broker-debs/partial
           sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
           sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
-            install -y --no-install-recommends mosquitto
+            -o Dir::Cache::archives="$HOME/broker-debs" \
+            install -y --no-install-recommends --download-only mosquitto
+          sudo rm -rf ~/broker-debs/partial ~/broker-debs/lock
+          sudo chown -R "$(id -u):$(id -g)" ~/broker-debs
+
+      - name: Install the MQTT broker the redelivery proof runs against
+        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests'
+        timeout-minutes: 2
+        run: |
+          sudo dpkg -i ~/broker-debs/*.deb
           sudo systemctl stop mosquitto || true
+          command -v mosquitto
 
       - name: Run tests
         if: steps.scope.outputs.run == 'true' && matrix.role == 'tests'
