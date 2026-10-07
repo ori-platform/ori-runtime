@@ -20,9 +20,11 @@ Contract rules enforced here (fail closed, before signing):
   increasing per device — allocate through the state store, never
   locally, and never reuse a value.
 
-``firmware-commands/v2`` keeps these bytes and adds that a command is never
-reissued automatically: not after a ``rate_limited`` refusal, and not when
-nothing came back. Nothing here or in the egress service retries.
+The ``firmware-commands/v2`` draft keeps these bytes and adds that a command
+is never reissued to recover its delivery: not after a ``rate_limited``
+refusal, and not when nothing came back. Nothing here or in the egress
+service retries. A fresh Tier D attempt under ``safety-profile/v1`` is a new
+command, and no firmware-commanded zone exists in this runtime to make one.
 
 The shared command and provisioning-approval golden vectors
 (``tests/fixtures/firmware_command_vectors.json`` and

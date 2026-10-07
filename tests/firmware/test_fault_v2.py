@@ -10,7 +10,9 @@ store, so acceptance and refusal are observed where they are recorded.
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import base64
 import json
 from pathlib import Path
 from typing import Any
@@ -77,6 +79,10 @@ async def gate(store: StateStore) -> FirmwareTelemetryGate:
     gate = FirmwareTelemetryGate(store)
     await provision_and_approve(gate, "manifest_full_sealed")
     return gate
+
+
+def _other_tasks() -> set[asyncio.Task[Any]]:
+    return asyncio.all_tasks() - {asyncio.current_task()}  # type: ignore[operator]
 
 
 async def _rows(store: StateStore, table: str) -> list[tuple[Any, ...]]:
@@ -172,8 +178,6 @@ def test_a_fault_version_other_than_the_integer_one_or_two_is_refused(
 
     fault = dict(CASES["v2_command_rejected_replayed"]["input"], v=version)
     key = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(CORPUS["test_seed_hex"]))
-    import base64
-
     signature = "ed25519:" + base64.b64encode(
         key.sign(canonical_json_bytes(fault))
     ).decode("ascii")
@@ -207,6 +211,7 @@ async def test_a_rate_limited_refusal_is_recorded_and_nothing_is_reissued(
             provisioner_key_bytes=PROVISIONER_SEED,
             liveness_supervisor=FirmwareLivenessSupervisor(),
         )
+        before = _other_tasks()
         await service.publish_command(
             device_id=device_id, action="relay_open", channel="relay0"
         )
@@ -217,6 +222,8 @@ async def test_a_rate_limited_refusal_is_recorded_and_nothing_is_reissued(
         await asyncio.sleep(0.05)
 
         assert verification.accepted and verification.detail == "rate_limited"
+        # Nothing left running could publish later: a delayed retry is a task.
+        assert _other_tasks() <= before
         assert len(publisher.commands) == 1
         assert _last_cmd_seq(store, device_id) == 1
         assert await _rows(store, "action_log") == []
@@ -245,13 +252,117 @@ async def test_a_failed_command_publish_is_not_retried(tmp_path: Path) -> None:
             provisioner_key_bytes=PROVISIONER_SEED,
             liveness_supervisor=FirmwareLivenessSupervisor(),
         )
+        before = _other_tasks()
         with pytest.raises(ConnectionError):
             await service.publish_command(
                 device_id=device_id, action="relay_open", channel="relay0"
             )
         await asyncio.sleep(0.05)
 
+        assert _other_tasks() <= before
         assert len(publisher.commands) == 1
         assert _last_cmd_seq(store, device_id) == 1
     finally:
         await store.close()
+
+
+#: Every production call into command signing or publication, as
+#: (module, enclosing scope, callee). A retry, a scheduler or a second caller
+#: has to appear here first.
+COMMAND_EGRESS_CALLS = {
+    (
+        "ori/gateway/firmware_commands.py",
+        "FirmwareCommandService.publish_command",
+        "sign_command",
+    ),
+    (
+        "ori/gateway/firmware_commands.py",
+        "FirmwareCommandService.publish_command",
+        "publish_command",
+    ),
+    ("ori/runtime.py", "OriRuntime.publish_firmware_command", "publish_command"),
+    (
+        "ori/security/firmware/commands.py",
+        "FirmwareCommandSigner.sign_command",
+        "sign_command_bytes",
+    ),
+}
+_EGRESS_NAMES = {c for _, _, c in COMMAND_EGRESS_CALLS} | {"publish_firmware_command"}
+
+
+def test_command_egress_has_exactly_its_known_callers() -> None:
+    root = Path(__file__).resolve().parents[2]
+    found: set[tuple[str, str, str]] = set()
+    named: set[tuple[str, str]] = set()
+    for path in sorted((root / "ori").rglob("*.py")):
+        rel = path.relative_to(root).as_posix()
+        tree = ast.parse(path.read_text())
+        scopes: list[str] = []
+
+        def visit(node: ast.AST) -> None:
+            scoped = isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            )
+            if scoped:
+                scopes.append(node.name)  # type: ignore[attr-defined]
+            if isinstance(node, ast.Call):
+                func = node.func
+                callee = (
+                    func.attr
+                    if isinstance(func, ast.Attribute)
+                    else func.id
+                    if isinstance(func, ast.Name)
+                    else None
+                )
+                if callee in _EGRESS_NAMES:
+                    found.add((rel, ".".join(scopes), callee))
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and node.value in _EGRESS_NAMES
+            ):
+                named.add((rel, node.value))
+            for child in ast.iter_child_nodes(node):
+                visit(child)
+            if scoped:
+                scopes.pop()
+
+        visit(tree)
+    assert found == COMMAND_EGRESS_CALLS, (
+        "command egress gained or lost a caller; firmware-commands/v2 forbids any "
+        "automatic reissue, so a new caller must be shown not to retry. This "
+        "guard sees direct calls and string names only, not a callee reached "
+        f"through an alias or a stored bound method: {sorted(found ^ COMMAND_EGRESS_CALLS)}"
+    )
+    assert named == set(), (
+        f"command egress named as a string, e.g. for getattr: {sorted(named)}"
+    )
+
+
+def test_v1_keeps_its_ingress_set_without_liveness_authority_failed() -> None:
+    """The v 2 set lists the token; v1's classification awaits its audit."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from ori.security.firmware.telemetry import canonical_json_bytes
+
+    key = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(CORPUS["test_seed_hex"]))
+    base = CASES["v2_ingress_degraded_liveness_authority_failed"]["input"]
+    verdicts = {}
+    for version in (1, 2):
+        fault = dict(base, v=version)
+        signature = "ed25519:" + base64.b64encode(
+            key.sign(canonical_json_bytes(fault))
+        ).decode("ascii")
+        verdicts[version] = verify_fault_message(
+            {"fault": fault, "signature": signature},
+            anchor_device_id=SEALED_DEVICE,
+            anchor_public_key_b64=PUBLIC_KEY_B64,
+            anchor_posture="sealed_flash",
+            accepted_manifest_hash=SEALED_HASH,
+            last_boot_id=0,
+            last_seq=0,
+            last_uptime_ms=None,
+        )
+    assert verdicts[2].accepted
+    assert not verdicts[1].accepted
+    assert "ingress_degraded detail" in verdicts[1].error_detail

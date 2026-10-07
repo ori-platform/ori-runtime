@@ -3,8 +3,10 @@
 
 """Verification of device-signed firmware telemetry (evidence Layer 1).
 
-Implements the consumer side of ``ori-specs/firmware-telemetry/v1.md``, and
-of v2, which changes only the fault object. It covers
+Implements the consumer side of ``ori-specs/firmware-telemetry/v1.md``. A
+fault object at ``v`` 2 is read with the closed detail sets the amendable
+``firmware-telemetry/v2`` draft lists; that is not a conformance claim to the
+draft. It covers
 provisioning anchors, capability-manifest pinning, Ed25519 envelope
 verification, ``(boot_id, seq)`` freshness, and receiver-derived trust
 grades. The canonical JSON rules here are the byte-level signing
