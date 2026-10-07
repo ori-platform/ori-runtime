@@ -554,6 +554,11 @@ VECTOR_CONSUMERS = {
         "test_ed25519_key_admission.py::test_admission_matches_the_contract_corpus",
         "test_ed25519_key_admission.py::test_every_keyless_signature_is_refused_for_its_key",
     ),
+    ("firmware_telemetry", "fault-vectors-v2"): (
+        "firmware/test_fault_v2.py::test_every_case_is_accepted_and_recorded",
+        "firmware/test_fault_v2.py"
+        "::test_every_refusal_is_refused_for_its_reason_and_consumes_nothing",
+    ),
 }
 
 #: Vendored vectors this runtime cannot exercise yet.

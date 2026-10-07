@@ -67,6 +67,10 @@ SETS=(
   # and both admissions here (Python and the Android runtime's Rust) are held
   # to its corpus. Pinned on its own: it moves with no other set.
   "ed25519-key-admission:tests/vectors/ed25519_key_admission:v1"
+  # firmware-telemetry/v2 fault events. The v1 fault vectors are the firmware
+  # repository's and live in tests/fixtures; this set is the contract's own
+  # corpus, so it is drift-checked against ori-specs like the others.
+  "firmware-telemetry:tests/vectors/firmware_telemetry:v2"
 )
 
 if [ -n "${ORI_SPECS_DIR:-}" ]; then

@@ -6599,8 +6599,8 @@ class StateStore:
         """Allocate the next strictly increasing command sequence for a
         provisioned device (firmware-commands contract: one strictly
         increasing cmd_seq per device, continuing across command-key
-        rotation and never reused — including for retries of lost
-        commands).
+        rotation and never reused; under firmware-commands/v2 a command
+        is never reissued automatically).
 
         The allocation is the command's authority commit: it lands only
         while the identity is unrevoked, approved and confirmed at the

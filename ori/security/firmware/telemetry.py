@@ -3,7 +3,8 @@
 
 """Verification of device-signed firmware telemetry (evidence Layer 1).
 
-Implements the consumer side of ``ori-specs/firmware-telemetry/v1.md``:
+Implements the consumer side of ``ori-specs/firmware-telemetry/v1.md``, and
+of v2, which changes only the fault object. It covers
 provisioning anchors, capability-manifest pinning, Ed25519 envelope
 verification, ``(boot_id, seq)`` freshness, and receiver-derived trust
 grades. The canonical JSON rules here are the byte-level signing
@@ -239,6 +240,29 @@ CLOSED_FAULT_DETAILS: dict[str, frozenset[str]] = {
         }
     ),
     "storage_degraded": frozenset({"buffer_write_failed", "buffer_mount_failed"}),
+}
+
+# firmware-commands/v2 adds one verdict: the command was verified, fresh and
+# authorised, and the device's release-owned actuation rate policy refused it.
+# It is a refusal and never an execution.
+COMMAND_REJECTION_VERDICTS_V2 = COMMAND_REJECTION_VERDICTS | {"rate_limited"}
+
+# firmware-telemetry/v2 lists its closed sets in full for a fault object at
+# v 2. ingress_degraded carries liveness_authority_failed there; v1's set is
+# left as this runtime has always enforced it.
+CLOSED_FAULT_DETAILS_V2: dict[str, frozenset[str]] = {
+    "command_rejected": COMMAND_REJECTION_VERDICTS_V2,
+    "ingress_degraded": CLOSED_FAULT_DETAILS["ingress_degraded"]
+    | {"liveness_authority_failed"},
+    "storage_degraded": CLOSED_FAULT_DETAILS["storage_degraded"],
+}
+
+# The fault object's own v decides which closed sets apply. It is inside the
+# signed bytes, so only the device chooses it, and no per-device version state
+# is kept: a v 1 fault is judged under v1 whatever the device signed before.
+CLOSED_FAULT_DETAILS_BY_VERSION: dict[int, dict[str, frozenset[str]]] = {
+    1: CLOSED_FAULT_DETAILS,
+    2: CLOSED_FAULT_DETAILS_V2,
 }
 
 # firmware-telemetry/v1: ``subject`` and ``detail`` are fleet-safe tokens
@@ -645,6 +669,7 @@ class FirmwareFaultVerification:
     code: str = ""
     subject: str = ""
     detail: str = ""
+    version: int = 0
     error_code: str = ""
     error_detail: str = ""
 
@@ -918,7 +943,11 @@ def verify_fault_message(
             raise FirmwareVerificationError(
                 ERR_INVALID_ENVELOPE, "fault object has unexpected fields"
             )
-        if not _is_version_one(fault.get("v")):
+        fault_version = fault.get("v")
+        if (
+            type(fault_version) is not int
+            or fault_version not in CLOSED_FAULT_DETAILS_BY_VERSION
+        ):
             raise FirmwareVerificationError(
                 ERR_INVALID_ENVELOPE, "unsupported fault version"
             )
@@ -971,7 +1000,7 @@ def verify_fault_message(
                     ERR_INVALID_ENVELOPE,
                     f"fault {_name} leaves the fleet-safe token alphabet",
                 )
-        closed_details = CLOSED_FAULT_DETAILS.get(code)
+        closed_details = CLOSED_FAULT_DETAILS_BY_VERSION[fault_version].get(code)
         if closed_details is not None and detail not in closed_details:
             # Empty is rejected here too: a closed-vocabulary code carries the
             # condition, and a blank one names nothing a consumer can act on.
@@ -1013,6 +1042,7 @@ def verify_fault_message(
             code=code,
             subject=subject,
             detail=detail,
+            version=fault_version,
         )
     except FirmwareVerificationError as exc:
         return rejected(exc.code, exc.detail)

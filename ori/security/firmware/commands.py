@@ -18,7 +18,11 @@ Contract rules enforced here (fail closed, before signing):
   manifest is dead by construction on the device);
 * ``cmd_seq`` is a canonical integer in ``1 .. 2**53 - 1``, strictly
   increasing per device — allocate through the state store, never
-  locally, and never reuse a value even for retries.
+  locally, and never reuse a value.
+
+``firmware-commands/v2`` keeps these bytes and adds that a command is never
+reissued automatically: not after a ``rate_limited`` refusal, and not when
+nothing came back. Nothing here or in the egress service retries.
 
 The shared command and provisioning-approval golden vectors
 (``tests/fixtures/firmware_command_vectors.json`` and
