@@ -29,7 +29,19 @@ bad() { FAIL=$((FAIL + 1)); printf '  \033[31mFAIL\033[0m  %s\n' "$1"; [ -n "${2
 
 # A minimal ori-specs with every vendored set, plus a consumer that vendors it.
 # The script iterates a fixed SETS list, so the fixture provides every path it
-# looks for; only commissioned-safety-binding carries content that matters here.
+# looks for, read from that list rather than repeated here: a set added to the
+# script is in the fixture without an edit. Only commissioned-safety-binding
+# carries content that matters here.
+SPEC_SETS=()
+while IFS= read -r set_path; do SPEC_SETS+=("${set_path}"); done < <(
+  awk '/^SETS=\(/{in_sets=1; next} in_sets && /^\)/{exit}
+       in_sets && /^  "/{split($0, f, "\""); split(f[2], p, ":"); print p[1]}' "${SCRIPT}"
+)
+if [ "${#SPEC_SETS[@]}" -eq 0 ]; then
+  echo "no SETS entries read from ${SCRIPT}" >&2
+  exit 1
+fi
+
 new_fixture() {
   local box="${WORK}/$1"
   local specs="${box}/specs" consumer="${box}/consumer"
@@ -38,9 +50,7 @@ new_fixture() {
   git -C "${specs}" init -q -b main
   git -C "${specs}" config user.email t@example.com
   git -C "${specs}" config user.name t
-  for d in evidence/vectors evidence-exchange/vectors evidence-exchange/vectors/receiver-state \
-           runtime-evidence-anchor/vectors gateway-api/vectors commissioned-safety-binding \
-           safety-profile/vectors sensor-configuration/vectors ed25519-key-admission; do
+  for d in "${SPEC_SETS[@]}"; do
     mkdir -p "${specs}/${d}"
     printf '{"set":"%s","v":1}\n' "${d}" > "${specs}/${d}/vectors.json"
   done
