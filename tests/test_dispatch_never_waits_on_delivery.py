@@ -24,6 +24,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import sqlite3
@@ -1317,7 +1318,12 @@ def test_ci_installs_the_broker_and_requires_the_proof() -> None:
     workflow = (
         Path(__file__).resolve().parent.parent / ".github" / "workflows" / "ci.yml"
     ).read_text()
-    assert "apt-get install -y --no-install-recommends mosquitto" in workflow
+    # Continuations joined, so apt options or a wrapped line do not hide it.
+    commands = workflow.replace("\\\n", " ")
+    assert re.search(
+        r"apt-get\b[^\n]*\binstall\b[^\n]*--no-install-recommends\s+mosquitto\b",
+        commands,
+    ), "CI no longer installs the broker the redelivery proof runs against"
     assert 'ORI_REQUIRE_MQTT_BROKER: "1"' in workflow
 
 
