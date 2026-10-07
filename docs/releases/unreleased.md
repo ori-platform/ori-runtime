@@ -523,6 +523,18 @@ candidate or release is cut.
 
 ## Fixed
 
+- An admitted firmware fault event is durable. The fault row and the device's
+  freshness advance commit in one transaction, so a failure between them
+  leaves neither written and the same signed fault can be redelivered; before,
+  the mark moved first and a lost fault row made every redelivery a
+  `sequence_replay`. Fault rows are keyed by `(device_id, key_epoch_id,
+  boot_id, seq)`, the epoch being the anchor the fault was verified against:
+  a re-keyed device restarts its counters, and a fault reusing a `(boot_id,
+  seq)` recorded under its earlier key was silently dropped after the advance.
+  A store created before this change has its `firmware_fault_events` table
+  rebuilt at the next runtime start in one transaction, every row and id kept
+  and earlier rows carrying an empty `key_epoch_id`; a read-only open does not
+  migrate.
 - A delivery receipt issued per `evidence-exchange/v2` is accepted. The
   runtime recomputed a receipt's `range_digest` over the sealed envelopes'
   envelope digests, which cover the wire bytes, while the contract takes it

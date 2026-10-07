@@ -100,6 +100,28 @@ BEGIN
 END;
 """
 
+# A device's (boot_id, seq) restarts with a new key, so a fault is keyed under
+# the key epoch it was verified against.
+_FIRMWARE_FAULT_EVENTS_DDL = """
+CREATE TABLE IF NOT EXISTS firmware_fault_events (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id         TEXT    NOT NULL,
+    key_epoch_id      TEXT    NOT NULL DEFAULT '',
+    boot_id           INTEGER NOT NULL,
+    seq               INTEGER NOT NULL,
+    grade             TEXT    NOT NULL,
+    posture           TEXT    NOT NULL,
+    capability_hash   TEXT    NOT NULL,
+    code              TEXT    NOT NULL,
+    subject           TEXT    NOT NULL DEFAULT '',
+    detail            TEXT    NOT NULL DEFAULT '',
+    device_uptime_ms  INTEGER NOT NULL,
+    received_at_ms    INTEGER NOT NULL,
+    fault_json        TEXT    NOT NULL,
+    UNIQUE(device_id, key_epoch_id, boot_id, seq)
+);
+"""
+
 _CORE_DDL = (
     EVIDENCE_REFERENCE_DDL
     + """
@@ -803,22 +825,9 @@ CREATE TABLE IF NOT EXISTS sensor_measurement_state (
     updated_at    INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS firmware_fault_events (
-    id                INTEGER PRIMARY KEY AUTOINCREMENT,
-    device_id         TEXT    NOT NULL,
-    boot_id           INTEGER NOT NULL,
-    seq               INTEGER NOT NULL,
-    grade             TEXT    NOT NULL,
-    posture           TEXT    NOT NULL,
-    capability_hash   TEXT    NOT NULL,
-    code              TEXT    NOT NULL,
-    subject           TEXT    NOT NULL DEFAULT '',
-    detail            TEXT    NOT NULL DEFAULT '',
-    device_uptime_ms  INTEGER NOT NULL,
-    received_at_ms    INTEGER NOT NULL,
-    fault_json        TEXT    NOT NULL,
-    UNIQUE(device_id, boot_id, seq)
-);
+"""
+    + _FIRMWARE_FAULT_EVENTS_DDL
+    + """
 
 -- Commissioned safety bindings, retained whole. Every accepted document stays
 -- so the binding in force at any past time can be produced for audit; the
@@ -1287,12 +1296,34 @@ _FIRMWARE_AUTHORITY_SQL = """
 """
 
 
+# The fault row's epoch is the one the advance's WHERE binds.
+_ANCHOR_KEY_EPOCH = FIRMWARE_ANCHOR_COLUMNS.index("key_epoch_id")
+
+
 def _firmware_anchor_values(verified_against: Any) -> tuple[str, ...]:
     """The anchor a decision was made under, refused unless complete."""
     anchor = tuple(verified_against[column] for column in FIRMWARE_ANCHOR_COLUMNS)
     if any(not isinstance(value, str) for value in anchor):
         raise ValueError("verified_against must carry every anchor column")
     return anchor
+
+
+_FIRMWARE_FAULT_COLUMNS = (
+    "grade",
+    "posture",
+    "capability_hash",
+    "code",
+    "subject",
+    "detail",
+    "device_uptime_ms",
+    "received_at_ms",
+    "fault_json",
+)
+
+
+def _firmware_fault_values(fault_event: dict[str, Any]) -> tuple[Any, ...]:
+    """The fault row's columns past its (device_id, boot_id, seq) key."""
+    return tuple(fault_event[column] for column in _FIRMWARE_FAULT_COLUMNS)
 
 
 def _firmware_anchor_sql() -> str:
@@ -1469,6 +1500,7 @@ class StateStore:
         self._rebuild_history_schema_if_unreceipted(conn)
         conn.executescript(_HISTORY_DDL)
         self._migrate_alert_outbox_receipt(conn)
+        self._key_firmware_fault_events_by_epoch(conn)
         # Add columns that may be missing from databases created before this
         # migration.  SQLite does not support ALTER TABLE ADD COLUMN IF NOT EXISTS
         # so duplicate-column errors are handled explicitly.
@@ -2045,6 +2077,51 @@ class StateStore:
                     migration_at_ms,
                 ),
             )
+
+    @staticmethod
+    def _key_firmware_fault_events_by_epoch(conn: sqlite3.Connection) -> None:
+        """Rebuild a pre-epoch fault table under the epoch key, every row and id kept."""
+        columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(firmware_fault_events)")
+        }
+        if "key_epoch_id" in columns:
+            return
+        kept = (
+            "id, device_id, boot_id, seq, grade, posture, capability_hash, code, "
+            "subject, detail, device_uptime_ms, received_at_ms, fault_json"
+        )
+        conn.commit()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "ALTER TABLE firmware_fault_events "
+                "RENAME TO _firmware_fault_events_unkeyed"
+            )
+            conn.execute(_FIRMWARE_FAULT_EVENTS_DDL)
+            conn.execute(
+                f"INSERT INTO firmware_fault_events ({kept}, key_epoch_id) "
+                f"SELECT {kept}, '' FROM _firmware_fault_events_unkeyed"
+            )
+            # AUTOINCREMENT never reissues an id the old table spent.
+            spent = conn.execute(
+                "SELECT seq FROM sqlite_sequence "
+                "WHERE name = '_firmware_fault_events_unkeyed'"
+            ).fetchone()
+            if spent is not None:
+                conn.execute(
+                    "DELETE FROM sqlite_sequence WHERE name = 'firmware_fault_events'"
+                )
+                conn.execute(
+                    "INSERT INTO sqlite_sequence (name, seq) "
+                    "VALUES ('firmware_fault_events', ?)",
+                    (int(spent[0]),),
+                )
+            conn.execute("DROP TABLE _firmware_fault_events_unkeyed")
+            conn.commit()
+        except BaseException:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
 
     def _refuse_unreceipted_history_unless_allowed(self) -> None:
         """Raise before any write when the store needs the rebuild and this opener may not do it."""
@@ -7110,6 +7187,7 @@ class StateStore:
         seq: int,
         uptime_ms: int,
         verified_against: dict[str, Any],
+        fault_event: dict[str, Any] | None = None,
     ) -> bool:
         """Advance the replay high-water mark, strictly monotonically.
 
@@ -7118,7 +7196,11 @@ class StateStore:
         the stored mark, or whose uptime goes back within one boot,
         updates zero rows, and the caller must treat that as a replay.
         So does one whose anchor, `verified_against`, is no longer the
-        registry's: the message must be verified again."""
+        registry's: the message must be verified again.
+
+        A `fault_event` is recorded in the same transaction as the advance:
+        the mark never moves past a fault that was not recorded, and a
+        failure raises with neither written."""
         return await self._run_write(
             self._advance_firmware_freshness_sync,
             device_id,
@@ -7126,6 +7208,7 @@ class StateStore:
             seq,
             uptime_ms,
             _firmware_anchor_values(verified_against),
+            None if fault_event is None else _firmware_fault_values(fault_event),
         )
 
     def _advance_firmware_freshness_sync(
@@ -7135,119 +7218,65 @@ class StateStore:
         seq: int,
         uptime_ms: int,
         anchor: tuple[Any, ...],
+        fault: tuple[Any, ...] | None,
     ) -> bool:
-        assert self._conn is not None
+        conn = self._conn
+        if conn is None:
+            raise sqlite3.ProgrammingError("the state store is not open")
         bound = _firmware_anchor_sql()
-        cur = self._conn.execute(
-            """
-            UPDATE firmware_device_registry
-            SET last_boot_id = ?, last_seq = ?, last_uptime_ms = ?,
-                last_uptime_mark =
-                    COALESCE(key_epoch_id, '') || ':' || ? || ':' || ?
-            WHERE device_id = ? AND revoked = 0 AND approved = 1
-              AND ? >= last_boot_id AND ? > last_seq
-              AND (? > last_boot_id OR last_uptime_ms IS NULL
-                   OR last_uptime_mark IS NOT
-                      COALESCE(key_epoch_id, '') || ':' || last_boot_id
-                      || ':' || last_seq
-                   OR ? >= last_uptime_ms)
-            """
-            + bound,
-            (
-                boot_id,
-                seq,
-                uptime_ms,
-                int(boot_id),
-                int(seq),
-                device_id,
-                boot_id,
-                seq,
-                boot_id,
-                uptime_ms,
-                *anchor,
-            ),
-        )
-        self._conn.commit()
-        return cur.rowcount > 0
-
-    async def append_firmware_fault_event(
-        self,
-        *,
-        device_id: str,
-        boot_id: int,
-        seq: int,
-        grade: str,
-        posture: str,
-        capability_hash: str,
-        code: str,
-        subject: str,
-        detail: str,
-        device_uptime_ms: int,
-        received_at_ms: int,
-        fault_json: str,
-    ) -> bool:
-        """Record an accepted signed firmware fault event.
-
-        Faults are Layer 1 evidence about device-side refusals and
-        protections. They must be durable, but they must never flow into
-        the sensor event bus as readings.
-        """
-        return await self._run_write(
-            self._append_firmware_fault_event_sync,
-            device_id,
-            boot_id,
-            seq,
-            grade,
-            posture,
-            capability_hash,
-            code,
-            subject,
-            detail,
-            device_uptime_ms,
-            received_at_ms,
-            fault_json,
-        )
-
-    def _append_firmware_fault_event_sync(
-        self,
-        device_id: str,
-        boot_id: int,
-        seq: int,
-        grade: str,
-        posture: str,
-        capability_hash: str,
-        code: str,
-        subject: str,
-        detail: str,
-        device_uptime_ms: int,
-        received_at_ms: int,
-        fault_json: str,
-    ) -> bool:
-        assert self._conn is not None
-        cur = self._conn.execute(
-            """
-            INSERT OR IGNORE INTO firmware_fault_events
-                (device_id, boot_id, seq, grade, posture, capability_hash,
-                 code, subject, detail, device_uptime_ms, received_at_ms, fault_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                device_id,
-                boot_id,
-                seq,
-                grade,
-                posture,
-                capability_hash,
-                code,
-                subject,
-                detail,
-                device_uptime_ms,
-                received_at_ms,
-                fault_json,
-            ),
-        )
-        self._conn.commit()
-        return cur.rowcount > 0
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            cur = conn.execute(
+                """
+                UPDATE firmware_device_registry
+                SET last_boot_id = ?, last_seq = ?, last_uptime_ms = ?,
+                    last_uptime_mark =
+                        COALESCE(key_epoch_id, '') || ':' || ? || ':' || ?
+                WHERE device_id = ? AND revoked = 0 AND approved = 1
+                  AND ? >= last_boot_id AND ? > last_seq
+                  AND (? > last_boot_id OR last_uptime_ms IS NULL
+                       OR last_uptime_mark IS NOT
+                          COALESCE(key_epoch_id, '') || ':' || last_boot_id
+                          || ':' || last_seq
+                       OR ? >= last_uptime_ms)
+                """
+                + bound,
+                (
+                    boot_id,
+                    seq,
+                    uptime_ms,
+                    int(boot_id),
+                    int(seq),
+                    device_id,
+                    boot_id,
+                    seq,
+                    boot_id,
+                    uptime_ms,
+                    *anchor,
+                ),
+            )
+            if cur.rowcount == 0:
+                conn.rollback()
+                return False
+            if fault is not None:
+                # Plain INSERT: the mark is strictly monotonic within an epoch,
+                # so a collision is a defect and must refuse the advance.
+                conn.execute(
+                    """
+                    INSERT INTO firmware_fault_events
+                        (device_id, key_epoch_id, boot_id, seq, grade, posture,
+                         capability_hash, code, subject, detail, device_uptime_ms,
+                         received_at_ms, fault_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (device_id, anchor[_ANCHOR_KEY_EPOCH], boot_id, seq, *fault),
+                )
+            conn.commit()
+            return True
+        except BaseException:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
 
     # ─── device_policy_cache ─────────────────────────────────────────────────
 

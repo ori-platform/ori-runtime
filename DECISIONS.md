@@ -1446,8 +1446,10 @@ Decisions:
 - **Signed fault events share the same freshness stream but never become
   readings.** `command_rejected`, local-interlock, sensor, and brownout fault
   messages are verified against the same anchor, manifest pin, signature, and
-  `(boot_id, seq)` rules, then recorded in `firmware_fault_events`. They are
-  evidence about firmware-side refusals or backstops, not action authority.
+  `(boot_id, seq)` rules, and recorded in `firmware_fault_events`, keyed by
+  the key epoch they were verified under, in the transaction that advances
+  the freshness mark. They are evidence about
+  firmware-side refusals or backstops, not action authority.
 - **MQTT is transport glue, not the trust boundary.** When
   `gateway.firmware_telemetry.enabled` is set, the runtime subscribes to
   `ori/fw/+/telemetry` over the configured gateway broker. Accepted telemetry

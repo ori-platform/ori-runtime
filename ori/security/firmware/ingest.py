@@ -109,11 +109,13 @@ class FirmwareTelemetryGate:
         device_id: str,
         verify: Callable[[dict[str, Any]], _V],
         rejected: Callable[[str, str], _V],
+        record: Callable[[_V, dict[str, Any]], dict[str, Any]] | None = None,
     ) -> tuple[_V, dict[str, Any] | None]:
         """Verify against the stored anchor and advance freshness under it.
 
         Returns the verification and, when it was accepted and the mark
-        advanced, the row it was verified against.
+        advanced, the row it was verified against. A `record` builds the
+        fault row committed in the advance's own transaction.
         """
         row = await self._store.get_firmware_device(device_id) if device_id else None
         attempts = 0
@@ -130,12 +132,16 @@ class FirmwareTelemetryGate:
                     ERR_ANCHOR_UNSTABLE,
                     f"the anchor changed under each of {attempts} advances",
                 ), None
+            extra: dict[str, Any] = {}
+            if record is not None:
+                extra["fault_event"] = record(verification, row)
             if await self._store.advance_firmware_freshness(
                 verification.device_id,
                 boot_id=verification.boot_id,
                 seq=verification.seq,
                 uptime_ms=verification.device_uptime_ms,
                 verified_against=row,
+                **extra,
             ):
                 return verification, row
             attempts += 1
@@ -465,27 +471,30 @@ class FirmwareTelemetryGate:
                 error_detail=detail,
             )
 
-        verification, row = await self._verify_and_advance(device_id, verify, rejected)
+        def record(
+            verification: FirmwareFaultVerification, row: dict[str, Any]
+        ) -> dict[str, Any]:
+            return {
+                "grade": verification.grade,
+                "posture": verification.posture,
+                "capability_hash": row["capability_hash"],
+                "code": verification.code,
+                "subject": verification.subject,
+                "detail": verification.detail,
+                "device_uptime_ms": verification.device_uptime_ms,
+                "received_at_ms": received,
+                "fault_json": canonical_json_bytes(fault).decode("utf-8")
+                if isinstance(fault, dict)
+                else "{}",
+            }
+
+        verification, row = await self._verify_and_advance(
+            device_id, verify, rejected, record
+        )
         if row is None:
             self._log_fault_rejection(verification)
             return verification
 
-        await self._store.append_firmware_fault_event(
-            device_id=verification.device_id,
-            boot_id=verification.boot_id,
-            seq=verification.seq,
-            grade=verification.grade,
-            posture=verification.posture,
-            capability_hash=row["capability_hash"],
-            code=verification.code,
-            subject=verification.subject,
-            detail=verification.detail,
-            device_uptime_ms=verification.device_uptime_ms,
-            received_at_ms=received,
-            fault_json=canonical_json_bytes(fault).decode("utf-8")
-            if isinstance(fault, dict)
-            else "{}",
-        )
         logger.warning(
             "firmware fault accepted: device=%s code=%s subject=%s detail=%s",
             verification.device_id,
