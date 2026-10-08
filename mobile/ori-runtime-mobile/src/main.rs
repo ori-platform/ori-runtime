@@ -1274,6 +1274,42 @@ mod tests {
         );
     }
 
+    // ed25519-verification/v1's corpus, held to the same admission and to
+    // dalek's verify, which every signature this payload checks goes through.
+    const VERIFICATION_CORPUS: &str =
+        include_str!("../../../tests/vectors/ed25519_verification/vectors-v1.json");
+
+    #[test]
+    fn verification_matches_the_contract_corpus() {
+        let corpus: serde_json::Value = serde_json::from_str(VERIFICATION_CORPUS).unwrap();
+        let mut checked = 0;
+        for (section, cases) in corpus.as_object().unwrap() {
+            let Some(cases) = cases.as_array() else {
+                continue;
+            };
+            for case in cases {
+                let public = le_hex(case["public_key_hex"].as_str().unwrap());
+                let message = hex_bytes(case["message_hex"].as_str().unwrap());
+                let signature: [u8; 64] = hex_bytes(case["signature_hex"].as_str().unwrap())
+                    .try_into()
+                    .unwrap();
+                let accepted = admit_public_key(&public)
+                    .map(|key| {
+                        key.verify(&message, &Signature::from_bytes(&signature))
+                            .is_ok()
+                    })
+                    .unwrap_or(false);
+                let expected = case["expected"].as_str().unwrap() == "accepted";
+                assert_eq!(accepted, expected, "{section}: {}", case["why"]);
+                checked += 1;
+            }
+        }
+        assert_eq!(
+            checked, 295,
+            "the corpus no longer has the cases this test was written for"
+        );
+    }
+
     #[test]
     fn admission_refuses_each_clause_and_admits_an_honest_key() {
         let honest = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]).verifying_key();

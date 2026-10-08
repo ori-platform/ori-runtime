@@ -25,8 +25,10 @@ import base64
 from typing import Final
 
 PUBLISHED_TEST_KEYS_B64: Final[tuple[str, ...]] = (
+    "/FHNjmIYoaONpH7QAjDwWAgW7RO6MwOsXeuRFUiQgCU=",
     "0EqyMnQrtKs6E2i9RhXk5tAiSrcaAWuvhSCjMsl3hzc=",
     "11l5O7wTooGagnx2rbb7qKSa7gB/SfLQmS2ZuCWtLEg=",
+    "11qYAYKxCrfVS/7TyWQHOg7hcvPapiMlrwIaaPcHURo=",
     "3eO8zsfzpmoRFfRdcg9NwTXDrnxOItyjj9se/WpJX/g=",
     "5KoEo9B6i5O77+8jr/x0+USx57OuOd9T6lZ08nbGmTU=",
     "5zTqbCtiV95yNV5HKqBaTEh+a0Y8Ap7TBt8vAbVja1g=",
@@ -45,6 +47,7 @@ PUBLISHED_TEST_KEYS_B64: Final[tuple[str, ...]] = (
     "NLTZBDFWy23PC+sKKUm3VZyUDSvLbb6MU6mzAnjjp0Y=",
     "O2onvM62pC1io6jQKm8Nc2UyFXcd4kOmOsBIoYtZ2ik=",
     "P3cI1fXMK8YztZ0rOi7ZLnR5IgxvCK3iCL682FgKuTs=",
+    "PUAXw+hDiVqStwqnTRt+vJyYLM8uxJaMwM1V8Sr0Zgw=",
     "R4nQzebuj1pjnCpAWhYvnecSZIH4InZKrOsLYoNNsUk=",
     "Swz7WkiOjIwH7tr74ZfNkBgCFWhd/r7LQrrmchCu8VA=",
     "T9CZzNR9eJPf6ewkQU7LDZtUICMqrTDZHEZb4zy+ZcQ=",
@@ -58,6 +61,7 @@ PUBLISHED_TEST_KEYS_B64: Final[tuple[str, ...]] = (
     "i7BOHBuD3d8xH1vN33xQ7ePAgC9H7HluKhMc9BKY2fM=",
     "ivC0z71ruLNOSRqZ47jQ1QJrDBavwYc+Wb3DEk8RAwk=",
     "ncD5PLGaHZB2WOaVbZgsExrIPb2aqvMTpJLLoaM2Swo=",
+    "nrnipCyE+VlyHkHP7iIj+EptRSYfYFxNRfoPjmlW1AE=",
     "oJql9HpnWYAv+VX43C0qFKXJnSO+l/hkEn/5ODRVpPA=",
     "skkdlQKuKGMKK6yy4MdFEP/N0yjDNP8+E5PnWy0x59w=",
     "wGlTlhWM04I+ailc3+2iOiKSKWq8c6XlRBNVvxzYi5Q=",
