@@ -150,6 +150,11 @@ release is cut.
 
 ## Security
 
+- The three RFC 8032 section 7.1 test keys, and the signer key of the
+  `ed25519-verification/v1` corpus, are refused as trust anchors and as
+  signing seeds, with the other keys whose private seeds this repository
+  publishes. Their seeds are vendored in the verification corpus, so anyone
+  can sign under them.
 - Every Ed25519 public key the runtime admits is refused when it is of small
   order, non-canonical, off the curve or carries an invalid sign bit, before
   any verifier is built. Under such a key a signature can verify without a
