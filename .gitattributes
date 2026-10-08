@@ -1,0 +1,5 @@
+# Text is checked out with LF on every platform, whatever core.autocrlf says.
+# Signed documents, vendored corpora and pinned registries are compared byte
+# for byte, so a checkout that rewrote their line endings would fail those
+# checks with no defect in the change under test.
+* text=auto eol=lf

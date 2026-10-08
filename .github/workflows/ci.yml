@@ -59,7 +59,7 @@ jobs:
         id: scope
         uses: ./.github/actions/changed-paths
         with:
-          pattern: '^(ori/|tests/|skills/|scripts/|packaging/|requirements/|mobile/|pyproject\.toml|pyright-baseline\.json|\.pre-commit-config\.yaml|\.python-version|ori\.[A-Za-z.]*example|\.github/)'
+          pattern: '^(ori/|tests/|skills/|scripts/|packaging/|requirements/|mobile/|pyproject\.toml|pyright-baseline\.json|\.pre-commit-config\.yaml|\.gitattributes|\.python-version|ori\.[A-Za-z.]*example|\.github/)'
           reason: running the runtime's tests, type checks and audits
 
       # A few tests read documents: the disclosure audit classifies every
