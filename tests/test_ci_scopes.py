@@ -64,6 +64,8 @@ SCENARIOS: list[tuple[str, set[str] | str]] = [
     ("pyproject.toml", {"test"}),
     ("pyright-baseline.json", {"test"}),
     (".pre-commit-config.yaml", {"test"}),
+    # It decides the bytes a checkout holds, which the byte-comparison tests read.
+    (".gitattributes", {"test"}),
     (".python-version", {"test"}),
     ("ori.yaml.example", {"test"}),
     ("ori.yaml.phone.victron.example", {"test"}),
