@@ -136,7 +136,7 @@ from tests.commissioning.signing import (
     sign_envelope,
 )
 from tests.conftest import _mark_startup_complete
-from tests.waiting import drained, settle
+from tests.waiting import drained, latency_bounds_apply, settle
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -2199,7 +2199,6 @@ async def test_registered_executors_never_reach_the_confirmation_gate(
     )
 
 
-@pytest.mark.latency_bound
 async def test_every_dispatch_route_leaves_the_gate_alone(
     probe: _Probe, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2445,7 +2444,7 @@ async def test_every_dispatch_route_leaves_the_gate_alone(
         for (route, source), gap in gaps.items()
         if gap > FIRMWARE_DELAY_BOUND_S
     )
-    assert not slower, (
+    assert not slower or not latency_bounds_apply(), (
         "an unconfirmed firmware epoch made a dispatch slower than the same "
         f"dispatch from a local reading by more than {FIRMWARE_DELAY_BOUND_S}s "
         f"(fastest of {REPEATS}): {slower} (widest {widest:.4f}s). " + _LIMIT
@@ -2456,7 +2455,7 @@ async def test_every_dispatch_route_leaves_the_gate_alone(
         for source, spent in by_source.items()
         if spent > DISPATCH_BOUND_S
     )
-    assert not overdue, (
+    assert not overdue or not latency_bounds_apply(), (
         f"a dispatch took longer than {DISPATCH_BOUND_S}s on every one of "
         f"{REPEATS} repeats: {overdue} (longest {longest:.4f}s). " + _LIMIT
     )

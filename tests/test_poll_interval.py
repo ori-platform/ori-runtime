@@ -31,6 +31,7 @@ from ori.network.events import SensorReading
 from ori.runtime import OriRuntime
 from ori.state.store import StateStore
 from tests.test_mqtt_adapter import _config, _FakeClient
+from tests.waiting import latency_bounds_apply, wait_until
 
 POLL_MS = 100
 RUN_S = 0.6
@@ -154,18 +155,24 @@ def _paced(adapter: _Paced, elapsed: float) -> None:
         f"{adapter.reads} reads in {elapsed:.2f}s at {POLL_MS} ms: the poll "
         "skipped its interval"
     )
+    gaps = [b - a for a, b in zip(adapter.times, adapter.times[1:])]
+    median = statistics.median(gaps) * 1000
+    # Not faster than the interval: a loaded runner cannot make reads closer.
+    assert 0.8 * POLL_MS <= median, (
+        f"median gap between reads {median:.0f} ms at a {POLL_MS} ms interval"
+    )
+    if not latency_bounds_apply():
+        return
+    # Not slower: a wall-clock bound, which a simulated stall inflates.
     assert adapter.reads >= int(expected * 0.6), (
         f"{adapter.reads} reads in {elapsed:.2f}s at {POLL_MS} ms: the poll "
         "waited more than its interval"
     )
-    gaps = [b - a for a, b in zip(adapter.times, adapter.times[1:])]
-    median = statistics.median(gaps) * 1000
-    assert 0.8 * POLL_MS <= median <= 1.6 * POLL_MS, (
+    assert median <= 1.6 * POLL_MS, (
         f"median gap between reads {median:.0f} ms at a {POLL_MS} ms interval"
     )
 
 
-@pytest.mark.latency_bound
 async def test_a_cached_duplicate_neither_spins_the_poll_nor_starves_the_loop(
     store: StateStore, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -204,15 +211,15 @@ async def test_a_cached_duplicate_neither_spins_the_poll_nor_starves_the_loop(
             await mqtt.close()
 
     _paced(adapter, elapsed)
-    assert worst < 0.05, f"a concurrent task waited {worst * 1000:.0f} ms"
     assert 99.9 in observed.first_seen, "a changed value never reached the registry"
     lag = observed.first_seen[99.9] - changed_at[0]
-    assert lag < 2 * POLL_MS / 1000, f"a changed value waited {lag * 1000:.0f} ms"
+    if latency_bounds_apply():
+        assert worst < 0.05, f"a concurrent task waited {worst * 1000:.0f} ms"
+        assert lag < 2 * POLL_MS / 1000, f"a changed value waited {lag * 1000:.0f} ms"
     assert store.history_admission.lost == 0
     assert published == [27.4, 99.9], "a suppressed duplicate reached the bus"
 
 
-@pytest.mark.latency_bound
 async def test_a_duplicate_from_a_yielding_adapter_waits_the_poll_interval(
     store: StateStore,
 ) -> None:
@@ -228,7 +235,6 @@ async def test_a_duplicate_from_a_yielding_adapter_waits_the_poll_interval(
     _paced(adapter, elapsed)
 
 
-@pytest.mark.latency_bound
 async def test_the_status_indicator_syncs_only_on_a_published_reading(
     store: StateStore,
 ) -> None:
@@ -259,7 +265,6 @@ async def test_the_status_indicator_syncs_only_on_a_published_reading(
     )
 
 
-@pytest.mark.latency_bound
 @pytest.mark.parametrize(
     "failure",
     [AdapterReadError("bus timeout"), RuntimeError("adapter bug")],
@@ -326,14 +331,10 @@ async def test_each_suppressed_duplicate_sleeps_once_and_cancels_promptly_in_the
             )
         )
         try:
-            waiter = asyncio.create_task(in_sleep_after_third_read.wait())
-            done, _ = await asyncio.wait(
-                {waiter, task},
-                timeout=HARD_CEILING_S,
-                return_when=asyncio.FIRST_COMPLETED,
+            await wait_until(
+                lambda: in_sleep_after_third_read.is_set() or task.done(),
+                what="a sleep after the third read, or the poll's end",
             )
-            waiter.cancel()
-            assert done, f"neither a third read nor the poll's end in {HARD_CEILING_S}s"
             assert in_sleep_after_third_read.is_set(), (
                 f"no poll-interval sleep after the third read ({adapter.reads} "
                 f"reads, sleeps at {sleeps}): a suppressed duplicate skipped it"

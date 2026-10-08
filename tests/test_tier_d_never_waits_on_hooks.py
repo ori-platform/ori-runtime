@@ -36,7 +36,7 @@ from tests.test_dispatch_never_waits_on_delivery import (
     _Site,
     _site,
 )
-from tests.waiting import wait_until
+from tests.waiting import latency_bounds_apply, wait_until
 
 _SKILLS = Path(__file__).resolve().parent.parent / "skills"
 _READING_NAMES = {"value", "sensor_id", "sensor_type", "unit", "quality"}
@@ -569,7 +569,6 @@ def _stall(kind: str, release: threading.Event) -> Any:
 
 
 class TestAStalledHookRunsOffTheLoop:
-    @pytest.mark.latency_bound
     def test_a_cpu_bound_hook_in_a_fresh_interpreter(self) -> None:
         """The CPU-bound case, in an interpreter of its own.
 
@@ -656,7 +655,8 @@ class TestAStalledHookRunsOffTheLoop:
             f"p50={statistics.median(latencies) * 1000:.1f}ms "
             f"p95={p95 * 1000:.1f}ms max={latencies[-1] * 1000:.1f}ms"
         )
-        assert latencies[-1] < _TRIP_BOUND_S, latencies[-1]
+        if latency_bounds_apply():
+            assert latencies[-1] < _TRIP_BOUND_S, latencies[-1]
 
     @pytest.mark.parametrize("kind", ["event", "sleep"])
     @pytest.mark.parametrize("name", sorted(_TIER_D_READINGS))

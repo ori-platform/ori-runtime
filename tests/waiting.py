@@ -28,24 +28,47 @@ DEADLINE_S = 30.0 * max(1.0, float(os.environ.get("ORI_TEST_CLOCK_SCALE", "") or
 _POLL_S = 0.005
 
 
+def latency_bounds_apply() -> bool:
+    """Whether a wall-clock latency bound means anything in this run.
+
+    Under ORI_TEST_STALL_MS or ORI_TEST_CLOCK_SCALE every latency is inflated
+    or distorted by construction, so a bound on one says nothing there. Only
+    the latency assertion consults this; every functional assertion in the
+    same test runs either way.
+    """
+    return not any(
+        float(os.environ.get(name, "") or 0) > 0
+        for name in ("ORI_TEST_STALL_MS", "ORI_TEST_CLOCK_SCALE")
+    )
+
+
 async def wait_until(
     predicate: Callable[[], Any | Awaitable[Any]],
     *,
     what: str,
     deadline_s: float = DEADLINE_S,
 ) -> None:
-    """Return once *predicate* (sync or async) is truthy; fail naming *what*."""
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + deadline_s
-    while True:
-        answer = predicate()
-        if inspect.isawaitable(answer):
-            answer = await answer
-        if answer:
-            return
-        if loop.time() >= deadline:
-            raise AssertionError(f"waited {deadline_s}s for {what}; it never happened")
-        await asyncio.sleep(_POLL_S)
+    """Return once *predicate* (sync or async) is truthy; fail naming *what*.
+
+    The deadline covers the whole wait, an async predicate's own awaits
+    included, so a predicate that hangs fails here rather than holding the
+    test. A predicate's exception propagates unchanged. A synchronous
+    predicate that blocks the loop cannot be interrupted by any asyncio
+    deadline: predicates must not block.
+    """
+    try:
+        async with asyncio.timeout(deadline_s):
+            while True:
+                answer = predicate()
+                if inspect.isawaitable(answer):
+                    answer = await answer
+                if answer:
+                    return
+                await asyncio.sleep(_POLL_S)
+    except TimeoutError:
+        raise AssertionError(
+            f"waited {deadline_s}s for {what}; it never happened"
+        ) from None
 
 
 async def settle(
@@ -87,15 +110,32 @@ async def drained(dispatcher: Any, *, deadline_s: float = DEADLINE_S) -> None:
 
 
 async def quiesce(*, what: str, deadline_s: float = DEADLINE_S) -> None:
-    """Wait for every other task on the running loop to finish.
+    """Wait until no other task on the running loop is left, under one deadline.
 
     For a test that owns its loop and asserts on work the code under test
-    scheduled out of sight. A task that never ends fails this loudly, which is
-    the point: work still running is work the assertion has not seen.
+    scheduled out of sight. A task that spawns another before it ends does not
+    end the wait: every generation is waited for, and the loop is given a turn
+    after the last one so a callback already due can start its task. A task
+    that never ends fails this loudly, which is the point: work still running
+    is work the assertion has not seen.
+
+    It cannot see work that exists only as a timer not yet due (`call_later`)
+    and has created no task; code that defers work that way needs its own
+    completion boundary.
     """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + deadline_s
     current = asyncio.current_task()
-    await settle(
-        {task for task in asyncio.all_tasks() if task is not current},
-        what=what,
-        deadline_s=deadline_s,
-    )
+    quiet_turns = 0
+    while quiet_turns < 2:
+        others = {
+            task
+            for task in asyncio.all_tasks()
+            if task is not current and not task.done()
+        }
+        if not others:
+            quiet_turns += 1
+            await asyncio.sleep(0)
+            continue
+        quiet_turns = 0
+        await settle(others, what=what, deadline_s=max(0.0, deadline - loop.time()))
