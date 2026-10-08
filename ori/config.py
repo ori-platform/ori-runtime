@@ -23,6 +23,7 @@ from ori.hal.config_schema import (
     validate_document,
     validate_schema,
 )
+from ori.hal.mqtt_base import topic_wildcards
 from ori.hal.protocol_registry import (
     MQTT_FAMILY_PROTOCOLS,
     SUPPORTED_SENSOR_PROTOCOLS,
@@ -802,6 +803,7 @@ class Config:
             mqtt_cfg = sensor.metadata.get("mqtt")
             if sensor.protocol in MQTT_FAMILY_PROTOCOLS:
                 _refuse_persistent_mqtt_session(sensor.id, sensor.metadata)
+                _refuse_wildcard_mqtt_topic(sensor.id, sensor.metadata)
             tls = mqtt_cfg.get("tls") if isinstance(mqtt_cfg, dict) else None
             if isinstance(tls, dict):
                 for key in ("ca_certfile", "certfile", "keyfile"):
@@ -1391,6 +1393,27 @@ def _refuse_persistent_mqtt_session(sensor_id: str, metadata: dict[str, Any]) ->
                 "uses a clean session. A broker queues messages for a persistent "
                 "session and delivers them on reconnect, and the freshness bound "
                 "cannot time a queued message from its publication."
+            )
+
+
+# The sensor keys an MQTT-family adapter builds its subscription from.
+_MQTT_TOPIC_KEYS = ("topic", "portal_id")
+
+
+def _refuse_wildcard_mqtt_topic(sensor_id: str, metadata: dict[str, Any]) -> None:
+    """A sensor reads one concrete topic; a wildcard is refused by name."""
+    for key in _MQTT_TOPIC_KEYS:
+        value = metadata.get(key)
+        if not isinstance(value, str):
+            continue
+        wildcards = topic_wildcards(value)
+        if wildcards:
+            raise ConfigValidationError(
+                f"sensors[{sensor_id}].{key}: {value!r} is refused; it carries "
+                f"the MQTT wildcard {' and '.join(repr(w) for w in wildcards)}. "
+                "A value is cached under the topic of the message that carried "
+                "it and read under the configured one, so a sensor on a wildcard "
+                "subscription never reads. Name one concrete topic per sensor."
             )
 
 
