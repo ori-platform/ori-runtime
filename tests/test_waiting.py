@@ -54,7 +54,7 @@ async def test_cancellation_from_outside_is_not_turned_into_a_failure() -> None:
     await asyncio.sleep(0.01)
     waiter.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await waiter
+        await asyncio.gather(waiter)
 
 
 async def test_settle_names_the_task_that_did_not_finish() -> None:

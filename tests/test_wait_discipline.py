@@ -259,39 +259,49 @@ def test_the_guard_sees_each_shape_it_names() -> None:
     disguised = {
         "unchecked-asyncio-wait": [
             # A partial result: one task done, another still pending.
-            "async def t(tasks):\n"
-            "    done, pending = await asyncio.wait(tasks, timeout=0.01)\n"
-            "    assert done\n",
-            "async def t(task):\n"
-            "    done, _ = await asyncio.wait({task}, timeout=2,"
-            " return_when=asyncio.FIRST_COMPLETED)\n"
-            "    assert done\n",
+            (
+                "async def t(tasks):\n"
+                "    done, pending = await asyncio.wait(tasks, timeout=0.01)\n"
+                "    assert done\n"
+            ),
+            (
+                "async def t(task):\n"
+                "    done, _ = await asyncio.wait({task}, timeout=2,"
+                " return_when=asyncio.FIRST_COMPLETED)\n"
+                "    assert done\n"
+            ),
         ],
         "unchecked-drain-records": [
             "async def t(d):\n    ignored = await d.drain_records(timeout=1)\n",
             "async def t(d):\n    result: None = await d.drain_records()\n",
         ],
         "swallowed-timeout": [
-            "async def t(task):\n"
-            "    try:\n"
-            "        await asyncio.wait_for(task, 1)\n"
-            "    except TimeoutError:\n"
-            "        print('timeout')\n",
-            "async def t(task):\n"
-            "    try:\n"
-            "        await asyncio.wait_for(task, 1)\n"
-            "    except (asyncio.TimeoutError, ValueError):\n"
-            "        task.cancel()\n",
+            (
+                "async def t(task):\n"
+                "    try:\n"
+                "        await asyncio.wait_for(task, 1)\n"
+                "    except TimeoutError:\n"
+                "        print('timeout')\n"
+            ),
+            (
+                "async def t(task):\n"
+                "    try:\n"
+                "        await asyncio.wait_for(task, 1)\n"
+                "    except (asyncio.TimeoutError, ValueError):\n"
+                "        task.cancel()\n"
+            ),
         ],
         "bounded-poll-falls-through": [
-            "async def t(x):\n"
-            "    for _ in range(3):\n"
-            "        if x:\n"
-            "            break\n"
-            "        await asyncio.sleep(0.01)\n"
-            "    else:\n"
-            "        pass\n"
-            "    assert x\n",
+            (
+                "async def t(x):\n"
+                "    for _ in range(3):\n"
+                "        if x:\n"
+                "            break\n"
+                "        await asyncio.sleep(0.01)\n"
+                "    else:\n"
+                "        pass\n"
+                "    assert x\n"
+            ),
         ],
     }
     for rule, source in cases.items():
