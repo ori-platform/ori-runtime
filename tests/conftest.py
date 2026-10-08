@@ -293,20 +293,3 @@ if _CLOCK_SCALE > 0:
         return _clock_origin + (_clock_time.monotonic() - _clock_origin) * _CLOCK_SCALE
 
     _clock_events.BaseEventLoop.time = _scaled_time  # type: ignore[method-assign]
-
-
-def pytest_collection_modifyitems(config: Any, items: list[Any]) -> None:
-    """Under the stall, skip the tests whose subject is a latency bound.
-
-    Their bound measures the loop the stall slows, so it fails by construction
-    there; a failure would say nothing about whether they wait correctly. They
-    run as usual without the stall.
-    """
-    if _STALL_MS <= 0:
-        return
-    skip = pytest.mark.skip(
-        reason=f"latency bound; {STALL_ENV}={_STALL_MS:g} inflates it by construction"
-    )
-    for item in items:
-        if item.get_closest_marker("latency_bound") is not None:
-            item.add_marker(skip)

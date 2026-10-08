@@ -43,7 +43,7 @@ from tests.test_mqtt_adapter import _FakeClient, _FakeTopic
 from tests.test_mqtt_perception_adapter import _config as perception_config
 from tests.test_victron_adapter import _config as victron_config
 from tests.test_zigbee_adapter import _config as zigbee_config
-from tests.waiting import wait_until
+from tests.waiting import settle, wait_until
 
 POLL_MS = 1000
 BOUND_MS = silence_bound_ms(POLL_MS)
@@ -710,8 +710,7 @@ async def test_the_staleness_watch_uses_the_same_silence_bound(poll_ms: int) -> 
         what="runtime._stale_sensor_active",
     )
     runtime._shutdown_event.set()
-    done, _ = await asyncio.wait({loop}, timeout=5.0)
-    assert loop in done, "the staleness watch did not stop on shutdown"
+    await settle({loop}, what="the staleness watch to stop on shutdown")
     assert loop.result() is None
     assert runtime._stale_sensor_active == {"past"}
 
@@ -797,8 +796,7 @@ async def _watch(runtime: OriRuntime) -> None:
     )
     await asyncio.sleep(0.02)
     runtime._shutdown_event.set()
-    done, _ = await asyncio.wait({task}, timeout=5.0)
-    assert task in done, "the staleness watch did not stop on shutdown"
+    await settle({task}, what="the staleness watch to stop on shutdown")
     assert task.result() is None
 
 

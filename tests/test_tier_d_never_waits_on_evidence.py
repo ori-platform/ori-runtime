@@ -319,8 +319,7 @@ class TestASecondTierDActDoesNotWaitOnTheFirstActsRecord:
 
         event_task = asyncio.create_task(coordinator.dispatch_event(_firmware_event()))
         try:
-            done, _ = await asyncio.wait({event_task}, timeout=_PROMPT)
-            assert done, "the event never passed its Tier D phase"
+            await settle({event_task}, what="the event to pass its Tier D phase")
             assert ran["trip_relay"].is_set() != ran["close_gas_valve"].is_set()
         finally:
             await asyncio.wait_for(event_task, _PROMPT)

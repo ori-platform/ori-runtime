@@ -398,10 +398,13 @@ only miss an excess, never invent one. A test whose subject is a latency bound
 keeps its bound.
 
 `tests/test_wait_discipline.py` refuses the shapes it can read: a suppressed
-or swallowed `TimeoutError`, an `asyncio.wait(..., timeout=...)` whose result
-is discarded, an unchecked `drain_records`, and a bounded poll loop that can
-fall through. It cannot see a plain sleep followed by an assertion, so run the
-tests you touch under a simulated loaded runner as well:
+`TimeoutError`, a `TimeoutError` handler that does not raise, any bounded
+`asyncio.wait` (checking `done` misses a partial result; `settle` checks what
+is pending), any direct `drain_records`, and a bounded poll loop that can fall
+through. It cannot see a plain sleep followed by an assertion, a timeout
+caught as a broader exception, or a bounded wait behind another helper, so run
+the tests you touch under a simulated loaded runner as well. That finds a
+window only when the run breaches it:
 
 ```bash
 # Every event-loop iteration first blocks for 20 ms; usable on the whole suite
@@ -413,9 +416,10 @@ ORI_TEST_STALL_MS=20 pytest tests/ -n auto -m "not hardware"
 ORI_TEST_CLOCK_SCALE=1000 pytest tests/test_tier_c_approval_sequences.py
 ```
 
-Tests whose subject is a latency bound carry `@pytest.mark.latency_bound` and
-are skipped under `ORI_TEST_STALL_MS`, which inflates any latency by
-construction.
+Either simulation inflates every latency by construction, so a wall-clock
+latency assertion is guarded by `latency_bounds_apply()` from `tests/waiting.py`.
+Guard that assertion alone: every functional assertion in the same test still
+runs under the simulation.
 
 ---
 
