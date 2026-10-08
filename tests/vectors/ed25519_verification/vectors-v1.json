@@ -1,0 +1,2653 @@
+{
+  "vector_set": "ed25519-verification/v1",
+  "contract": "ed25519-verification/v1",
+  "purpose": "Cross-language agreement on which Ed25519 signatures an Ori verifier accepts under a key ed25519-key-admission/v1 admits, held at the signatures on which the cofactored and cofactorless equations, strict and loose decoding of R, and a reduced or unreduced S disagree.",
+  "derivation": "rfc8032 are RFC 8032 section 7.1 TEST 1 to 3. Every other admitted key is derived under RFC 8032 section 5.1.5 from seed_hex, SHA-256 of 'ed25519-verification/v1 signer', or from SHA-256 of 'ed25519-verification/v1 other signer'. honest signatures are the first messages 'ed25519-verification/v1 honest message N' whose R has bit 255 clear and set. negated_r flip bit 255 of the nonce point [r]B and sign over the flipped R, at the first messages 'ed25519-verification/v1 negated R N' whose nonce point has bit 255 clear and set. flipped_bit_r flip bit N of the nonce point at the first message 'ed25519-verification/v1 flipped bit N R C' for which the flipped encoding is a canonical point of order L, and sign over the flipped R. torsion_component_r use the nonce SHA-512 of the seed's prefix and the message, reduced modulo L, with torsion_point_hex added to the nonce point. small_order_r and non_canonical_r set S to k*a modulo L, k the full SHA-512 challenge over the given R. s_range alter the S of an honest signature. refused_keys pair a key the admission contract refuses with a signature the cofactorless equation accepts under it.",
+  "rfc8032": [
+    {
+      "public_key_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "message_hex": "",
+      "signature_hex": "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b",
+      "expected": "accepted",
+      "clause": null,
+      "seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+      "why": "RFC 8032 section 7.1 TEST 1"
+    },
+    {
+      "public_key_hex": "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+      "message_hex": "72",
+      "signature_hex": "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00",
+      "expected": "accepted",
+      "clause": null,
+      "seed_hex": "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+      "why": "RFC 8032 section 7.1 TEST 2"
+    },
+    {
+      "public_key_hex": "fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025",
+      "message_hex": "af82",
+      "signature_hex": "6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a",
+      "expected": "accepted",
+      "clause": null,
+      "seed_hex": "c5aa8df43f9f837bedb7442f31dcb7b166d38535076f094b85ce3a2e0b4458f7",
+      "why": "RFC 8032 section 7.1 TEST 3"
+    }
+  ],
+  "honest": [
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120686f6e657374206d6573736167652031",
+      "signature_hex": "385e3a6ac074120180de8bd7da5f4205b79a19d628a7a85e4cc996c478414a49f470810433ae64ed8db3d1af0cffd404b878974b2300ec6795fbfa43a7cea00a",
+      "expected": "accepted",
+      "clause": null,
+      "seed_hex": "e14bd391bc7befb61db0b7f943f2fa217d6df3f526d7d30ee9d36ec2d454aad1",
+      "why": "signed with seed_hex; bit 255 of R is 0"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120686f6e657374206d6573736167652030",
+      "signature_hex": "8ee1c41d963eef66752e3b102dfd87974dcf11cf338cbe44884d6d4b09878ff5f111a04c8909fbb3b86e4c8b1fec97526b00f53feefb69e51b59468c3116810a",
+      "expected": "accepted",
+      "clause": null,
+      "seed_hex": "e14bd391bc7befb61db0b7f943f2fa217d6df3f526d7d30ee9d36ec2d454aad1",
+      "why": "signed with seed_hex; bit 255 of R is 1"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120686f6e657374206d657373616765203121",
+      "signature_hex": "385e3a6ac074120180de8bd7da5f4205b79a19d628a7a85e4cc996c478414a49f470810433ae64ed8db3d1af0cffd404b878974b2300ec6795fbfa43a7cea00a",
+      "expected": "refused",
+      "clause": "equation",
+      "why": "the bit-255-0 signature over a different message"
+    },
+    {
+      "public_key_hex": "4024604a198abd07f51ba40555553764cdb34f282ab20cc37b090536ffb6303f",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120686f6e657374206d6573736167652031",
+      "signature_hex": "385e3a6ac074120180de8bd7da5f4205b79a19d628a7a85e4cc996c478414a49f470810433ae64ed8db3d1af0cffd404b878974b2300ec6795fbfa43a7cea00a",
+      "expected": "refused",
+      "clause": "equation",
+      "why": "the bit-255-0 signature under a different admitted key"
+    }
+  ],
+  "negated_r": [
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f7631206e65676174656420522030",
+      "signature_hex": "ba35409b1aa038d7ae46fc77def1b897f32ac11facafcf675e216c932592cb96d01fe1a559a0e7d9a7280cd4df5d13853a4b2ae04fdd852f6b864bd1e2c1f309",
+      "expected": "refused",
+      "clause": "equation",
+      "why": "R is the honest nonce point negated, bit 255 flipped from 0 to 1: [S]B - [k]A differs from R in bit 255 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f7631206e65676174656420522031",
+      "signature_hex": "bcf487140bd9b425d2d8b8f33f33fb759ea015008fe2856891f1cfd5808467064ff062e273f924c5d437feb069d7bfc3bdc47821567faa3641524b36950f5001",
+      "expected": "refused",
+      "clause": "equation",
+      "why": "R is the honest nonce point negated, bit 255 flipped from 1 to 0: [S]B - [k]A differs from R in bit 255 alone"
+    }
+  ],
+  "flipped_bit_r": [
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420302052203134",
+      "signature_hex": "f507b77c40f2e55c3117625b0178c56bf13fd60d9c96cc24925c73a8b7350745ccf48bb251e027f8d6d03f3b29310af26239cf3845acb7262b60578e2dc69f0e",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 0,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 0 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420312052203234",
+      "signature_hex": "de11d65add2f27193d746b9e299b385acdd94ac34b7e6587c363369cffd1e4e54a950e68043dc19f7071429295aea53cd69bf4584a898ad149b8deaba23f3401",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 1,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 1 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420322052203635",
+      "signature_hex": "0260f62dfc214e103269194ab3a001e722c57fee219fe773eb5570459394f70f1e34aef2963a526f09b4f4073737a2608896e3e441e1dff6bdfb054fc5ffa601",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 2,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 2 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420332052203530",
+      "signature_hex": "b02c80b6a304f6ecf03a4e191ea41386d74654ce0f40a0f6a5dffe00019f839efba89023dc9c6daf61cf8bb1b84baeb7f56ec786a63f467d4320a4fa9f05020e",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 3,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 3 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203420522034",
+      "signature_hex": "51fdc87cf0a9dc893bd1bf84bc708b40f8bf5bc71096bbd3831602f399aaa3543a1bf1b700a4277e4a1f7be8fc8e363ef9beabe9642884386f74d5d3dea04106",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 4,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 4 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420352052203134",
+      "signature_hex": "39430d6a799f83b9d2f4c9b525a1426fbd687592a9a49a87ce17b7e1d304c30c502ca423904633afaf787f98004c6dd686a33b37e8b713908548d20e81f9b008",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 5,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 5 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203620522033",
+      "signature_hex": "fee926dd41006a62014afd331afcc449a8e8b43bd0453151e67600f84fcaaf43898b73c689f03621cbed841e9e79a23061104242508c7c4831e50b45842fe10a",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 6,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 6 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203720522036",
+      "signature_hex": "600bc3e40ec92fe7c6a756ac6912d12a0cf52cacc3685c33eac3f206921e175b9fb032fd1f71398d69d54bba4487fdb94c9222209849270c164c5624d7ac1d08",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 7,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 7 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420382052203433",
+      "signature_hex": "f3e813d80c645c7f27ad748a9dcc5a5ee5642e32a46284fdec068ae514d9f3ab6db6e5275a29b527b6e1533d6f1c021ad9375eff1e601191c373e77cc1b8c40d",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 8,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 8 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420392052203131",
+      "signature_hex": "470be12106599df73b916395925e932d46ec36840abb45c5fd67e252cf80118ea2467444b8868cbd24d5421373762bd31f0933ca5e7bf24f880bd684c253ae07",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 9,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 9 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420313020522035",
+      "signature_hex": "f33b958918877337701226f22b0505b08ffbda4d23a0cab8e4bc6474eea9e0d129019c25d3a77c6608e358ff74006d9bc72ba74bfc8378ee38628262c5a7ee0c",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 10,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 10 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420313120522036",
+      "signature_hex": "9cab4785995abe3c4f173152fcdbc8ebf73cd430092b79efc71e61ccc3543419f1550f21b4b996e203055e1c3d2d0bc84a3028abc3ebae1a9965080df9e19802",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 11,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 11 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031322052203137",
+      "signature_hex": "3dc8d065fef31f78e296881343b12bc9c8c73b25ff29d689deca7adeceff3c70fa8670615c2df85353ef111c84979bd6423c399734831272c4052bce10e8fb0e",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 12,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 12 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031332052203135",
+      "signature_hex": "769e3348fa63d1e431cb85da10926408dd9939bd49250d14d7e4f289f4b11b58d2e57f339e6f4868b4f83c3d570f8d7a1d29516a14145695e3aef9bb5cbc0e07",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 13,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 13 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420313420522031",
+      "signature_hex": "99270f0a69b5c37aa3537f945f33a656fa0077bc4781d0fceeda98974324aef3eaf87a78613052ad2d2c6b04ef6c33f23c282771cb9bd197bf7089076772480f",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 14,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 14 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031352052203337",
+      "signature_hex": "3c2b5e7abb5fe67778f51d45ef2d77ba872a0df51792cc0a11a4976f92b6e122758ec072fa184d6fc3a1d0e9cff3d57bbeea480f96a91564ebb440a93a3cc30c",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 15,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 15 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420313620522030",
+      "signature_hex": "8d32eeefb94ca7ab4f9564d94b54d4cc7e5427ecb5f5f57c59dd40c02a568b237b995fe95da32f3863c9d3e5872cc5139f0be74164d61da14d65b1cf410db409",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 16,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 16 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420313720522032",
+      "signature_hex": "1466d9f755a069bbc332e4c212014572aa65372bee6e94dd458e5a7ab3826819197f47559b86c7bc31a464c87155e4b6acb96e250637d7b8f1da25e08d639609",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 17,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 17 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031382052203233",
+      "signature_hex": "812828d2a1ff96b10d841bc9aee9b2ecc25e80bad29c65cf109340b172e771bc095a4ec2b002e362c93e8b067bc1fba2ad49dae5719c2dcb33cd93a5806c0406",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 18,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 18 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031392052203137",
+      "signature_hex": "fe9418c5b512d81d2b881e1e2fd38e88b4300de46e0908d7edefcc0f867fa48702451a047eab59aca779cd3e031d515ba73325b363614bbaadc9ea604d85ed05",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 19,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 19 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420323020522036",
+      "signature_hex": "d7cf0d998e3154f60218e4c6422ad28a676c32f47915d3906d7459cc1caf4bc68ff7cdda217aca3636da3e9ff1cb93177f70e2cf128d44bb7af4723a0a142f0b",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 20,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 20 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032312052203132",
+      "signature_hex": "75443a78759006a4e140bde68659014000207a4ddd535bec6add546c66c7ea314c5cadf1a0ccbf2398c4ff1d277b187a180394c71600c3203d341b587808c106",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 21,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 21 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032322052203231",
+      "signature_hex": "c1ce5f4ae3c5f2992bf4101b3b92756ef61748eca68f0ec2520f738445df8e17b6b3b93db5e9fc9fdf075dada85f19653f2cda58db82ce8a80466afee797ba03",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 22,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 22 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032332052203134",
+      "signature_hex": "fe44c72bb0409756cbe916cbdbb2d98de1258cfb33cd327186749ac20da84f6abe74aa6a008784f9ce2f77a84e6c51d53df3b13a8f73aa19afc037918196160c",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 23,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 23 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420323420522033",
+      "signature_hex": "e921743739ca0fdccca40b7cd71dbd6eb4a00fae379d8478556d0dbb2b42cdb5387f5fcde2798f8760dd1e6b72d183874cc353f89faf125a416445e13f8a4e08",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 24,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 24 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420323520522031",
+      "signature_hex": "75677cae5e57767a002a5c3ef050114e183b6be74d35f116f1671c3420a788f81283fd8279421057fafb8758a9caff99b02af8eab3ce7cba30fe39d0346a2f02",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 25,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 25 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032362052203135",
+      "signature_hex": "411350a1e9514bc959fb9c03a223c6c98323dc4f112bf38aa4d5c9fccdefa2b2011bfc33ad7aef596ea10678a3dae48317fe4816153bef9dd274fb2bbd97490d",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 26,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 26 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032372052203336",
+      "signature_hex": "291b62a46d6b502fea162e9b416c56c748b806ba6b86678762ed2f92a1fba5b484c1e9295303f96ae1260368157f1aad8b86ae924ab9146f8f38aabf5042b80b",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 27,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 27 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420323820522033",
+      "signature_hex": "5c6b68a1f443bb7ca7a431a1e4ecb5d9c8e15cbe44b2683fddfd7260e785877c878202606ddb9d850d9af29a879fea088ee1e675c463ab5289048d482c926b01",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 28,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 28 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032392052203233",
+      "signature_hex": "e65e6e94d86e7b0f3388bf6cc512dd382c309a59df3395f1361a95d5bb2c8fdab2006df2fce84ab5ab72173543c2d52e13dff450f8f150f08fa2fda2a8c69508",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 29,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 29 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420333020522031",
+      "signature_hex": "4b28080eedd3f80d2d93d03d508e21532995357e5321a97bae11164995004cbe177ddcdcf1edb9822efab67a2abcd36022e72448d66f9308af88747d13eaa903",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 30,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 30 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742033312052203135",
+      "signature_hex": "ae847d1e540b97c1f93aebefd3dd0f2abb8b5229e8036b33edc1bd93e0a17d311a02808553361662107f1a8ab56cfbc56f78c05bbf63c5585226187f3f65ef08",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 31,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 31 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420333220522036",
+      "signature_hex": "43b0a0d993c836c16275f1f43e07d58274eb0f3c9b8368087f6775d2fdca27ce7b2a565d0af1e8229b66b6dfaf00dcc7e53007ee90aa35a8f6c56a70104a6301",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 32,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 32 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742033332052203134",
+      "signature_hex": "6d61ad920b6dcb832ec068eee2a1a48e2b2a05ac100d408d98c5506576f1e6505e10f665bbf363494ac265e49d0b7f49efb9a406e7ee22491a8ccad23ab2e702",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 33,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 33 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420333420522036",
+      "signature_hex": "c5a26a770b330674b9e0088a291a259ef4cf85ee41ce752ba369babf39d53ad9d9bc2c840dddd00c19a352681f294041e38ae0ff5b446fd7e751c9d93864f20e",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 34,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 34 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742033352052203430",
+      "signature_hex": "7cd478bd888c22c6f8a85ce6ed56e09db6bbd9e26f936f4bf07612b143472d5e3d23b0deb8124e79148031766650687fa4c1baf0fab4ebdab5c2e7bdb85d6906",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 35,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 35 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420333620522039",
+      "signature_hex": "563e5f3b0ae097231a0d3b8f6d43d04228e8773b9a42e0023afe99a86fb0d3943212cbc4f50d8d8a4a269ae07538d1078777359dd9f6a43ea60f6c934ac8f00c",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 36,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 36 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420333720522036",
+      "signature_hex": "d73d88eb1d88144e35d6ac2e5f99b69fb7eef941dd00cb5d1285bc968949b0a5a2e6529826f8274666c78dd433c5f0cadd76516b76370d9fdf50e89164fda90a",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 37,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 37 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742033382052203137",
+      "signature_hex": "abbca0ddfaa1bb9c6801460320ced2706a1a6cbc9e68059cf075691bac7cf83ff3af29de17990ed0bc7950bfe3f00102dbeb1671317ceda8371546696d241c0a",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 38,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 38 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742033392052203230",
+      "signature_hex": "bb5de3ed654c4ee6df721111827cd7819b363540b9c4686ef81b7ba27c4a3e054bb664e7a8ff75f78ca031443d047b64473b41ce3f1e4cf486d05f044ca04503",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 39,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 39 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742034302052203131",
+      "signature_hex": "ab8d583e6fdf88edb291494576965258a0e95a2b7aba1525528937a4ab1f53f28a4cf9713e6526988dd805057058208e97313ad49228c8fb0a4c1f1dcc558b0f",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 40,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 40 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742034312052203130",
+      "signature_hex": "f470fbb102b1e24ae8c77bcc9281841f629d26755a43335cd59efab0b5993129b5abe6129883b065a3936840a1cedf792747f3d10a03b34995168f2c894e580b",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 41,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 41 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420343220522030",
+      "signature_hex": "9598ba87705b38b73cd986a36c662a97faadb34f4863cebd07740b22e53d52b94bfd892868c1fac01959cac2012c3cfa59a7a14a567e8a46cd016492acb81b0e",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 42,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 42 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742034332052203130",
+      "signature_hex": "14fbc8569a0f18f8a4581e4370cc28bef51b8d53f615204937275c1c7f67ee777f82956641bd1c07d22f9339b88b1585a7c7f6a011d388429756397a89ac0f0b",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 43,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 43 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742034342052203233",
+      "signature_hex": "25e37211e12155689bbc29f302308bc3ddbf9f0576ac90a031beefa4fcb99e0b15741b13b910309f6f8e91e23585c91d7f88f98e9670315bbec31820e8ac8d0d",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 44,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 44 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420343520522036",
+      "signature_hex": "9859a29234bb3ed581a397f5e4dadcebb9dac37df78dd910c07ed2c1fb80ef2c636d6b183fb3d57fb9f62525b3bff60c7356fd2143003ee07f882193d8d5ab0f",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 45,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 45 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420343620522038",
+      "signature_hex": "5d98cf14fff84682efae2c29dbce529862f4cedcf1d7192a8ff123ada475af02792f9dd69a5729d146a3dfda7c48688bb8176f1f47a52ae7af8515822b99ef01",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 46,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 46 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742034372052203236",
+      "signature_hex": "d5173ee28d17b7e6823d42d3e2462d936a4f0b9f4cee7951c1df6821451c8910848f560cbe9db747adcc2a7014edd2bfe0d0983bf4e7b84c30399b642b35cc0f",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 47,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 47 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420343820522033",
+      "signature_hex": "3411f4c2b049208747dcdeb2183e6cc1255ed6f0f577df7ff6090b6f459d2dc3dcae17d8e69ee74c50e846e421da57a7eea89897a58f21e445f3afc338da6406",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 48,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 48 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742034392052203432",
+      "signature_hex": "f92f53d39134cd41dc56e094c22b12af8f173e448394b353aa00364227f046b067736f7d998edc48dc9b13ac7af768db95130607535d0d5721d0c448c3295f0a",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 49,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 49 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420353020522034",
+      "signature_hex": "e2a87c1cecb6213a4f819d216aeb553c1039dc8a985c253651693c02bb3a5207e1057f61ff0513c7c316f74b9ee3c7c7af1d20830d881dfef3195229d810570d",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 50,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 50 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420353120522030",
+      "signature_hex": "01b9aacf514d4d49db4146fc38de14ee53ddf1d2be2a3d765716b968810a777ce08e859e404eebc2d0aea84720e3219bff3edc1e993fcc85c4735b4897e82e0b",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 51,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 51 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742035322052203130",
+      "signature_hex": "d6437dab391708f622f40669fc87b29b088f73d20df3e93adaafde36ee8b155a29fca4a707c9e6f6c16baaecc6d5484972ebb130f8409e83cc9c5d0f78f6bb01",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 52,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 52 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420353320522033",
+      "signature_hex": "b08a411799d8476bddf2aa6514185ecae886a4a7db521a7647b8744abe1276e414c7868426bfc4d2fb9ae55b98cedecf6bff057705af778924deb725cf768509",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 53,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 53 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420353420522034",
+      "signature_hex": "5c35df5823fe274138a6bd0de97d640b86f5144db94ab60a79068169864293a30ee5795afbe2ec7a3ac50c341b13bec96788e06d4689a3e0a9c757585876e801",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 54,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 54 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742035352052203131",
+      "signature_hex": "7db57ceed5e353a2ec0df38f1eed14c6d9ad7a5b69edd718c819a96382cfa812f37d55a16f1f49d7ec62c8a6f87b89d10192efc438b960c94d4e2e5c3f7bb302",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 55,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 55 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742035362052203138",
+      "signature_hex": "a0084e02ea9b83b1116ebfc9bbe5331a627db86fd3106c96d5530617849229c75f936a7f63abf4951ab9f2b85008b248e5af0f83d35f4f0f1d0bbc1464ab860f",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 56,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 56 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742035372052203137",
+      "signature_hex": "e42c63b6ef618b565e0abdcd0b456ff7c41a49e2ea460fb511bda179ddc2c8cb6c668a70efc86eb83507d019adc951475b7cfee9f75b55c9607c32102d62fe0d",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 57,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 57 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742035382052203231",
+      "signature_hex": "990cfe74ccb82d29cc83eacffb631ddbe4d6f9297d7bde75d8aa270bf370df31a28ebbdeca109be2d00b7ee3962f06a6429189fe355e2a5ee0e0389b2a08d90d",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 58,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 58 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420353920522033",
+      "signature_hex": "ef53ce3eadd7c070f78ed0b7033441c259de82da4d8ff07f364597ab29303fbfca08a0756982b94c02e1ee12e242ec2e540e279b21b628f2ee98e63d03fa8a0b",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 59,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 59 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420363020522031",
+      "signature_hex": "445063c8145b89a7958d6382b273a04d35e036b948363cece65b1f0917dd355812b0fb39db034f9372a41daa55e9e2e4c42492b0bdd2be2a405297639a441b07",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 60,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 60 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420363120522032",
+      "signature_hex": "d0e63b24eba62f16d4da8f0af26c27b72b5a32e612d70be966610ab38641e70ea06c979f7abc0f1b33fc5032c028a28bb7ba44590061a2a50c4b17e47401ac0c",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 61,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 61 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420363220522032",
+      "signature_hex": "e019e2743fd72cce7490e678660dd6e1d9740460f684fc61a71ef702aa10dcd51951edb37dcbdc1ec0d0968cfcde15fd6dced6ca16f980ea9e85e21478454d06",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 62,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 62 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742036332052203334",
+      "signature_hex": "d67cfdecb515a3fc7b72c6b23632566c507918623923bb493d88e7d2c373d03de9e2fba6fcd763764928e3361bcc5fbb1c82a3c56a67494f9cd26aef46781f0f",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 63,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 63 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742036342052203135",
+      "signature_hex": "ce82eaba1065943d755726b2c084d667bdb2d0a8b831cbf1dc1c9de4faedbe1bd8e23c95768b47582f40d44a6d542e1e21c0c7a858a3c11ff3d84593187ade02",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 64,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 64 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742036352052203336",
+      "signature_hex": "a1c66d36ec6d71936ab15672d1becf576c8c492f9f2123850f6c7c40e90a8e7f3a83d536cd88e693deae066098428ca8a86c91d5af493bf2729e8d4dd865320e",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 65,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 65 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742036362052203334",
+      "signature_hex": "34d2cbae3c52e8bfed12199cc808e2cbba92c7d6a54d29458e9aaf4ac6b01bd560ab597a24a2e7eee6a0ba60d4ef09a229f5e6b16cd7628d323896e510f4c706",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 66,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 66 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420363720522038",
+      "signature_hex": "d207cfb21ecfaf19a748d31eb419dc3d508efc94c57784116a508117cea8104a507eb1ced1b537513abddefdda290d9f8e090a3112bdd241c67862a33211090a",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 67,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 67 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420363820522033",
+      "signature_hex": "1469e7173d4d0a9075c5a278fcc48dd086f2a7c364105b8db85032f664aeffce0786d5ebb8c38dee5b9dde15e715c8ac58bdacbe5e2f553636f8007eb1a46806",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 68,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 68 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742036392052203436",
+      "signature_hex": "9ba7c331fe73e96c521c87d6ef7db75fdf88310bc803d30b0f729699e9c735b2bedbb6a5e18a6ebbe1f444700158bf65da65aa5b2e140951c739af4f8e4cc001",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 69,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 69 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420373020522032",
+      "signature_hex": "df76a75fac25d9b19adf263d635e10e2679a74fe461500f22f7320de9fd7a5105a59a1d61f6b9322b6f5d121b5400cbde7d3043335b0f9ea00fc521c9def2504",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 70,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 70 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742037312052203138",
+      "signature_hex": "15d434070add0e9e4ad4fa52afcff5a98973c8a0933f012f4b64236976fc1c4e7ea0aad087bda673469f5b5263ea375555bd57ab164cc3c00c509cf066b91e03",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 71,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 71 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420373220522037",
+      "signature_hex": "14c1b11a23f165ea4967b6e6b3e5b678ad55900a5a3075095572bb02d6f3775adb90f0430edf49408b311e1e1a5498be7f44abda6e0cf994657f94277f790d01",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 72,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 72 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420373320522032",
+      "signature_hex": "d3b15084ef7069b202fc7f23c4ada041922106b85606dc305770ea5bd234cfc06303caa0c29ec2de4fbe57846ffc377a8c2a4f30f1ac74ea6e9800dff71dc503",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 73,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 73 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420373420522035",
+      "signature_hex": "46e3ca6eed4a4c0ca34f5b96c75fe8c22b7bd6f59bcd1160f5276f1f0ca378a5fbe42633b57809dcdf385d81cb1c415a4be0ce09273c733343c9113e5168ea0a",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 74,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 74 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742037352052203130",
+      "signature_hex": "3256509af3c3af5362a75fd006f3f4ac4c5a7df9434d088b91c9b50c44299ec4214805eb67046d4826488bb5a896a8854a3edadcd18829a2a4f6b1668b5dc301",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 75,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 75 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420373620522034",
+      "signature_hex": "2a2deaaa8c853f72546cf1fd307514abd80e13ab73bb2700a4797a8f4d4984c3610a020d4c15f1917cfb90ea1b4b66030f9ffbf0074972a1212643d0d4e9130f",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 76,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 76 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420373720522036",
+      "signature_hex": "00223c99b44f695f455acbcbfc9b9bd2efd9bd515d8beff728b9f4b5cd067a92318d481be6c68d6d58bb78368154951176ff6a4dc7388c6a323393346659a709",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 77,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 77 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420373820522030",
+      "signature_hex": "25098b2dce8379f216130c2e2436fbf5537e7cf46d8a0416f27d58ce738191dd80f9d8985ebfabc38ce48b73068747d2dc0c80e5e39f6c1fdc7db55f5161f309",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 78,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 78 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420373920522032",
+      "signature_hex": "15785350fae93fce53e4da857f167e5d53e792ef551310f7edd63384da0e76ce9f2475c136f99a331f78ac41ee96167ac254ead7804a2d606c615bc39eb0a901",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 79,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 79 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742038302052203334",
+      "signature_hex": "97bba0fb63d497edc87cb5cd7cdf5d650763ebd94b0d8f8641db15ab953b281f87203c3c6eb3bac99f8aee1782cb7edea3e43f2e61f7d8bd533f3fe50465200b",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 80,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 80 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742038312052203139",
+      "signature_hex": "250d7ef2ac43b4ce3d706f68b6fb5c8d5333011004b15304efb54050a94a22fd5766952b3778f39e3868d6d1ac400975db76b78f35be13a0ff6bfad49fe7d30c",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 81,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 81 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742038322052203130",
+      "signature_hex": "2dfb8e8b6f987c12df758b3bd513b3778371df72cb9de59b66098b81e220a36a4ceba72ec95c76fbce716a380b4a2a6928c868e7195c582484af680624a38702",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 82,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 82 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420383320522035",
+      "signature_hex": "a546a900a1a7db47fa4b4068f7778f0542fbe51bd7194e48c6c7b8ba53c2f87776e7b038f8bcdf7b3c21b8289641af585ca236a0bbdaeb8a8b39497ac7a00806",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 83,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 83 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420383420522032",
+      "signature_hex": "1421689e55d2675328f50c315ca7902b4b660c7ac06a3652b735be57b48f025734db5a1f3e595ff520b88686861e98c5541283f3f771df37553684e8018cc40a",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 84,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 84 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420383520522030",
+      "signature_hex": "a70e0c04eceb9f37187eb01fdc57dd184b13528192ce93844794ef4770477c0b9bd0487cc992e2608359b1fdf40dcb79714a8d2582e420483865bc0e43d2850f",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 85,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 85 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742038362052203137",
+      "signature_hex": "e208d973d260ba7d5c03de900986f5d29de5ca2dddb385b0d079e3756b137d45533c321bb5627dd8d127731497dace7d9070f5853792bcd58ecd0066548e3b06",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 86,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 86 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742038372052203136",
+      "signature_hex": "6874d31177496f0e1316dabd770e79ef41f260b104fa68081e793e187d926b4359ed6385ce00932d10bc05cf9928786d5a05a4ae23826c1c2945bfd4a6bb7b0a",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 87,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 87 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742038382052203432",
+      "signature_hex": "6977673079a25b9aa0125f45786b9179252b6ce4521012bff53f4ea89aa27147c10a52d9ea915a9dbd9fece104103d4780185e0461648f18c2af746d86e36a06",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 88,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 88 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420383920522031",
+      "signature_hex": "07a9e66beed268e4aa4fde9e4656bd2f7cb859bea63343315d2f08ae8700b31b488fd72bd9f860a964681005bad6fd0a7010809caeb55e82be2c2f22fdfcbd05",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 89,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 89 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742039302052203230",
+      "signature_hex": "2bd6d3718f841b1a601bc5e145dbad3a84e072c08d2a303652db1bb16f65b2c5b17b6b376084efa89c6497705b844fd49ae5e1e17744cb85ff5105d259c74a04",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 90,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 90 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742039312052203131",
+      "signature_hex": "96f91fe64a63293cc2320704a04967e12c45580ca819a27a9229e8e9b34ac718ee863caac7bff71eabb6fa4f664892cc060bd5a50c39e612bc8395b0fe0a1506",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 91,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 91 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742039322052203130",
+      "signature_hex": "bac1983da15330bc7151c1341bee66946e6b8aa48032055b1e2f08f274505343488efb9fd2099a9e847e26d2d856a56d76b3c404a99995ed6161cce098b9c50e",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 92,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 92 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420393320522039",
+      "signature_hex": "7db189f35e1d873797077b7b2160e9d0dbcbb3ec152a39c7408b02956157691096dc8d7e71dd7e629bdda04da92ecd55c86bc969765778c634a62b89d9ef0e04",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 93,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 93 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420393420522034",
+      "signature_hex": "6669318b2792481a36ad5930a91038240babee7f25c0eb142702f9d8119e73b5c7365c975c25c0739622109ef0af5af358d1b90b76b1333586f4ab432d3cf00a",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 94,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 94 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420393520522039",
+      "signature_hex": "dde888e75b3904613932694f99d84adf289deac16eda5e6bd6638022a2b9e2145a3eacfc166988aca2fa93f1164825df6b2d7d6ccefeceb8d2067ea54c4a6201",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 95,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 95 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420393620522037",
+      "signature_hex": "eb7a8f4a26f14f4077f87e838766f8b82d71b634fe5753e29f80546e7d9c528f075a2a2acef8b0bf8efb87ba8f49f067711eaf2ddeea54c58fe7787d7038ed0d",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 96,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 96 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742039372052203138",
+      "signature_hex": "0e2c19ac6793095f5f5f84ba3cf4c9d62633e475902b500cc7fa7b0939781443c96da6483e342737d67958298314bdb2cea690f5187d230f0fe1631c68b1240b",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 97,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 97 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742039382052203136",
+      "signature_hex": "c24e0a3f29c22fc5dd6142ae9e18cc92a616743b7f27962ebdfa6fdb3e465aba3cc628504ba48ba3897e0f48dc97e3a18de322b37d2141a625c7e8b068a01609",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 98,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 98 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420393920522034",
+      "signature_hex": "c4b2ff0971a84a7931257c7165b7b70537820a431b50ef159d3a5e1c84c201459aebf08645dbefa192ce281298a3ba0dfc9d9bc9ef8503fd0fd517b9de5e6101",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 99,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 99 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031303020522031",
+      "signature_hex": "3e37c82f7466622eebd7fa43dd1b4ab5239723b7ba0c5f5911b7c9ed8daf76a9023b6c1f6dd0aecae86cf1908d6ec281d539089afed50c2d0aa316afd99bcf0c",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 100,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 100 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203130312052203133",
+      "signature_hex": "ae8fed9a1cf9efa8c5826a703428e57fa9a10500e3f82eac506cfddfdf23502bbd9f39d4f2d9db8aada33bacdc166b216de768946c81c88dbb3c670b18af6101",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 101,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 101 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203130322052203134",
+      "signature_hex": "0da97c2bf911d7a135b4460e05f75b0a49d3289611042f342a27c3afa9a07185e3352b47beb0c4078c51208a9af83469604684a0da001a129fe2929261cd280b",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 102,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 102 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203130332052203137",
+      "signature_hex": "dc307f25a124293a95c9e50a12009e610ca602cb41c8a9af5cee0c11685d6e858d386c11095e3482479c98052fac8d5d316328aa8f2bc9313f3f224fd39d3d01",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 103,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 103 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031303420522039",
+      "signature_hex": "1633ed260d02802e1921ee85a98e797677968f58564a2013212ca1a73524dba9199467621c75c44fac3ece4e178d30186cfb0ba6c6b69a3160706ae723de2c04",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 104,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 104 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203130352052203130",
+      "signature_hex": "352da37eded1f98b19a107f52f73204044798b4d1a8f549647d93be560bf561dfa5fc39e528b362f136f05b7ac07bca57f9f6acf750dc034513327993a82ed00",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 105,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 105 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203130362052203236",
+      "signature_hex": "92212f16db22bf40f28f7cd3b9fef3b0468a08278d5c89ca7ceec2d76ed9f96aaaaa5f38715df3773f405fca47421fc31bb45e1d4484d1d2dcbefda456b6500a",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 106,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 106 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203130372052203134",
+      "signature_hex": "b3aec66208e1b9b35ac69a4bc0e1836425349c076869bcae63f2a1bfe66f1f104029e23536429be7bb1568e2653068d94ed1d43b8741f161ca2b80b930c36805",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 107,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 107 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203130382052203232",
+      "signature_hex": "f6b6c840b75c9e17d7eb61bc50894135d413983a4e04f6cc66fd930523215391452f7052f9ff2f992aec605240de7ec221497a61c4e1030bd91ef05a95434208",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 108,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 108 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203130392052203236",
+      "signature_hex": "8f51c5b9ddefd54535bb3988d32e5242d368d2f58b4f3dac7202b980a697a40d1bbc3305c7c5784aad361a262937d899f676542dae9c283cccd988cd45dfd307",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 109,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 109 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031313020522039",
+      "signature_hex": "5aa9ba8940a81d1315edb3bb933da3ee5cf73eccc65924d18fc24a93069f8a7029de83f70a70785e2d66b7f816c99427bb0db0d42de6148c8733c6f7b6b9330b",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 110,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 110 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203131312052203233",
+      "signature_hex": "b9524b8663674120cba95c7af97717597daf7cbc1a3c7d535236519052549cffe28ce2030aa557541f38ec9a4188a44da19974eb85cbdfad5a7461555d5a440a",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 111,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 111 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203131322052203230",
+      "signature_hex": "83c4df3a728e2dcd96f1498c90cf1c68641ed49011bc3b212a99ceb12fddfecc2455514c815defe3a23e91133dd55dceb397208d73b8cd4da7f8d2404bff9800",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 112,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 112 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203131332052203237",
+      "signature_hex": "78e25e73fed1a5eb85539d8349b549d2b667b8a027b7d0084e2091f78dbcc7dc0a81b508cdc8ed4653563e35dc6c7b246fb26a4062fb4762db8da6f50d30180d",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 113,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 113 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031313420522037",
+      "signature_hex": "3ff900d59d4c18c51270f5f5b738f8b501bc7c0c316be469d398ebe709a5c321213ea140f5ad6e4c404a1d3f639b07055180c5d80e398070143b62a8449aaf02",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 114,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 114 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203131352052203333",
+      "signature_hex": "ee001bec882b42b33da7482846fec32b0786adc71328bae29fa1bfc543841700b97565ffb3f0704f9717540028d43a67712a948156aba2bc5365cef66b58c70f",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 115,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 115 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203131362052203531",
+      "signature_hex": "18e73013364a925ef19aabd0bf04956b5ef945f6b0b552f2f6f99af596fd9bdac714cbe9f81a11398b493b0c3cbf06f9ec5f3d09b089a89c32c4f913c60d180e",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 116,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 116 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203131372052203438",
+      "signature_hex": "48b536a9a6ae0cc6cc9b78fb54a9ce5ade3b9aca824ef6d6829e3a0a36b70df0d0784964c25d8d0bb7b0dde68203d35076ea9b544e3e1a316d50bc402fb46a02",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 117,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 117 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031313820522031",
+      "signature_hex": "7c4429ab79f4cb422a62410c4233d5b9533f913a6f67c7c447c845d783f81f83a7aaa07b645cbe4650413e7d68769339190896da58e845d1f92ff83ca3319100",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 118,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 118 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031313920522031",
+      "signature_hex": "91558ad9d14de11ba35e6dd7f6760e9b0c30b3ba95d3591810766bbe2b9d958f750eeafe477b550785652821cb4547d1c7d6d04162e3fa910ad238a8d21eb509",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 119,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 119 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031323020522031",
+      "signature_hex": "fb0db19e0509bc90d2be8966b1e5ac9148c4e3bc865bc77bb781a5638736a2635a8822947c0188f80d0e11867dc41c6acba671d9da61d3c438c2c324cbbfa901",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 120,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 120 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031323120522032",
+      "signature_hex": "16fc5dafc68187f1429c191822c3065e735622463c0bd9e35e615c7c0cf9effe8dc4b17cda1fa5860eac29548b3e23a11b6de4f7f3e2d8c842b63daec81fa50d",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 121,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 121 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031323220522036",
+      "signature_hex": "afc9541d44ced4f93ae6ed881886cbee597514dfdbcffc594ba736c4e6806f0d845aa731866e55fbf680536a6a873740509c08c03806efc5cd314c5e6936f10e",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 122,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 122 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031323320522039",
+      "signature_hex": "bb47e4c3d7d4bd2de1d52c5a6cf80d022c9bd478b29ce076c6c59647ca698be0912282fd715adbea5c984bacb7f00e47fa880880bd66c5c18bfc81c0b6f6650f",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 123,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 123 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031323420522033",
+      "signature_hex": "b1e2a7758a636c5e53847c7d6d1a7944df006f5785d3666bc3edc4646a2d9b67a65003a7f9a872de3db8b2cb651468dc7425919a795e68ebb4f6e2489fc9ef06",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 124,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 124 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203132352052203238",
+      "signature_hex": "ec53a8f7ca91f2d4cc485b4c25a27303932d00e09cb3622861017e2244ba96d0673ee01cefef834f1c544ad18448d3efdca914724bf6909809430599e0b7df02",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 125,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 125 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031323620522037",
+      "signature_hex": "6eecee72709f88e821fce4cb72b20bb28bb1303a47ea75f77222d71c69121854eb1c1c2e7a981e67651bf1af1e22f6d9b7d0fc9cd9445223e8573a27c09fcf02",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 126,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 126 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031323720522031",
+      "signature_hex": "7d3c22473a5a97edf3b5fa0507654ebbb3effb2edf8dc5a0d8cc6e31c357f48429b28e45863d1c76b7649959fb9d6f328a40461a6538fb62bdc1dc4afea0030e",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 127,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 127 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031323820522036",
+      "signature_hex": "6a1342c6c47eec5addea1189936684569b2e34206cbaae9274f5283f5e242dfa02e967e4969d98c4e27b2a6c213caf5937c04b780c07f5b821503caf87e6e80b",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 128,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 128 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031323920522030",
+      "signature_hex": "e6b73ded8884c0c08ef04ca98e190ec5881f45581c47d7777e31c91dfe1f284726fbd3362eeeafdbf9daa3967bed7f94e6d480ddb428990dff2a8d447c326d08",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 129,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 129 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031333020522033",
+      "signature_hex": "05d064a2b2d48be67cb4cf4852502318614bbbd71b5f0dcfe7eb3f14b77b0313881f657b21cea19ddcdb15ce9e3285b41d8e48295f4ca98a2d9b53879fbf5b07",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 130,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 130 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203133312052203236",
+      "signature_hex": "bce5f3c19ac1d04ee82415f44cf3d02335ca2705ffcf5b07b0c47a37971feee0bed26be3b7c2e35f9509ea8f8c6ab0c10aea3d2fe653ff70a26e665aee56e401",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 131,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 131 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031333220522037",
+      "signature_hex": "977987e6462a283fdadaf3b203f6c273811596d676eaa040a05b41174fd352cab392e2b52f7b6c47dc97af121edf4aace9c0426aa3b10ff4174bacf4dd928c05",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 132,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 132 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031333320522038",
+      "signature_hex": "38ed2f1b0e09d9f768c1f1824967ee6a693805381280cc206813ffffe94553616c9ae1e98b95020ee10c385be711c6655484c43648cdfcc45f7e2b423c0daf06",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 133,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 133 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203133342052203532",
+      "signature_hex": "991b19900a8d96c1938a324b3437994516387272eebfed098a443b9a74c67852cbb52f55780d79773410d02328d4ebc90b12e9e97caa26e222ea26870060cb0c",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 134,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 134 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031333520522032",
+      "signature_hex": "671fc13bfb71dbeb711df77a4860fb9b5d65fcaaa691fca1a072a9ad46fdb1c79be7725abf0e2313d0bbbc49a083e829dea1d151e6116c4f04ce48d7ccf62804",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 135,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 135 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031333620522033",
+      "signature_hex": "9b1a1eb9cbf208ca927160982078508461ce409a93a51cc5b4908a0d29e752a7ef0dea97687284e4885c44a03dcc2cfaa8c55bc76deeabd6328353b148f9ef07",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 136,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 136 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031333720522038",
+      "signature_hex": "d9b1237ec3c84bb32889b3c016a00071db3f25d8b69178e5ffe5aff444985cbf671c5c45a3492f44ad0fd9013f6870af5a64e28c6f20e7559d142b9ebfcd8504",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 137,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 137 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031333820522039",
+      "signature_hex": "388ee53ca773a6c840ffd352dba614bd75baefc7573afe6ccfee2414b992aa0b7b386df4a05daf86c1a1590f550350974d1cf481b7bbbfc1fd95ec60e7093008",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 138,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 138 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031333920522034",
+      "signature_hex": "2a1642161c9a5bd99552cbab1b4643ca827abc156e878f91aa6c1795fe08bb7552a730bda31178d763ade8b5bd2c93037a98b7d434066000c725e2fc8b62cf0d",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 139,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 139 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203134302052203231",
+      "signature_hex": "b5085f62f6159c03634b2f690b21c64c0634393f63e52d28c137a270ed4399be9c155cf234c02af793757c11c6f53d977e78835dbb2607059b9f5ba100f0e90c",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 140,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 140 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031343120522033",
+      "signature_hex": "fffc468989c47c30925987fd7ec2f46a99f9a10850bd0eb29da4c114ddd4e220e50e0eadcb353e552ba794d29a6945bd70d43007de91a32eab34a7c958aebe06",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 141,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 141 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031343220522035",
+      "signature_hex": "21a5f9b288286bb6d82591bf4743d1038c4499e5e986359efb52681246a74f7af1dd2308200c2926a841c7808c2bb7d186bd4e97d8b1e94e7f901267dee4ae02",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 142,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 142 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031343320522033",
+      "signature_hex": "6df8eba2669f924a6a50ab69d42ca951caa537a69591fcc417fb5d643c33feaf82a35911dd6da56fa39395d4d13b116ffff1a7c9e49c822eff86c3b44f9f2000",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 143,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 143 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031343420522036",
+      "signature_hex": "87176bde2f1b7878796ffac30ca58e68c7123fff94d26f6112dfe32171bc96554a476f8ae96fd762ec57f3d6bd1ef6f390004fa2b38a23ad93d081c6b6416505",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 144,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 144 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031343520522037",
+      "signature_hex": "a968cb02b9d4397f8621e2d79770621621fce2dfa147ef47bdd8fd8491fb6adeb700617f75d6b01f3c0febc7a0b5781d1447d3eb1cc1e80776c9838f7fa58704",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 145,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 145 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031343620522038",
+      "signature_hex": "3ca6cdda05aa95686d690d7832a28e7ddd6ecb6543c95a82221a73ca254625410943b49e9449e35b5b9d2c0cdaa124fb938444657b9e98fa1fc910d6caa1dc00",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 146,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 146 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031343720522033",
+      "signature_hex": "3262b6cc58883b6163ff0ca7c9b6fb3139424de881f702e58bd2c91777733f1c5f7f7f667131e696e5a46430935f715a8396d30934ea718e3c0a23f39121270c",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 147,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 147 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031343820522033",
+      "signature_hex": "267a468370dfd59dc217f98ddf84c05532f4dbaab33cd872d2b079439641925abda5df957ea8993d79836adf72e2a426d9f9ab6ecd3cc63791f40bd2760d2c02",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 148,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 148 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203134392052203230",
+      "signature_hex": "1c5241f69bf26d012135cca61631a10d43798ca623cd74039f73ff25d2bfd0558c342509917a52cac0569a8f8e103e79ff9ac7e73a21b015a8ae18c9bab0270c",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 149,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 149 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031353020522031",
+      "signature_hex": "338f6efe62bf59ce60764e496d2fb08dd16395c1f20bbc702143975e0761e23720f92fcf42329d5524ba7e99fd48dd01a8417b43905d896852bb21b2d962460c",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 150,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 150 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031353120522036",
+      "signature_hex": "458f7063237c8999be4bd6f86e385dfada1b6c1e90ad5302bc1d8155ce8294d4632db7c930d34d49605e42e74515baed61f3fdd37ef09ab7920f61233b4cb10e",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 151,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 151 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031353220522035",
+      "signature_hex": "5d948d3341dcea39e36383d303bcad3cebbd683d17efd35066595ffa0031e8be1157ed168bb8305f1c604c16a4bc42d9323d71d6abb2704cfcc4da97a7accb0e",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 152,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 152 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203135332052203636",
+      "signature_hex": "533f53b6328208ad9b455ad1d259578edd5d47cb01309f887276fb0d86603981f9bbe533c17ab3f819422347bc3282cd33968271fc5b032a8faaa1777b10ff04",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 153,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 153 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203135342052203132",
+      "signature_hex": "fba0891e0beae5763c271fc3737e4b92044e9ee61a8da4f8406a77911a5b0964864b9002c060564bb453f1e01890f73339eff8adf7c169996e9ac0b6d5e5810c",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 154,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 154 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203135352052203234",
+      "signature_hex": "751e09351aecf3f99f92707eb528b0321e0c97e41081c7b713d25a40c5492524bdd844afbeb659580e5d22ab77b8d0c3c45941d2432a03e4ec84c1d4ea1bb00f",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 155,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 155 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203135362052203533",
+      "signature_hex": "da0e233b05f2d26985a3dbe35e87b803850109282cc7d4b951fd53b9081cca5a1dc9dbc698aadce0b99a775bbeba0ab701a5e867079c14e0a3afabfb04df830d",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 156,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 156 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031353720522034",
+      "signature_hex": "ed9138f669a7667ba8cd859a7d5e1c3380eb92d0c40d5a60b2fc0eaa16238e0b225c337b00edd98df09961ed67a4ec4c31145c529fc8ec0140ea3b7d41a46f03",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 157,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 157 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031353820522032",
+      "signature_hex": "4c078a310508359792248819605e1e5ed30f53333e975912cc9d65793292814ba5a1223861273f834c488100397ffd67293ab3b1580caf53dafedd0ef292020d",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 158,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 158 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031353920522033",
+      "signature_hex": "07afc7310943ec27ca9fdda2209ab25ccc57e6b69371d1184fa2cae5b5bed8977f70bd76cc3e44614aa5b3193c2d3a8c937d65fe5a4e3fc3f9d4576a3af9e300",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 159,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 159 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203136302052203132",
+      "signature_hex": "0a07755c7bbc2555af1092bdd1337d1e0824ad946dbea94f1d2f3a80a259b1930eb02591e62e1ebc243948a495e2159a99da59876e8988c00b2e780f52123802",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 160,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 160 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203136312052203136",
+      "signature_hex": "d1786a9a5a48c69e15dc21dec129fe85c2c2a77485030422c65bb9f09771da50c2dc4a4a8383fd31825b0817914beb01c4cdc71e389fec02d8d02cdc3e702b0f",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 161,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 161 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031363220522030",
+      "signature_hex": "8f6dbb04b800fa1dae3c581d170f67da737654cdce76863006167d320e2a5fcabd851ca1f0c8aebd4e419eb3cfc700ad884110df1d02bb38e0e5bfa76494400f",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 162,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 162 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031363320522033",
+      "signature_hex": "a5d7c1aa4aae76bcf11046688376a9cc0872a932f3c1db3535d43eba6251f11c849db2501c375edc621d2ff42ad8329ab79317b8754a5fdc5db99c2919a04b06",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 163,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 163 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203136342052203135",
+      "signature_hex": "75e0c430080038906c10ba6b0109976099cc2ee15443af9cb92493150ad69cc4315c35a13dd8fd95b504e95125d6d6a26b7de1611fdf6f86bf6345b70889d509",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 164,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 164 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203136352052203132",
+      "signature_hex": "faab7a6bc4bc9b5a228b339ba3fb7ece900777a19ea7c681418867911e63b4d97ffa4ae91edd6da2cb5e9a1e1fbe00a85227da8963bec944742f06e594354907",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 165,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 165 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203136362052203134",
+      "signature_hex": "59c1db235d2a5afa8883de678e9df4f95bc27c742920b84275fdd1fda15b775994b40d45c8c8e0b3cd483ff55dd127038219141bc6c8e4abf41f7b11f2b3e501",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 166,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 166 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203136372052203135",
+      "signature_hex": "43da1afa0cf30510d1735e3ea5edf8ccb139e285cc1d4faa6666eecf194281c8bc6ab5cb238acaf25876d81b67fcd7d0066b0b70342f59c9869f4afb22d50100",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 167,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 167 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031363820522036",
+      "signature_hex": "a337c2b28dffc7f0ad37e0ca27fa0ecb7191fae4d5194a6562e0bcd266d18ec9279323625f330a6a203eaa290f65458613125c1c55b3d2e10f4328b2289f740e",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 168,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 168 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203136392052203338",
+      "signature_hex": "d464e121cecf0e9026b70f91b4fdca5802135c95fe5fbef992319d465bfb9b954b2ed1a7645216365aa4f6ba6ef5fb0639db425dbd96376067edad5614f9420c",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 169,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 169 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203137302052203530",
+      "signature_hex": "1fb7f7428b8027ac8fcfc935764711246f84ee1e459de93894c506aeda433178b2d6ec686ba53f0345c6f3a65dedcb7c86910af4679bd6cb5e703987ecd24605",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 170,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 170 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031373120522036",
+      "signature_hex": "67cbff14995cf97d730fce3a71fd47516f0c0b62b9bf6343ed3e0e24779d267eb7364108950edc64636286359326d5aff49b76769c7910852cd13ec7dcd2e803",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 171,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 171 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203137322052203237",
+      "signature_hex": "6c75b4faecdddee2831af540b45c8327d6b418391d8bb389352059bfa1205b5608fe802ef4a97d19edc9d3bc9b9c00d67411fed1bcd8b07bbca219fcea135f08",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 172,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 172 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203137332052203133",
+      "signature_hex": "a86d66973b102fdaa13caeb2ec244696800b9c762268b5728c1898fce1776de14c8526c63d92766ab44d5283707172e23e813581042b68944cba8ddca439780a",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 173,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 173 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031373420522035",
+      "signature_hex": "1ab267b1089484c5974c50cbf4c385599a5544d8697b1b7c1a518c9ead98b6e37badbbb20523cfa122acfa98b0f4f17061778d1e1a1c7f8bdf2f9e62f9675405",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 174,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 174 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203137352052203235",
+      "signature_hex": "bd4e4c50f5cf603e612111de419238673aa287a126687e12a71ccd7d2deb77c6f23a7df32904b8d7fe698f337add93deca3235af04c61af4f047a77b19d26603",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 175,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 175 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031373620522031",
+      "signature_hex": "1892e36a6abf0f055e82778d30fe48e20bd8d1895293e9a96dc6ee0eb6dbedbcbb51798c45356f7b6d733a44a157ebe0559dfea2da2820b11d811ab47d707c01",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 176,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 176 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203137372052203334",
+      "signature_hex": "a18c2b43dca65d5339813deb2c99cc046cbcfb8e3bcd5c2b2112eca4e63563c2cccc27aa65472200424a74b24cc542c5994b278b119a18b7fb7aee67af34b102",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 177,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 177 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031373820522032",
+      "signature_hex": "c1cbc92f5664788cb03a4a938bbb573e4eb24bdf8c7ac3fda98ee5a67920b0f35554f2be5c92ac4d7ee87ec5065f9d912b211ac148aa5cc30e01f7ce316f4109",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 178,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 178 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031373920522037",
+      "signature_hex": "15d31d75f1f61842cfed0e0020057690e3e1e233382b338c71315f1aeb96beecd350367ad86c78018ae2509847bce4653a29ca072bb0dcb9fba6cea5ad0bdf0c",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 179,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 179 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203138302052203130",
+      "signature_hex": "574acd55638ef7bd7aae8de4b7f53a5942d185ff6bd311621c323df57da78f2f6e966efae275e3f5ed3dca111d3143c2b4f504f9c5fb845f6f89d1943c76f800",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 180,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 180 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031383120522036",
+      "signature_hex": "0e21b6e6d0d8aafcb851fba6a287632a343b83aa12e4246fdcd49e331010042f6b8c0f6d69118d028a49febff9df212c5160745615455d7aefa16b9d289d6a03",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 181,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 181 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031383220522031",
+      "signature_hex": "81a11cff60bcb9978947758d7deb17d37beaa4e16bdbee512ef8ce26946646d534afb496b2ba03aa7e4a3f1c4fd09408e2400c4b8adea7ec37c341e263c6c101",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 182,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 182 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031383320522037",
+      "signature_hex": "e7b0f4c9c73249aafb636a33b442d33139cfcab955d9ba8219e391202358aa882f75b0fa8d36663cc81eb25a07622284388f68184fceda97ee201ce538951a0d",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 183,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 183 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031383420522030",
+      "signature_hex": "2aa78abcc68860f1f6962f31326d7758f1dad114fdbc8344fa8e33fbeebb3bd705d181fcdc14cc2ed1d3189411797b7ecb093e60babbe6136e0853bb8a0d4e00",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 184,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 184 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031383520522035",
+      "signature_hex": "08ec768afde012de6ed7f3e7000d8fcbba19b2a742ec38a179f26c8b3d155ff84ec5112905783b48e18daabbbff64041938f26ae381d68e9edbb9b2e73ce3d0c",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 185,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 185 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031383620522030",
+      "signature_hex": "cdad7e821906293b1844b1a69b333cee3a90734170adeb5cfc359b5e27ad0c5a9cab0d979c391a92227b6bfeb5d37e2aab35e8803e89ca9cd9bdd3c793ebe500",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 186,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 186 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031383720522032",
+      "signature_hex": "374b266d3700d49789564fa0323ef0d709742836ae7b86568a8d18827d940afc2280b21d2b06365555df2ca9a18be7507ae387080c44c0a3a7d6dc0e2318ff05",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 187,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 187 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031383820522036",
+      "signature_hex": "d554cba7eeee90f2eefcf7787cc886f93901cd30d6cc03ca41b76dbed7b42a1a971fe10729e914059a275beef3d7d80c34fc03008de7f66463bf8f0f79e3f50e",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 188,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 188 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031383920522034",
+      "signature_hex": "d033ceb2c7fb575b3bab86d4f57a8b93280ebd1c39bd4a9254800005a566b7dc14e2877a8e9729c939a2190f1b1e2655514ff1ad8eb0748ee544e08394387a0d",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 189,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 189 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203139302052203239",
+      "signature_hex": "9ffcac5712da5083c800e05a2256b482b4cc921885859ebfc0e4eebf86ecbf95d33111a60a91e016d330a27e644946be1bf414d3769ac6ee247985f408749b02",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 190,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 190 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203139312052203134",
+      "signature_hex": "111f004cc2a7c66ea96d6ae495f6a16c85842fba2b752310b1df2154d3e882fa0c22091536bc5ff4e70a4ba28b9c3b9b493a4216ec9c861bff568b8ee1672d0d",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 191,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 191 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203139322052203130",
+      "signature_hex": "fa253dd36fa45fb6d3d69851b3fedd81442b1b234b087803e44975488a477854ac0a886cd6a440d1ffb68a2030f0b82c7a3cef59c448fa8c8d651f82d36e310d",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 192,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 192 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203139332052203332",
+      "signature_hex": "2c464dddd736c9c6d769cd90a33cafed94e561ca55a33768fbf8c0c09253603290db342337f14e6f78b591524beb1389a9bf75d897edf7e92774d094fe3d4f0d",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 193,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 193 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203139342052203134",
+      "signature_hex": "eeb4298b6d4fdc9e71188ba177228712b4a2772678cd0b8771c9c1adde67ce7abaf507b6754eb812967f74aba12b0cf6e5bcb481754157dfa7a7bb0d6206b70f",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 194,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 194 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203139352052203238",
+      "signature_hex": "6f2e25df9d735fdcf57099b621c138a632ea857265b90384ca76040382bb08335e87582ae52699fc810c97e56fac556ab64a6bfb6ad010a2fdfab7d5c6474b0d",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 195,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 195 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031393620522036",
+      "signature_hex": "c9edc89f96b445350dfcb07145090b6a61d790944cdf26f48903a74f476428de5d6e9ae7bb89b0ec38749c425fd30e9cfedf9f307df6003d5114aa4a46401f07",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 196,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 196 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031393720522033",
+      "signature_hex": "55138f13e206efa70d6149fb1553b4d29c66f395995e0f8c7d9bd06efc5864ac96c1451b85004d30ce692f069db0416b5fbd3ba696c8b9e2522d013ec09a6002",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 197,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 197 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742031393820522038",
+      "signature_hex": "34f4f8ad04f22e17d875f1d526abae07a604cd4a5b84731df37c2ac26d93d01a9fb3d3e7cb75673c3d0ac8b6a33b139d04decaf394aa34ce0c752b994f0f610f",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 198,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 198 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203139392052203230",
+      "signature_hex": "902289387c616c13c6734001dc955ae37baa0d052687564b34cddedf635d2933b56b880c8c131517c7d2bfc9a1a6909b5014b2a2dcfc1a671c14003d00818a00",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 199,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 199 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032303020522032",
+      "signature_hex": "af10a95348bba3c28607fea05eb4fa0079003e5009d3ddc4359a5ed36cf60435d0620cb8676b7d460b892080078822e0675e8e91a3f08e6cbcd4e634691b340b",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 200,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 200 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032303120522033",
+      "signature_hex": "e0aefbb435bb59613dc8bbf4ae7f77ce5ae9ccbc4aeafc5367cd69d4702372f96ec496ebf494b64631e7528d8aaa5b587f40b70aaccb8100b84a7755c6822806",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 201,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 201 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032303220522033",
+      "signature_hex": "8251826919555bd9839bf153f55079f40d56e86a5d67c58f04015e21180f9a4f49199d5222532ff9958f1c1cc2511bbaac2301901c32b55b65390afc5f44fe0c",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 202,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 202 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203230332052203139",
+      "signature_hex": "d42ea8082f626d27ca3efa9baff46fcb05cc1b62c5640b74696708c7e81abaae1090b676758dd11aca46b18dbbfa211df683430825e3aace46c6a5187b22fa06",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 203,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 203 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203230342052203131",
+      "signature_hex": "315e1972468c7ec4f86788a6cfc91d8a2e219726a51729dbfbf13410832e2e337f6483eef516cad1b11d85f2205dc5f877066b17a0b69ddf03d3e7d705d52409",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 204,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 204 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203230352052203430",
+      "signature_hex": "66fb77d6b905f1c0ecae9e0604665ebbe0b37df2d22cd967f72fa73e4e4d2ea7f5586f2313aa9b8210802d2b00f8b14b377c915ae5a8e6eaf412e10793e70605",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 205,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 205 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203230362052203437",
+      "signature_hex": "1579ff99c5cb9635e2a0df1bda813b042dd7648bbb5022a6be6be96be4ec4ef626625f351408cb32b85ac815e0ee97a046df878b11bf9fc80bf8f37007b32009",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 206,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 206 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203230372052203237",
+      "signature_hex": "16f70ff6bbae339681f1d27df56919e1edf05972398688ac0ab8c24eb069aeb023893301825ced64dcad83cd3bafdb892464276bc00d2392a21ad36a05409709",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 207,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 207 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203230382052203439",
+      "signature_hex": "f522ebef4205d6da3280fc3d84d2cc71eaae5add790ee21cce18e24c4110d3806553b749e45f9ac918a2441d1724d9b5199d83cbca0d50ce4daa4f2e318bcf07",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 208,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 208 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032303920522033",
+      "signature_hex": "13d19219c1d50d78a47d6c2172e94920815afe87f5df67336446b8577dedf91ab7a3997bf8a7b380a7f57b57268b5d986e870a3c145ad62d90d27305ed33e601",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 209,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 209 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032313020522035",
+      "signature_hex": "7953df0bc994ee48890f85f194ce1515881a08cc2115b3b02952361b6f3c5b08c4839d1c165c1d6dfa3ad12c920149bc255ab6c5f32ae0df35e701a5dab51101",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 210,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 210 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203231312052203138",
+      "signature_hex": "bfecaf9cd8b2887b46a85b9724ca0ccea169502d2c0c0d4ae8f4585e184cb939a15c0f038a8d9d6c774c2e8d51f0bb33afb2b03b2b3554b98e8bc03b2bb2f107",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 211,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 211 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032313220522039",
+      "signature_hex": "717475aaf2dcba48b6016da3a60f82cfb0b38f7e04a3614e9a613a0c9a28d76d0b557ad81abe96da57d3af6b1c223d763f08f4690abb90fe7f9e6c8ce31cc609",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 212,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 212 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032313320522037",
+      "signature_hex": "c3ec3685f0c8c5cfd2e40c49fcb65d7b2fdfeac9b6bd29357c4b25c8c8eb541dba61ec3578601e1a9c16460d9939013f2bd758b95d429646152356131f184405",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 213,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 213 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203231342052203435",
+      "signature_hex": "13ede7f93ed1787db0312d650c264d81ca0d1a236004298e55ee553e12709bf87c4db6ec72c3f83e87ddb7f31ec8b553e38f9ffaeffc359334481da48009720d",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 214,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 214 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203231352052203137",
+      "signature_hex": "4ca90a51e20da2ee9e64616711d6f61bc656d2e459d04edf1d3b16975af173f2992808fcb8bac89fa202d52e8a8e05c69fab4a6c28208c9e5bcadf595c90ad05",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 215,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 215 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032313620522033",
+      "signature_hex": "fa43ccf1115449eb9cd1bea0efc10cc61418e4bef4d5b43169949393808e3e034f9876763567bf6b4ebaa6bb4c6363348fa21b1772e241db1d722fcd1195fb07",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 216,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 216 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032313720522033",
+      "signature_hex": "f05a5e21158fc58416184b58856257247ff05bbc90ac6f95d8c352afcff9d103e5ea5c72c1512a68c2144d1fd10dc15dcc29b2e51bad49fb46050b2ef01e8a07",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 217,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 217 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032313820522036",
+      "signature_hex": "0300d32da89894d47f2144c2ff9888e9d18604e62abadacb79cbcbde5bf67b262208b1513ebb61a2fb7dff92b03bebfc7747b9df00699c11de6ecea3daa6cd01",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 218,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 218 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203231392052203135",
+      "signature_hex": "aa5d1d4f8f5eac89d7947c0ab72d3d06c106f5286600f208897606586ae89cedeb7940b8c396b093f220b82c1dd0e4f6ffee9f88ae7925a8703e188f0d52fa0a",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 219,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 219 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032323020522030",
+      "signature_hex": "7765cee23299281e3911fe0d27fd401126da1b2694d9e13c2c2684d8c486532f8cb7f43d24087aa1a836b04393278709e84bb9aa9cd73f106ea9eb617535100c",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 220,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 220 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203232312052203133",
+      "signature_hex": "8c0ab8d0641c7d190d41c43bd2a915eba810e43f324826defee981aec5158693b0510d6d894ca2f2956ec4f898c53e864c52f5cb5897cd1cd9dae9517382d908",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 221,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 221 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032323220522036",
+      "signature_hex": "a31fc71b4774af21e82a673dd2d63d2c5c71c62284291931b13c4c9c5c4c3d8c1f13a00abead656a6a014e44829151edb731084e2afabc360f2b2db69d4e6e06",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 222,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 222 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203232332052203138",
+      "signature_hex": "bb8522db8e42fcdc5c5d72d43459f8fc27d3c32145246a807b00e78f01099a0c72cd692603ee48dc533fc805e4e2ff80d20bc89fff2e01bd31a689635a46950c",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 223,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 223 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032323420522031",
+      "signature_hex": "bc59e45f8c0ea5f002d921ab419d3535c52bc32cdf8e83bf507570ea87a9ee7f5d629643b91d7432f382141a2132bcd3f7559bfd18e0f8a0ee1b98d9a19a6f07",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 224,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 224 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032323520522037",
+      "signature_hex": "369fa872c7b1959139b7f55a886c6834401f8ed6cb47e56ff45d6f0adeb2368da5eebaeb8d8d1807331b3cd07546650bebb62b8898c15b56f4a1f9822d2b030a",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 225,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 225 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032323620522035",
+      "signature_hex": "86f6c04a32f4dd5a9a0524f541a4ca80e546d0875fb74619443f64556cdce4cc34545647f1a88841c1a182d5a0de55e0630d2a0b641e966f85f60dddcb74430a",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 226,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 226 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203232372052203235",
+      "signature_hex": "7a2c52f16fa2bfad09dda0db4740f06a9d0f1494a5a12577381aec3363fba1aa18e3349afa93ed887bc782b3b822d1423fe5deac30c718bf47fb932ce170fa03",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 227,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 227 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032323820522038",
+      "signature_hex": "cd4d95f3e1d770a11c181ddc56c6bb7a268ad220aed10f68449c76bc47c849ea4e07d9126ab85b84f1e501ce4d4b62b59fdf6ca5edcc5d913689be09d0ea350b",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 228,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 228 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032323920522038",
+      "signature_hex": "81ea656b8d04b7d0794366a5c79bb53e6fba35319bea4d42897dc5e82ed900b8d7f4bcc6f4230832df2abd76cdb56ddbc23fd68fa73f09b0bc1f01ee95332203",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 229,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 229 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203233302052203138",
+      "signature_hex": "b9b1836f111f9f5a336f926ad85218dd7dff1828dd3ff7ecbe6d6d0af6f3b35c69ae97b9833d8c0f65756714ab77ae7f2f9cede3e586f85b9c9b290cbf4a7a03",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 230,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 230 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032333120522033",
+      "signature_hex": "5dffdd717ef67466d7c71c453abeff5efdeb08fc22e16e20549ee4752d5ba7aac6f5bbfddbc67e4e8e54f75174156e790a7621a584e3d76b460b2456e91aed08",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 231,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 231 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203233322052203134",
+      "signature_hex": "3ede1892ed84a8df3ea22f36a071e9cc325713ce7c88d56da15372051ba87e5b943f2d6fdb0a287a1436b33b084b41c9e3e071194f041f77f962b0e396622f0a",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 232,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 232 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203233332052203139",
+      "signature_hex": "b8980cf1ca9e0ec9632199febb80527e0d0aec801660b08326a547c3ef94e9e8d8fa0a4f014a31292dd0972c5f171e99bd34345763c1f7808b33c47a4debeb04",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 233,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 233 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203233342052203132",
+      "signature_hex": "21dd3850131b221ea6a344aa27999558211ef637df805349d0f534d153bf24918c42f672ae9f69e9212c2ce99a51bd8db7417134e45b7ef1b02290caef0b8a0e",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 234,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 234 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203233352052203138",
+      "signature_hex": "428642b2276347434f7d77b0a4aa791a42f5901a857b77ab2c4aa6956b2e14b5f3902b5a62c1e913e6d1a8e90ebe213c9cd23405a949bb81d37af4536e6a6c0e",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 235,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 235 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032333620522039",
+      "signature_hex": "51a3d60ef642ee4ca94262231fecf4a217499327e96d683bf590f64013246f7d931aee2bf3ad67fc129ee4f60e08483b8db8e18793ca5cd19ca85fb6686b9a00",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 236,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 236 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032333720522030",
+      "signature_hex": "188bfde64d9fdbfa5dd95d96ab1f11dee6794ca58d834d5320a25b6acbee2ed0c0c3334ca1412da7b2333650e16119934d05f7ad9b5fc0dba1280998515d2c0e",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 237,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 237 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032333820522034",
+      "signature_hex": "5346366ee7aff1d8fd8dd6bdc3b352c4ed313d4e6ff1d7a04e2cb1c5f2a7df7012531d19a21b4092a930082669445460f476841fd5f4ede5b7009a8dbd7a7e0d",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 238,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 238 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203233392052203233",
+      "signature_hex": "58710c271f241e0e7def4f250e434c1104d411f0a66ad73526a7a8fac7e6464eb8dc217b380ab8090297bdc4d1f412c31601bd9019bcaf1fdd92e17885870708",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 239,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 239 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032343020522036",
+      "signature_hex": "1db5933b4e542496b3b3c8a6d9dd8d92428e0d348242a8a549760067c7f7e12356e18c800b7800a333faef4f17a4c06ed44cd141c232523abccc8811370fb50f",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 240,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 240 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032343120522033",
+      "signature_hex": "14d9c6f4164c5444ab22413cf9a18b1ca61aaf832f675595f437c565348187c8717692911be9d60ba54e91adfcbf12906a0ad42d70518698dbb72b13004d2e04",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 241,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 241 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032343220522034",
+      "signature_hex": "c61a59722267205aca3108eec56e39c3942f7f7940015712a26e1c4c9c14a90e5adaf6ceff5317eeb78b735e0ab7c2061c6c6e7a6a95fc74a97d1a7c22662305",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 242,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 242 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032343320522034",
+      "signature_hex": "bb1ec1bd5ec75685c1604de53677aaaee7dd5afea6e3d468366de2d548c028b9a2bc58a872d8fda94724d7f9eb4a4b83e868c46a64af0aa4e2ed8010a443e90f",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 243,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 243 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032343420522030",
+      "signature_hex": "1a9c4d82a5029ba1525de12d04badd79dba904a3ad6a5923edc80fe4951d3a3a6b5bb2edcfc40656e26a6b9f9ab3973008cefa09e7b981188b1a3a5381484501",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 244,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 244 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c69707065642062697420323435205220313035",
+      "signature_hex": "59b2a3bf0ac8323e0042c9c45ecea1fc6abac648697704ac6659e8e00723410d7c40ba8503a4e21f6a2853ec6735ef45c3a55a639c363fa4d0fbafa9e87f2b09",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 245,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 245 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203234362052203332",
+      "signature_hex": "41abf71859199c74696fd4be657c149deb10de1bce7f8c02e914d04f06013051a2d11aacac19961372d54c216442170767dc36f9fba126f5f1f0d1eb00040d0a",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 246,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 246 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032343720522036",
+      "signature_hex": "c9759718a951cbacf10d54291d410b558092b937815d7838488965e84c3897539febe8a2766bfe520333778ca765a3b4acb8b2698d4e91e549d2f1224588b30c",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 247,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 247 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032343820522034",
+      "signature_hex": "3a5d28b4331d48951df2b231b5ab9a6f698e7d04dceb6ede8f5e5d3845c2211e455ef9f397f3a523cabe03d1e752a783c247062ddae7a2bbbd9a6aead0638807",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 248,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 248 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032343920522036",
+      "signature_hex": "a04b2c4dccb3d62e1a2eb543a4acf7fbb09c6fe1ab279d939393db25d4766323e295aab573669c490b5f472b7f8612532e3e2e9f6dd17e19f83ce85e99495703",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 249,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 249 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032353020522039",
+      "signature_hex": "e8eaa008324b762d6eef03a525e50cb6aecbec118ca5b66d66f76c61320e159b905e809276767f08ee7ac7e3d61c4a72510a419d575a197f46ad17984256600e",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 250,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 250 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032353120522034",
+      "signature_hex": "a2434e65162cd28a919015d719788087e62328c781d8aa3351bfb96b2dc377d360e239b78a8fa4f5f5602093c4139896bafbfb9ca9cf99f4acace22f67bd8c06",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 251,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 251 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032353220522030",
+      "signature_hex": "e1416cff94a5724e60f9433d6d9328c15d9f8c0b1dbe82fb5c52cab36560dfd0d41234c141445e793d253e62ef083d4497ad75a0e66c63e2835effa939f09605",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 252,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 252 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c697070656420626974203235332052203135",
+      "signature_hex": "f200076f058e5742ef31f831aaa90f6d79af33bc4880f71be6d96a9885e94423d75741aa4f4d76b2c6d461fc067e2be5af7e7b8167a9a6fea203fe74090ee00a",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 253,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 253 alone"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120666c6970706564206269742032353420522033",
+      "signature_hex": "2021f36791e960fac6ef301affdd211d30935250a5a3349b055df07a62f39111bb6379272c941554eb06c0516d7f1020767323f1f1b85da1045f5698d32f9e08",
+      "expected": "refused",
+      "clause": "equation",
+      "bit": 254,
+      "why": "R is a canonical point of order L that differs from the honest nonce point in bit 254 alone"
+    }
+  ],
+  "torsion_component_r": [
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120746f7273696f6e20636f6d706f6e656e742031",
+      "signature_hex": "1c9739a583cd1d1ec07e5c8c9a159fb922a31866727b2d4d330c9762675c375f2fd512b75e6fc7254cf6d7d6ec3e5643897c98e6bd03c4bbe54dbd5ce8e5a50b",
+      "expected": "refused",
+      "clause": "equation",
+      "torsion_point_hex": "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "why": "R is the honest nonce point plus torsion_point_hex: the cofactored equation accepts it, the cofactorless one does not"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120746f7273696f6e20636f6d706f6e656e742032",
+      "signature_hex": "5131177e85e486224ee2abbfe3331f337739f02b53b3c6f7a0d8bcc8fb3da9c1dc856fde0f79e3b603d0f93ee4695533952af7635777d305379b16e434655e0b",
+      "expected": "refused",
+      "clause": "equation",
+      "torsion_point_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "why": "R is the honest nonce point plus torsion_point_hex: the cofactored equation accepts it, the cofactorless one does not"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120746f7273696f6e20636f6d706f6e656e742033",
+      "signature_hex": "797add1923a4ad5cac0faac7f7a00e7d01b293ea37ad01236c6bc3f775b1686e403a96aa2147638634ec19f2960999ba5e6e2c05053531c76b5be6195f6e9509",
+      "expected": "refused",
+      "clause": "equation",
+      "torsion_point_hex": "0000000000000000000000000000000000000000000000000000000000000080",
+      "why": "R is the honest nonce point plus torsion_point_hex: the cofactored equation accepts it, the cofactorless one does not"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120746f7273696f6e20636f6d706f6e656e742034",
+      "signature_hex": "e03905fc95885bc17e10ce26a4ece29deea58b6533508f25d548f3920778f06c3d3b3a8c393d606512f6a1f188b20d4f000d5b5eead8d75b2e8ae5dc25368d07",
+      "expected": "refused",
+      "clause": "equation",
+      "torsion_point_hex": "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+      "why": "R is the honest nonce point plus torsion_point_hex: the cofactored equation accepts it, the cofactorless one does not"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120746f7273696f6e20636f6d706f6e656e742035",
+      "signature_hex": "ec3a835e5d4f3f76fcbbdfda7ff77a2614ea6ee7668046c47b81a6f57ca5c436e2d4f32d46ed54b8eaa55b2b2408aa6132e9d56a45f233be9a846c8ac4f62a01",
+      "expected": "refused",
+      "clause": "equation",
+      "torsion_point_hex": "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+      "why": "R is the honest nonce point plus torsion_point_hex: the cofactored equation accepts it, the cofactorless one does not"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120746f7273696f6e20636f6d706f6e656e742036",
+      "signature_hex": "776c2cabe5c52936b436e6824445c27e666015b0ecea464707ee6dfb279c75dd63a9baceba92ab04a4dabd899c194833d8783cd42bae928f429d33f0ccc1640e",
+      "expected": "refused",
+      "clause": "equation",
+      "torsion_point_hex": "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+      "why": "R is the honest nonce point plus torsion_point_hex: the cofactored equation accepts it, the cofactorless one does not"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120746f7273696f6e20636f6d706f6e656e742037",
+      "signature_hex": "625063a19e29f75278d80a08ec0eae63037653dd4b9da18280bc28253998cb2d4f131aaf93f92718360dcc421ecb28c61ca2447e983173b90a6ea50fc394dd0f",
+      "expected": "refused",
+      "clause": "equation",
+      "torsion_point_hex": "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+      "why": "R is the honest nonce point plus torsion_point_hex: the cofactored equation accepts it, the cofactorless one does not"
+    }
+  ],
+  "small_order_r": [
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120736d616c6c2d6f7264657220522030",
+      "signature_hex": "0100000000000000000000000000000000000000000000000000000000000000da7d1b4319aafe832061ecda02b941e49c0c0ed12ec161978f901b3d25f7770a",
+      "expected": "accepted",
+      "clause": null,
+      "why": "R is the identity and S = k*a: a signature with nonce 0, which only the private key makes"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120736d616c6c2d6f7264657220522031",
+      "signature_hex": "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f010baaaed3025f350ffa28644435afbccc33aff23dfa076cabbd78127d686402",
+      "expected": "refused",
+      "clause": "equation",
+      "why": "R is a point of small order other than the identity and S = k*a: the cofactored equation accepts it"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120736d616c6c2d6f7264657220522032",
+      "signature_hex": "000000000000000000000000000000000000000000000000000000000000000095f48e6c71f2fe9bd12dbb69cc7451a27c2201ea797fc0fe8af15191c55a8609",
+      "expected": "refused",
+      "clause": "equation",
+      "why": "R is a point of small order other than the identity and S = k*a: the cofactored equation accepts it"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120736d616c6c2d6f7264657220522033",
+      "signature_hex": "00000000000000000000000000000000000000000000000000000000000000806a9e75a386619d8447e838a565be2b5fc0852f8b6b842f0f040a9e5c67029305",
+      "expected": "refused",
+      "clause": "equation",
+      "why": "R is a point of small order other than the identity and S = k*a: the cofactored equation accepts it"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120736d616c6c2d6f7264657220522034",
+      "signature_hex": "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc0532619dc01058938abe947ddbd5ddd3e0081cb99720ed1a5a7ef3b54f922c1002",
+      "expected": "refused",
+      "clause": "equation",
+      "why": "R is a point of small order other than the identity and S = k*a: the cofactored equation accepts it"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120736d616c6c2d6f7264657220522035",
+      "signature_hex": "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85b88a9ad1401f4aefb10d9e4d2721e552c7022573351cd75b2ab8aed794608206",
+      "expected": "refused",
+      "clause": "equation",
+      "why": "R is a point of small order other than the identity and S = k*a: the cofactored equation accepts it"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120736d616c6c2d6f7264657220522036",
+      "signature_hex": "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a62721ea156828d8677575953b38d9d415cbbc18b0f924a30cf3542374adf4d09",
+      "expected": "refused",
+      "clause": "equation",
+      "why": "R is a point of small order other than the identity and S = k*a: the cofactored equation accepts it"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120736d616c6c2d6f7264657220522037",
+      "signature_hex": "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fafdd4b7781f72b8a040b08da179f304e85c7a5d703bf8a9eff935a3554a58c003",
+      "expected": "refused",
+      "clause": "equation",
+      "why": "R is a point of small order other than the identity and S = k*a: the cofactored equation accepts it"
+    }
+  ],
+  "non_canonical_r": [
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f7631206e6f6e2d63616e6f6e6963616c20522030",
+      "signature_hex": "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f636cc72b2e0ac5c43fc54670b4bee4327fd8a7c44f621380807728e11011c605",
+      "expected": "refused",
+      "clause": "non_canonical_r",
+      "why": "y = p, sign 0: decodes as y = 0 when reduced; S = k*a"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f7631206e6f6e2d63616e6f6e6963616c20522031",
+      "signature_hex": "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe180dac394c906b800986b4d640709e316ce8fecf235d585756649002f193c01",
+      "expected": "refused",
+      "clause": "non_canonical_r",
+      "why": "y = p, sign 1: decodes as y = 0 when reduced; S = k*a"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f7631206e6f6e2d63616e6f6e6963616c20522032",
+      "signature_hex": "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fded34cd764c015f4eff07153f8d58a35212654633d81799857273210c0e1d205",
+      "expected": "refused",
+      "clause": "non_canonical_r",
+      "why": "y = p + 1, sign 0: decodes as the identity when reduced; S = k*a"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f7631206e6f6e2d63616e6f6e6963616c20522033",
+      "signature_hex": "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff65aef21869cb5c6f809cc62790e705fc90fa3520cfbbbff25721f4c08034e909",
+      "expected": "refused",
+      "clause": "non_canonical_r",
+      "why": "y = p + 1, sign 1: decodes as the identity when reduced and the sign ignored; S = k*a"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f7631206e6f6e2d63616e6f6e6963616c20522034",
+      "signature_hex": "0100000000000000000000000000000000000000000000000000000000000080ccf62941170dcbecad1e69f1e4ae26e3cdc81c4dba701e392a5b93430d463904",
+      "expected": "refused",
+      "clause": "non_canonical_r",
+      "why": "the identity with bit 255 set; S = k*a"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f7631206e6f6e2d63616e6f6e6963616c20522035",
+      "signature_hex": "ecfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffd7ef00cc8c7aa4e7bfb58b6db3049daf47550720242561c25810b97b6433002",
+      "expected": "refused",
+      "clause": "non_canonical_r",
+      "why": "the point of order 2 with bit 255 set; S = k*a"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f7631206f66662d637572766520522030",
+      "signature_hex": "02000000000000000000000000000000000000000000000000000000000000005c818f913e8add84308af95277bb9538fc27f2e1703c833858ae4022eddb0c0a",
+      "expected": "refused",
+      "clause": "non_canonical_r",
+      "why": "y = 2 is on no curve point; sign 0"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f7631206f66662d637572766520522031",
+      "signature_hex": "0200000000000000000000000000000000000000000000000000000000000080e805ca5d4336363fb2681220a87d3d37b25ffebee55b4998a6ff55409a3f4c03",
+      "expected": "refused",
+      "clause": "non_canonical_r",
+      "why": "y = 2 is on no curve point; sign 1"
+    }
+  ],
+  "s_range": [
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120532072616e6765",
+      "signature_hex": "62f47496903bb12ecbe5e20fa8ca441d8758ea04a388adfe876a00e5dff8cb148ffc012d1eee3b7dfa42f31e056e53e0c236ec9127e8f5e509ab422189c65e1f",
+      "expected": "refused",
+      "clause": "s_out_of_range",
+      "why": "an honest signature with L added to S: the same S modulo L"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120532072616e6765",
+      "signature_hex": "62f47496903bb12ecbe5e20fa8ca441d8758ea04a388adfe876a00e5dff8cb14edd3f55c1a631258d69cf7a2def9de1400000000000000000000000000000010",
+      "expected": "refused",
+      "clause": "s_out_of_range",
+      "why": "S = L"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120532072616e6765",
+      "signature_hex": "62f47496903bb12ecbe5e20fa8ca441d8758ea04a388adfe876a00e5dff8cb14ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expected": "refused",
+      "clause": "s_out_of_range",
+      "why": "S = 2^256 - 1"
+    },
+    {
+      "public_key_hex": "9eb9e2a42c84f959721e41cfee2223f84a6d45261f605c4d45fa0f8e6956d401",
+      "message_hex": "656432353531392d766572696669636174696f6e2f763120532072616e676520616e64206e6f6e2d63616e6f6e6963616c2052",
+      "signature_hex": "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fb1c1923f28a90817595669ad69b77ee210f69f940fdbf0ad5370742cd1535d1e",
+      "expected": "refused",
+      "clause": "s_out_of_range",
+      "why": "S >= L and R non-canonical: S is checked first"
+    }
+  ],
+  "refused_keys": [
+    {
+      "public_key_hex": "0100000000000000000000000000000000000000000000000000000000000000",
+      "message_hex": "656432353531392d766572696669636174696f6e2f7631206964656e74697479206b6579",
+      "signature_hex": "58666666666666666666666666666666666666666666666666666666666666660100000000000000000000000000000000000000000000000000000000000000",
+      "expected": "refused",
+      "clause": "key_refused",
+      "why": "the identity as the key, R the base point and S = 1: the cofactorless equation accepts it for every message"
+    },
+    {
+      "public_key_hex": "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "message_hex": "656432353531392d766572696669636174696f6e2f7631206f726465722d32206b65792033",
+      "signature_hex": "58666666666666666666666666666666666666666666666666666666666666660100000000000000000000000000000000000000000000000000000000000000",
+      "expected": "refused",
+      "clause": "key_refused",
+      "why": "the point of order 2 as the key, R the base point and S = 1, at a message whose challenge is even both in full and reduced modulo L: the cofactorless equation accepts it"
+    },
+    {
+      "public_key_hex": "838b5a71a9ae88834d4a02d90de5c87f0b0657ed380c1e02676a2361e2e7dce8",
+      "message_hex": "656432353531392d766572696669636174696f6e2f76312073686966746564206b65792034",
+      "signature_hex": "0aa12fe3cdeeb476118461fbf3b9270ffeba233e97a026af6bad44d8854fee3a7662e39b0b28a89b05a8cd09e5d2887b23a77b14902166ae91c755ff3ac4520f",
+      "expected": "refused",
+      "clause": "key_refused",
+      "seed_hex": "e14bd391bc7befb61db0b7f943f2fa217d6df3f526d7d30ee9d36ec2d454aad1",
+      "torsion_point_hex": "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+      "why": "the key of seed_hex plus torsion_point_hex, signed with the unshifted scalar at a challenge divisible by 8 both in full and reduced modulo L: the cofactorless equation accepts it"
+    },
+    {
+      "public_key_hex": "0100000000000000000000000000000000000000000000000000000000000000",
+      "message_hex": "656432353531392d766572696669636174696f6e2f7631206964656e74697479206b6579",
+      "signature_hex": "5866666666666666666666666666666666666666666666666666666666666666eed3f55c1a631258d69cf7a2def9de1400000000000000000000000000000010",
+      "expected": "refused",
+      "clause": "key_refused",
+      "why": "the identity key with S >= L: the key is checked first"
+    }
+  ]
+}

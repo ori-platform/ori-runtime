@@ -554,6 +554,12 @@ VECTOR_CONSUMERS = {
         "test_ed25519_key_admission.py::test_admission_matches_the_contract_corpus",
         "test_ed25519_key_admission.py::test_every_keyless_signature_is_refused_for_its_key",
     ),
+    # The Android runtime's verifier reads the same file in its own test
+    # (mobile/ori-runtime-mobile, verification_matches_the_contract_corpus).
+    ("ed25519_verification", "vectors-v1"): (
+        "test_ed25519_verification_vectors.py::test_the_runtime_reaches_the_contract_verdict",
+        "test_ed25519_verification_vectors.py::test_admission_is_what_refuses_the_refused_keys",
+    ),
     ("firmware_telemetry", "fault-vectors-v2"): (
         "firmware/test_fault_v2.py::test_every_case_is_accepted_and_recorded",
         "firmware/test_fault_v2.py"
