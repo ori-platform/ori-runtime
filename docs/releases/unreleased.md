@@ -19,6 +19,13 @@ release is cut.
   load, so a runtime carrying one no longer starts. Before, it started and
   that sensor silently never read. Before restarting on this release,
   replace each wildcard with one sensor per concrete topic.
+- An MQTT-family sensor whose `clean_session` or `mqtt_clean_session` is set
+  to anything but `true` is refused at config load, so a deployment that
+  asked for a persistent session no longer starts. Remove the setting, or set
+  it to `true`, before upgrading.
+- `gateway.firmware_commands.publish_timeout_s` must be finite. A value such
+  as `.inf` loaded before and is now refused at config load; set a finite
+  number of seconds before upgrading.
 
 ## Added
 
