@@ -14,6 +14,11 @@ release is cut.
   across the upgrade is closed with its safe default, as at every restart,
   and is not approved under the new digest; the next trigger raises a new
   proposal.
+- An MQTT-family sensor whose `topic`, or a Victron sensor whose
+  `portal_id`, contains the wildcard `+` or `#` is now refused at config
+  load, so a runtime carrying one no longer starts. Before, it started and
+  that sensor silently never read. Before restarting on this release,
+  replace each wildcard with one sensor per concrete topic.
 
 ## Added
 
@@ -90,6 +95,12 @@ release is cut.
   until a live publication arrives, which can take hours. Sensors always
   connect with a clean session, and a sensor's `clean_session` or
   `mqtt_clean_session` set to anything but `true` is refused at config load.
+- An MQTT-family sensor whose `topic` (or a Victron sensor whose `portal_id`)
+  contains the wildcard `+` or `#` is refused at config load, naming the
+  sensor and the key. Such a sensor loaded and subscribed but never read,
+  because a value is cached under the topic of the message that carried it
+  and read under the configured one. The adapters refuse it too, before
+  dialling the broker. One sensor reads one concrete topic.
 - `aiomqtt` is in the runtime lock, so the MQTT perception adapters install
   from the release bundle. Connecting one on a Raspberry Pi is not yet
   observed.

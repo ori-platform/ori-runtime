@@ -32,6 +32,15 @@ RECONNECT_CAP_S = 60.0
 # would otherwise be redialled at the base delay forever.
 RECONNECT_STABLE_S = 30.0
 
+# The characters MQTT reserves for subscription filters; no published message
+# carries one in its topic.
+MQTT_TOPIC_WILDCARDS = ("+", "#")
+
+
+def topic_wildcards(topic: str) -> tuple[str, ...]:
+    """The wildcard characters *topic* carries; empty for a concrete topic."""
+    return tuple(char for char in MQTT_TOPIC_WILDCARDS if char in topic)
+
 
 def reconnect_delay(attempt: int, rng: random.Random | None = None) -> float:
     """Seconds before reconnect *attempt* (0-based): uniform in [0, ceiling]."""
@@ -478,10 +487,19 @@ class MqttCachedAdapter(BaseAdapter):
             raise AdapterConnectionError(
                 f"{self.adapter_name}: '{port_key}' must be > 0."
             )
+        # A value is cached under the topic of the message that carried it and
+        # read back under the subscribed one, so a filter would never read.
+        topics = tuple(topics)
+        for topic in topics:
+            if topic_wildcards(topic):
+                raise AdapterConnectionError(
+                    f"{self.adapter_name}: topic {topic!r} is a wildcard "
+                    "subscription, and a sensor reads one concrete topic."
+                )
 
         try:
             self._client_kwargs = self._build_mqtt_client_kwargs(config)
-            self._topics = tuple(topics)
+            self._topics = topics
             await self._open_client()
             self._link_up = True
             self._listener_task = asyncio.create_task(
