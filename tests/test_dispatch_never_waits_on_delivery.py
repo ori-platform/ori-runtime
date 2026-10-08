@@ -79,7 +79,7 @@ from ori.security.evidence.ingest import RECEIPT_DOMAIN
 from ori.security.evidence.registration import CONFIRMATION_OVERDUE_MS
 from ori.skills.loader import Trigger
 from ori.state.store import StateStore
-from tests.waiting import drained, settle, wait_until
+from tests.waiting import drained, latency_bounds_apply, settle, wait_until
 
 DEVICE = "dev-01"
 REFERENCE = "sha256:" + "ab" * 32
@@ -482,8 +482,7 @@ class _Site:
         """Wait, bounded, for the trip's event to finish dispatching."""
         trip = self.dispatching
         assert trip is not None
-        done, _ = await asyncio.wait({trip}, timeout=_PROMPT_S)
-        assert done, "the trip's event never settled"
+        await settle({trip}, what="the trip's event to settle")
 
     async def approve(self) -> dict[str, Any]:
         """Raise an approval, answer YES, and return once the act has run."""
@@ -761,12 +760,14 @@ def baseline(tmp_path_factory: pytest.TempPathFactory) -> dict[str, Any]:
 
 def _assert_unobstructed(case: str, trip: dict, approved: dict) -> None:
     assert trip["ran"] == 1, f"{case}: the trip did not run"
-    assert trip["after_s"] < _TRIP_BOUND_S, (
-        f"{case}: the trip waited {trip['after_s']:.3f}s"
-    )
     assert approved["ran"] == 1, f"{case}: the approved act did not run: {approved}"
     assert approved["safe_default_ran"] == 0, f"{case}: the safe default ran instead"
     assert approved["decided"] == _DECIDED, f"{case}: {approved['decided']}"
+    if not latency_bounds_apply():
+        return
+    assert trip["after_s"] < _TRIP_BOUND_S, (
+        f"{case}: the trip waited {trip['after_s']:.3f}s"
+    )
     assert approved["after_reply_s"] < _APPROVED_BOUND_S, (
         f"{case}: the approved act waited {approved['after_reply_s']:.3f}s after YES"
     )
@@ -775,7 +776,6 @@ def _assert_unobstructed(case: str, trip: dict, approved: dict) -> None:
     )
 
 
-@pytest.mark.latency_bound
 @pytest.mark.parametrize("case", CASES)
 def test_delivery_state_never_changes_a_trip_or_an_approved_act(
     case: str, baseline: dict[str, Any], tmp_path: Path

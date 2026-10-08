@@ -77,7 +77,7 @@ from tests.conftest import (
     run_runtime_full_startup,
     run_runtime_until,
 )
-from tests.waiting import DEADLINE_S, wait_until
+from tests.waiting import DEADLINE_S, settle, wait_until
 
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -720,8 +720,7 @@ async def _stop_and_join(runtime, start_task: asyncio.Task) -> None:
     # `asyncio.wait` joins without re-raising the task's CancelledError, and
     # returns what is still pending — so the teardown asserts the runtime task
     # actually stopped rather than discarding an awaited value.
-    _, pending = await asyncio.wait({start_task}, timeout=10)
-    assert not pending, "the runtime task did not stop"
+    await settle({start_task}, what="the runtime task to stop")
 
 
 @pytest.mark.asyncio

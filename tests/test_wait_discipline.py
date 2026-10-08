@@ -11,8 +11,9 @@ awaited.
 
 Read by AST, so a rename or a reformat does not slip past it, and limited to
 the shapes it can name. It cannot see a fixed `asyncio.sleep` followed by an
-assertion on another task's work, which is the same defect in its plainest
-form; `ORI_TEST_STALL_MS` (see `tests/conftest.py`) is what exposes those.
+assertion on another task's work, a timeout caught as a broader exception, or
+a bounded wait behind a helper of another name. `ORI_TEST_STALL_MS` (see
+`tests/conftest.py`) exposes such a window only when a run breaches it.
 """
 
 from __future__ import annotations
@@ -29,15 +30,22 @@ _EXEMPT_FILES = frozenset({"waiting.py"})
 #: (path relative to tests/, rule, enclosing function) -> why it is sound.
 #: Every entry is a decision: a bound that runs out here cannot reach an
 #: assertion as though the awaited work had happened.
-ALLOWED: dict[tuple[str, str, str], str] = {}
+ALLOWED: dict[tuple[str, str, str], str] = {
+    ("test_dispatch_never_waits_on_delivery.py", "swallowed-timeout", "close"): (
+        "teardown of a site whose assertions have already run: a route still "
+        "running at close is cancelled, and nothing is asserted after it"
+    ),
+}
 
 _HELP = (
     "Wait for the condition itself with tests/waiting.py — wait_until(predicate, "
     "what=...), settle(tasks, what=...), drained(dispatcher) or quiesce(what=...) — "
-    "which fail naming what never happened. This guard reads a few shapes only: "
-    "a fixed asyncio.sleep followed by an assertion on another task's work is the "
-    "same defect and passes it, so run the touched tests under ORI_TEST_STALL_MS "
-    "as well."
+    "which fail naming what never happened. This guard reads a few shapes only. "
+    "It does not see a fixed asyncio.sleep followed by an assertion on another "
+    "task's work, a timeout caught as a broader exception, or a bounded wait "
+    "behind a helper of another name; those are the same defect and pass it. "
+    "Neither stall simulation finds them all either: it finds the windows the "
+    "run happens to breach."
 )
 
 
@@ -119,38 +127,23 @@ class _Finder(ast.NodeVisitor):
                 self._add(node, "suppressed-timeout")
 
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
-        silent = all(
-            isinstance(stmt, (ast.Pass, ast.Continue))
-            or (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant))
-            for stmt in node.body
-        )
-        if node.type is not None and _is_timeout_error(node.type) and silent:
+        # Logging, counting or cancelling and carrying on is still carrying on.
+        raises = any(isinstance(child, ast.Raise) for child in ast.walk(node))
+        if node.type is not None and _is_timeout_error(node.type) and not raises:
             self._add(node, "swallowed-timeout")
         self.generic_visit(node)
 
-    def visit_Expr(self, node: ast.Expr) -> None:
-        value = node.value
-        if isinstance(value, ast.Await) and _is_call_to(value.value, "wait", "asyncio"):
-            call = value.value
-            assert isinstance(call, ast.Call)
-            if any(kw.arg == "timeout" for kw in call.keywords) or len(call.args) > 1:
-                self._add(node, "unchecked-asyncio-wait")
-        if isinstance(value, ast.Await) and _is_call_to(value.value, "drain_records"):
-            self._add(node, "unchecked-drain-records")
-        self.generic_visit(node)
-
-    def visit_Assign(self, node: ast.Assign) -> None:
-        value = node.value
-        if (
-            isinstance(value, ast.Await)
-            and _is_call_to(value.value, "wait", "asyncio")
-            and all(
-                isinstance(t, ast.Name) and t.id == "_"
-                for target in node.targets
-                for t in (target.elts if isinstance(target, ast.Tuple) else [target])
-            )
+    def visit_Call(self, node: ast.Call) -> None:
+        # Kept, assigned or asserted on, a bounded asyncio.wait still returns
+        # normally when its bound runs out, with work left pending; checking
+        # `done` misses a partial result. `settle` checks what is pending.
+        if _is_call_to(node, "wait", "asyncio") and (
+            any(kw.arg == "timeout" for kw in node.keywords) or len(node.args) > 1
         ):
             self._add(node, "unchecked-asyncio-wait")
+        # Returns quietly when its timeout runs out, whatever is done with it.
+        if _is_call_to(node, "drain_records"):
+            self._add(node, "unchecked-drain-records")
         self.generic_visit(node)
 
     def visit_Module(self, node: ast.Module) -> None:
@@ -167,7 +160,13 @@ class _Finder(ast.NodeVisitor):
     def _check_body(self, body: list[ast.stmt]) -> None:
         """A bounded poll that can fall out of its loop with nothing said."""
         for index, stmt in enumerate(body):
-            if not isinstance(stmt, (ast.For, ast.While)) or stmt.orelse:
+            if not isinstance(stmt, (ast.For, ast.While)):
+                continue
+            if any(
+                isinstance(child, ast.Raise)
+                for o in stmt.orelse
+                for child in ast.walk(o)
+            ):
                 continue
             if not _awaits_sleep(stmt):
                 continue
@@ -256,12 +255,57 @@ def test_the_guard_sees_each_shape_it_names() -> None:
             "    assert x\n"
         ),
     }
+    # The shapes that look checked and are not.
+    disguised = {
+        "unchecked-asyncio-wait": [
+            # A partial result: one task done, another still pending.
+            "async def t(tasks):\n"
+            "    done, pending = await asyncio.wait(tasks, timeout=0.01)\n"
+            "    assert done\n",
+            "async def t(task):\n"
+            "    done, _ = await asyncio.wait({task}, timeout=2,"
+            " return_when=asyncio.FIRST_COMPLETED)\n"
+            "    assert done\n",
+        ],
+        "unchecked-drain-records": [
+            "async def t(d):\n    ignored = await d.drain_records(timeout=1)\n",
+            "async def t(d):\n    result: None = await d.drain_records()\n",
+        ],
+        "swallowed-timeout": [
+            "async def t(task):\n"
+            "    try:\n"
+            "        await asyncio.wait_for(task, 1)\n"
+            "    except TimeoutError:\n"
+            "        print('timeout')\n",
+            "async def t(task):\n"
+            "    try:\n"
+            "        await asyncio.wait_for(task, 1)\n"
+            "    except (asyncio.TimeoutError, ValueError):\n"
+            "        task.cancel()\n",
+        ],
+        "bounded-poll-falls-through": [
+            "async def t(x):\n"
+            "    for _ in range(3):\n"
+            "        if x:\n"
+            "            break\n"
+            "        await asyncio.sleep(0.01)\n"
+            "    else:\n"
+            "        pass\n"
+            "    assert x\n",
+        ],
+    }
     for rule, source in cases.items():
         assert _scan(source) == [rule], (rule, _scan(source))
+    for rule, sources in disguised.items():
+        for source in sources:
+            assert _scan(source) == [rule], (rule, source, _scan(source))
     sound = (
         "async def t(x, pending):\n"
-        "    done, _ = await asyncio.wait(pending, timeout=2)\n"
-        "    assert done\n"
+        "    await settle(pending, what='the pending work')\n"
+        "    try:\n"
+        "        await asyncio.wait_for(x, 1)\n"
+        "    except TimeoutError:\n"
+        "        raise AssertionError('x never finished') from None\n"
         "    for _ in range(10):\n"
         "        if x:\n"
         "            break\n"

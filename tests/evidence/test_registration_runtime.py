@@ -30,6 +30,7 @@ from ori import operator_socket as op
 from ori.operator_socket import OperatorSocketServer
 from ori.runtime import OriRuntime
 from tests.test_evidence_commission import run_installed_bridge
+from tests.waiting import settle
 
 REPO = Path(__file__).resolve().parent.parent.parent
 DEVICE = "bench-01"
@@ -92,8 +93,7 @@ async def _started(config: Path) -> tuple[OriRuntime, asyncio.Task[None]]:
 async def _stopped(runtime: OriRuntime, task: asyncio.Task[None]) -> None:
     await runtime.stop()
     task.cancel()
-    _, pending = await asyncio.wait({task}, timeout=10)
-    assert not pending
+    await settle({task}, what="the runtime task to stop")
 
 
 async def _until_status(runtime: OriRuntime, status: str) -> dict[str, Any]:

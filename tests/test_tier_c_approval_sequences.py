@@ -237,6 +237,8 @@ class Replay:
             )
         ).decode("ascii")
         self.critical: list[str] = []
+        #: How long a step waits for the world to come to rest; a hang bound.
+        self.rest_deadline_s = DEADLINE_S
         # Set by the operator-socket corpus, which submits every local
         # reconcile through the socket and the bridge rather than the dispatcher.
         self.operator_transport: Any = None
@@ -259,22 +261,37 @@ class Replay:
         finally:
             self.listening[proposal_id] -= 1
 
-    def parked(self, proposal_id: str) -> bool:
+    async def parked(self, proposal_id: str) -> bool:
         """Whether a dispatch has finished or waits on something only a step moves.
 
-        A dispatch waits on the harness in two places: for an operator reply
-        (with none queued), and at the entry to dispatch the harness holds.
-        Anywhere else it still has work of its own to do.
+        A dispatch waits on the harness in two places, each legitimate only in
+        the lifecycle state that has it: for an operator reply (with none
+        queued) while its proposal is still `proposed`, and at the entry to
+        dispatch the harness holds while its approval is admitted and not yet
+        dispatched. A dispatch whose proposal has moved past either is not
+        parked whatever it waits on: it still has to finish.
         """
         task = self.tasks.get(proposal_id)
         if task is None or task.done():
             return True
+        state = await self.state_of(proposal_id)
         if (
-            self.listening.get(proposal_id, 0) > 0
+            state == adm.PROPOSED
+            and self.listening.get(proposal_id, 0) > 0
             and not self.replies[proposal_id].qsize()
         ):
             return True
-        return proposal_id in self.dispatch_held and not self.dispatch_released.is_set()
+        return (
+            state == adm.APPROVED_PENDING_DISPATCH
+            and proposal_id in self.dispatch_held
+            and not self.dispatch_released.is_set()
+        )
+
+    async def _all_parked(self) -> bool:
+        for proposal_id in list(self.tasks):
+            if not await self.parked(proposal_id):
+                return False
+        return True
 
     async def at_rest(self, what: str) -> None:
         """Wait until every dispatch is parked, its notices sent, its records written.
@@ -285,8 +302,9 @@ class Replay:
         """
         assert self.dispatcher is not None
         await wait_until(
-            lambda: all(self.parked(p) for p in self.tasks),
+            self._all_parked,
             what=f"{what}: every dispatch to finish or wait on the harness",
+            deadline_s=self.rest_deadline_s,
         )
         await settle(
             {
@@ -1217,3 +1235,41 @@ def test_every_pinned_sequence_exists_in_the_corpora() -> None:
         seq["name"] for seq in BINDING["sequences"]
     }
     assert EXPECTED_NOT_REPRESENTED <= names, EXPECTED_NOT_REPRESENTED - names
+
+
+async def test_a_dispatch_still_running_after_its_outcome_is_never_at_rest(
+    tmp_path: Path, monkeypatch: Any, caplog: Any
+) -> None:
+    """A rest point that accepted any listener would pass a dispatch that acted,
+    recorded `executed`, and then waited for a reply that can never matter."""
+    replay = Replay(tmp_path, ADMISSION["proposal"], monkeypatch)
+    replay.rest_deadline_s = 0.5
+    start = replay.start
+    signature = inspect.signature(ActionDispatcher._dispatch_admitted)
+
+    async def start_with_a_lingering_dispatch(*args: Any, **kwargs: Any) -> None:
+        await start(*args, **kwargs)
+        assert replay.dispatcher is not None
+        dispatcher = replay.dispatcher
+        admitted = dispatcher._dispatch_admitted
+
+        async def lingering(*a: Any, **kw: Any) -> Any:
+            result = await admitted(*a, **kw)
+            row = signature.bind(dispatcher, *a, **kw).arguments["row"]
+            await replay.await_reply(str(row["proposal_id"]))
+            return result
+
+        dispatcher._dispatch_admitted = lingering  # type: ignore[method-assign]
+
+    replay.start = start_with_a_lingering_dispatch  # type: ignore[method-assign]
+    sequence = next(
+        s
+        for s in ADMISSION["sequences"]
+        if s["name"] == "a live approval dispatches immediately and records its outcome"
+    )
+    try:
+        with pytest.raises(AssertionError, match="every dispatch to finish"):
+            await _run(replay, sequence, caplog)
+    finally:
+        if replay.store is not None and replay.store._conn is not None:
+            await replay.crash()
