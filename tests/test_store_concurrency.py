@@ -9,6 +9,7 @@ import pytest
 
 from ori.network.events import OriEvent, SensorReading
 from ori.state.store import StateStore
+from tests.waiting import wait_until
 
 
 @pytest.fixture
@@ -68,10 +69,7 @@ async def test_write_blocks_other_writes(store, monkeypatch):
     monkeypatch.setattr(StateStore, "_insert_reading_sync", _blocked_insert)
 
     first = asyncio.create_task(store.append_history(_event("sensor-1", 1.0)))
-    for _ in range(30):
-        if entered.is_set():
-            break
-        await asyncio.sleep(0.01)
+    await wait_until(lambda: entered.is_set(), what="entered.is_set()")
     assert entered.is_set(), "First writer did not enter the critical section"
 
     second = asyncio.create_task(store.append_history(_event("sensor-1", 2.0)))
@@ -96,10 +94,7 @@ async def test_read_during_write(store, monkeypatch):
     monkeypatch.setattr(StateStore, "_insert_reading_sync", _blocked_insert)
 
     blocked_write = asyncio.create_task(store.append_history(_event("sensor-1", 99.0)))
-    for _ in range(30):
-        if entered.is_set():
-            break
-        await asyncio.sleep(0.01)
+    await wait_until(lambda: entered.is_set(), what="entered.is_set()")
     assert entered.is_set(), "Write path did not enter blocked section"
 
     rows = await asyncio.wait_for(store.get_history("sensor-1", limit=1), timeout=0.5)

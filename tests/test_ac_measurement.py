@@ -19,6 +19,7 @@ import pytest
 from ori.actions.alert_failover import AlertFailoverSender
 from ori.hal.ac_measurement import WindowRefusedError, WindowSpec, summarise_window
 from ori.state.deferred_writer import DeferredWriter
+from tests.waiting import wait_until
 
 
 @contextlib.contextmanager
@@ -1039,10 +1040,7 @@ async def test_the_staleness_loop_drives_the_escalation():
                 check_interval_s=3600.0,
             )
         )
-        for _ in range(20):
-            await asyncio.sleep(0)
-            if harness.sent:
-                break
+        await wait_until(lambda: harness.sent, what="the staleness notice")
         runtime._shutdown_event.set()
         await asyncio.wait_for(task, 5)
 

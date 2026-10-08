@@ -43,6 +43,7 @@ from tests.test_mqtt_adapter import _FakeClient, _FakeTopic
 from tests.test_mqtt_perception_adapter import _config as perception_config
 from tests.test_victron_adapter import _config as victron_config
 from tests.test_zigbee_adapter import _config as zigbee_config
+from tests.waiting import wait_until
 
 POLL_MS = 1000
 BOUND_MS = silence_bound_ms(POLL_MS)
@@ -704,10 +705,10 @@ async def test_the_staleness_watch_uses_the_same_silence_bound(poll_ms: int) -> 
     loop = asyncio.create_task(
         runtime._sensor_staleness_loop(alert_sender=AsyncMock(), check_interval_s=1.0)
     )
-    for _ in range(50):
-        if runtime._stale_sensor_active:
-            break
-        await asyncio.sleep(0.01)
+    await wait_until(
+        lambda: runtime._stale_sensor_active,
+        what="runtime._stale_sensor_active",
+    )
     runtime._shutdown_event.set()
     done, _ = await asyncio.wait({loop}, timeout=5.0)
     assert loop in done, "the staleness watch did not stop on shutdown"

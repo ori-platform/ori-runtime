@@ -28,6 +28,7 @@ from ori.reasoning.elevator import IntelligenceElevator
 from ori.reasoning.resource_gate import ResourceGate
 from ori.state.store import StateStore
 from ori.utils.time_utils import now_ms
+from tests.waiting import drained, settle
 
 ZONE = ("local_gpio", "pin:26")
 BOUND = BindingView(
@@ -256,7 +257,7 @@ async def _settle(
     for release in releases:
         release.set()
     await coordinator.drain(timeout=_PROMPT)
-    await dispatcher.drain_records(timeout=_PROMPT)
+    await drained(dispatcher)
 
 
 _BLOCKED_STEPS = [
@@ -366,7 +367,7 @@ class TestABusyStoreDoesNotHoldATrip:
                 await asyncio.wait_for(ran["trip_relay"].wait(), _PROMPT)
             await asyncio.wait_for(event_task, _PROMPT)
             await coordinator.drain(timeout=_PROMPT)
-            await dispatcher.drain_records(timeout=_PROMPT)
+            await drained(dispatcher)
             rows = await store.get_action_log(limit=10)
             assert [(r["action_name"], r["tier"]) for r in rows] == [
                 ("trip_relay", "D")
@@ -506,7 +507,7 @@ class TestAnApprovedTierCActIsRecordedThroughATrackedRecord:
             approval_timeout=5,
         )
         assert outcome.approved is True and ran["terminate_process"].is_set()
-        await dispatcher.drain_records(timeout=_PROMPT)
+        await drained(dispatcher)
         assert store.rows == [("terminate_process", "C", True, "True")]
         assert store.attestations == {1: "signed"}
         assert dispatcher.pending_record_count() == 0
@@ -578,7 +579,7 @@ class TestAnotherConnectionHoldingTheDatabase:
             holder.execute("ROLLBACK")
             holder.close()
         try:
-            await dispatcher.drain_records(timeout=15.0)
+            await drained(dispatcher)
             assert dispatcher.pending_record_count() == 0
         finally:
             await store.close()
@@ -677,7 +678,7 @@ class TestAStopBetweenTheActAndItsRecord:
             assert await store.get_action_log(limit=10) == []
         finally:
             release.set()
-            await dispatcher.drain_records(timeout=_PROMPT)
+            await drained(dispatcher)
             await store.close()
 
 
@@ -722,8 +723,9 @@ class TestAFailedTripsNoticeDoesNotHoldTheNextTrip:
         finally:
             sender.release.set()
             await asyncio.wait_for(event_task, _PROMPT)
-            if pending := dispatcher.get_inflight_tier_d_tasks():
-                await asyncio.wait(pending, timeout=_PROMPT)
+            await settle(
+                dispatcher.get_inflight_tier_d_tasks(), what="the trip's notice"
+            )
         assert len(sender.sent) == 1 and "trip_relay" in sender.sent[0]
 
 
@@ -778,7 +780,7 @@ class TestABacklogOfRecordsIsBounded:
         assert any("lost" in r.getMessage() for r in caplog.records)
 
         store.locked_for = 0
-        await dispatcher.drain_records(timeout=_PROMPT)
+        await drained(dispatcher)
         assert dispatcher.pending_record_count() == 0
         assert len(store.overrides) + len(store.rows) == 4
         assert dispatcher.record_backlog()["lost"] == 16
@@ -873,7 +875,7 @@ class TestEveryRecordSurvivesALockedStore:
                 result=_reasoning(),
                 approval_timeout=5,
             )
-            await dispatcher.drain_records(timeout=_PROMPT)
+            await drained(dispatcher)
             assert store.locked_remaining["n"] == 0  # type: ignore[attr-defined]
             assert dispatcher.record_backlog()["lost"] == 0
             decisions = await store.get_tier_c_decision_log()
@@ -953,7 +955,7 @@ class TestAStoreThatWillNotAnswerIsReported:
             result=_reasoning(),
             approval_timeout=5,
         )
-        await dispatcher.drain_records(timeout=_PROMPT)
+        await drained(dispatcher)
         try:
             assert [row[0] for row in store.rows] == ["trip_relay", "terminate_process"]
             # Neither row was marked: both stay pending for reconciliation.
@@ -979,7 +981,7 @@ class TestAStoreThatWillNotAnswerIsReported:
             assert dispatcher.record_backlog()["oldest_pending_age_ms"] >= 40
         finally:
             store.release.set()
-            await dispatcher.drain_records(timeout=_PROMPT)
+            await drained(dispatcher)
         assert dispatcher.record_backlog()["oldest_pending_age_ms"] == 0
 
 
@@ -1024,7 +1026,7 @@ class TestARecordWithNothingToRecordLeavesTheQueueWorking:
         await asyncio.gather(joiner, return_exceptions=True)
         release.set()
         await asyncio.wait_for(first, _PROMPT)
-        await dispatcher.drain_records(timeout=_PROMPT)
+        await drained(dispatcher)
         assert dispatcher.record_backlog()["lost"] == 0
         assert sorted(store.rows) == [
             ("trip_relay", "D", False, "False"),
@@ -1059,13 +1061,13 @@ class TestARecordWithNothingToRecordLeavesTheQueueWorking:
         task.cancel()
         interrupted = (await asyncio.gather(task, return_exceptions=True))[0]
         assert getattr(interrupted, "executed", None) is False
-        await dispatcher.drain_records(timeout=_PROMPT)
+        await drained(dispatcher)
         assert store.rows == []
         release.set()
-        pending = dispatcher.get_inflight_tier_d_tasks()
-        if pending:
-            await asyncio.wait(pending, timeout=_PROMPT)
-        await dispatcher.drain_records(timeout=_PROMPT)
+        await settle(
+            dispatcher.get_inflight_tier_d_tasks(), what="the released Tier D act"
+        )
+        await drained(dispatcher)
         assert store.rows == [("trip_relay", "D", True, "True")]
 
 
@@ -1096,7 +1098,7 @@ class TestShutdownWithAnApprovalOpen:
         )
         await asyncio.sleep(0.05)
         started = time.monotonic()
-        await dispatcher.drain_records(timeout=2.0)
+        await drained(dispatcher)
         assert time.monotonic() - started < 0.5
         with caplog.at_level(logging.CRITICAL):
             assert await dispatcher.abandon_records() == 0

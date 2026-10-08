@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import contextlib
+import inspect
 import json
 import logging
 import sqlite3
@@ -46,6 +46,7 @@ from ori.security import offline_tokens as offline_tokens_module
 from ori.security.offline_tokens import V2_SIGNATURE_DOMAIN, OfflineTierCTokenVerifier
 from ori.skills.signing import canonical_signed_payload
 from ori.state.store import StateStore
+from tests.waiting import DEADLINE_S, drained, settle, wait_until
 
 VECTORS = Path(__file__).parent / "vectors"
 ADMISSION = json.loads((VECTORS / "tier_c_approval" / "admission.json").read_text())
@@ -147,8 +148,13 @@ class _Store(StateStore):
             # The live outcome append: held or refused as the corpus says.
             # Recovery's own writes after a restart are the store's to take.
             if self._h.outcome_write == "blocked":
-                await self._h.outcome_released.wait()
+                self._h.outcome_held += 1
+                try:
+                    await self._h.outcome_released.wait()
+                finally:
+                    self._h.outcome_held -= 1
             if self._h.outcome_write == "failed":
+                self._h.outcome_refusals += 1
                 raise sqlite3.DatabaseError("the outcome cannot be appended")
         return await super().advance_tier_c_proposal(proposal_id, state, **kwargs)
 
@@ -173,10 +179,7 @@ class _Operator:
         # The harness feeds replies; the wait ends only with a reply, or with
         # the crash that cancels the dispatch. The workflow's own deadline is
         # the corpus's monotonic clock, never real time.
-        proposal_id = self._h.listening_for()
-        queue = self._h.replies.setdefault(proposal_id, asyncio.Queue())
-        self._h.listens[proposal_id] = self._h.listens.get(proposal_id, 0) + 1
-        return await queue.get()
+        return await self._h.await_reply(self._h.listening_for())
 
 
 class Replay:
@@ -203,18 +206,22 @@ class Replay:
         self.marker_durable = True
         self.outcome_write = "blocked"
         self.outcome_released = asyncio.Event()
+        # Appends parked at the held store, and appends the store refused.
+        self.outcome_held = 0
+        self.outcome_refusals = 0
         # Dispatch is immediate in the runtime; the corpus observes the admitted
         # approval before it. The harness holds the entry to dispatch, purely
         # as observation, and releases it at the corpus's dispatch step.
         self.dispatch_released = asyncio.Event()
+        # Proposals whose admitted approval waits at that gate.
+        self.dispatch_held: set[str] = set()
         self.executor_answer: Any = True
         self.contention = False
         self.actuations = 0
         self.proposed: set[str] = set()
         self.replies: dict[str, asyncio.Queue[Any]] = {}
-        # How many times the workflow has waited for a reply to each proposal,
-        # so a step can tell that a reply was taken and the wait resumed.
-        self.listens: dict[str, int] = {}
+        # Listeners waiting for a reply to each proposal right now.
+        self.listening: dict[str, int] = {}
         self.tasks: dict[str, asyncio.Task[Any]] = {}
         self.results: dict[str, Any] = {}
         self.next_ids: list[str] = []
@@ -242,6 +249,57 @@ class Replay:
         return (
             self.next_ids.pop(0) if self.next_ids else str(self.proposal["proposal_id"])
         )
+
+    async def await_reply(self, proposal_id: str) -> Any:
+        """The workflow's wait for a reply: it ends only when the harness feeds one."""
+        queue = self.replies.setdefault(proposal_id, asyncio.Queue())
+        self.listening[proposal_id] = self.listening.get(proposal_id, 0) + 1
+        try:
+            return await queue.get()
+        finally:
+            self.listening[proposal_id] -= 1
+
+    def parked(self, proposal_id: str) -> bool:
+        """Whether a dispatch has finished or waits on something only a step moves.
+
+        A dispatch waits on the harness in two places: for an operator reply
+        (with none queued), and at the entry to dispatch the harness holds.
+        Anywhere else it still has work of its own to do.
+        """
+        task = self.tasks.get(proposal_id)
+        if task is None or task.done():
+            return True
+        if (
+            self.listening.get(proposal_id, 0) > 0
+            and not self.replies[proposal_id].qsize()
+        ):
+            return True
+        return proposal_id in self.dispatch_held and not self.dispatch_released.is_set()
+
+    async def at_rest(self, what: str) -> None:
+        """Wait until every dispatch is parked, its notices sent, its records written.
+
+        An outcome append is excluded: a held or refusing store keeps it
+        waiting or retrying for as long as the corpus says, and the outcome
+        step waits for it by what it observes.
+        """
+        assert self.dispatcher is not None
+        await wait_until(
+            lambda: all(self.parked(p) for p in self.tasks),
+            what=f"{what}: every dispatch to finish or wait on the harness",
+        )
+        await settle(
+            {
+                t
+                for t in self.dispatcher.get_inflight_tier_d_tasks()
+                if not t.get_name().startswith("tier-c-outcome:")
+            },
+            what=f"{what}: the notices and markers sent beside the act",
+        )
+        await drained(self.dispatcher)
+        for proposal_id, task in self.tasks.items():
+            if task.done() and not task.cancelled():
+                self.results[proposal_id] = task.result()
 
     def listening_for(self) -> str:
         return (
@@ -331,16 +389,20 @@ class Replay:
             self.dispatcher._tier_c_comms_available = lambda: False  # type: ignore[method-assign]
 
             async def console(**kwargs: Any) -> str | None:
-                proposal_id = kwargs["proposal_id"]
-                queue = self.replies.setdefault(proposal_id, asyncio.Queue())
-                self.listens[proposal_id] = self.listens.get(proposal_id, 0) + 1
-                return await queue.get()
+                return await self.await_reply(kwargs["proposal_id"])
 
             self.dispatcher._listen_for_local_console_response = console  # type: ignore[method-assign]
         real_dispatch = self.dispatcher._dispatch_admitted
+        dispatch_signature = inspect.signature(real_dispatch)
 
         async def held_dispatch(*args: Any, **kwargs: Any) -> Any:
-            await self.dispatch_released.wait()
+            row = dispatch_signature.bind(*args, **kwargs).arguments["row"]
+            held = str(row["proposal_id"])
+            self.dispatch_held.add(held)
+            try:
+                await self.dispatch_released.wait()
+            finally:
+                self.dispatch_held.discard(held)
             return await real_dispatch(*args, **kwargs)
 
         self.dispatcher._dispatch_admitted = held_dispatch  # type: ignore[method-assign]
@@ -404,37 +466,15 @@ class Replay:
             )
         )
         self.tasks[proposal_id] = task
-        for _ in range(400):
-            # Proposed and announced, or waiting for its reply (an SMS or
-            # console proposal is announced by a path that records nothing
-            # here), or already finished.
-            if (
-                proposal_id in self.proposed
-                or self.listens.get(proposal_id, 0) > 0
-                or task.done()
-            ):
-                break
-            await asyncio.sleep(0.005)
-        if task.done():
-            self.results[proposal_id] = task.result()
-
-    async def settle(self, proposal_id: str) -> None:
-        task = self.tasks.get(proposal_id)
-        if task is not None and not task.done():
-            with contextlib.suppress(asyncio.TimeoutError):
-                self.results[proposal_id] = await asyncio.wait_for(task, 5)
-        assert self.dispatcher is not None
-        await self.dispatcher.drain_records(timeout=2)
-        pending = self.dispatcher.get_inflight_tier_d_tasks()
-        if pending:
-            await asyncio.wait(pending, timeout=2)
+        # Proposed and waiting for its reply, or already finished (refused).
+        await self.at_rest(f"proposal {proposal_id}")
 
     async def crash(self) -> None:
         assert self.dispatcher is not None and self.store is not None
 
         async def bounded(what: str, awaitable: Any) -> None:
             try:
-                await asyncio.wait_for(awaitable, 4)
+                await asyncio.wait_for(awaitable, DEADLINE_S)
             except asyncio.TimeoutError:
                 raise AssertionError(f"crash: {what} did not finish") from None
 
@@ -527,6 +567,8 @@ async def _check(
     expect = step.get("expect", {})
     unrepresented: list[str] = []
     assert replay.dispatcher is not None
+    # Whatever the step set going has finished or waits on the harness.
+    await replay.at_rest(f"{replay.phase} check")
     if (
         "state" in expect
         and not replay.marker_durable
@@ -644,23 +686,6 @@ async def _check(
     return unrepresented
 
 
-async def _turns(n: int = 6) -> None:
-    for _ in range(n):
-        await asyncio.sleep(0)
-
-
-async def _until(predicate: Any, *, seconds: float = 3.0) -> bool:
-    """Poll *predicate* (sync or async) for up to *seconds* of real time."""
-    for _ in range(int(seconds / 0.005)):
-        answer = predicate()
-        if asyncio.iscoroutine(answer):
-            answer = await answer
-        if answer:
-            return True
-        await asyncio.sleep(0.005)
-    return False
-
-
 def _executor_answer(result: str) -> Any:
     if result == "executed":
         return True
@@ -713,7 +738,6 @@ async def _run(replay: Replay, sequence: dict[str, Any], caplog: Any) -> list[st
                 replay.store.create_tier_c_proposal = original  # type: ignore[method-assign]
             else:
                 await replay.propose(main, timeout_s=lifetime_s)
-            await _turns()
             unrepresented += await _check(replay, step, main, caplog)
             continue
 
@@ -757,48 +781,12 @@ async def _run(replay: Replay, sequence: dict[str, Any], caplog: Any) -> list[st
                     assert answer.startswith("closed:") or answer == "duplicate", answer
                 unrepresented += await _check(replay, step, main, caplog)
                 continue
-            notices_before = len(replay.operator.notices)  # type: ignore[union-attr]
-            listens_before = replay.listens.get(target, 0)
             await replay.replies.setdefault(target, asyncio.Queue()).put(reply)
-
-            def listening_again() -> bool:
-                # The workflow took the reply and is waiting for the next one:
-                # nothing further will move until another reply arrives.
-                return (
-                    replay.listens.get(target, 0) > listens_before
-                    and replay.replies[target].empty()
-                )
-
-            async def moved() -> bool:
-                state = await replay.state_of(target)
-                t = replay.tasks.get(target)
-                return (
-                    state != adm.PROPOSED
-                    or (t is not None and t.done())
-                    or len(replay.operator.notices) > notices_before  # type: ignore[union-attr]
-                    or listening_again()
-                )
-
-            await _until(moved)
-
-            async def resolved() -> bool:
-                # A reply that closes the proposal resolves the whole workflow
-                # (the deferred close, the safe default, the decision record);
-                # an admitted one holds at the harness's dispatch gate, and a
-                # proposal left open keeps listening until the wait is up.
-                t = replay.tasks.get(target)
-                if t is None or t.done() or listening_again():
-                    return True
-                return await replay.state_of(target) in adm.ADMITTED_STATES
-
-            await _until(resolved, seconds=2.0)
-            await _turns()
-            task = replay.tasks.get(target)
-            if task is not None and task.done():
-                replay.results[target] = task.result()
-                # A proposal that resolved wrote its closing state off the act's
-                # path; read it after the writer has taken it.
-                await replay.dispatcher.drain_records(timeout=2)
+            # The reply is taken; the workflow then closes the proposal,
+            # holds an admitted approval at the harness's dispatch gate, or
+            # listens again. A proposal that closed wrote its closing state
+            # off the act's path, which the rest point also waits for.
+            await replay.at_rest(f"step {index} reply to {target}")
             unrepresented += await _check(replay, step, main, caplog)
             continue
 
@@ -839,7 +827,7 @@ async def _run(replay: Replay, sequence: dict[str, Any], caplog: Any) -> list[st
                         or await replay.state_of(main) != adm.APPROVED_PENDING_DISPATCH
                     )
 
-                await _until(acted)
+                await wait_until(acted, what=f"step {index}: dispatch to act or close")
                 if replay.marker_durable:
                     # The marker is written beside the act, never awaited by
                     # it; a loaded runner lands it after the actuation.
@@ -848,12 +836,9 @@ async def _run(replay: Replay, sequence: dict[str, Any], caplog: Any) -> list[st
                             await replay.state_of(main) != adm.APPROVED_PENDING_DISPATCH
                         )
 
-                    await _until(marked)
-                await _turns()
+                    await wait_until(marked, what=f"step {index}: the dispatch marker")
+                await replay.at_rest(f"step {index} dispatch")
                 replay.dispatch_released.clear()
-                t = replay.tasks.get(main)
-                if t is not None and t.done():
-                    replay.results[main] = t.result()
             # else: nothing is admitted, so nothing dispatches.
             unrepresented += await _check(replay, step, main, caplog)
             continue
@@ -862,11 +847,18 @@ async def _run(replay: Replay, sequence: dict[str, Any], caplog: Any) -> list[st
             write = str(step.get("write", "ok"))
             if write == "blocked":
                 replay.outcome_write = "blocked"
-                await asyncio.sleep(0.05)
+                await wait_until(
+                    lambda: replay.outcome_held > 0,
+                    what=f"step {index}: the outcome append to reach the held store",
+                )
             elif write == "failed":
                 replay.outcome_write = "failed"
+                refusals = replay.outcome_refusals
                 replay.outcome_released.set()
-                await asyncio.sleep(0.2)
+                await wait_until(
+                    lambda: replay.outcome_refusals > refusals,
+                    what=f"step {index}: the store to refuse the outcome append",
+                )
             else:
                 replay.outcome_write = "ok"
                 replay.outcome_released.set()
@@ -875,18 +867,19 @@ async def _run(replay: Replay, sequence: dict[str, Any], caplog: Any) -> list[st
                     adm.APPROVED_PENDING_DISPATCH,
                     adm.DISPATCH_STARTED,
                 ):
-
-                    async def landed() -> bool:
-                        return await replay.state_of(main) != state_before
-
-                    await _until(landed, seconds=6.0)
-                else:
-                    # A settled outcome takes no further write. Draining the
-                    # writer shows that none is pending, without waiting out
-                    # real time for something that cannot arrive.
+                    # The append the store now takes, and the bookkeeping
+                    # after it: the task ends once both are done.
                     assert replay.dispatcher is not None
-                    await replay.dispatcher.drain_records(timeout=2)
-                await _turns()
+                    await settle(
+                        {
+                            t
+                            for t in replay.dispatcher.get_inflight_tier_d_tasks()
+                            if t.get_name().startswith("tier-c-outcome:")
+                        },
+                        what=f"step {index}: the released outcome append",
+                    )
+                # A settled outcome takes no further write.
+            await replay.at_rest(f"step {index} outcome")
             unrepresented += await _check(replay, step, main, caplog)
             continue
 
@@ -908,11 +901,7 @@ async def _run(replay: Replay, sequence: dict[str, Any], caplog: Any) -> list[st
             replay.outcome_released = asyncio.Event()
             replay.dispatch_released = asyncio.Event()
             await replay.start(recover=True)
-            await _turns()
-            pending = replay.dispatcher.get_inflight_tier_d_tasks()  # type: ignore[union-attr]
-            if pending:
-                await asyncio.wait(pending, timeout=2)
-            await replay.dispatcher.drain_records(timeout=2)  # type: ignore[union-attr]
+            await replay.at_rest(f"step {index} restart")
             unrepresented += await _check(replay, step, main, caplog)
             continue
 
@@ -1081,7 +1070,7 @@ async def _bounded_run(
     import traceback
 
     try:
-        return await asyncio.wait_for(_run(replay, sequence, caplog), 40)
+        return await asyncio.wait_for(_run(replay, sequence, caplog), 4 * DEADLINE_S)
     except asyncio.TimeoutError:
         import sys
         import threading
@@ -1211,7 +1200,7 @@ async def test_host_state_token_cases(case: dict[str, Any], tmp_path: Path) -> N
                 ),
                 approval_timeout_seconds=5,
             )
-        await dispatcher.drain_records(timeout=5)
+        await drained(dispatcher)
         with sqlite3.connect(str(tmp_path / "s.db")) as reader:
             consumed = reader.execute(
                 "SELECT count(*) FROM offline_token_consumption"

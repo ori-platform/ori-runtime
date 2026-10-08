@@ -29,6 +29,7 @@ from tests.test_tier_d_never_waits_on_evidence import (
     _Signer,
     _Skill,
 )
+from tests.waiting import drained, wait_until
 
 PROMPT = 2.0
 
@@ -119,7 +120,7 @@ async def test_a_request_joining_a_held_trip_is_a_contributor(
         assert not joined.proposal_id
         release.set()
         await asyncio.wait_for(holder, PROMPT)
-        await dispatcher.drain_records(timeout=PROMPT)
+        await drained(dispatcher)
         assert calls == ["trip_relay"], "a second executor ran"
         rows = _rows(store)
         dispatches = [r for r in rows if r["record_kind"] == "dispatch"]
@@ -198,7 +199,7 @@ async def test_an_approval_gated_tier_b_joiner_asks_no_operator(tmp_path: Path) 
         )
         release.set()
         await asyncio.wait_for(holder, PROMPT)
-        await dispatcher.drain_records(timeout=PROMPT)
+        await drained(dispatcher)
         assert calls == ["terminate_process"] and approver_calls == []
         kinds = sorted((r["record_kind"], r["executed"]) for r in _rows(store))
         assert kinds == [("contributor", 0), ("dispatch", 1)]
@@ -236,7 +237,7 @@ async def test_a_request_joining_an_uncertain_holder_does_not_wait(
         )
         assert joined.executed is False
         release.set()
-        await dispatcher.drain_records(timeout=PROMPT)
+        await drained(dispatcher)
         assert calls == ["trip_relay"]
     finally:
         await store.close()
@@ -498,7 +499,7 @@ async def test_a_holder_still_running_is_not_reported_missing(tmp_path: Path) ->
         ] == 0
         release.set()
         await asyncio.wait_for(holder, PROMPT)
-        await dispatcher.drain_records(timeout=PROMPT)
+        await drained(dispatcher)
         kinds = [r["record_kind"] for r in _rows(store)]
         assert kinds == ["dispatch", "contributor"], "the holder's row is first"
         assert (await store.get_attestation_summary())[
@@ -525,12 +526,14 @@ async def test_a_dispatch_cancelled_at_the_gate_leaves_no_record_unsettled(
                 result=_reasoning(),
             )
         )
-        await asyncio.sleep(0.02)
-        assert dispatcher.record_backlog()["unsettled"] >= 1
+        await wait_until(
+            lambda: dispatcher.record_backlog()["unsettled"] >= 1,
+            what="the dispatch's record waiting on its act",
+        )
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         gate._lock.release()
-        await dispatcher.drain_records(timeout=PROMPT)
+        await drained(dispatcher)
         assert dispatcher.record_backlog()["unsettled"] == 0
         assert calls == []
     finally:

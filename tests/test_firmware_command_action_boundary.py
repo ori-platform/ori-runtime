@@ -136,6 +136,7 @@ from tests.commissioning.signing import (
     sign_envelope,
 )
 from tests.conftest import _mark_startup_complete
+from tests.waiting import drained, settle
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -1498,8 +1499,11 @@ async def probe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     # to a bound, and hold it to the same rule.
     current = asyncio.current_task()
     leftover = [t for t in asyncio.all_tasks() if t is not current and not t.done()]
-    if leftover:
-        await asyncio.wait(leftover, timeout=LATE_WORK_TIMEOUT_S)
+    await settle(
+        leftover,
+        what="work an action handed elsewhere to finish",
+        deadline_s=LATE_WORK_TIMEOUT_S,
+    )
     await _drain()
     late = [*reached[during[0] :], *(r for r, _ in confirmation_reads[during[1] :])]
     assert not late, (
@@ -2195,6 +2199,7 @@ async def test_registered_executors_never_reach_the_confirmation_gate(
     )
 
 
+@pytest.mark.latency_bound
 async def test_every_dispatch_route_leaves_the_gate_alone(
     probe: _Probe, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2317,7 +2322,7 @@ async def test_every_dispatch_route_leaves_the_gate_alone(
                         # it belongs to this window, so it lands before the
                         # window closes and before the next one arms the
                         # engine recorder against a connection mid-statement.
-                        await dispatcher.drain_records()
+                        await drained(dispatcher)
                     finally:
                         _close_window(token)
                     spent = clock() - started

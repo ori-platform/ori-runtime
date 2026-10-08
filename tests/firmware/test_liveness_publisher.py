@@ -26,6 +26,7 @@ from ori.security.firmware.liveness import (
     FirmwareLivenessError,
     SupervisedDevice,
 )
+from tests.waiting import wait_until
 
 HASH = "sha256:" + "a" * 64
 
@@ -526,10 +527,15 @@ async def test_a_slow_device_does_not_delay_the_devices_behind_it() -> None:
     )
     scheduler = FirmwareLivenessScheduler(service)
     tick = asyncio.create_task(scheduler.publish_once())
-    await asyncio.sleep(0.05)
 
-    # The fast devices are already published while the slow one is stalled.
-    assert {"ori-fw-b", "ori-fw-c"}.issubset({row[0] for row in service.published})
+    # The fast devices are published while the slow one is stalled.
+    await wait_until(
+        lambda: {"ori-fw-b", "ori-fw-c"}.issubset(
+            {row[0] for row in service.published}
+        ),
+        what="the fast devices to publish beside the stalled one",
+    )
+    assert not tick.done()
     release.set()
     assert (await asyncio.wait_for(tick, timeout=2.0)).sent == 3
 
@@ -554,6 +560,8 @@ async def test_concurrency_is_bounded() -> None:
     service = _CountingService([_device(f"ori-fw-{i}") for i in range(20)])
     scheduler = FirmwareLivenessScheduler(service, max_concurrent=4)
     tick = asyncio.create_task(scheduler.publish_once())
+    await wait_until(lambda: peak >= 4, what="four publishes in flight")
+    # A window for a fifth to start: it can only miss an excess, never invent one.
     await asyncio.sleep(0.05)
     assert peak == 4, f"expected at most 4 in flight, saw {peak}"
     release.set()

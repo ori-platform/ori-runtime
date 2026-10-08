@@ -26,6 +26,7 @@ from ori.reasoning.tier_c_admission import TierCAuthorityFacts
 from ori.security.evidence.first_party import FirstPartyEvidenceAttestor
 from ori.state.store import StateStore
 from ori.utils.time_utils import now_ms
+from tests.waiting import drained, settle
 
 DEVICE = "dev-01"
 ZONE = "zone-feeder-a"
@@ -127,7 +128,7 @@ async def _host_dispatch(dispatcher: ActionDispatcher, store: StateStore) -> Any
         safe_default_action="log_to_dashboard",
         approval_timeout=1,
     )
-    await dispatcher.drain_records(timeout=5)
+    await drained(dispatcher)
     return outcome
 
 
@@ -293,10 +294,11 @@ async def _propose(
         result=_result(),
         approval_timeout=timeout,
     )
-    await dispatcher.drain_records(timeout=5)
-    pending = dispatcher.get_inflight_tier_d_tasks()
-    if pending:
-        await asyncio.wait(pending, timeout=5)
+    await settle(
+        dispatcher.get_inflight_tier_d_tasks(),
+        what="the dispatcher's tracked notices and outcome writes",
+    )
+    await drained(dispatcher)
     return outcome
 
 
@@ -362,7 +364,7 @@ class TestGovernedRefusalsBeforeAProposal:
                     30,
                     None,
                 )
-            await dispatcher.drain_records(timeout=5)
+            await drained(dispatcher)
             decisions = await store.get_tier_c_decision_log()
         finally:
             await store.close()

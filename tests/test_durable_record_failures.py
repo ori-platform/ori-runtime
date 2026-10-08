@@ -23,6 +23,7 @@ from ori.reasoning.action_dispatcher import ActionDispatcher, ActionTier
 from ori.runtime import OriRuntime
 from ori.state.store import StateStore
 from tests.test_action_dispatcher import _context, _result
+from tests.waiting import drained
 
 NOT_A_LOCK = sqlite3.DatabaseError("disk I/O error")
 
@@ -72,7 +73,7 @@ async def _dispatch(
                 _result(action_tier="C"),
                 approval_timeout_seconds=1,
             )
-        await d.drain_records()
+        await drained(d)
     finally:
         await store.close()
     with sqlite3.connect(tmp_path / "state.db") as conn:

@@ -35,8 +35,8 @@ from tests.test_dispatch_never_waits_on_delivery import (
     _pi_sized_default_executor,
     _Site,
     _site,
-    _until,
 )
+from tests.waiting import wait_until
 
 _SKILLS = Path(__file__).resolve().parent.parent / "skills"
 _READING_NAMES = {"value", "sensor_id", "sensor_type", "unit", "quality"}
@@ -94,7 +94,7 @@ async def _first_act(
     before = len(fired)
     started = time.monotonic()
     await bus.publish(event)
-    await _until(lambda: len(fired) > before)
+    await wait_until(lambda: len(fired) > before, what="len(fired) > before")
     assert len(fired) > before, f"{trigger} did not fire: {site.acts.by_trigger}"
     return fired[before][1] - started
 
@@ -120,7 +120,7 @@ class TestAHookCannotHoldATierDIncident:
                         site, bus, trigger, _reading(sensor_type, value)
                     )
                     assert latency < _TRIP_BOUND_S, latency
-                await _until(lambda: bool(called))
+                await wait_until(lambda: bool(called), what="bool(called)")
                 assert called, "the hook was never reached"
             finally:
                 never.set()
@@ -142,7 +142,7 @@ class TestAHookCannotHoldATierDIncident:
             latency = await _first_act(site, bus, trigger, _reading(sensor_type, value))
             assert latency < _TRIP_BOUND_S, latency
             fired = site.acts.by_trigger[trigger]
-            await _until(lambda: bool(called))
+            await wait_until(lambda: bool(called), what="bool(called)")
             assert called and called[0] >= fired[0][1], (
                 "the hook ran before the incident acted"
             )
@@ -240,7 +240,7 @@ class TestAShippedHookCannotHoldTheNextIncident:
             thread = threading.Thread(target=sensor)
             thread.start()
             await asyncio.to_thread(thread.join, 5.0)
-            await _until(lambda: bool(fired), 10.0)
+            await wait_until(lambda: bool(fired), what="bool(fired)")
             assert fired, f"{trigger} did not fire: {site.acts.by_trigger}"
             latency = fired[0][1] - produced[0]
             assert latency < _TRIP_BOUND_S, latency
@@ -569,6 +569,7 @@ def _stall(kind: str, release: threading.Event) -> Any:
 
 
 class TestAStalledHookRunsOffTheLoop:
+    @pytest.mark.latency_bound
     def test_a_cpu_bound_hook_in_a_fresh_interpreter(self) -> None:
         """The CPU-bound case, in an interpreter of its own.
 
@@ -640,7 +641,10 @@ class TestAStalledHookRunsOffTheLoop:
             thread.start()
             try:
                 await asyncio.to_thread(thread.join, 10.0)
-                await _until(lambda: len(fired) >= 2 * readings, 10.0)
+                await wait_until(
+                    lambda: len(fired) >= 2 * readings,
+                    what="len(fired) >= 2 * readings",
+                )
                 firsts = [at for action, at in fired if action == "alert_whatsapp"]
                 latencies = sorted(a - p for a, p in zip(firsts, produced))
             finally:
@@ -680,7 +684,7 @@ class TestAStalledHookRunsOffTheLoop:
             thread.start()
             try:
                 await asyncio.to_thread(thread.join, 5.0)
-                await _until(lambda: bool(fired))
+                await wait_until(lambda: bool(fired), what="bool(fired)")
                 assert fired, f"{trigger} did not act behind a stuck hook"
                 assert fired[0][1] - produced[0] < _TRIP_BOUND_S
             finally:
@@ -699,7 +703,10 @@ class TestAStalledHookRunsOffTheLoop:
             try:
                 for _ in range(HOOK_QUEUE_CAPACITY + 6):
                     await bus.publish(_reading("current_clamp", 5.0))
-                await _until(lambda: runner.skipped_saturated >= 5)
+                await wait_until(
+                    lambda: runner.skipped_saturated >= 5,
+                    what="runner.skipped_saturated >= 5",
+                )
                 assert runner.pending <= HOOK_QUEUE_CAPACITY
                 assert runner.skipped_saturated >= 5
             finally:
@@ -726,7 +733,10 @@ class TestAStalledHookRunsOffTheLoop:
                 await site.store.append_history(_reading("current_clamp", 5.0 + n))
             try:
                 await bus.publish(_reading("current_clamp", 30.0))
-                await _until(lambda: runner.timed_out >= 1)
+                await wait_until(
+                    lambda: runner.timed_out >= 1,
+                    what="runner.timed_out >= 1",
+                )
                 assert runner.timed_out == 1
                 # Tier D was decided without it; the notices that need the
                 # hook's baseline were not evaluated for this reading.
@@ -746,7 +756,7 @@ class TestAStalledHookRunsOffTheLoop:
             await bus.publish(_reading("current_clamp", 5.0))
             await bus.publish(_reading("current_clamp", 5.0))
             runner = site.coordinator._elevator._hooks
-            await _until(lambda: runner.pending >= 1)
+            await wait_until(lambda: runner.pending >= 1, what="runner.pending >= 1")
             started = time.monotonic()
             lost = await asyncio.wait_for(runner.close(timeout_s=0.3), 2.0)
             assert time.monotonic() - started < 1.0
@@ -775,7 +785,7 @@ class TestAStalledHookRunsOffTheLoop:
             skill.hooks.pre_trigger_eval = recorded
             try:
                 await bus.publish(_reading("current_clamp", 5.0))
-                await _until(lambda: bool(ran), 2.0)
+                await wait_until(lambda: bool(ran), what="bool(ran)")
                 assert ran, "the hook waited on the loop's default executor"
             finally:
                 hold.set()
@@ -834,7 +844,10 @@ class TestASkippedHookLeavesNothingBehind:
             with pytest.raises(HookSkippedError):
                 await asyncio.gather(runner.run(first), runner.run(second))
             release.set()
-            await _until(lambda: runner.expired_unstarted == 1, 3.0)
+            await wait_until(
+                lambda: runner.expired_unstarted == 1,
+                what="runner.expired_unstarted == 1",
+            )
             assert started == ["first"]
             assert runner.expired_unstarted == 1
         finally:
@@ -863,7 +876,10 @@ class TestASkippedHookLeavesNothingBehind:
             with pytest.raises(HookSkippedError):
                 await runner.run(late, state, commit=state.commit)
             await asyncio.to_thread(returned.wait, 3.0)
-            await _until(lambda: runner.discarded == 1, 3.0)
+            await wait_until(
+                lambda: runner.discarded == 1,
+                what="runner.discarded == 1",
+            )
             assert runner.discarded == 1
             assert (
                 store.hooks_get_skill_state(
@@ -969,6 +985,6 @@ class TestAnAsynchronousHookNeverRunsOnTheLoop:
             thread = threading.Thread(target=sensor)
             thread.start()
             await asyncio.to_thread(thread.join, 5.0)
-            await _until(lambda: bool(fired))
+            await wait_until(lambda: bool(fired), what="bool(fired)")
             assert fired and fired[0][1] - produced[0] < _TRIP_BOUND_S
             assert ran == [], "the asynchronous hook's body ran"

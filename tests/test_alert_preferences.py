@@ -32,6 +32,7 @@ from ori.policy.device_policy import DevicePolicy
 from ori.policy.remote_fetch import _alert_preferences
 from ori.reasoning.action_dispatcher import ALERT_SUPPRESSED
 from ori.runtime import OriRuntime
+from tests.waiting import drained
 
 
 def _policy(**overrides) -> DevicePolicy:
@@ -645,7 +646,7 @@ async def test_the_real_dispatcher_logs_a_suppression_as_suppressed(
         ctx, res = _dispatch_inputs()
         suppressed = await dispatcher.dispatch("alert_sms", "A", ctx, res)
         failed = await dispatcher.dispatch("alert_whatsapp", "A", ctx, res)
-        await dispatcher.drain_records()
+        await drained(dispatcher)
 
         assert suppressed.executed is False
         assert suppressed.action_taken == "suppressed"

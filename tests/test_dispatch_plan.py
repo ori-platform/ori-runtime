@@ -44,6 +44,7 @@ from ori.reasoning.resource_gate import (
     ResourceGate,
 )
 from ori.utils.time_utils import now_ms
+from tests.waiting import drained, quiesce, wait_until
 
 ZONE = ("local_gpio", "pin:26")
 BOUND = BindingView(
@@ -126,7 +127,7 @@ def _dispatcher_double(executors: tuple[str, ...] = ()) -> Any:
 
 
 async def _dispatched(dispatcher: Any) -> list[tuple[str, str]]:
-    await asyncio.sleep(0.05)
+    await quiesce(what="the work the event scheduled")
     return [
         (call.kwargs["action"], call.kwargs["tier"])
         for call in dispatcher.dispatch.call_args_list
@@ -227,7 +228,7 @@ class TestDeclarationOrder:
         coordinator = _coordinator(notice_skill, dispatcher)
         coordinator.add_skill(trip_skill)
         await coordinator.dispatch_event(_event())
-        await asyncio.sleep(0.05)
+        await quiesce(what="the event's scheduled work")
 
         assert order[0] == "close_gas_valve@D", order
         assert "alert_whatsapp@A" in order
@@ -729,7 +730,7 @@ class TestCooldownAccounting:
         coordinator = _coordinator(skill, dispatcher, elevator=elevator)
 
         await coordinator.dispatch_event(_event())
-        await asyncio.sleep(0.05)
+        await quiesce(what="the event's scheduled work")
         assert elevator._rule_engine.in_cooldown("notice", 60, "fake-skill") is True
 
 
@@ -750,7 +751,7 @@ class TestDiscoveryBarrier:
         event = _event()
 
         await asyncio.gather(*(coordinator.handle_event(event) for _ in range(5)))
-        await asyncio.sleep(0.05)
+        await quiesce(what="the events' scheduled work")
 
         assert await _dispatched(dispatcher) == [("alert_whatsapp", "A")]
 
@@ -836,7 +837,7 @@ class TestSealingOnTheActionTier:
             await dispatcher.dispatch(
                 action="alert_whatsapp", tier="A", context=context, result=result
             )
-            await dispatcher.drain_records()
+            await drained(dispatcher)
 
             assert "trip_relay" in attested
             assert "alert_whatsapp" not in attested
@@ -902,7 +903,7 @@ class TestShippedSkillReproduction:
             quality=1.0,
         )
         await bus.publish(OriEvent.from_reading(reading, "bench-device"))
-        await asyncio.sleep(0.1)
+        await quiesce(what="the reading's dispatch")
 
         assert ("terminate_process", "C") in dispatched, dispatched
         assert ("alert_whatsapp", "A") in dispatched, dispatched
@@ -963,7 +964,7 @@ class TestShippedSkillReproduction:
             quality=1.0,
         )
         await bus.publish(OriEvent.from_reading(reading, "bench-device"))
-        await asyncio.sleep(0.1)
+        await quiesce(what="the reading's dispatch")
 
         # The incident is discovered; its notifications ride at their own
         # authority rather than inheriting the incident's.
@@ -1065,7 +1066,7 @@ class TestIndependentBoundaries:
         coordinator = _coordinator(skill, dispatcher, elevator=elevator)
 
         await coordinator.dispatch_event(_event())
-        await asyncio.sleep(0.05)
+        await quiesce(what="the event's scheduled work")
 
         assert await _dispatched(dispatcher) == []
         assert elevator._rule_engine.in_cooldown("trip", 60, "fake-skill") is False
@@ -1120,12 +1121,12 @@ class TestCooldownIsScopedToItsSkill:
         coordinator.add_skill(named("skill-two", "value > 90.0"))
 
         await coordinator.dispatch_event(_event(value=5.0))
-        await asyncio.sleep(0.05)
+        await quiesce(what="the first event's scheduled work")
         assert len(dispatcher.dispatch.call_args_list) == 1
 
         dispatcher.dispatch.reset_mock()
         await coordinator.dispatch_event(_event(value=99.0))
-        await asyncio.sleep(0.05)
+        await quiesce(what="the second event's scheduled work")
         assert len(dispatcher.dispatch.call_args_list) == 1, (
             "the second skill's trigger was suppressed by the first skill's fire"
         )
@@ -1166,7 +1167,7 @@ class TestARefusedTripCanReRaise:
         elevator = IntelligenceElevator()
         coordinator = _coordinator(skill, dispatcher, elevator=elevator)
         await coordinator.dispatch_event(_event())
-        await asyncio.sleep(0.05)
+        await quiesce(what="the event's scheduled work")
 
         assert elevator._rule_engine.in_cooldown("trip", 600, "fake-skill") is False
 
@@ -1200,7 +1201,7 @@ class TestARefusedTripCanReRaise:
         elevator = IntelligenceElevator()
         coordinator = _coordinator(skill, dispatcher, elevator=elevator)
         await coordinator.dispatch_event(_event())
-        await asyncio.sleep(0.05)
+        await quiesce(what="the event's scheduled work")
 
         assert elevator._rule_engine.in_cooldown("trip", 600, "fake-skill") is True
 
@@ -1341,7 +1342,7 @@ class TestTierDDoesNotWaitOnAnApproval:
                 result=result,
                 approval_timeout=1,
             )
-            await dispatcher.drain_records(timeout=5)
+            await drained(dispatcher)
         finally:
             await store.close()
         assert seen == [HolderState.PROPOSAL], seen
@@ -2174,7 +2175,10 @@ class TestATriggerInFlightDoesNotMatchAgain:
         coordinator = _coordinator(self._slow_notice_skill(60), dispatcher)
 
         running = asyncio.create_task(coordinator.dispatch_event(_event()))
-        await asyncio.sleep(0.1)
+        await wait_until(
+            lambda: coordinator._in_flight == {("fake-skill", "notice")},
+            what="the notice to be held in flight",
+        )
         assert coordinator._in_flight == {("fake-skill", "notice")}
         running.cancel()
         await asyncio.gather(running, return_exceptions=True)
@@ -2198,7 +2202,9 @@ class TestATriggerInFlightDoesNotMatchAgain:
         coordinator = _coordinator(self._slow_notice_skill(60), dispatcher)
 
         await coordinator.handle_event(_event())
-        await asyncio.sleep(0.1)
+        await wait_until(
+            lambda: coordinator._in_flight, what="the first notice to be held in flight"
+        )
         coordinator.clear_skills()
         coordinator.add_skill(self._slow_notice_skill(60))
         await coordinator.handle_event(_event())

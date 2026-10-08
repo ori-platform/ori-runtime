@@ -79,6 +79,7 @@ from ori.security.evidence.ingest import RECEIPT_DOMAIN
 from ori.security.evidence.registration import CONFIRMATION_OVERDUE_MS
 from ori.skills.loader import Trigger
 from ori.state.store import StateStore
+from tests.waiting import drained, settle, wait_until
 
 DEVICE = "dev-01"
 REFERENCE = "sha256:" + "ab" * 32
@@ -310,12 +311,6 @@ class _Acts:
         return run
 
 
-async def _until(predicate: Any, timeout_s: float = _PROMPT_S) -> None:
-    deadline = time.monotonic() + timeout_s
-    while not predicate() and time.monotonic() < deadline:
-        await asyncio.sleep(0.002)
-
-
 def _pi_sized_default_executor() -> None:
     asyncio.get_running_loop().set_default_executor(
         ThreadPoolExecutor(max_workers=_PI_DEFAULT_WORKERS)
@@ -477,7 +472,7 @@ class _Site:
         before = len(ran)
         started = time.monotonic()
         self._dispatch("current_clamp")
-        await _until(lambda: len(ran) > before)
+        await wait_until(lambda: len(ran) > before, what="len(ran) > before")
         return {
             "ran": len(ran) - before,
             "after_s": ran[before] - started if len(ran) > before else None,
@@ -496,7 +491,7 @@ class _Site:
         before = len(ran)
         started = time.monotonic()
         self._dispatch("current")
-        await _until(lambda: len(ran) > before)
+        await wait_until(lambda: len(ran) > before, what="len(ran) > before")
         executed = ran[before] if len(ran) > before else None
         return {
             "ran": len(ran) - before,
@@ -514,25 +509,22 @@ class _Site:
         nothing under test holds the store.
         """
         proposal = self.phone.proposals[-1] if self.phone.proposals else ""
-        records: list[str] = []
-        deadline = time.monotonic() + _PROMPT_S
-        while time.monotonic() < deadline:
-            records = await self.store.get_tier_c_proposal_records(proposal)
-            if records == _DECIDED:
-                break
-            await asyncio.sleep(0.01)
-        return records
+
+        async def decided() -> bool:
+            return await self.store.get_tier_c_proposal_records(proposal) == _DECIDED
+
+        await wait_until(decided, what=f"proposal {proposal!r} to record {_DECIDED}")
+        return await self.store.get_tier_c_proposal_records(proposal)
 
     async def _finish_dispatches(self) -> None:
-        if self._dispatches:
-            await asyncio.wait(self._dispatches, timeout=_PROMPT_S * 3)
+        await settle(self._dispatches, what="the site's dispatched events")
 
     async def settle(self) -> dict[str, Any]:
         """Release what was held and read the evidence consequence."""
         self.release()
         await self._finish_dispatches()
         await self.coordinator.drain(timeout=_PROMPT_S * 3)
-        await self.dispatcher.drain_records(timeout=_PROMPT_S * 3)
+        await drained(self.dispatcher)
         await asyncio.sleep(0.2)
         with sqlite3.connect(str(self.root / "evidence.db")) as ledger:
             failures = sorted(
@@ -569,7 +561,7 @@ class _Site:
             except (asyncio.TimeoutError, Exception):
                 task.cancel()
         await self.coordinator.drain(timeout=_PROMPT_S)
-        await self.dispatcher.drain_records(timeout=_PROMPT_S)
+        await drained(self.dispatcher)
         await self.store.close()
         self.attestor.close()
 
@@ -783,6 +775,7 @@ def _assert_unobstructed(case: str, trip: dict, approved: dict) -> None:
     )
 
 
+@pytest.mark.latency_bound
 @pytest.mark.parametrize("case", CASES)
 def test_delivery_state_never_changes_a_trip_or_an_approved_act(
     case: str, baseline: dict[str, Any], tmp_path: Path
@@ -948,7 +941,7 @@ class TestAFailedTripStillRaisesTheAlarm:
             await asyncio.sleep(0.2)
             started = time.monotonic()
             site._dispatch("current_clamp")
-            await _until(lambda: bool(sent))
+            await wait_until(lambda: bool(sent), what="bool(sent)")
             assert attempted and attempted[0] - started < _TRIP_BOUND_S
             assert sent, "no emergency notice"
             assert sent[0] - started < _TRIP_BOUND_S, sent[0] - started
@@ -1015,7 +1008,10 @@ class TestATripDoesNotWaitOnAnotherTriggersHistory:
             site.store.avg_last_hours = slow  # type: ignore[method-assign]
             task = asyncio.create_task(site.trip())
             try:
-                await _until(lambda: bool(site.acts.ran["trip_relay"]))
+                await wait_until(
+                    lambda: bool(site.acts.ran["trip_relay"]),
+                    what="bool(site.acts.ran['trip_relay'])",
+                )
                 assert site.acts.ran["trip_relay"], "the trip waited on history"
                 assert len(site.history_reads) <= 1
             finally:
@@ -1086,7 +1082,7 @@ class TestAShippedTierDTriggerWithHistoryHooks:
             )
             site._dispatches.append(site.dispatching)
             fired = site.acts.by_trigger.setdefault("dangerous_overcurrent", [])
-            await _until(lambda: bool(fired))
+            await wait_until(lambda: bool(fired), what="bool(fired)")
             assert fired, "the overcurrent trigger did not fire"
             name, at = fired[0]
             assert name == "alert_whatsapp", site.acts.by_trigger
@@ -1095,7 +1091,7 @@ class TestAShippedTierDTriggerWithHistoryHooks:
             # through the held write lock: the notices that need its baseline
             # follow promptly rather than after the store's busy timeout.
             spike = site.acts.by_trigger.setdefault("sudden_load_spike", [])
-            await _until(lambda: bool(spike))
+            await wait_until(lambda: bool(spike), what="bool(spike)")
             assert hook_reads, "the hook never read history"
             assert spike, f"the hook never completed: {site.acts.by_trigger}"
             assert spike[0][1] - started < 1.0, spike[0][1] - started
@@ -1143,12 +1139,19 @@ async def test_a_message_past_the_bound_is_left_unacknowledged(tmp_path: Path) -
                 None,
                 SimpleNamespace(payload=_MALFORMED_RECEIPT, mid=mid, qos=1),
             )
-        await asyncio.sleep(0.2)
         assert site.subscriber is not None
+        subscriber = site.subscriber
+        await wait_until(
+            lambda: subscriber.shed_count >= 4,
+            what="the deliveries past the bound shed",
+        )
         assert site.subscriber.shed_count == 4
         assert client.acked == []
         site.release()
-        await _until(lambda: len(client.acked) == INBOUND_IN_FLIGHT_BOUND)
+        await wait_until(
+            lambda: len(client.acked) == INBOUND_IN_FLIGHT_BOUND,
+            what="len(client.acked) == INBOUND_IN_FLIGHT_BOUND",
+        )
         # Only what was routed is released at the broker; the rest stays there.
         assert sorted(client.acked) == list(range(1, INBOUND_IN_FLIGHT_BOUND + 1))
 
@@ -1247,7 +1250,7 @@ async def test_the_broker_redelivers_what_the_route_had_no_room_for(
             subscriber._client_factory = client_factory
             shutdown = asyncio.Event()
             serving = asyncio.create_task(subscriber.serve_until(shutdown))
-            await _until(lambda: subscriber.connected)
+            await wait_until(lambda: subscriber.connected, what="subscriber.connected")
             assert subscriber.connected
             site.lock("evidence.db")
 
@@ -1264,11 +1267,17 @@ async def test_the_broker_redelivers_what_the_route_had_no_room_for(
                 sender.publish(
                     subscriber.topic, json.dumps(body), qos=1
                 ).wait_for_publish(_PROMPT_S)
-            await _until(lambda: subscriber.shed_count > 0)
+            await wait_until(
+                lambda: subscriber.shed_count > 0,
+                what="subscriber.shed_count > 0",
+            )
             assert subscriber.shed_count > 0, "the route was never saturated"
             site.release()
 
-            await _until(lambda: len(set(routed)) == published, _PROMPT_S * 4)
+            await wait_until(
+                lambda: len(set(routed)) == published,
+                what="len(set(routed)) == published",
+            )
             # At least once, as QoS 1 promises: a message routed just before
             # the reconnect can come round again, and ingest is idempotent.
             assert set(routed) == set(range(published))
@@ -1362,11 +1371,17 @@ class TestRedeliveryTiming:
             subscriber, client = await _serving(site)
             site.lock("evidence.db")
             _deliver(client, range(1, INBOUND_IN_FLIGHT_BOUND + 5))
-            await _until(lambda: subscriber.shed_count == 4)
+            await wait_until(
+                lambda: subscriber.shed_count == 4,
+                what="subscriber.shed_count == 4",
+            )
             site.release()
-            await _until(lambda: subscriber._in_flight == 0)
+            await wait_until(
+                lambda: subscriber._in_flight == 0,
+                what="subscriber._in_flight == 0",
+            )
             drained = time.monotonic()
-            await _until(lambda: client.sessions >= 2)
+            await wait_until(lambda: client.sessions >= 2, what="client.sessions >= 2")
             assert client.sessions >= 2
             assert client.session_at[1] - drained < 0.5
 
@@ -1381,9 +1396,9 @@ class TestRedeliveryTiming:
 
             subscriber._router.route = broken  # type: ignore[method-assign]
             _deliver(client, range(1, 2))
-            await _until(lambda: client.sessions >= 2, 5.0)
+            await wait_until(lambda: client.sessions >= 2, what="client.sessions >= 2")
             _deliver(client, range(2, 3))
-            await _until(lambda: client.sessions >= 3, 5.0)
+            await wait_until(lambda: client.sessions >= 3, what="client.sessions >= 3")
             first, second, third = client.session_at[:3]
             assert second - first >= 0.3, second - first
             assert third - second >= 0.6, third - second
@@ -1396,9 +1411,15 @@ class TestTheInFlightSlots:
         async with _site(tmp_path) as site:
             subscriber, client = await _serving(site)
             _deliver(client, range(1, 6))
-            await _until(lambda: len(client.acked) == 5)
+            await wait_until(
+                lambda: len(client.acked) == 5,
+                what="len(client.acked) == 5",
+            )
             # The ack is sent inside the route and the slot released after it.
-            await _until(lambda: subscriber._in_flight == 0)
+            await wait_until(
+                lambda: subscriber._in_flight == 0,
+                what="subscriber._in_flight == 0",
+            )
             assert subscriber._in_flight == 0
             assert sorted(client.acked) == [1, 2, 3, 4, 5]
 
@@ -1412,7 +1433,7 @@ class TestTheInFlightSlots:
             subscriber._router.route = broken  # type: ignore[method-assign]
             _deliver(client, range(7, 8))
             # The message is still the broker's: the route reconnects for it.
-            await _until(lambda: client.sessions >= 2)
+            await wait_until(lambda: client.sessions >= 2, what="client.sessions >= 2")
             assert subscriber._in_flight == 0
             assert client.acked == []
             assert client.sessions >= 2
@@ -1424,7 +1445,10 @@ class TestTheInFlightSlots:
             subscriber, client = await _serving(site)
             site.lock("evidence.db")
             _deliver(client, range(9, 10))
-            await _until(lambda: subscriber._in_flight == 1)
+            await wait_until(
+                lambda: subscriber._in_flight == 1,
+                what="subscriber._in_flight == 1",
+            )
             await asyncio.sleep(0.05)
             (task,) = [
                 t
@@ -1432,10 +1456,13 @@ class TestTheInFlightSlots:
                 if getattr(t.get_coro(), "__qualname__", "").endswith("._routed")
             ]
             task.cancel()
-            await _until(lambda: subscriber._in_flight == 0)
+            await wait_until(
+                lambda: subscriber._in_flight == 0,
+                what="subscriber._in_flight == 0",
+            )
             assert subscriber._in_flight == 0
             assert client.acked == []
-            await _until(lambda: client.sessions >= 2)
+            await wait_until(lambda: client.sessions >= 2, what="client.sessions >= 2")
             assert client.sessions >= 2
             site.release()
 
@@ -1458,7 +1485,10 @@ class TestTheInFlightSlots:
             assert subscriber._in_flight == 1
             (future,) = scheduled
             future.cancel()
-            await _until(lambda: subscriber._in_flight == 0)
+            await wait_until(
+                lambda: subscriber._in_flight == 0,
+                what="subscriber._in_flight == 0",
+            )
             assert subscriber._in_flight == 0
             assert client.acked == []
 
@@ -1518,7 +1548,7 @@ class TestTheInFlightSlots:
                 sender.start()
                 time.sleep(0.3)  # the loop is blocked; the burst keeps arriving
                 unblocked = time.monotonic()
-                await _until(lambda: bool(ran))
+                await wait_until(lambda: bool(ran), what="bool(ran)")
                 stop.set()
                 sender.join(_PROMPT_S)
             assert ran, "the queued trip never ran"
@@ -1526,7 +1556,10 @@ class TestTheInFlightSlots:
             assert subscriber.shed_count > 1000, subscriber.shed_count
             assert peak <= INBOUND_IN_FLIGHT_BOUND, peak
             site.release()
-            await _until(lambda: subscriber._in_flight == 0)
+            await wait_until(
+                lambda: subscriber._in_flight == 0,
+                what="subscriber._in_flight == 0",
+            )
 
     async def test_a_burst_of_courier_answers_schedules_nothing_past_the_bound(
         self, tmp_path: Path
@@ -1579,7 +1612,10 @@ class TestTheInFlightSlots:
             assert site.publisher.acks_shed > 1000, site.publisher.acks_shed
             assert peak <= evidence_outbound.ACK_IN_FLIGHT_BOUND, peak
             site.release()
-            await _until(lambda: site.publisher._acks_in_flight == 0)
+            await wait_until(
+                lambda: site.publisher._acks_in_flight == 0,
+                what="site.publisher._acks_in_flight == 0",
+            )
 
     async def test_the_route_stops_cleanly_with_work_in_flight(
         self, tmp_path: Path
@@ -1588,7 +1624,10 @@ class TestTheInFlightSlots:
             subscriber, client = await _serving(site)
             site.lock("evidence.db")
             _deliver(client, range(1, INBOUND_IN_FLIGHT_BOUND + 1))
-            await _until(lambda: subscriber._in_flight == INBOUND_IN_FLIGHT_BOUND)
+            await wait_until(
+                lambda: subscriber._in_flight == INBOUND_IN_FLIGHT_BOUND,
+                what="subscriber._in_flight == INBOUND_IN_FLIGHT_BOUND",
+            )
             site._shutdown.set()
             started = time.monotonic()
             inbound = site._tasks[1]
@@ -1597,7 +1636,10 @@ class TestTheInFlightSlots:
             assert subscriber._io._executor is None
             threads = {t.name for t in threading.enumerate()}
             site.release()
-            await _until(lambda: subscriber._in_flight == 0)
+            await wait_until(
+                lambda: subscriber._in_flight == 0,
+                what="subscriber._in_flight == 0",
+            )
             assert subscriber._in_flight == 0
             # The routes still in flight finished without a new route thread,
             # and nothing was acknowledged on the stopped client.
@@ -1613,7 +1655,7 @@ class TestTheInFlightSlots:
             subscriber, client = await _serving(site)
             client.ack_code = 4  # paho's MQTT_ERR_NO_CONN
             _deliver(client, range(1, 2))
-            await _until(lambda: client.sessions >= 2)
+            await wait_until(lambda: client.sessions >= 2, what="client.sessions >= 2")
             assert client.sessions >= 2
 
     async def test_a_reconnect_keeps_the_slots_it_holds(self, tmp_path: Path) -> None:
@@ -1631,18 +1673,33 @@ class TestTheInFlightSlots:
 
             subscriber._router.route = held_route  # type: ignore[method-assign]
             _deliver(client, range(1, INBOUND_IN_FLIGHT_BOUND + 1))
-            await _until(lambda: subscriber._in_flight == INBOUND_IN_FLIGHT_BOUND)
+            await wait_until(
+                lambda: subscriber._in_flight == INBOUND_IN_FLIGHT_BOUND,
+                what="subscriber._in_flight == INBOUND_IN_FLIGHT_BOUND",
+            )
             assert subscriber._in_flight == INBOUND_IN_FLIGHT_BOUND
             with patch.object(evidence_inbound, "_RECONNECT_MIN_S", 0.01):
                 subscriber._signal_lost()
-                await _until(lambda: subscriber.connected is False)
-                await _until(lambda: subscriber.connected)
+                await wait_until(
+                    lambda: subscriber.connected is False,
+                    what="subscriber.connected is False",
+                )
+                await wait_until(
+                    lambda: subscriber.connected,
+                    what="subscriber.connected",
+                )
             assert subscriber._in_flight == INBOUND_IN_FLIGHT_BOUND
             _deliver(client, range(100, 101))
-            await _until(lambda: subscriber.shed_count == 1)
+            await wait_until(
+                lambda: subscriber.shed_count == 1,
+                what="subscriber.shed_count == 1",
+            )
             assert subscriber.shed_count == 1
             held.set()
-            await _until(lambda: subscriber._in_flight == 0)
+            await wait_until(
+                lambda: subscriber._in_flight == 0,
+                what="subscriber._in_flight == 0",
+            )
 
     async def test_an_inbound_flood_takes_no_slot_from_courier_acknowledgements(
         self, tmp_path: Path
@@ -1652,7 +1709,10 @@ class TestTheInFlightSlots:
             subscriber, client = await _serving(site)
             site.lock("evidence.db")
             _deliver(client, range(1, INBOUND_IN_FLIGHT_BOUND + 10))
-            await _until(lambda: subscriber.shed_count > 0)
+            await wait_until(
+                lambda: subscriber.shed_count > 0,
+                what="subscriber.shed_count > 0",
+            )
             for n in range(4):
                 site.courier.on_message(
                     site.courier,
@@ -1669,11 +1729,17 @@ class TestTheInFlightSlots:
                         ).encode()
                     ),
                 )
-            await asyncio.sleep(0.1)
+            await wait_until(
+                lambda: site.publisher._acks_in_flight >= 4,
+                what="the courier's four acknowledgements in flight",
+            )
             assert site.publisher.acks_shed == 0
             assert site.publisher._acks_in_flight == 4
             site.release()
-            await _until(lambda: site.publisher._acks_in_flight == 0)
+            await wait_until(
+                lambda: site.publisher._acks_in_flight == 0,
+                what="site.publisher._acks_in_flight == 0",
+            )
 
 
 # ── A redelivered refusal is the same refusal ───────────────────────────────
@@ -1686,13 +1752,19 @@ class TestARedeliveredRefusalIsRecordedOnce:
         async with _site(tmp_path) as site:
             subscriber, client = await _serving(site)
             _deliver(client, range(1, 4))
-            await _until(lambda: len(client.acked) == 3)
+            await wait_until(
+                lambda: len(client.acked) == 3,
+                what="len(client.acked) == 3",
+            )
             refusals = await site.attestor.ingest_refusal_summary()
             assert refusals is not None and refusals["count"] == 1
             other = json.loads(_MALFORMED_RECEIPT)
             other["artifact"]["n"] = 1
             _deliver(client, range(4, 6), json.dumps(other).encode())
-            await _until(lambda: len(client.acked) == 5)
+            await wait_until(
+                lambda: len(client.acked) == 5,
+                what="len(client.acked) == 5",
+            )
             refusals = await site.attestor.ingest_refusal_summary()
             assert refusals is not None and refusals["count"] == 2
             # Every delivery is still answered: the courier retires on that.
@@ -1716,7 +1788,9 @@ class TestTheExecutorsAreBounded:
             held = [
                 asyncio.create_task(executor.run_async(hold.wait)) for _ in range(4)
             ]
-            await asyncio.sleep(0.05)
+            await wait_until(
+                lambda: executor.pending >= 4, what="four held evidence calls"
+            )
             assert executor.pending == 4
             # Bounded waits: past the ceiling a call is refused at once, and
             # one queued behind the held calls would otherwise never return.
@@ -1741,7 +1815,7 @@ class TestTheExecutorsAreBounded:
         hold = threading.Event()
         try:
             held = [asyncio.create_task(io.run(hold.wait)) for _ in range(2)]
-            await asyncio.sleep(0.05)
+            await wait_until(lambda: io.pending >= 2, what="two held route calls")
             assert io.pending == 2
             with pytest.raises(RouteIOSaturatedError):
                 await asyncio.wait_for(io.run(lambda: None), 1.0)
@@ -1780,7 +1854,10 @@ class TestTheExecutorsAreBounded:
             reads = [
                 asyncio.create_task(store.get_action_log(limit=1)) for _ in range(20)
             ]
-            await asyncio.sleep(0.1)
+            await wait_until(
+                lambda: peak >= store_module._READ_WORKERS,
+                what="every read worker to hold a read",
+            )
             assert store._read_executor is not None
             assert store._read_executor._work_queue.qsize() == 0
             assert peak == store_module._READ_WORKERS

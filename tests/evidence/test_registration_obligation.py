@@ -50,6 +50,7 @@ from ori.security.evidence.registration import (
     RegistrationStatus,
     reoffer_due,
 )
+from tests.waiting import wait_until
 
 DEVICE = "energy-monitor-ikeja-01"
 SECRET = "install-secret-for-obligation-tests"
@@ -202,10 +203,7 @@ async def _serve(
     )
     shutdown = asyncio.Event()
     task = asyncio.create_task(publisher.serve_until(shutdown))
-    for _ in range(200):
-        if publisher.connected:
-            break
-        await asyncio.sleep(0.01)
+    await wait_until(lambda: publisher.connected, what="publisher.connected")
     assert publisher.connected
     # The serve loop's own first drain may still be pending; draining here,
     # under the same lock, makes what the client has seen deterministic.
@@ -518,10 +516,10 @@ async def test_the_route_survives_counts_that_would_overflow_an_exponent(
     shutdown = asyncio.Event()
     task = asyncio.create_task(publisher.serve_until(shutdown))
     try:
-        for _ in range(300):
-            if publisher.connected and len(client.published) >= 3:
-                break
-            await asyncio.sleep(0.01)
+        await wait_until(
+            lambda: publisher.connected and len(client.published) >= 3,
+            what="publisher.connected and len(client.published) >= 3",
+        )
         types = [json.loads(p)["artifact_type"] for p in client.published]
         assert sorted(types) == [
             "anchor_registration",
@@ -544,11 +542,13 @@ async def test_the_route_survives_counts_that_would_overflow_an_exponent(
                 },
             )(),
         )
-        for _ in range(300):
-            row = device.handoff(checkpoint["artifact_digest"])
-            if row["retired_at_ms"] is not None:
-                break
-            await asyncio.sleep(0.01)
+        await wait_until(
+            lambda: (
+                device.handoff(checkpoint["artifact_digest"])["retired_at_ms"]
+                is not None
+            ),
+            what="the checkpoint's handoff to retire",
+        )
         assert (
             device.handoff(checkpoint["artifact_digest"])["retire_outcome"] == "queued"
         )

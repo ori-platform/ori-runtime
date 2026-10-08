@@ -182,6 +182,7 @@ markers = [
     "hardware: requires real Raspberry Pi hardware",
     "slow: builds a real virtual environment from locked dependencies",
     "disclosure_release: evidence-disclosure checks needing real release inputs",
+    "latency_bound: asserts a latency bound; skipped under ORI_TEST_STALL_MS, which inflates it by construction",
 ]
 python_files = ["test_*.py"]
 

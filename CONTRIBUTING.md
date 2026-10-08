@@ -382,6 +382,41 @@ async def test_psutil_adapter_integration():
 The test suite covers all core layers.
 Every PR must keep the suite green.
 
+### Waiting for asynchronous work
+
+A test that asserts on work another task does must wait for that work, not
+for an interval. Sleeping a fixed window, or bounding a wait and carrying on
+when the bound runs out, passes on an idle laptop and fails on a loaded CI
+runner with no product defect. Use the helpers in `tests/waiting.py`:
+`wait_until(predicate, what=...)` for a condition, `settle(tasks, what=...)`
+for tasks, `drained(dispatcher)` for the action-record writer, and
+`quiesce(what=...)` for everything a test's own loop scheduled. Their deadline
+only bounds a hang, and running out of it fails naming what never happened.
+An absence (something must *not* happen) cannot be waited for: wait for the
+positive state first, then a short window may follow, since under load it can
+only miss an excess, never invent one. A test whose subject is a latency bound
+keeps its bound.
+
+`tests/test_wait_discipline.py` refuses the shapes it can read: a suppressed
+or swallowed `TimeoutError`, an `asyncio.wait(..., timeout=...)` whose result
+is discarded, an unchecked `drain_records`, and a bounded poll loop that can
+fall through. It cannot see a plain sleep followed by an assertion, so run the
+tests you touch under a simulated loaded runner as well:
+
+```bash
+# Every event-loop iteration first blocks for 20 ms; usable on the whole suite
+ORI_TEST_STALL_MS=20 pytest tests/ -n auto -m "not hardware"
+
+# The loop's clock runs 1000x fast: every loop timer expires that much sooner
+# while threads and the store keep their speed. Faster and sharper, but product
+# timers shrink too, so use it on the tests you are examining, not the suite.
+ORI_TEST_CLOCK_SCALE=1000 pytest tests/test_tier_c_approval_sequences.py
+```
+
+Tests whose subject is a latency bound carry `@pytest.mark.latency_bound` and
+are skipped under `ORI_TEST_STALL_MS`, which inflates any latency by
+construction.
+
 ---
 
 ## Safety Invariants

@@ -18,6 +18,7 @@ from ori.security.commissioning.profiles import (
     load_shipped_profile_set,
 )
 from ori.state.store import StateStore, TripJournal
+from tests.waiting import wait_until
 
 RATIFIED = load_profile_set(
     [
@@ -438,24 +439,42 @@ async def test_deferred_gate_is_zonal_across_a_shared_sensor(store: StateStore) 
     assert commander.startup_calls == ["calm-zone"]
 
 
+class HeldIntentJournal(TripJournal):
+    """A journal whose intent append stays in flight until the test lands it.
+
+    Slower than any deadline or grace the registry allows, for exactly as long
+    as the test needs, rather than for an interval the test then hopes has
+    passed.
+    """
+
+    def __init__(self, store: StateStore) -> None:
+        super().__init__(store)
+        self._release = asyncio.Event()
+        self._landed = asyncio.Event()
+
+    async def append_intent(self, *args, **kwargs) -> None:
+        await self._release.wait()
+        await super().append_intent(*args, **kwargs)
+        self._landed.set()
+
+    async def land(self) -> None:
+        """Let the held intent append finish, and return once it has."""
+        self._release.set()
+        await wait_until(self._landed.is_set, what="the held trip intent to land")
+
+
 async def test_recovery_never_crosses_an_intent_slower_than_the_grace(
     store: StateStore,
 ) -> None:
     """The grace-expired path: the record defers, and recovery called while
     the intent write is still in flight must not write either — the durable
     order stays intent-then-record however slow the intent."""
-    import time as _time
-
-    class VerySlowJournal(TripJournal):
-        async def append_intent(self, *args, **kwargs) -> None:
-            await asyncio.to_thread(_time.sleep, 1.0)
-            await super().append_intent(*args, **kwargs)
-
+    journal_in_flight = HeldIntentJournal(store)
     commander = FakeCommander()
     registry = SafetyRegistry(
         RATIFIED,
         (zone(),),
-        VerySlowJournal(store),
+        journal_in_flight,
         commander,
         binding_seq=4,
         record_order_grace_s=0.1,
@@ -473,7 +492,7 @@ async def test_recovery_never_crosses_an_intent_slower_than_the_grace(
     _, entries = await journal.load("main-distribution", "fixture.overcurrent.v1")
     assert entries == []
     # Once the intent lands, recovery persists in append order.
-    await asyncio.sleep(1.2)
+    await journal_in_flight.land()
     assert await registry.retry_records_once() == 1
     _, entries = await journal.load("main-distribution", "fixture.overcurrent.v1")
     assert [next(iter(e)) for e in entries] == ["intent", "record"]
@@ -485,18 +504,12 @@ async def test_outcome_retry_never_crosses_an_unsettled_intent(
 ) -> None:
     """A refused command with its intent still in flight: the reading-free
     retry waits for the intent to settle before commanding again."""
-    import time as _time
-
-    class VerySlowJournal(TripJournal):
-        async def append_intent(self, *args, **kwargs) -> None:
-            await asyncio.to_thread(_time.sleep, 1.0)
-            await super().append_intent(*args, **kwargs)
-
+    journal_in_flight = HeldIntentJournal(store)
     commander = FakeCommander()
     registry = SafetyRegistry(
         RATIFIED,
         (zone(),),
-        VerySlowJournal(store),
+        journal_in_flight,
         commander,
         binding_seq=4,
         record_order_grace_s=0.1,
@@ -507,7 +520,7 @@ async def test_outcome_retry_never_crosses_an_unsettled_intent(
     commander.accept = True
     assert await registry.retry_pending_once() == 0
     assert len(commander.outcome_calls) == 1
-    await asyncio.sleep(1.2)
+    await journal_in_flight.land()
     assert await registry.retry_pending_once() == 1
     assert len(commander.outcome_calls) == 2
 

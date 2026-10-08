@@ -12,6 +12,7 @@ from ori.network.events import OriEvent, ReasoningResult, SensorReading
 from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext
 from ori.state.store import StateStore
+from tests.waiting import drained
 
 
 def _ms() -> int:
@@ -369,7 +370,7 @@ class TestRejectionMemory:
             context=ctx,
             result=res,
         )
-        await dispatcher.drain_records()
+        await drained(dispatcher)
         key = store._build_rejection_pattern_key(
             _reading_of(evt).sensor_type,
             "overcurrent_trip",

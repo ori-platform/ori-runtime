@@ -234,3 +234,79 @@ if os.environ.get(SLOW_STARTUP_PROBE_ENV) == "1":
         monkeypatch.setattr(
             _ProbeRuntime, "_start_health_socket_if_enabled", _slow_late
         )
+
+
+STALL_ENV = "ORI_TEST_STALL_MS"
+
+# Opt-in loaded-runner simulation. Every iteration of the event loop first
+# blocks the loop thread for this many milliseconds, as a runner whose cores
+# are busy, or a coverage tracer, takes the loop away from the test:
+#
+#     ORI_TEST_STALL_MS=3 python3 -m pytest tests/test_tier_c_approval_sequences.py
+#
+# Wall-clock time then runs ahead of the work the loop gets through: a timer
+# shorter than the stall is already due when the loop next looks, so a test
+# that sleeps a fixed window, or bounds a wait and carries on when the bound
+# runs out, reaches its assertion before the work it asserts on. Such a test
+# fails here deterministically rather than once in a while in CI; one that
+# waits for the event it asserts (`tests/waiting.py`) only takes longer.
+#
+# It slows neither threads nor subprocesses, and it cannot make a latency
+# bound meaningful; it widens the gap between a window and the work behind it.
+_STALL_MS = float(os.environ.get(STALL_ENV, "") or 0)
+if _STALL_MS > 0:
+    import asyncio.base_events as _base_events
+    import time as _time
+
+    _unstalled_run_once = _base_events.BaseEventLoop._run_once  # type: ignore[attr-defined]
+
+    def _stalled_run_once(self: Any) -> None:
+        _time.sleep(_STALL_MS / 1000.0)
+        _unstalled_run_once(self)
+
+    _base_events.BaseEventLoop._run_once = _stalled_run_once  # type: ignore[attr-defined]
+
+
+CLOCK_SCALE_ENV = "ORI_TEST_CLOCK_SCALE"
+
+# The same pressure, faster and more repeatable: the event loop's clock runs
+# this many times faster than real time, so every timer, timeout and deadline
+# on the loop expires that much sooner while threads, subprocesses and the
+# store work at their real speed.
+#
+#     ORI_TEST_CLOCK_SCALE=1000 python3 -m pytest tests/test_tier_c_approval_sequences.py
+#
+# A window measured on the loop (`asyncio.sleep`, `wait_for`, `asyncio.wait`,
+# `loop.time()`) shrinks by the factor; `tests/waiting.py` measures its own
+# deadline on the loop too, which the factor shortens alike, so its waits are
+# scaled up by it to stay a bound on a hang. Product timers shrink as well, so
+# a test that relies on one not expiring before real work completes fails here
+# for that reason, not for the one this hunts: read the message.
+_CLOCK_SCALE = float(os.environ.get(CLOCK_SCALE_ENV, "") or 0)
+if _CLOCK_SCALE > 0:
+    import asyncio.base_events as _clock_events
+    import time as _clock_time
+
+    _clock_origin = _clock_time.monotonic()
+
+    def _scaled_time(self: Any) -> float:
+        return _clock_origin + (_clock_time.monotonic() - _clock_origin) * _CLOCK_SCALE
+
+    _clock_events.BaseEventLoop.time = _scaled_time  # type: ignore[method-assign]
+
+
+def pytest_collection_modifyitems(config: Any, items: list[Any]) -> None:
+    """Under the stall, skip the tests whose subject is a latency bound.
+
+    Their bound measures the loop the stall slows, so it fails by construction
+    there; a failure would say nothing about whether they wait correctly. They
+    run as usual without the stall.
+    """
+    if _STALL_MS <= 0:
+        return
+    skip = pytest.mark.skip(
+        reason=f"latency bound; {STALL_ENV}={_STALL_MS:g} inflates it by construction"
+    )
+    for item in items:
+        if item.get_closest_marker("latency_bound") is not None:
+            item.add_marker(skip)
