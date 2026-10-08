@@ -31,6 +31,7 @@ from ori.reasoning.capability_posture import CapabilityPosture
 from ori.reasoning.elevator import SkillContext
 from ori.security.offline_tokens import TokenVerificationResult
 from ori.state.store import StateStore
+from tests.waiting import drained, settle, wait_until
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -254,7 +255,7 @@ class TestTierA:
         ctx = SkillContext(skill=FakeSkill(), event=_event(), state_store=store)
         d = ActionDispatcher()
         await d.dispatch("alert_whatsapp", ActionTier.INFORMATIONAL, ctx, _result())
-        await d.drain_records()
+        await drained(d)
         store.log_action_for_event.assert_awaited_once()
 
     async def test_returns_action_result_instance(self):
@@ -845,7 +846,7 @@ class TestTierC:
                 "Detailed explanation" not in value
                 for value in sent_alert.template_variables
             )
-            await d.drain_records()
+            await drained(d)
             action_rows = await store.get_action_log()
             assert action_rows[0]["proposal_id"] == "AB12CD34"
             decision_rows = await store.get_tier_c_decision_log()
@@ -928,7 +929,7 @@ class TestTierC:
                 _result(),
                 approval_timeout_seconds=10,
             )
-        await d.drain_records()
+        await drained(d)
 
         store.log_action_for_event.assert_awaited_once()
 
@@ -962,7 +963,7 @@ class TestTierC:
             )
 
         assert result.approved is False
-        await d.drain_records()
+        await drained(d)
         store.log_tier_c_decision.assert_awaited_once()
         kwargs = store.log_tier_c_decision.await_args.kwargs
         assert kwargs["device_id"] == "dev-01"
@@ -1013,7 +1014,7 @@ class TestTierC:
             )
 
         assert result.approved is True
-        await dispatcher.drain_records()
+        await drained(dispatcher)
         fields = store.log_tier_c_decision.await_args.kwargs
         assert fields["operator_response"] == "YES-AB12CD34"
         assert fields["operator_response_channel"] == "whatsapp"
@@ -1324,7 +1325,7 @@ class TestLogging:
         ctx = SkillContext(skill=FakeSkill(), event=_event(), state_store=None)
         d = ActionDispatcher(state_store=store)
         await d.dispatch("alert_whatsapp", ActionTier.INFORMATIONAL, ctx, _result())
-        await d.drain_records()
+        await drained(d)
         store.log_action_for_event.assert_awaited_once()
 
     async def test_context_store_takes_priority(self):
@@ -1333,7 +1334,7 @@ class TestLogging:
         ctx = SkillContext(skill=FakeSkill(), event=_event(), state_store=ctx_store)
         d = ActionDispatcher(state_store=dispatcher_store)
         await d.dispatch("alert_whatsapp", ActionTier.INFORMATIONAL, ctx, _result())
-        await d.drain_records()
+        await drained(d)
         ctx_store.log_action_for_event.assert_awaited_once()
         dispatcher_store.log_action_for_event.assert_not_awaited()
 
@@ -1355,7 +1356,7 @@ class TestLogging:
 
         d.register_executor("alert_whatsapp", boom)
         await d.dispatch("alert_whatsapp", ActionTier.INFORMATIONAL, ctx, _result())
-        await d.drain_records()
+        await drained(d)
         store.log_action_for_event.assert_awaited_once()
 
 
@@ -1603,9 +1604,11 @@ class TestUnknownTier:
 class TestCancellationHandling:
     async def test_asyncio_shield_prevents_tier_d_abandonment_on_cancellation(self):
         d = ActionDispatcher()
+        executor_started = asyncio.Event()
         executor_ran = asyncio.Event()
 
         async def _mock_exec(action, ctx):
+            executor_started.set()
             await asyncio.sleep(0.1)
             executor_ran.set()
 
@@ -1614,12 +1617,12 @@ class TestCancellationHandling:
         task = asyncio.create_task(
             d.dispatch("trip_relay", ActionTier.SAFETY_CRITICAL, _context(), _result())
         )
-        await asyncio.sleep(0.05)
+        await wait_until(executor_started.is_set, what="the Tier D executor to start")
         task.cancel()
 
         await task
         # Wait for the shielded task to finish in the background
-        await asyncio.sleep(0.1)
+        await settle(d.get_inflight_tier_d_tasks(), what="the shielded Tier D act")
 
         assert executor_ran.is_set(), "Shielded executor was abandoned"
 
@@ -2046,7 +2049,7 @@ class TestOfflineTokenApproval:
                 )
             # The decision record lands after the act; the store must still
             # be open when it does.
-            await d.drain_records()
+            await drained(d)
         finally:
             await store.close()
         with sqlite3.connect(tmp_path / "state.db") as conn:
@@ -2144,7 +2147,7 @@ class TestOfflineTokenApproval:
                 )
             # The decision record lands after the act; the store must still
             # be open when it does.
-            await d.drain_records()
+            await drained(d)
         finally:
             await store.close()
         with sqlite3.connect(tmp_path / "state.db") as conn:
@@ -2494,7 +2497,7 @@ class TestSnapshotBuildFailureIsContained:
             ctx,
             _result(action_tier="D"),
         )
-        await d.drain_records()
+        await drained(d)
 
         store.log_action_for_event.assert_awaited()
         # The snapshot could not be built, so nothing spurious was logged.
@@ -2548,7 +2551,7 @@ class TestTierDIsIndependentOfEvidence:
         result = await d.dispatch(
             "trip_relay", ActionTier.SAFETY_CRITICAL, ctx, _result()
         )
-        await d.drain_records()
+        await drained(d)
 
         assert attempted == ["attest"], "attestation was never attempted"
         assert result.executed is True
@@ -2579,7 +2582,7 @@ class TestTierDIsIndependentOfEvidence:
         result = await d.dispatch(
             "trip_relay", ActionTier.SAFETY_CRITICAL, ctx, _result()
         )
-        await d.drain_records()
+        await drained(d)
 
         assert attempted == ["attest"]
         assert result.executed is True
@@ -2627,7 +2630,7 @@ class TestTierDIsIndependentOfEvidence:
         d.register_executor("trip_relay", _executor)
 
         await d.dispatch("trip_relay", ActionTier.SAFETY_CRITICAL, ctx, _result())
-        await d.drain_records()
+        await drained(d)
 
         assert "attest" in order, "attestation was never attempted"
         assert order[0] == "execute", order
@@ -2684,7 +2687,7 @@ class TestWhichTiersReachEvidence:
         d.register_executor("log_to_dashboard", AsyncMock(return_value=True))
 
         await d.dispatch("close_gas_valve", ActionTier.HARD_PHYSICAL, ctx, _result())
-        await d.drain_records()
+        await drained(d)
 
         assert seen, "a Tier C action never reached the evidence path"
         tiers = [tier for tier, _reconciled in seen]
@@ -2700,7 +2703,7 @@ class TestWhichTiersReachEvidence:
         d = ActionDispatcher(evidence_attestor=self._attestor(seen))
         d.register_executor("trip_relay", AsyncMock(return_value=True))
         await d.dispatch("trip_relay", ActionTier.SAFETY_CRITICAL, ctx, _result())
-        await d.drain_records()
+        await drained(d)
         assert ("D", False) in seen, "a Tier D action was not attested"
 
     @pytest.mark.parametrize(
@@ -2758,7 +2761,7 @@ class TestAttestationFailureIsRecordedNotSilent:
         result = await d.dispatch(
             "trip_relay", ActionTier.SAFETY_CRITICAL, ctx, _result()
         )
-        await d.drain_records()
+        await drained(d)
 
         assert result.executed is True
         store.set_action_attestation.assert_awaited()
@@ -2790,7 +2793,7 @@ class TestAttestationFailureIsRecordedNotSilent:
         d = ActionDispatcher(evidence_attestor=_Silent())
         d.register_executor("trip_relay", AsyncMock(return_value=True))
         await d.dispatch("trip_relay", ActionTier.SAFETY_CRITICAL, ctx, _result())
-        await d.drain_records()
+        await drained(d)
 
         statuses = [
             call.kwargs.get("status")
@@ -2853,7 +2856,7 @@ class TestAnUnansweredApprovalSaysWhyItEnded:
                 safe_default_action="log_to_dashboard",
                 approval_timeout_seconds=timeout,
             )
-            await dispatcher.drain_records()
+            await drained(dispatcher)
 
             def records(conn):
                 decision = conn.execute(

@@ -47,6 +47,7 @@ from ori.security.gateway_messages import (
     GatewayMessageAuthConfig,
     GatewayMessageAuthenticator,
 )
+from tests.waiting import wait_until
 
 DEVICE = "energy-monitor-ikeja-01"
 ENVELOPE_SECRET = "site-envelope-secret"
@@ -544,14 +545,6 @@ def _publisher(
     )
 
 
-async def _until(predicate, timeout_s: float = 2.0) -> None:
-    deadline = asyncio.get_running_loop().time() + timeout_s
-    while not predicate():
-        if asyncio.get_running_loop().time() > deadline:
-            raise AssertionError("condition not reached")
-        await asyncio.sleep(0.01)
-
-
 async def _stop(shutdown: asyncio.Event, task: asyncio.Task[None]) -> None:
     shutdown.set()
     await asyncio.wait_for(task, 2.0)
@@ -571,7 +564,10 @@ async def test_retained_artifacts_are_carried_as_exact_bytes_at_qos_1(rig):
     shutdown = asyncio.Event()
     task = asyncio.create_task(publisher.serve_until(shutdown))
     try:
-        await _until(lambda: len(_carried(client)) == 2)
+        await wait_until(
+            lambda: len(_carried(client)) == 2,
+            what="len(_carried(client)) == 2",
+        )
         assert client.subscriptions == [(f"ori/{DEVICE}/evidence/outbound/ack", 1)]
         assert {qos for _, _, qos in client.published} == {1}
         by_type = {c["artifact_type"]: c for c in _carried(client)}
@@ -600,7 +596,10 @@ async def test_nothing_is_carried_once_the_broker_drops_the_session(rig):
     shutdown = asyncio.Event()
     task = asyncio.create_task(publisher.serve_until(shutdown))
     try:
-        await _until(lambda: len(_carried(client)) == 1)
+        await wait_until(
+            lambda: len(_carried(client)) == 1,
+            what="len(_carried(client)) == 1",
+        )
         rig.seal(2)
         # The state `_on_disconnect` leaves before the serve loop tears the
         # client down: the session is gone but the handle still exists.
@@ -655,12 +654,23 @@ async def test_puback_retires_nothing_and_the_envelope_is_republished_after_back
     shutdown = asyncio.Event()
     task = asyncio.create_task(publisher.serve_until(shutdown))
     try:
-        await _until(lambda: len(_carried(client)) == 1)
+        await wait_until(
+            lambda: len(_carried(client)) == 1,
+            what="len(_carried(client)) == 1",
+        )
         await asyncio.sleep(0.2)
         assert len(_carried(client)) == 1, "republished before backoff elapsed"
         clock["now"] += int(RETRY_INTERVAL_S * 1000)
         publisher.nudge()
-        await _until(lambda: len(_carried(client)) == 2)
+        await wait_until(
+            lambda: len(_carried(client)) == 2,
+            what="len(_carried(client)) == 2",
+        )
+        # The publish reaches the client before its attempt reaches the ledger.
+        await wait_until(
+            lambda: rig.envelope(int(sealed["local_seq"]))["attempts"] == 2,
+            what="the second attempt on the ledger",
+        )
         assert rig.envelope(int(sealed["local_seq"]))["attempts"] == 2
         assert rig.envelope(int(sealed["local_seq"]))["custody_state"] == "none"
     finally:
@@ -676,13 +686,17 @@ async def test_a_queued_acknowledgement_arriving_on_the_route_retires_the_checkp
     shutdown = asyncio.Event()
     task = asyncio.create_task(publisher.serve_until(shutdown))
     try:
-        await _until(lambda: len(_carried(client)) == 1)
+        await wait_until(
+            lambda: len(_carried(client)) == 1,
+            what="len(_carried(client)) == 1",
+        )
         client.deliver(_ack("checkpoint", checkpoint["artifact_digest"]))
-        await _until(
+        await wait_until(
             lambda: (
                 (rig.artifact(checkpoint["artifact_digest"]) or {}).get("retired_at_ms")
                 is not None
-            )
+            ),
+            what="the checkpoint to retire",
         )
         publisher.nudge()
         await asyncio.sleep(0.2)
@@ -699,7 +713,10 @@ async def test_a_publish_failure_is_recorded_and_the_drain_stops(rig):
     shutdown = asyncio.Event()
     task = asyncio.create_task(publisher.serve_until(shutdown))
     try:
-        await _until(lambda: rig.envelope(int(first["local_seq"]))["attempts"] == 1)
+        await wait_until(
+            lambda: rig.envelope(int(first["local_seq"]))["attempts"] == 1,
+            what="rig.envelope(int(first['local_seq']))['attempts'] == 1",
+        )
         assert rig.envelope(int(first["local_seq"]))["last_failure"] == "unreachable"
         assert rig.envelope(2)["attempts"] == 0
         assert _carried(client) == []
@@ -715,8 +732,11 @@ async def test_flush_carries_what_is_due_and_returns_the_count(rig):
     shutdown = asyncio.Event()
     task = asyncio.create_task(publisher.serve_until(shutdown))
     try:
-        await _until(lambda: publisher.connected)
-        await _until(lambda: len(_carried(client)) == 2)
+        await wait_until(lambda: publisher.connected, what="publisher.connected")
+        await wait_until(
+            lambda: len(_carried(client)) == 2,
+            what="len(_carried(client)) == 2",
+        )
         rig.queue_checkpoint()
         assert await publisher.flush(1.0) == 0, (
             "an identical checkpoint is one artifact"
@@ -881,7 +901,10 @@ async def test_the_checkpoint_loop_issues_on_the_release_owned_interval(monkeypa
     attestor = _RecordingAttestor()
     runtime = _runtime(attestor, None)
     task = asyncio.create_task(runtime._evidence_checkpoint_loop(cast(Any, attestor)))
-    await _until(lambda: attestor.checkpoints >= 3)
+    await wait_until(
+        lambda: attestor.checkpoints >= 3,
+        what="attestor.checkpoints >= 3",
+    )
     runtime._shutdown_event.set()
     await asyncio.wait_for(task, 1.0)
 
@@ -900,7 +923,7 @@ async def test_shutdown_drains_what_was_retained_before_closing(rig):
     shutdown = asyncio.Event()
     task = asyncio.create_task(publisher.serve_until(shutdown))
     try:
-        await _until(lambda: publisher.connected)
+        await wait_until(lambda: publisher.connected, what="publisher.connected")
         checkpoint = rig.queue_checkpoint()
         assert _carried(client) == []
     finally:
@@ -930,7 +953,7 @@ async def test_a_flush_overlapping_a_nudged_drain_carries_each_artifact_once(rig
     shutdown = asyncio.Event()
     task = asyncio.create_task(publisher.serve_until(shutdown))
     try:
-        await _until(lambda: publisher.connected)
+        await wait_until(lambda: publisher.connected, what="publisher.connected")
         rig.queue_checkpoint()
         publisher.nudge()
         await asyncio.to_thread(in_flight.wait, 2.0)
@@ -1033,17 +1056,24 @@ async def test_a_courier_answer_survives_the_publish_in_either_order(
     task = asyncio.create_task(publisher.serve_until(shutdown))
     try:
         for carried in (1, 2, 3):
-            await _until(lambda: len(_carried(client)) == carried)
+            await wait_until(
+                lambda: len(_carried(client)) == carried,
+                what="len(_carried(client)) == carried",
+            )
             if order == "write-first":
                 # The publisher's write has committed; only then does the
                 # courier answer.
-                await _until(lambda: len(writes) == carried)
+                await wait_until(
+                    lambda: len(writes) == carried,
+                    what="len(writes) == carried",
+                )
                 client.deliver(client.pending.pop())
-            await _until(
+            await wait_until(
                 lambda: (
                     rig.envelope(local_seq)["courier_answer"] == stored
                     and len(writes) == carried
-                )
+                ),
+                what=f"the courier's answer {stored!r} on write {carried}",
             )
             await asyncio.sleep(0.05)
             assert rig.envelope(local_seq)["courier_answer"] == stored

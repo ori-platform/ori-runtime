@@ -77,6 +77,7 @@ from tests.conftest import (
     run_runtime_full_startup,
     run_runtime_until,
 )
+from tests.waiting import DEADLINE_S, wait_until
 
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -755,11 +756,10 @@ async def test_a_failed_sensor_connect_does_not_take_the_runtime_down(
         # Wait for the sensor loop, not merely for the event bus: the bus is
         # built well before any adapter is connected, so breaking on it would
         # assert against a runtime that had not reached the boundary yet.
-        deadline = time.monotonic() + 10.0
-        while time.monotonic() < deadline and not attempts:
-            if start_task.done():
-                break
-            await asyncio.sleep(0.05)
+        await wait_until(
+            lambda: attempts or start_task.done(),
+            what="a connect attempt, or startup to end",
+        )
 
         # The runtime came up rather than aborting.
         assert not start_task.done(), (
@@ -828,11 +828,10 @@ async def test_a_sensor_that_never_connects_reaches_the_operator(
     runtime = OriRuntime(config_path=str(minimal_config))
     start_task = asyncio.create_task(runtime.start())
     try:
-        deadline = time.monotonic() + 10.0
-        while time.monotonic() < deadline and not sent:
-            if start_task.done():
-                break
-            await asyncio.sleep(0.05)
+        await wait_until(
+            lambda: sent or start_task.done(),
+            what="an alert to be sent, or startup to end",
+        )
 
         assert not start_task.done(), (
             "startup aborted rather than reporting: "
@@ -931,13 +930,13 @@ async def test_a_failed_connect_reaches_the_pair_that_depends_on_it(
         # is still in flight — passing on an idle machine and failing under
         # load. Waiting for the thing being asserted removes the race rather
         # than widening the window it hides in.
-        deadline = time.monotonic() + 10.0
-        while time.monotonic() < deadline and not any(
-            "measurement_loss" in message for message in sent
-        ):
-            if start_task.done():
-                break
-            await asyncio.sleep(0.05)
+        await wait_until(
+            lambda: (
+                any("measurement_loss" in message for message in sent)
+                or start_task.done()
+            ),
+            what="a measurement_loss notice, or startup to end",
+        )
         assert not start_task.done(), (
             f"startup aborted: {start_task.exception() if start_task.done() else ''}"
         )
@@ -993,14 +992,17 @@ async def test_an_unconnected_sensor_notice_is_queued_when_delivery_fails(
         # on a slow machine that window is wide enough to hit. The connect
         # loop runs long after `open()`, so this is the point from which the
         # outbox can be asked at all.
-        deadline = time.monotonic() + 10.0
         queued: list = []
-        while time.monotonic() < deadline and not queued:
+
+        async def queued_or_ended() -> bool:
+            nonlocal queued
             if start_task.done():
-                break
+                return True
             if runtime._unconnected_sensors and runtime._state_store is not None:
                 queued = await runtime._state_store.get_retryable_alerts(limit=10)
-            await asyncio.sleep(0.05)
+            return bool(queued)
+
+        await wait_until(queued_or_ended, what="a queued alert, or startup to end")
 
         assert not start_task.done(), "startup aborted rather than queueing"
         assert queued, "delivery failed and nothing was durably queued"
@@ -1094,11 +1096,10 @@ async def test_a_failed_sensor_connect_is_non_fatal_under_hardened_posture_too(
     runtime = OriRuntime(config_path=str(hardened))
     start_task = asyncio.create_task(runtime.start())
     try:
-        deadline = time.monotonic() + 10.0
-        while time.monotonic() < deadline and not attempts:
-            if start_task.done():
-                break
-            await asyncio.sleep(0.05)
+        await wait_until(
+            lambda: attempts or start_task.done(),
+            what="a connect attempt, or startup to end",
+        )
 
         assert attempts, "connect() was never attempted, so nothing was proven"
         # Without this the test would pass on a config that silently stayed in
@@ -1240,11 +1241,10 @@ async def test_the_runtime_opens_the_store_beside_its_config(tmp_path, monkeypat
     runtime = OriRuntime(config_path=str(home / "ori.yaml"))
     start_task = asyncio.create_task(runtime.start())
     try:
-        deadline = time.monotonic() + 10.0
-        while time.monotonic() < deadline and not (home / "ori_state.db").exists():
-            if start_task.done():
-                break
-            await asyncio.sleep(0.05)
+        await wait_until(
+            lambda: (home / "ori_state.db").exists() or start_task.done(),
+            what="the store beside the configuration, or startup to end",
+        )
         assert (home / "ori_state.db").exists(), (
             "the runtime never opened a store beside its configuration: "
             f"{start_task.exception() if start_task.done() else ''}"
@@ -1330,11 +1330,10 @@ async def test_a_relative_skills_dir_survives_a_runtime_working_directory(
     runtime = OriRuntime(config_path=str(home / "ori.yaml"))
     start_task = asyncio.create_task(runtime.start())
     try:
-        deadline = time.monotonic() + 10.0
-        while time.monotonic() < deadline and runtime._skills_dir is None:
-            if start_task.done():
-                break
-            await asyncio.sleep(0.05)
+        await wait_until(
+            lambda: runtime._skills_dir is not None or start_task.done(),
+            what="a resolved skills directory, or startup to end",
+        )
         # The directory the loader was handed, taken from the running runtime
         # rather than from the parsed configuration, because the seam that
         # broke is between the two.
@@ -1442,11 +1441,10 @@ async def test_startup_accepts_a_dotenv_under_a_document_that_stays_development(
     )
     start_task = asyncio.create_task(runtime.start())
     try:
-        deadline = time.monotonic() + 10.0
-        while time.monotonic() < deadline and runtime._config is None:
-            if start_task.done():
-                break
-            await asyncio.sleep(0.05)
+        await wait_until(
+            lambda: runtime._config is not None or start_task.done(),
+            what="a loaded configuration, or startup to end",
+        )
         assert runtime._config is not None, (
             "startup refused a development document: "
             f"{start_task.exception() if start_task.done() else ''}"
@@ -1496,11 +1494,10 @@ async def test_a_hardened_document_without_a_dotenv_still_starts(tmp_path, monke
     runtime = OriRuntime(config_path=str(home / "ori.yaml"), dotenv_variables=None)
     start_task = asyncio.create_task(runtime.start())
     try:
-        deadline = time.monotonic() + 10.0
-        while time.monotonic() < deadline and runtime._config is None:
-            if start_task.done():
-                break
-            await asyncio.sleep(0.05)
+        await wait_until(
+            lambda: runtime._config is not None or start_task.done(),
+            what="a loaded configuration, or startup to end",
+        )
         assert runtime._config is not None, (
             "startup refused a hardened document that loaded no .env: "
             f"{start_task.exception() if start_task.done() else ''}"
@@ -1554,11 +1551,10 @@ async def test_startup_reads_the_documents_placeholders_and_escapes_its_banner(
     with caplog.at_level("INFO"):
         start_task = asyncio.create_task(runtime.start())
         try:
-            deadline = time.monotonic() + 10.0
-            while time.monotonic() < deadline and runtime._config is None:
-                if start_task.done():
-                    break
-                await asyncio.sleep(0.05)
+            await wait_until(
+                lambda: runtime._config is not None or start_task.done(),
+                what="a loaded configuration, or startup to end",
+            )
             assert runtime._config is not None
         finally:
             await _stop_and_join(runtime, start_task)
@@ -2370,20 +2366,10 @@ class TestAdapterProtocol:
         runtime = OriRuntime(config_path=str(cfg))
 
         # No state to wait for: `start()` is expected to raise before it
-        # reaches any of it. The stop is a backstop so that a start which
-        # unexpectedly succeeds fails as a timeout rather than hanging.
-        async def _stop_if_it_did_not_raise():
-            try:
-                await asyncio.wait_for(runtime._shutdown_event.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
-                # The expected path: `start()` raised, so nothing ever set the
-                # shutdown event and the wait timed out. Fall through and stop
-                # anyway, which is a no-op on a runtime that never started.
-                pass
-            await runtime.stop()
-
+        # reaches any of it. A start that unexpectedly succeeds never returns,
+        # and the bound turns that into a TimeoutError the raises block rejects.
         with pytest.raises(ConfigValidationError, match="unknown_proto"):
-            await asyncio.gather(runtime.start(), _stop_if_it_did_not_raise())
+            await asyncio.wait_for(runtime.start(), timeout=DEADLINE_S)
 
 
 class TestLifecycle:
@@ -2682,13 +2668,13 @@ class TestSkillReload:
         runtime = OriRuntime(config_path=str(minimal_config))
         start_task = asyncio.create_task(runtime.start())
         try:
-            deadline = time.monotonic() + 2.0
-            while time.monotonic() < deadline:
-                if runtime._event_bus is not None and (
-                    runtime._event_bus.subscriber_count("cpu_percent") >= 1
-                ):
-                    break
-                await asyncio.sleep(0.05)
+            await wait_until(
+                lambda: (
+                    runtime._event_bus is not None
+                    and runtime._event_bus.subscriber_count("cpu_percent") >= 1
+                ),
+                what="the skill's handler on the event bus",
+            )
 
             assert runtime._event_bus is not None
             loader = runtime._skill_loader
@@ -2734,13 +2720,13 @@ class TestSkillReload:
 
         start_task = asyncio.create_task(runtime.start())
         try:
-            deadline = time.monotonic() + 2.0
-            while time.monotonic() < deadline:
-                if runtime._event_bus is not None and (
-                    runtime._event_bus.subscriber_count("cpu_percent") >= 1
-                ):
-                    break
-                await asyncio.sleep(0.05)
+            await wait_until(
+                lambda: (
+                    runtime._event_bus is not None
+                    and runtime._event_bus.subscriber_count("cpu_percent") >= 1
+                ),
+                what="the skill's handler on the event bus",
+            )
             assert runtime._event_bus is not None
             assert runtime._event_bus.subscriber_count("cpu_percent") == 1
 
@@ -2786,13 +2772,13 @@ class TestSkillReload:
 
         start_task = asyncio.create_task(runtime.start())
         try:
-            deadline = time.monotonic() + 2.0
-            while time.monotonic() < deadline:
-                if runtime._event_bus is not None and (
-                    runtime._event_bus.subscriber_count("cpu_percent") >= 1
-                ):
-                    break
-                await asyncio.sleep(0.05)
+            await wait_until(
+                lambda: (
+                    runtime._event_bus is not None
+                    and runtime._event_bus.subscriber_count("cpu_percent") >= 1
+                ),
+                what="the skill's handler on the event bus",
+            )
             assert runtime._event_bus is not None
             before = runtime._event_bus.subscriber_count("cpu_percent")
             assert before == 1
@@ -3310,13 +3296,11 @@ class TestSensorPolling:
 
         monkeypatch.setattr(StateStore, "close", recorded_close)
 
-        async def _stop():
-            deadline = time.monotonic() + 5.0
-            while runtime._state_store is None and time.monotonic() < deadline:
-                await asyncio.sleep(0.05)
-            await runtime.stop()
-
-        await asyncio.gather(runtime.start(), _stop())
+        await run_runtime_until(
+            runtime,
+            lambda: runtime._state_store is not None,
+            description="an open state store",
+        )
 
         assert order[:2] == ["measurement-writer", "store"]
         assert runtime._measurement_writer.closed
@@ -3340,16 +3324,10 @@ class TestSensorPolling:
 
         runtime = OriRuntime(config_path=str(minimal_config))
 
-        async def _stop():
-            # Avoid startup timing races: wait until polling has actually
-            # happened (or timeout), then stop.
-            deadline = time.monotonic() + 2.0
-            while read_count < 2 and time.monotonic() < deadline:
-                await asyncio.sleep(0.05)
-            await runtime.stop()
-
         with caplog.at_level(logging.WARNING):
-            await asyncio.gather(runtime.start(), _stop())
+            await run_runtime_until(
+                runtime, lambda: read_count >= 2, description="two poll attempts"
+            )
 
         assert read_count >= 2, "Expected at least 2 poll attempts"
         warning_msgs = [r.message for r in caplog.records if "read failed" in r.message]

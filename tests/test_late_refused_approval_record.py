@@ -26,6 +26,7 @@ from ori.reasoning.elevator import SkillContext, _record_planned_outcome
 from ori.reasoning.resource_gate import Contributor, ResourceGate
 from ori.security.evidence.first_party import FirstPartyEvidenceAttestor
 from ori.state.store import StateStore
+from tests.waiting import drained
 
 PROPOSAL = "P0000001"
 TARGET = "pid:4242"
@@ -147,7 +148,7 @@ class _Harness:
                 safe_default_action="log_to_dashboard",
                 approval_timeout=timeout,
             )
-        await self.dispatcher.drain_records(timeout=5)
+        await drained(self.dispatcher)
         return outcome
 
     async def decision_rows(self) -> list[dict]:

@@ -48,6 +48,7 @@ from ori.security.gateway_messages import (
     GatewayMessageAuthConfig,
     GatewayMessageAuthenticator,
 )
+from tests.waiting import wait_until
 
 DEVICE = "energy-monitor-ikeja-01"
 ENVELOPE_SECRET = "site-envelope-secret"
@@ -624,9 +625,8 @@ def test_the_subscriber_subscribes_at_qos_1_and_stops_cleanly():
     async def scenario() -> None:
         shutdown = asyncio.Event()
         task = asyncio.create_task(subscriber.serve_until(shutdown))
-        await asyncio.sleep(0.05)
+        await wait_until(lambda: subscriber.connected, what="the route to come up")
         assert client.subscriptions == [(f"ori/{DEVICE}/evidence/inbound", 1)]
-        assert subscriber.connected
         shutdown.set()
         await asyncio.wait_for(task, timeout=2)
 
@@ -657,10 +657,12 @@ def test_a_refused_subscription_does_not_report_the_route_up(name, client, monke
     async def scenario() -> None:
         shutdown = asyncio.Event()
         task = asyncio.create_task(subscriber.serve_until(shutdown))
-        await asyncio.sleep(0.1)
-        assert not subscriber.connected, name
         # Refusal must retry rather than park on a route carrying nothing.
-        assert client.connect_attempts > 1, name
+        await wait_until(
+            lambda: client.connect_attempts > 1,
+            what=f"a reconnect after the refusal ({name})",
+        )
+        assert not subscriber.connected, name
         shutdown.set()
         await asyncio.wait_for(task, timeout=2)
 
@@ -679,7 +681,7 @@ def test_a_queued_subscribe_alone_does_not_report_the_route_up():
     async def scenario() -> None:
         shutdown = asyncio.Event()
         task = asyncio.create_task(subscriber.serve_until(shutdown))
-        await asyncio.sleep(0.05)
+        await wait_until(lambda: client.subscriptions, what="SUBSCRIBE to be sent")
         assert client.subscriptions == [(f"ori/{DEVICE}/evidence/inbound", 1)]
         assert not subscriber.connected
         shutdown.set()
@@ -698,13 +700,14 @@ def test_a_dropped_session_reconnects_and_stops_claiming_the_route_is_up(monkeyp
     async def scenario() -> None:
         shutdown = asyncio.Event()
         task = asyncio.create_task(subscriber.serve_until(shutdown))
-        await asyncio.sleep(0.05)
-        assert subscriber.connected
+        await wait_until(lambda: subscriber.connected, what="the route to come up")
         attempts = client.connect_attempts
 
         await asyncio.to_thread(client.drop_session)
-        await asyncio.sleep(0.1)
-        assert client.connect_attempts > attempts
+        await wait_until(
+            lambda: client.connect_attempts > attempts,
+            what="a reconnect after the dropped session",
+        )
 
         shutdown.set()
         await asyncio.wait_for(task, timeout=2)
@@ -726,9 +729,10 @@ def test_a_broker_outage_retries_rather_than_ending_the_route(monkeypatch):
     async def scenario() -> None:
         shutdown = asyncio.Event()
         task = asyncio.create_task(subscriber.serve_until(shutdown))
-        await asyncio.sleep(0.2)
+        await wait_until(
+            lambda: subscriber.connected, what="the route to come up after the outage"
+        )
         assert client.connect_attempts >= 3
-        assert subscriber.connected
         shutdown.set()
         await asyncio.wait_for(task, timeout=2)
 
@@ -745,14 +749,14 @@ def test_a_message_on_the_wire_reaches_ingest():
     async def scenario() -> None:
         shutdown = asyncio.Event()
         task = asyncio.create_task(subscriber.serve_until(shutdown))
-        await asyncio.sleep(0.05)
+        await wait_until(lambda: subscriber.connected, what="the route to come up")
 
         message = SimpleNamespace(
             payload=_signed(_envelope(ARTIFACT_CUSTODY, artifact))
         )
         assert client.on_message is not None
         await asyncio.to_thread(client.on_message, client, None, message)
-        await asyncio.sleep(0.05)
+        await wait_until(lambda: ingest.calls, what="the artifact to reach ingest")
 
         shutdown.set()
         await asyncio.wait_for(task, timeout=2)
@@ -770,13 +774,19 @@ def test_a_refused_message_is_logged_rather_than_dropped(caplog):
     async def scenario() -> None:
         shutdown = asyncio.Event()
         task = asyncio.create_task(subscriber.serve_until(shutdown))
-        await asyncio.sleep(0.05)
+        await wait_until(lambda: subscriber.connected, what="the route to come up")
 
         message = SimpleNamespace(payload=b"{}")
         assert client.on_message is not None
         with caplog.at_level(logging.WARNING):
             await asyncio.to_thread(client.on_message, client, None, message)
-            await asyncio.sleep(0.05)
+            await wait_until(
+                lambda: any(
+                    REFUSE_ENVELOPE_UNAUTHENTICATED in record.message
+                    for record in caplog.records
+                ),
+                what="the refusal to be logged",
+            )
 
         shutdown.set()
         await asyncio.wait_for(task, timeout=2)
@@ -869,13 +879,15 @@ def test_the_subscriber_publishes_the_acknowledgement():
     async def scenario() -> None:
         shutdown = asyncio.Event()
         task = asyncio.create_task(subscriber.serve_until(shutdown))
-        await asyncio.sleep(0.05)
+        await wait_until(lambda: subscriber.connected, what="the route to come up")
         message = SimpleNamespace(
             payload=_signed(_envelope(ARTIFACT_CUSTODY, artifact))
         )
         assert client.on_message is not None
         await asyncio.to_thread(client.on_message, client, None, message)
-        await asyncio.sleep(0.05)
+        await wait_until(
+            lambda: client.published, what="the acknowledgement to be published"
+        )
         shutdown.set()
         await asyncio.wait_for(task, timeout=2)
 

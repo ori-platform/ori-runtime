@@ -47,6 +47,7 @@ from ori.security.evidence.registration import (
 )
 from ori.state import store as state_store_module
 from ori.state.store import StateStore
+from tests.waiting import drained
 
 DEVICE = "dev-01"
 REFERENCE = "sha256:" + "ab" * 32
@@ -307,7 +308,7 @@ async def _dispatch(state: str, tier: str, tmp_path: Path) -> dict[str, Any]:
             elapsed = time.monotonic() - started
         # The record lands after the act; wait for it before reading the log,
         # so the comparison is between records, not between races.
-        await dispatcher.drain_records()
+        await drained(dispatcher)
         rows = await store.get_action_log()
         return {
             "executor_awaits": executor.await_count,

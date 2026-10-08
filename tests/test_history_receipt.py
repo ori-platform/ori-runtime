@@ -36,6 +36,7 @@ from ori.reasoning.elevator import SkillContext
 from ori.skills.loader import SkillLoader, SkillValidationError
 from ori.state.store import StateStore
 from tests.test_action_dispatcher import FakeSkill, _result
+from tests.waiting import drained
 
 ROOT = Path(__file__).resolve().parents[1]
 NOW = 2_000_000_000_000
@@ -606,7 +607,7 @@ async def test_the_provider_template_slot_is_the_time_ori_proposed_not_the_devic
         assert sent.template_variables[2] == ActionDispatcher._format_local_time(
             NOW, "UTC"
         )
-        await d.drain_records()
+        await drained(d)
     finally:
         await state.close()
 

@@ -28,6 +28,7 @@ from ori.reasoning.elevator import SkillContext
 from ori.reasoning.tier_c_admission import TierCAuthorityFacts
 from ori.state.store import StateStore
 from ori.utils.time_utils import now_ms
+from tests.waiting import drained, settle, wait_until
 
 DEVICE = "energy-monitor-ikeja-01"
 ZONE = "zone-feeder-a"
@@ -194,10 +195,11 @@ async def _states(store: StateStore) -> list[tuple[str, str]]:
 
 
 async def _settle(dispatcher: ActionDispatcher) -> None:
-    await dispatcher.drain_records(timeout=5)
-    pending = dispatcher.get_inflight_tier_d_tasks()
-    if pending:
-        await asyncio.wait(pending, timeout=5)
+    await settle(
+        dispatcher.get_inflight_tier_d_tasks(),
+        what="the dispatcher's tracked notices and outcome writes",
+    )
+    await drained(dispatcher)
 
 
 class TestTheProposalIsCommittedBeforeTheAsk:
@@ -640,10 +642,7 @@ class TestGracefulStop:
         try:
             dispatcher = _dispatcher(store, operator, journal)
             task = asyncio.create_task(_propose(dispatcher, store, timeout=300))
-            for _ in range(200):
-                if operator.proposals:
-                    break
-                await asyncio.sleep(0.01)
+            await wait_until(lambda: operator.proposals, what="operator.proposals")
             assert operator.proposals
             closed = await dispatcher.close_open_proposals(
                 store, reason="graceful_shutdown"
@@ -697,10 +696,7 @@ class TestBindingAndBlocking:
         try:
             dispatcher = _dispatcher(store, operator, journal)
             task = asyncio.create_task(_propose(dispatcher, store))
-            for _ in range(200):
-                if operator.proposals:
-                    break
-                await asyncio.sleep(0.01)
+            await wait_until(lambda: operator.proposals, what="operator.proposals")
             dispatcher.facts_holder["facts"] = _facts(binding="sha256:" + "c" * 64)  # type: ignore[attr-defined]
             with caplog.at_level(logging.CRITICAL):
                 outcome = await asyncio.wait_for(task, 10)
@@ -1298,10 +1294,7 @@ class TestTerminalDecisionsAreDurableBeforeTheyAreReported:
         try:
             dispatcher = _dispatcher(store, operator, journal)
             task = asyncio.create_task(_propose(dispatcher, store))
-            for _ in range(400):
-                if held:
-                    break
-                await asyncio.sleep(0.005)
+            await wait_until(lambda: held, what="held")
             assert held, "the rejection never reached the store"
             await asyncio.sleep(0.05)
             # The decision is not reported while its row has not moved.
@@ -1542,7 +1535,10 @@ class TestAJoinedContributorReportsTheProposedAct:
             )
         )
         dispatcher._retire_when_settled(token, settled)
-        await asyncio.wait(dispatcher.get_inflight_tier_d_tasks(), timeout=5)
+        await settle(
+            dispatcher.get_inflight_tier_d_tasks(),
+            what="the uncertain command's retirement",
+        )
         assert token.done.is_set()
         assert token.result is False
 

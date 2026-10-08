@@ -25,6 +25,7 @@ from ori.reasoning.escalation_policy import GATEWAY_ESCALATION_CONTEXT_KEY
 from ori.reasoning.rule_engine import RuleResult
 from ori.skills.loader import Skill, SkillLoader, Trigger
 from ori.state.store import StateStore
+from tests.waiting import drained
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1311,7 +1312,7 @@ class TestReasonAndDispatch:
                 return_value="AB12CD34",
             ):
                 await elevator.reason_and_dispatch(event, skill, store, dispatcher)
-            await dispatcher.drain_records()
+            await drained(dispatcher)
 
             rows = await store.get_tier_c_decision_log()
             assert len(rows) == 1
@@ -1525,7 +1526,7 @@ class TestReasonAndDispatch:
                 _event(value=5.0), _tier_a_skill(), store, dispatcher
             )
 
-            await dispatcher.drain_records()
+            await drained(dispatcher)
             actions = await store.get_action_log()
             conn = store._conn
             assert conn is not None
@@ -1593,7 +1594,7 @@ class TestReasonAndDispatch:
                 _event(value=5.0), _tier_b_post_action_skill(), store, dispatcher
             )
 
-            await dispatcher.drain_records()
+            await drained(dispatcher)
             actions = await store.get_action_log()
             correlations = {row["correlation_id"] for row in actions}
             conn = store._conn
@@ -1667,7 +1668,7 @@ class TestReasonAndDispatch:
             await elevator.reason_and_dispatch(
                 _event(value=5.0), _tier_b_post_action_skill(), store, dispatcher
             )
-            await dispatcher.drain_records()
+            await drained(dispatcher)
             conn = store._conn
             assert conn is not None
             rows = await store._run(
@@ -1717,7 +1718,7 @@ class TestReasonAndDispatch:
             )
 
             local_llm.reason.assert_not_called()
-            await dispatcher.drain_records()
+            await drained(dispatcher)
             actions = await store.get_action_log()
             by_action = {row["action_name"]: row for row in actions}
             assert by_action["alert_whatsapp"]["tier"] == "A"
@@ -1906,7 +1907,7 @@ class TestReasonAndDispatch:
                 dispatcher,
             )
 
-            await dispatcher.drain_records()
+            await drained(dispatcher)
             actions = await store.get_action_log()
             by_action = {row["action_name"]: row for row in actions}
             assert by_action["coap_command"]["tier"] == "B"

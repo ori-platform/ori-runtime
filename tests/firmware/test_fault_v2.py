@@ -42,6 +42,7 @@ from tests.firmware.test_telemetry import (
     SEALED_HASH,
     provision_and_approve,
 )
+from tests.waiting import wait_until
 
 CORPUS = json.loads(
     (
@@ -220,11 +221,13 @@ async def test_a_rate_limited_refusal_is_recorded_and_nothing_is_reissued(
         verification = await FirmwareTelemetryGate(store).ingest_fault(
             message(refusal), received_at_ms=1
         )
-        await asyncio.sleep(0.05)
+        # Nothing left running could publish later: a delayed retry is a task.
+        await wait_until(
+            lambda: _other_tasks() <= before,
+            what="every task the refusal started to end",
+        )
 
         assert verification.accepted and verification.detail == "rate_limited"
-        # Nothing left running could publish later: a delayed retry is a task.
-        assert _other_tasks() <= before
         assert len(publisher.commands) == 1
         assert _last_cmd_seq(store, device_id) == 1
         assert await _rows(store, "action_log") == []
@@ -258,9 +261,10 @@ async def test_a_failed_command_publish_is_not_retried(tmp_path: Path) -> None:
             await service.publish_command(
                 device_id=device_id, action="relay_open", channel="relay0"
             )
-        await asyncio.sleep(0.05)
-
-        assert _other_tasks() <= before
+        await wait_until(
+            lambda: _other_tasks() <= before,
+            what="every task the failure started to end",
+        )
         assert len(publisher.commands) == 1
         assert _last_cmd_seq(store, device_id) == 1
     finally:

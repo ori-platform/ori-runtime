@@ -165,6 +165,7 @@ def _paced(adapter: _Paced, elapsed: float) -> None:
     )
 
 
+@pytest.mark.latency_bound
 async def test_a_cached_duplicate_neither_spins_the_poll_nor_starves_the_loop(
     store: StateStore, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -211,6 +212,7 @@ async def test_a_cached_duplicate_neither_spins_the_poll_nor_starves_the_loop(
     assert published == [27.4, 99.9], "a suppressed duplicate reached the bus"
 
 
+@pytest.mark.latency_bound
 async def test_a_duplicate_from_a_yielding_adapter_waits_the_poll_interval(
     store: StateStore,
 ) -> None:
@@ -226,6 +228,7 @@ async def test_a_duplicate_from_a_yielding_adapter_waits_the_poll_interval(
     _paced(adapter, elapsed)
 
 
+@pytest.mark.latency_bound
 async def test_the_status_indicator_syncs_only_on_a_published_reading(
     store: StateStore,
 ) -> None:
@@ -256,6 +259,7 @@ async def test_the_status_indicator_syncs_only_on_a_published_reading(
     )
 
 
+@pytest.mark.latency_bound
 @pytest.mark.parametrize(
     "failure",
     [AdapterReadError("bus timeout"), RuntimeError("adapter bug")],
@@ -323,12 +327,13 @@ async def test_each_suppressed_duplicate_sleeps_once_and_cancels_promptly_in_the
         )
         try:
             waiter = asyncio.create_task(in_sleep_after_third_read.wait())
-            await asyncio.wait(
+            done, _ = await asyncio.wait(
                 {waiter, task},
                 timeout=HARD_CEILING_S,
                 return_when=asyncio.FIRST_COMPLETED,
             )
             waiter.cancel()
+            assert done, f"neither a third read nor the poll's end in {HARD_CEILING_S}s"
             assert in_sleep_after_third_read.is_set(), (
                 f"no poll-interval sleep after the third read ({adapter.reads} "
                 f"reads, sleeps at {sleeps}): a suppressed duplicate skipped it"

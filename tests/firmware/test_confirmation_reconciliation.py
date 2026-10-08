@@ -24,6 +24,7 @@ from typing import Any, cast
 import pytest
 
 from ori.security.firmware.reconciliation import FirmwareConfirmationReconciler
+from tests.waiting import wait_until
 
 
 class _Store:
@@ -126,8 +127,10 @@ async def test_an_unlistable_store_yields_no_calls_rather_than_raising():
 # --- the loop --------------------------------------------------------------
 
 
-async def _run_briefly(reconciler, shutdown, seconds=0.12):
+async def _run_briefly(reconciler, shutdown, seconds=0.12, *, until=None, what=""):
     task = asyncio.create_task(reconciler.serve_until(shutdown))
+    if until is not None:
+        await wait_until(until, what=what)
     await asyncio.sleep(seconds)
     shutdown.set()
     reconciler.nudge()
@@ -141,7 +144,13 @@ async def test_a_confirmation_arriving_later_is_acted_on_without_a_restart():
     coordinator = _Coordinator({"dev-a": ["confirmation_pending", "confirmed"]})
     reconciler = _reconciler(store, coordinator)
     shutdown = asyncio.Event()
-    await _run_briefly(reconciler, shutdown)
+    await _run_briefly(
+        reconciler,
+        shutdown,
+        0,
+        until=lambda: coordinator.calls.count("dev-a") >= 2,
+        what="a second reconciliation of dev-a",
+    )
     assert coordinator.calls.count("dev-a") >= 2
 
 
@@ -151,7 +160,15 @@ async def test_an_unavailable_store_backs_off_rather_than_hammering():
     coordinator = _Coordinator()  # never confirms
     reconciler = _reconciler(store, coordinator, interval_s=0.01, max_interval_s=0.02)
     shutdown = asyncio.Event()
-    await _run_briefly(reconciler, shutdown, seconds=0.15)
+    # The first attempt is waited for; the window after it bounds the rate,
+    # which a loaded runner can only lower.
+    await _run_briefly(
+        reconciler,
+        shutdown,
+        seconds=0.15,
+        until=lambda: coordinator.calls,
+        what="a first reconciliation attempt",
+    )
     # Without backoff a 10ms interval over 150ms would attempt roughly 15
     # times; doubling to a 20ms ceiling roughly halves that. The bound is
     # loose on purpose so the test asserts backoff, not scheduler precision.
@@ -168,10 +185,7 @@ async def test_a_nudge_reconciles_without_waiting_out_the_interval():
     task = asyncio.create_task(reconciler.serve_until(shutdown))
     await asyncio.sleep(0)
     reconciler.nudge()
-    for _ in range(50):
-        if coordinator.calls:
-            break
-        await asyncio.sleep(0.01)
+    await wait_until(lambda: coordinator.calls, what="coordinator.calls")
     shutdown.set()
     reconciler.nudge()
     await asyncio.wait_for(task, timeout=1)

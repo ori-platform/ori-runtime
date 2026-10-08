@@ -27,6 +27,7 @@ from ori.gateway.firmware_commands import (
     MqttFirmwareCommandPublisher,
 )
 from tests.test_dispatch_never_waits_on_delivery import _free_port, _mosquitto
+from tests.waiting import wait_until
 
 DEVICE = "ori-fw-7c9f2b3a"
 FAMILIES = {
@@ -106,9 +107,9 @@ async def test_a_failed_publication_is_not_delivered_on_reconnect(
         try:
             await asyncio.sleep(0.3)
             await _publish(publisher, family, b"fresh")
-            deadline = time.monotonic() + 10.0
-            while b"fresh" not in received and time.monotonic() < deadline:
-                await asyncio.sleep(0.05)
+            await wait_until(
+                lambda: b"fresh" in received, what="the fresh command to arrive"
+            )
             # Give anything still queued in a stale client time to arrive.
             await asyncio.sleep(1.5)
         finally:
@@ -140,9 +141,9 @@ async def _only_fresh_arrives(
             # be back on the broker and resending before the fresh message.
             await asyncio.sleep(3.0)
             await _publish(publisher, family, b"fresh")
-            deadline = time.monotonic() + 10.0
-            while b"fresh" not in received and time.monotonic() < deadline:
-                await asyncio.sleep(0.05)
+            await wait_until(
+                lambda: b"fresh" in received, what="the fresh command to arrive"
+            )
             await asyncio.sleep(0.5)
         finally:
             device.loop_stop()
@@ -311,8 +312,11 @@ async def test_a_client_that_failed_a_publication_is_discarded(
     )
     with pytest.raises(expected):
         await publisher.publish_command(DEVICE, b"stale")
-    await asyncio.sleep(0.05)  # the network loop is stopped off the event loop
-    assert failing.stopped and not failing.connected
+    # The network loop is stopped off the event loop.
+    await wait_until(
+        lambda: failing.stopped and not failing.connected,
+        what="the failed client to be stopped",
+    )
 
     await publisher.publish_command(DEVICE, b"fresh")
     assert failing.published == [f"ori/fw/{DEVICE}/cmd"]
@@ -446,9 +450,7 @@ async def test_a_live_client_does_not_drain_a_failed_publication(
             assert received == []
 
             await _publish(publisher, family, b"fresh")
-            deadline = time.monotonic() + 5.0
-            while not received and time.monotonic() < deadline:
-                await asyncio.sleep(0.05)
+            await wait_until(lambda: received, what="the fresh command to arrive")
             await asyncio.sleep(0.3)
         finally:
             gate.write.set()
