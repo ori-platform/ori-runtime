@@ -2266,6 +2266,31 @@ class StateStore:
                 return
             raise
 
+    def _immediate(
+        self, fn: Callable[_P, _T], *args: _P.args, **kwargs: _P.kwargs
+    ) -> _T:
+        """Run a read-decide-write callable inside one `BEGIN IMMEDIATE`.
+
+        The write lock serialises this store's writers only; another connection
+        to the same file can still write between a decision's reads and its
+        writes. Taking the database's write lock first makes the reads the ones
+        the writes act on. A callable that returns without committing changed
+        nothing it meant to keep, so the transaction is rolled back.
+        """
+        conn = self._conn
+        if conn is None:
+            raise sqlite3.ProgrammingError("the state store is not open")
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            result = fn(*args, **kwargs)
+        except BaseException:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+        if conn.in_transaction:
+            conn.rollback()
+        return result
+
     async def _run_write(
         self, fn: Callable[_P, _T], *args: _P.args, **kwargs: _P.kwargs
     ) -> _T:
@@ -5383,6 +5408,7 @@ class StateStore:
         revocation cannot be raced.
         """
         return await self._run_write(
+            self._immediate,
             self._upsert_firmware_device_anchor_sync,
             device_id,
             public_key_b64,
@@ -6082,24 +6108,33 @@ class StateStore:
         actor: str,
         reason: str,
         occurred_at_ms: int | None = None,
+        expected_anchor_epoch_id: str | None = None,
     ) -> bool:
         """Promote the pending anchor to active (ori-specs
         device-provisioning/v1.md). Promotion is the only path to active.
 
         `actor` and `reason` are REQUIRED and recorded in the transition
         log. Promotion is a trust transition; an unattributed one is
-        indistinguishable from a compromise after the fact.
+        indistinguishable from a compromise after the fact. With
+        `expected_anchor_epoch_id`, only that pending candidate is promoted.
         """
         return await self._run_write(
+            self._immediate,
             self._approve_firmware_device_sync,
             device_id,
             actor,
             reason,
             occurred_at_ms if occurred_at_ms is not None else now_ms(),
+            expected_anchor_epoch_id,
         )
 
     def _approve_firmware_device_sync(
-        self, device_id: str, actor: str, reason: str, occurred_at_ms: int
+        self,
+        device_id: str,
+        actor: str,
+        reason: str,
+        occurred_at_ms: int,
+        expected_anchor_epoch_id: str | None = None,
     ) -> bool:
         """Promotion: the ONLY path an anchor becomes active.
 
@@ -6128,6 +6163,13 @@ class StateStore:
             # Nothing to promote. An already-active anchor is not
             # re-promoted, and inventing one here would be the implicit
             # transition this model exists to remove.
+            return False
+        if (
+            expected_anchor_epoch_id is not None
+            and pending["anchor_epoch_id"] != expected_anchor_epoch_id
+        ):
+            # The candidate the caller checked was replaced before this
+            # transaction; promoting its successor would skip that check.
             return False
 
         # A quarantined epoch is a cross-store disagreement awaiting
@@ -6267,6 +6309,7 @@ class StateStore:
         as `revoked`, any pending candidate is discarded, and the
         transition is recorded."""
         return await self._run_write(
+            self._immediate,
             self._revoke_firmware_device_sync,
             device_id,
             revoked_at_ms if revoked_at_ms is not None else now_ms(),
@@ -6354,6 +6397,7 @@ class StateStore:
         act is an explicit, separately audited promotion.
         """
         return await self._run_write(
+            self._immediate,
             self._reinstate_firmware_device_sync,
             device_id,
             actor,
@@ -6444,6 +6488,7 @@ class StateStore:
         ``refused_key_reuse`` (this identity has used that key before).
         """
         return await self._run_write(
+            self._immediate,
             self._reprovision_firmware_device_sync,
             device_id,
             public_key_b64,

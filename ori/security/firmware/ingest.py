@@ -43,11 +43,13 @@ from ori.security.firmware.telemetry import (
     ERR_UNKNOWN_DEVICE,
     ERR_UPTIME_REGRESSION,
     GRADE_REJECTED,
+    MANIFEST_POLICY_REVISION,
     FirmwareFaultVerification,
     FirmwareVerificationError,
     TelemetryVerification,
     canonical_json_bytes,
     manifest_channel_map,
+    validate_manifest_policy,
     verify_fault_message,
     verify_manifest_message,
     verify_telemetry_message,
@@ -77,6 +79,30 @@ class FirmwareTelemetryGate:
 
     def __init__(self, store: Any) -> None:
         self._store = store
+        self._manifest_policy: dict[tuple[str, str, str], tuple[str, str] | None] = {}
+
+    def _stored_manifest_refusal(
+        self, device_id: str, capability_hash: str, manifest: Any
+    ) -> tuple[str, str] | None:
+        """Why a stored manifest fails the current manifest rules, if it does.
+
+        Decided once per anchor and rule revision: the manifest is pinned by the
+        capability hash, so the answer cannot change while both stay the same.
+        """
+        key = (device_id, capability_hash, MANIFEST_POLICY_REVISION)
+        if key in self._manifest_policy:
+            return self._manifest_policy[key]
+        refusal: tuple[str, str] | None = None
+        try:
+            validate_manifest_policy(manifest)
+        except FirmwareVerificationError as exc:
+            refusal = (
+                exc.code,
+                f"stored manifest fails {MANIFEST_POLICY_REVISION}: {exc.detail}; "
+                "re-register the device",
+            )
+        self._manifest_policy[key] = refusal
+        return refusal
 
     async def _freshness_refusal(self, verification: Any) -> tuple[str, str]:
         """The reason a message lost the atomic advance, read against the new mark."""
@@ -124,6 +150,11 @@ class FirmwareTelemetryGate:
                 return rejected(
                     ERR_ANCHOR_MISSING, "no provisioning anchor for device"
                 ), None
+            refusal = self._stored_manifest_refusal(
+                str(row["device_id"]), str(row["capability_hash"]), row.get("manifest")
+            )
+            if refusal is not None:
+                return rejected(*refusal), None
             verification = verify(row)
             if not verification.accepted:
                 return verification, None
@@ -236,16 +267,46 @@ class FirmwareTelemetryGate:
             )
         return manifest_hash
 
-    async def approve_device(self, device_id: str, *, actor: str, reason: str) -> bool:
+    async def approve_device(
+        self,
+        device_id: str,
+        *,
+        actor: str,
+        reason: str,
+        expected_anchor_epoch_id: str | None = None,
+    ) -> bool:
         """Promote the pending anchor to active.
 
         `actor` and `reason` are mandatory: promotion is a trust
         transition, and ori-specs/device-provisioning/v1.md requires every
-        one to be attributed.
+        one to be attributed. The pending candidate is the anchor checked
+        against the current manifest rules, and the store promotes only that
+        candidate: one replaced in between is not promoted. A caller that
+        confirmed a particular candidate names it in `expected_anchor_epoch_id`.
         """
+        pending = await self._store.get_pending_firmware_anchor(device_id)
+        if pending is None:
+            return False
+        if (
+            expected_anchor_epoch_id is not None
+            and pending["anchor_epoch_id"] != expected_anchor_epoch_id
+        ):
+            return False
+        try:
+            manifest = json.loads(pending["manifest_json"])
+        except (TypeError, ValueError):
+            manifest = None
+        refusal = self._stored_manifest_refusal(
+            device_id, str(pending["capability_hash"]), manifest
+        )
+        if refusal is not None:
+            raise FirmwareVerificationError(*refusal)
         return bool(
             await self._store.approve_firmware_device(
-                device_id, actor=actor, reason=reason
+                device_id,
+                actor=actor,
+                reason=reason,
+                expected_anchor_epoch_id=str(pending["anchor_epoch_id"]),
             )
         )
 

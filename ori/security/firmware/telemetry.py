@@ -59,6 +59,8 @@ __all__ = [
     "FirmwareVerificationError",
     "TelemetryVerification",
     "canonical_json_bytes",
+    "derive_device_mode",
+    "validate_manifest_policy",
     "manifest_channel_map",
     "verify_fault_message",
     "verify_manifest_message",
@@ -71,6 +73,12 @@ JSON_SAFE_INT_MAX = 9007199254740991  # 2**53 - 1
 
 POSTURES = ("development", "sealed_flash", "hardware_key")
 PRODUCTION_POSTURES = ("sealed_flash", "hardware_key")
+# firmware-telemetry/v2 closes device_mode to these and actuator_node is never
+# accepted, because a manifest with no channel is refused before its mode is read.
+DEVICE_MODES = frozenset({"sensor_node", "bridge_node", "actuator_node", "mixed"})
+# Names the rules validate_manifest_policy applies, so a stored anchor is
+# re-checked when they change rather than once for all time.
+MANIFEST_POLICY_REVISION = "firmware-telemetry/v2"
 SUPPORTED_TRANSPORTS = frozenset({"mqtt", "uart", "rs485"})
 SUPPORTED_CHANNEL_PROTOCOLS = frozenset(
     {"adc", "gpio", "i2c", "uart", "modbus_rtu", "rs232", "pulse", "one_wire"}
@@ -118,6 +126,8 @@ ERR_UNSUPPORTED_CHANNEL = "unsupported_channel"
 ERR_INVALID_POSTURE = "invalid_posture"
 ERR_INVALID_READING = "invalid_reading"
 ERR_INVALID_ENVELOPE = "invalid_envelope"
+ERR_INVALID_DEVICE_MODE = "invalid_device_mode"
+ERR_NO_CHANNELS = "no_channels"
 ERR_UNSUPPORTED_ALG = "unsupported_alg"
 ERR_DEVICE_REVOKED = "device_revoked"
 ERR_DEVICE_NOT_APPROVED = "device_not_approved"
@@ -466,9 +476,7 @@ def manifest_channel_map(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """
     channels = _require_list(manifest, "channels", ERR_INVALID_ENVELOPE)
     if not channels:
-        raise FirmwareVerificationError(
-            ERR_INVALID_ENVELOPE, "channels cannot be empty"
-        )
+        raise FirmwareVerificationError(ERR_NO_CHANNELS, "channels cannot be empty")
 
     out: dict[str, dict[str, Any]] = {}
     allowed_keys = {
@@ -562,16 +570,70 @@ def _validate_manifest_fields(manifest: dict[str, Any]) -> None:
             )
 
 
+def derive_device_mode(
+    channels: Mapping[str, Mapping[str, Any]], actions: list[Any]
+) -> str:
+    """The device_mode firmware-telemetry/v2 says a manifest's arrays determine."""
+    roles = {
+        "bridged" if channel["source"] == "foreign_device" else "metering"
+        for channel in channels.values()
+    }
+    if actions:
+        roles.add("actions")
+    if len(roles) > 1:
+        return "mixed"
+    if roles == {"metering"}:
+        return "sensor_node"
+    if roles == {"bridged"}:
+        return "bridge_node"
+    return "actuator_node"
+
+
 def _validate_manifest_contract(manifest: dict[str, Any]) -> None:
     _validate_manifest_fields(manifest)
     _require_str(manifest, "firmware_version", ERR_INVALID_ENVELOPE)
     _require_str(manifest, "board_profile", ERR_INVALID_ENVELOPE)
-    _require_str(manifest, "device_mode", ERR_INVALID_ENVELOPE)
     _require_str(manifest, "key_storage", ERR_INVALID_ENVELOPE)
     _validate_transport_list(manifest)
-    manifest_channel_map(manifest)
+    channels = manifest_channel_map(manifest)
     _validate_manifest_actions(manifest)
     _validate_manifest_interlocks(manifest)
+    _validate_device_mode(manifest, channels)
+
+
+def validate_manifest_policy(manifest: Any) -> None:
+    """Apply the device-mode rules to a manifest already verified and stored.
+
+    An anchor registered before these rules may hold a manifest they refuse;
+    its evidence is refused and it is not promoted until it is re-registered.
+    """
+    if not isinstance(manifest, dict):
+        raise FirmwareVerificationError(
+            ERR_INVALID_ENVELOPE, "stored manifest is not an object"
+        )
+    channels = manifest_channel_map(manifest)
+    actions = manifest.get("actions")
+    if not isinstance(actions, list):
+        raise FirmwareVerificationError(
+            ERR_INVALID_ENVELOPE, "stored manifest has no actions list"
+        )
+    _validate_device_mode(manifest, channels)
+
+
+def _validate_device_mode(
+    manifest: dict[str, Any], channels: Mapping[str, Mapping[str, Any]]
+) -> None:
+    mode = manifest.get("device_mode")
+    if not isinstance(mode, str) or mode not in DEVICE_MODES:
+        raise FirmwareVerificationError(
+            ERR_INVALID_DEVICE_MODE, "device_mode is not a defined mode"
+        )
+    expected = derive_device_mode(channels, manifest["actions"])
+    if mode != expected:
+        raise FirmwareVerificationError(
+            ERR_INVALID_DEVICE_MODE,
+            f"device_mode {mode!r} disagrees with the arrays, which make it {expected!r}",
+        )
 
 
 def verify_manifest_message(
