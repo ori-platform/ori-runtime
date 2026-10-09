@@ -337,10 +337,22 @@ async def _approve(
                 "Approving would bind authority to a device you did not verify."
             )
         gate = FirmwareTelemetryGate(store)
-        if not await gate.approve_device(device_id, actor=actor, reason=reason):
+        try:
+            promoted = await gate.approve_device(
+                device_id,
+                actor=actor,
+                reason=reason,
+                expected_anchor_epoch_id=str(pending["anchor_epoch_id"]),
+            )
+        except FirmwareVerificationError as exc:
+            raise ProvisionerError(
+                f"refused to promote {device_id!r}: {exc.code}: {exc.detail}"
+            ) from exc
+        if not promoted:
             raise ProvisionerError(
                 f"registry refused to promote {device_id!r}: there is no pending "
-                "anchor to promote, or the identity is revoked"
+                "anchor to promote, the identity is revoked, or the anchor whose "
+                "key you confirmed was replaced; confirm the new one"
             )
     finally:
         await store.close()

@@ -26,6 +26,15 @@ release is cut.
 - `gateway.firmware_commands.publish_timeout_s` must be finite. A value such
   as `.inf` loaded before and is now refused at config load; set a finite
   number of seconds before upgrading.
+- A firmware capability manifest whose `device_mode` is not one of
+  `sensor_node`, `bridge_node`, `actuator_node` or `mixed`, or is not the mode
+  its `channels` and `actions` determine, is now refused at registration with
+  `invalid_device_mode`. A manifest with no channel is refused with
+  `no_channels`, as it was before under `invalid_envelope`. A device
+  registered before this release is checked against the same rules: if its
+  stored manifest fails them, its telemetry and faults are refused with that
+  code and its pending anchor is not approved. Re-register it from a manifest
+  that follows `firmware-telemetry/v2`.
 
 ## Added
 

@@ -305,7 +305,7 @@ class TestGoldenVectors:
 
     def test_tampered_manifest_rejected(self) -> None:
         message = manifest_message("manifest_full_sealed")
-        message["manifest"]["device_mode"] = "sensor_node"
+        message["manifest"]["firmware_version"] = "9.9.9"
         with pytest.raises(FirmwareVerificationError) as excinfo:
             verify_manifest_message(
                 message,

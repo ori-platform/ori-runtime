@@ -42,7 +42,7 @@ def _verify(**overrides: Any) -> str:
 
 def test_contract_shapes_are_accepted() -> None:
     _verify()
-    _verify(actions=[ACTION], interlocks=[INTERLOCK])
+    _verify(actions=[ACTION], interlocks=[INTERLOCK], device_mode="mixed")
     _verify(deployment_maintenance_limit_ms=900000)
 
 

@@ -793,3 +793,70 @@ class TestPublishedSeedsAreRefused:
         seed_file = tmp_path / "fresh_seed.b64"
         seed_file.write_text(_b64.b64encode(fresh).decode("ascii"))
         assert read_seed(seed_file, "provisioner seed") == fresh
+
+
+class TestPromotionIsTheConfirmedCandidate:
+    """The provisioner promotes the anchor whose key the operator confirmed,
+    and only if it meets the current manifest rules."""
+
+    def test_a_pending_manifest_failing_the_device_mode_rules_is_not_approved(
+        self, bench
+    ) -> None:
+        bench["message"] = signed_manifest(
+            bench["device_seed"], device_mode="sensor_node"
+        )
+        _store_unchecked(bench)
+        assert _approve(bench) == 2
+
+    def test_a_candidate_replaced_after_the_key_was_confirmed_is_not_promoted(
+        self, bench, monkeypatch
+    ) -> None:
+        from ori.security.firmware.ingest import FirmwareTelemetryGate
+
+        assert _register(bench) == 0
+        replacement_seed = os.urandom(32)
+
+        class ReplacedFirst(FirmwareTelemetryGate):
+            async def approve_device(self, device_id, **kwargs):  # type: ignore[override]
+                await self.reprovision_device(
+                    device_id=device_id,
+                    public_key_b64=_pub_b64(replacement_seed),
+                    posture="development",
+                    manifest_message=signed_manifest(replacement_seed),
+                    actor="someone-else",
+                    reason="raced",
+                )
+                return await super().approve_device(device_id, **kwargs)
+
+        monkeypatch.setattr(
+            "ori.security.firmware.ingest.FirmwareTelemetryGate", ReplacedFirst
+        )
+        assert _approve(bench) == 2
+
+
+def _store_unchecked(bench) -> None:
+    """Store a pending anchor as a runtime without the device-mode rules did."""
+    import asyncio
+
+    from ori.security.firmware.telemetry import canonical_json_bytes
+    from ori.state.store import StateStore
+
+    message = bench["message"]
+    manifest = message["manifest"]
+
+    async def _run():
+        store = StateStore(db_path=bench["db"])
+        await store.open()
+        try:
+            await store.upsert_firmware_device_anchor(
+                device_id=manifest["device_id"],
+                public_key_b64=manifest["public_key_b64"],
+                posture="development",
+                capability_hash=message["manifest_hash"],
+                manifest_json=canonical_json_bytes(manifest).decode("utf-8"),
+                channel_map_json="{}",
+            )
+        finally:
+            await store.close()
+
+    asyncio.run(_run())
