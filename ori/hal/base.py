@@ -66,6 +66,14 @@ def refuse_unusable_reading(reading: Any) -> None:
     one message a sensor passes through, so it is refused as a measurement
     rather than counted as a live reading that then fails before evaluation.
     """
+    # A foreign controller's alarm word is a bitmask, never a quantity, so it is
+    # not averaged, compared with a threshold or stored as a measurement
+    # (firmware-telemetry/v2 Controller Profiles), whichever path carried it.
+    if (
+        getattr(reading, "sensor_type", None) == "controller_alarm_word"
+        or getattr(reading, "unit", None) == "bitmask"
+    ):
+        raise MeasurementRefusedError("an alarm word is not a measurement")
     value = reading.value
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise MeasurementRefusedError(f"reading value {value!r} is not a number")

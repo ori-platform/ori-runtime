@@ -1,11 +1,12 @@
 {
   "source_repository": "ori-platform/ori-specs",
   "source_path": "firmware-telemetry",
-  "source_commit": "aa4aabe88142466c7ddc23497d29d4276a48be1d",
+  "source_commit": "f3e980dcfb5d9b68ca5bb1cb16dabc7f07476d98",
   "contract_version": "v2",
   "note": "Vendored copies of the normative vectors. The runtime must produce and accept the bytes they describe, so they are its conformance fixtures. Digests detect a local edit; the source commit is the provenance trail.",
   "files": {
+    "controller-profile-vectors-v2.json": "3504e144432b3c8f05f66850c60d974ed44588f175702a0a2f2162dbaa6ea6d3",
     "fault-vectors-v2.json": "7c54e32f65e02e9b58f7eb28a669977277863c81f2349b78970a69354b30bff0",
-    "manifest-vectors-v2.json": "bc6f043aa280c4afce25fc50eaaca3e31f485b04367c50f81b172eb97d98edd3"
+    "manifest-vectors-v2.json": "fc1c630891422f52d1dc26aa7e9cda7a59534314130d6e6137018cff6c847eea"
   }
 }

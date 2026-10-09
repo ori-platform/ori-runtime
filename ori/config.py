@@ -785,6 +785,7 @@ class Config:
         for section, keys in (
             (health_socket, ("path",)),
             (gateway.tls, ("ca_certfile", "certfile", "keyfile")),
+            (gateway.firmware_telemetry, ("controller_profiles_dir",)),
         ):
             if not isinstance(section, dict):
                 continue
@@ -1685,6 +1686,17 @@ def _parse_gateway(data: Any) -> GatewayConfig:
         raise ConfigValidationError("gateway.firmware_telemetry.qos must be 0, 1, or 2")
     firmware_telemetry["topic"] = topic or "ori/fw/+/telemetry"
     firmware_telemetry["qos"] = firmware_qos
+    # Where the controller profile documents a release publishes are held. A
+    # document is used only through the digest a signed manifest names, so
+    # this chooses which documents are available, never what one means.
+    profiles_dir = firmware_telemetry.get("controller_profiles_dir", "")
+    if profiles_dir is None:
+        profiles_dir = ""
+    if not isinstance(profiles_dir, str) or "\x00" in profiles_dir:
+        raise ConfigValidationError(
+            "gateway.firmware_telemetry.controller_profiles_dir must be a path"
+        )
+    firmware_telemetry["controller_profiles_dir"] = profiles_dir.strip()
 
     firmware_commands_raw = data.get("firmware_commands") or {}
     if not isinstance(firmware_commands_raw, dict):

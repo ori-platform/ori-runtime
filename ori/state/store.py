@@ -1326,6 +1326,27 @@ def _firmware_fault_values(fault_event: dict[str, Any]) -> tuple[Any, ...]:
     return tuple(fault_event[column] for column in _FIRMWARE_FAULT_COLUMNS)
 
 
+# The device's latest promotion: it changes on every promotion, including a
+# reinstated anchor promoted again with byte-identical columns.
+_FIRMWARE_ACTIVATION_SQL = """
+    AND (SELECT MAX(t.id) FROM firmware_anchor_transitions t
+          WHERE t.device_id = firmware_device_registry.device_id
+            AND t.transition = 'promoted') IS ?
+"""
+
+
+def _firmware_activation(verified_against: Any) -> int | None:
+    """The activation a decision was made under, refused unless it was read."""
+    if "activation_id" not in verified_against:
+        raise ValueError("verified_against must carry activation_id")
+    activation = verified_against["activation_id"]
+    if activation is not None and (
+        isinstance(activation, bool) or not isinstance(activation, int)
+    ):
+        raise ValueError("verified_against activation_id must be an int or None")
+    return activation
+
+
 def _firmware_anchor_sql() -> str:
     return "".join(f" AND {column} = ?" for column in FIRMWARE_ANCHOR_COLUMNS)
 
@@ -6066,7 +6087,10 @@ class StateStore:
                    manifest_json, channel_map_json, board_profile, approved,
                    provisioned_at_ms, last_boot_id, last_seq, last_provision_seq,
                    revoked, revoked_at_ms, anchor_epoch_id, key_epoch_id,
-                   last_uptime_ms, last_uptime_mark
+                   last_uptime_ms, last_uptime_mark,
+                   (SELECT MAX(t.id) FROM firmware_anchor_transitions t
+                     WHERE t.device_id = firmware_device_registry.device_id
+                       AND t.transition = 'promoted')
             FROM firmware_device_registry WHERE device_id = ?
             """,
             (device_id,),
@@ -6099,6 +6123,10 @@ class StateStore:
                 and row[18] == _uptime_mark(row[16], int(row[10]), int(row[11]))
                 else None
             ),
+            # Every promotion writes a new transition, including the promotion
+            # of a reinstated anchor that is byte-for-byte the one revoked, so
+            # this tells two activations of one anchor apart.
+            "activation_id": int(row[19]) if row[19] is not None else None,
         }
 
     async def approve_firmware_device(
@@ -7241,7 +7269,8 @@ class StateStore:
         the stored mark, or whose uptime goes back within one boot,
         updates zero rows, and the caller must treat that as a replay.
         So does one whose anchor, `verified_against`, is no longer the
-        registry's: the message must be verified again.
+        registry's, including a byte-identical anchor promoted again since
+        (its `activation_id`): the message must be verified again.
 
         A `fault_event` is recorded in the same transaction as the advance:
         the mark never moves past a fault that was not recorded, and a
@@ -7253,6 +7282,7 @@ class StateStore:
             seq,
             uptime_ms,
             _firmware_anchor_values(verified_against),
+            _firmware_activation(verified_against),
             None if fault_event is None else _firmware_fault_values(fault_event),
         )
 
@@ -7263,12 +7293,13 @@ class StateStore:
         seq: int,
         uptime_ms: int,
         anchor: tuple[Any, ...],
+        activation: int | None,
         fault: tuple[Any, ...] | None,
     ) -> bool:
         conn = self._conn
         if conn is None:
             raise sqlite3.ProgrammingError("the state store is not open")
-        bound = _firmware_anchor_sql()
+        bound = _firmware_anchor_sql() + _FIRMWARE_ACTIVATION_SQL
         try:
             conn.execute("BEGIN IMMEDIATE")
             cur = conn.execute(
@@ -7298,6 +7329,7 @@ class StateStore:
                     boot_id,
                     uptime_ms,
                     *anchor,
+                    activation,
                 ),
             )
             if cur.rowcount == 0:

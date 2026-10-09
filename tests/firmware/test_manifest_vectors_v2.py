@@ -55,11 +55,16 @@ async def _register(tmp_path: Path, case: dict[str, Any]) -> tuple[str, bool]:
 
 
 def test_the_corpus_holds_accepted_cases_and_each_refusal_class() -> None:
-    assert len(CASES) >= 7
+    assert len(CASES) >= 15
     assert {case["reason"] for case in REJECTS.values()} == {
         "invalid_device_mode",
         "no_channels",
+        "controller_profile_missing",
+        "controller_profile_unexpected",
+        "invalid_controller_profile",
+        "invalid_alarm_channel",
     }
+    assert set(CORPUS["reasons"]) == {case["reason"] for case in REJECTS.values()}
     assert all(case["signature_valid"] for case in REJECTS.values())
 
 

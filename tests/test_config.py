@@ -5375,7 +5375,45 @@ actions:
             "enabled": True,
             "topic": "ori/fw/site-a/telemetry",
             "qos": 2,
+            "controller_profiles_dir": "",
         }
+
+    def test_controller_profiles_dir_is_anchored_to_the_config(self, tmp_path):
+        path = _write_yaml(
+            tmp_path,
+            self._yaml(
+                "  firmware_telemetry:\n"
+                "    enabled: true\n"
+                "    controller_profiles_dir: profiles\n"
+            ),
+        )
+        cfg = Config.load(path)
+        assert cfg.gateway.firmware_telemetry["controller_profiles_dir"] == str(
+            pathlib.Path(path).resolve().parent / "profiles"
+        )
+
+    def test_rejects_a_controller_profiles_dir_with_a_nul(self, tmp_path):
+        with pytest.raises(ConfigValidationError, match="controller_profiles_dir"):
+            Config.load(
+                _write_yaml(
+                    tmp_path,
+                    self._yaml(
+                        "  firmware_telemetry:\n"
+                        '    controller_profiles_dir: "pro\\0files"\n'
+                    ),
+                )
+            )
+
+    def test_rejects_a_controller_profiles_dir_that_is_not_a_path(self, tmp_path):
+        with pytest.raises(ConfigValidationError, match="controller_profiles_dir"):
+            Config.load(
+                _write_yaml(
+                    tmp_path,
+                    self._yaml(
+                        "  firmware_telemetry:\n    controller_profiles_dir: [a]\n"
+                    ),
+                )
+            )
 
     def test_rejects_hash_wildcard_topic(self, tmp_path):
         with pytest.raises(ConfigValidationError, match="firmware_telemetry.topic"):

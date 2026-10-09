@@ -360,6 +360,11 @@ gateway:
     enabled: false                   # subscribe to signed evidence Layer 1 firmware telemetry
     topic: ori/fw/+/telemetry        # signed telemetry and signed fault events
     qos: 1                           # firmware publishes QoS 1; receiver deduplicates by boot_id/seq
+    # Controller profile documents the firmware release publishes, held here
+    # so bridged readings and foreign alarm words can be read with no network.
+    # A document is used only through the digest a signed manifest names.
+    # Read once at start: restart after adding a document.
+    controller_profiles_dir: ""      # e.g. controller-profiles (relative to this file)
   firmware_commands:
     # Signed egress to firmware devices: provisioning approvals, physical
     # commands, and the runtime liveness signal that tells a device an

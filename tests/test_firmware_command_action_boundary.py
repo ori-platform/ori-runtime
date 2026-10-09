@@ -270,6 +270,14 @@ NOT_HOLDERS = {
         "the supervised-device table and its clock; it holds no key and "
         "publishes nothing"
     ),
+    "_firmware_profile_library": (
+        "controller profile documents held by digest; read-only data, no key, "
+        "no topic, no store"
+    ),
+    "_firmware_alarm_tracker": (
+        "in-memory alarm-word snapshots and a clock; it holds no key and "
+        "publishes nothing"
+    ),
 }
 
 #: Where the authority keys come from, and the builders that sign with them.
