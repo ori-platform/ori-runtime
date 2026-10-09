@@ -785,9 +785,10 @@ async def test_a_bridged_reading_carries_the_qualification_it_was_accepted_under
     await device.provision()
     reading = _reading(MEASURE_CHANNEL, "current", "ampere", 12.3)
     reading["quality"] = 1.0
-    _verification, (accepted,) = await device.gate.ingest(
+    verification, (accepted,) = await device.gate.ingest(
         device.envelope(epoch=0, boot_id=1, seq=1, readings=[reading])
     )
+    assert verification.accepted
     assert accepted.metadata["controller_profile"] == qualified
     assert accepted.metadata["controller_profile_status"] == "usable"
 
@@ -1075,10 +1076,10 @@ async def test_a_fault_racing_a_repromotion_still_holds_the_channel(
             await device.revoke()
             await device.reinstate()
             await device.promote()
-            _v, _r = await device.gate.ingest(
+            during, readings = await device.gate.ingest(
                 device.envelope(epoch=0, boot_id=1, seq=2, readings=[_alarm(1)])
             )
-            assert _v.accepted
+            assert during.accepted and readings == []
             assert (await device.alarm_state())["state"] == "as_of"
         return await real_advance(*args, **kwargs)
 
