@@ -633,6 +633,26 @@ VECTOR_EXEMPTIONS = {
             "covers the bytes the authority must match."
         ),
     },
+    ("firmware_telemetry", "envelope-vectors-v2"): {
+        "owner": "the runtime",
+        "status": "proof_pending",
+        "tracking": "ori-runtime#840",
+        "reason": (
+            "The reading envelope at v 2 carries liveness_nonce. The runtime's "
+            "verifier accepts v 1 only, so there is no v 2 path to drive until "
+            "it adopts the envelope. Vendored so the drift check covers the bytes."
+        ),
+    },
+    ("firmware_telemetry", "reading-age-vectors-v2"): {
+        "owner": "the runtime",
+        "status": "proof_pending",
+        "tracking": "ori-runtime#840",
+        "reason": (
+            "The liveness table and the age bound do not exist in the runtime "
+            "yet, so nothing here can recompute these queries. Vendored so the "
+            "drift check covers the bytes."
+        ),
+    },
     ("safety_profile", "activation"): {
         "owner": "the runtime",
         "status": "proof_pending",

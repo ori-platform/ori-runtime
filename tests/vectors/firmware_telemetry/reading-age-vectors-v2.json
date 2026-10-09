@@ -1,0 +1,1982 @@
+{
+  "contract": "ori-specs/firmware-telemetry/v2.md",
+  "version": 2,
+  "comment": "Golden vectors for firmware-telemetry/v2 How Old A Reading Is, at the signing runtime. Each case runs its events in order, on a clock that counts suspended time, in nanoseconds, under the case's per-device and total table bounds. Every accept event is a message already accepted under every check; the corpus does not exercise verification. A conforming runtime reproduces every query's 'expected'. Nonces are fixed fixture values.",
+  "clock": "monotonic, nanoseconds, counting suspended time",
+  "retention_ns": 3600000000000,
+  "event_kinds": {
+    "sign_liveness": "the runtime signs a v 2 liveness message; t_ns is its signing start, or null when the clock could not be read",
+    "sign_liveness_v1": "the runtime signs a v 1 liveness message, which carries no nonce and records nothing",
+    "sign_failed": "the runtime begins signing a v 2 liveness message at t_ns and the signing fails; its entry is discarded and nothing is published",
+    "accept": "the runtime accepts an envelope; channels lists its readings' channels, empty for a heartbeat",
+    "restart": "the runtime's process restarts",
+    "store_restore": "the runtime's state store is restored while it runs",
+    "suspend": "the host is suspended from t_ns until resume_t_ns",
+    "query": "the bound of a message, or of a channel's latest reading, at t_ns"
+  },
+  "cases": [
+    {
+      "name": "matched_and_growing",
+      "per_device_bound": 240,
+      "total_bound": 100000,
+      "events": [
+        {
+          "kind": "sign_liveness",
+          "t_ns": 1000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 1,
+          "nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 4000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "query",
+          "t_ns": 4000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "upper",
+            "age_upper_ns": 3000000000,
+            "age_upper_ms_rounded_up": 3000
+          }
+        },
+        {
+          "kind": "query",
+          "t_ns": 64000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "upper",
+            "age_upper_ns": 63000000000,
+            "age_upper_ms_rounded_up": 63000
+          }
+        },
+        {
+          "kind": "query",
+          "t_ns": 64000000000,
+          "channel": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "channel": "ch0"
+          },
+          "expected": {
+            "latest": {
+              "boot_id": 41,
+              "seq": 100
+            },
+            "bound": "upper",
+            "age_upper_ns": 63000000000,
+            "age_upper_ms_rounded_up": 63000
+          }
+        }
+      ],
+      "note": "the bound is computed at use and grows after receipt"
+    },
+    {
+      "name": "rounds_up",
+      "per_device_bound": 240,
+      "total_bound": 100000,
+      "events": [
+        {
+          "kind": "sign_liveness",
+          "t_ns": 1000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 1,
+          "nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 1002500001,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "query",
+          "t_ns": 1002500001,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "upper",
+            "age_upper_ns": 2500001,
+            "age_upper_ms_rounded_up": 3
+          }
+        }
+      ],
+      "note": "2500001 ns is shown as 3 ms, never 2"
+    },
+    {
+      "name": "unknown_nonce",
+      "per_device_bound": 240,
+      "total_bound": 100000,
+      "events": [
+        {
+          "kind": "sign_liveness",
+          "t_ns": 1000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 1,
+          "nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 4000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "1da4dd2aab84b54a19e394966a9925af"
+        },
+        {
+          "kind": "query",
+          "t_ns": 4000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "none"
+          }
+        }
+      ],
+      "note": "a nonce the runtime never signed bounds nothing"
+    },
+    {
+      "name": "null_nonce",
+      "per_device_bound": 240,
+      "total_bound": 100000,
+      "events": [
+        {
+          "kind": "sign_liveness",
+          "t_ns": 1000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 1,
+          "nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 4000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": null
+        },
+        {
+          "kind": "query",
+          "t_ns": 4000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "none"
+          }
+        }
+      ],
+      "note": "a reading measured while the device held no nonce has no bound"
+    },
+    {
+      "name": "v1_envelope",
+      "per_device_bound": 240,
+      "total_bound": 100000,
+      "events": [
+        {
+          "kind": "sign_liveness",
+          "t_ns": 1000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 1,
+          "nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 4000000000,
+          "v": 1,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ]
+        },
+        {
+          "kind": "query",
+          "t_ns": 4000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "none"
+          }
+        }
+      ],
+      "note": "a v 1 envelope carries no nonce and has no bound"
+    },
+    {
+      "name": "other_device",
+      "per_device_bound": 240,
+      "total_bound": 100000,
+      "events": [
+        {
+          "kind": "sign_liveness",
+          "t_ns": 1000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 1,
+          "nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 4000000000,
+          "v": 2,
+          "device_id": "ori-fw-00000000",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "query",
+          "t_ns": 4000000000,
+          "message": {
+            "device_id": "ori-fw-00000000",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "none"
+          }
+        }
+      ],
+      "note": "an entry matches only the device it was signed for"
+    },
+    {
+      "name": "other_boot",
+      "per_device_bound": 240,
+      "total_bound": 100000,
+      "events": [
+        {
+          "kind": "sign_liveness",
+          "t_ns": 1000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 1,
+          "nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 4000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 42,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "query",
+          "t_ns": 4000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 42,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "none"
+          }
+        }
+      ],
+      "note": "an entry matches only the boot it was signed for"
+    },
+    {
+      "name": "other_manifest",
+      "per_device_bound": 240,
+      "total_bound": 100000,
+      "events": [
+        {
+          "kind": "sign_liveness",
+          "t_ns": 1000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 1,
+          "nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 4000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:abababababababababababababababababababababababababababababababab",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "query",
+          "t_ns": 4000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "none"
+          }
+        }
+      ],
+      "note": "an entry matches only the manifest it was signed for"
+    },
+    {
+      "name": "accepted_exactly_an_hour_after_signing",
+      "per_device_bound": 240,
+      "total_bound": 100000,
+      "events": [
+        {
+          "kind": "sign_liveness",
+          "t_ns": 1000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 1,
+          "nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 3601000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "query",
+          "t_ns": 3601000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "upper",
+            "age_upper_ns": 3600000000000,
+            "age_upper_ms_rounded_up": 3600000
+          }
+        }
+      ],
+      "note": "an entry still serves a lookup exactly one hour after its signing start"
+    },
+    {
+      "name": "accepted_past_the_hour",
+      "per_device_bound": 240,
+      "total_bound": 100000,
+      "events": [
+        {
+          "kind": "sign_liveness",
+          "t_ns": 1000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 1,
+          "nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 3601000000001,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "query",
+          "t_ns": 3601000000001,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "none"
+          }
+        }
+      ],
+      "note": "one nanosecond later the entry no longer serves one"
+    },
+    {
+      "name": "matched_reading_older_than_an_hour",
+      "per_device_bound": 240,
+      "total_bound": 100000,
+      "events": [
+        {
+          "kind": "sign_liveness",
+          "t_ns": 1000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 1,
+          "nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 11000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "query",
+          "t_ns": 7201000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "upper",
+            "age_upper_ns": 7200000000000,
+            "age_upper_ms_rounded_up": 7200000
+          }
+        }
+      ],
+      "note": "the hour limits matching, not age: a matched reading keeps its signing start"
+    },
+    {
+      "name": "per_device_eviction",
+      "per_device_bound": 2,
+      "total_bound": 100000,
+      "events": [
+        {
+          "kind": "sign_liveness",
+          "t_ns": 1000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 1,
+          "nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "sign_liveness",
+          "t_ns": 16000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 2,
+          "nonce": "1da4dd2aab84b54a19e394966a9925af"
+        },
+        {
+          "kind": "sign_liveness",
+          "t_ns": 31000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 3,
+          "nonce": "b1f424405f8d69e729a615e26151eb41"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 32000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 33000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 101,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "1da4dd2aab84b54a19e394966a9925af"
+        },
+        {
+          "kind": "query",
+          "t_ns": 33000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "none"
+          }
+        },
+        {
+          "kind": "query",
+          "t_ns": 33000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 101
+          },
+          "expected": {
+            "bound": "upper",
+            "age_upper_ns": 17000000000,
+            "age_upper_ms_rounded_up": 17000
+          }
+        }
+      ],
+      "note": "the third entry for a device with room for two evicts its earliest"
+    },
+    {
+      "name": "total_eviction",
+      "per_device_bound": 2,
+      "total_bound": 2,
+      "events": [
+        {
+          "kind": "sign_liveness",
+          "t_ns": 1000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 1,
+          "nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "sign_liveness",
+          "t_ns": 2000000000,
+          "device_id": "ori-fw-00000000",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 1,
+          "nonce": "1da4dd2aab84b54a19e394966a9925af"
+        },
+        {
+          "kind": "sign_liveness",
+          "t_ns": 3000000000,
+          "device_id": "ori-fw-00000000",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 2,
+          "nonce": "b1f424405f8d69e729a615e26151eb41"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 4000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 5000000000,
+          "v": 2,
+          "device_id": "ori-fw-00000000",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 200,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "1da4dd2aab84b54a19e394966a9925af"
+        },
+        {
+          "kind": "query",
+          "t_ns": 5000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "none"
+          }
+        },
+        {
+          "kind": "query",
+          "t_ns": 5000000000,
+          "message": {
+            "device_id": "ori-fw-00000000",
+            "boot_id": 41,
+            "seq": 200
+          },
+          "expected": {
+            "bound": "upper",
+            "age_upper_ns": 3000000000,
+            "age_upper_ms_rounded_up": 3000
+          }
+        }
+      ],
+      "note": "with room for two in total, the third entry evicts the table's earliest, another device's"
+    },
+    {
+      "name": "eviction_tie_goes_to_first_nonce_in_byte_order",
+      "per_device_bound": 2,
+      "total_bound": 100000,
+      "events": [
+        {
+          "kind": "sign_liveness",
+          "t_ns": 1000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 1,
+          "nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "sign_liveness",
+          "t_ns": 1000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 2,
+          "nonce": "1da4dd2aab84b54a19e394966a9925af"
+        },
+        {
+          "kind": "sign_liveness",
+          "t_ns": 16000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 3,
+          "nonce": "b1f424405f8d69e729a615e26151eb41"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 17000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 17000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 101,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "1da4dd2aab84b54a19e394966a9925af"
+        },
+        {
+          "kind": "query",
+          "t_ns": 17000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "upper",
+            "age_upper_ns": 16000000000,
+            "age_upper_ms_rounded_up": 16000
+          }
+        },
+        {
+          "kind": "query",
+          "t_ns": 17000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 101
+          },
+          "expected": {
+            "bound": "none"
+          }
+        }
+      ],
+      "note": "two entries share a signing start; the one whose nonce sorts first in byte order is evicted"
+    },
+    {
+      "name": "hour_old_entry_survives_a_recording_with_room",
+      "per_device_bound": 240,
+      "total_bound": 100000,
+      "events": [
+        {
+          "kind": "sign_liveness",
+          "t_ns": 1000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 1,
+          "nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "sign_liveness",
+          "t_ns": 3601000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 2,
+          "nonce": "1da4dd2aab84b54a19e394966a9925af"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 3601000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "query",
+          "t_ns": 3601000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "upper",
+            "age_upper_ns": 3600000000000,
+            "age_upper_ms_rounded_up": 3600000
+          }
+        }
+      ],
+      "note": "recording another entry exactly an hour after the first, with room to spare, does not expire the first: its age is exactly one hour, which is still usable"
+    },
+    {
+      "name": "per_device_bound_before_total_bound",
+      "per_device_bound": 2,
+      "total_bound": 3,
+      "events": [
+        {
+          "kind": "sign_liveness",
+          "t_ns": 1000000000,
+          "device_id": "ori-fw-00000000",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 1,
+          "nonce": "5b89918ff8e1b95e4aafee0c4d655949"
+        },
+        {
+          "kind": "sign_liveness",
+          "t_ns": 2000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 1,
+          "nonce": "133dcf9c54d68489b16858c688dc4965"
+        },
+        {
+          "kind": "sign_liveness",
+          "t_ns": 3000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 2,
+          "nonce": "1ae6b5f40d11f32ca4a85d8489dc275f"
+        },
+        {
+          "kind": "sign_liveness",
+          "t_ns": 4000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 3,
+          "nonce": "e05c0855e86083f6768e002200214456"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 5000000000,
+          "v": 2,
+          "device_id": "ori-fw-00000000",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 200,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "5b89918ff8e1b95e4aafee0c4d655949"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 5000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "133dcf9c54d68489b16858c688dc4965"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 5000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 101,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "1ae6b5f40d11f32ca4a85d8489dc275f"
+        },
+        {
+          "kind": "query",
+          "t_ns": 5000000000,
+          "message": {
+            "device_id": "ori-fw-00000000",
+            "boot_id": 41,
+            "seq": 200
+          },
+          "expected": {
+            "bound": "upper",
+            "age_upper_ns": 4000000000,
+            "age_upper_ms_rounded_up": 4000
+          }
+        },
+        {
+          "kind": "query",
+          "t_ns": 5000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "none"
+          }
+        },
+        {
+          "kind": "query",
+          "t_ns": 5000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 101
+          },
+          "expected": {
+            "bound": "upper",
+            "age_upper_ns": 2000000000,
+            "age_upper_ms_rounded_up": 2000
+          }
+        }
+      ],
+      "note": "the per-device bound is applied first: it evicts Y1, after which the table is under its total bound, so the other device's earlier X1 survives"
+    },
+    {
+      "name": "per_device_bound_spans_boots",
+      "per_device_bound": 2,
+      "total_bound": 100000,
+      "events": [
+        {
+          "kind": "sign_liveness",
+          "t_ns": 1000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 1,
+          "nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "sign_liveness",
+          "t_ns": 2000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 42,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 1,
+          "nonce": "1da4dd2aab84b54a19e394966a9925af"
+        },
+        {
+          "kind": "sign_liveness",
+          "t_ns": 3000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 42,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 2,
+          "nonce": "b1f424405f8d69e729a615e26151eb41"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 4000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "query",
+          "t_ns": 4000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "none"
+          }
+        }
+      ],
+      "note": "the per-device bound counts every entry for the device_id, whatever its boot_id: the third entry evicts the earlier boot's"
+    },
+    {
+      "name": "entry_at_the_hour_still_counts",
+      "per_device_bound": 2,
+      "total_bound": 100000,
+      "events": [
+        {
+          "kind": "sign_liveness",
+          "t_ns": 1000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 1,
+          "nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "sign_liveness",
+          "t_ns": 10000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 2,
+          "nonce": "1da4dd2aab84b54a19e394966a9925af"
+        },
+        {
+          "kind": "sign_liveness",
+          "t_ns": 3601000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 3,
+          "nonce": "b1f424405f8d69e729a615e26151eb41"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 3601000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 3601000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 101,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "1da4dd2aab84b54a19e394966a9925af"
+        },
+        {
+          "kind": "query",
+          "t_ns": 3601000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "none"
+          }
+        },
+        {
+          "kind": "query",
+          "t_ns": 3601000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 101
+          },
+          "expected": {
+            "bound": "upper",
+            "age_upper_ns": 3591000000000,
+            "age_upper_ms_rounded_up": 3591000
+          }
+        }
+      ],
+      "note": "at exactly one hour the first entry is still usable and still counts, so recording a third evicts it: size eviction removes a usable entry"
+    },
+    {
+      "name": "rollout_failed_v2_signing_leaves_no_entry",
+      "per_device_bound": 240,
+      "total_bound": 100000,
+      "events": [
+        {
+          "kind": "sign_liveness_v1",
+          "t_ns": 1000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 10
+        },
+        {
+          "kind": "sign_failed",
+          "t_ns": 1001000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 11,
+          "nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 2000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": null
+        },
+        {
+          "kind": "accept",
+          "t_ns": 3000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 101,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "query",
+          "t_ns": 3000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "none"
+          }
+        },
+        {
+          "kind": "query",
+          "t_ns": 3000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 101
+          },
+          "expected": {
+            "bound": "none"
+          }
+        }
+      ],
+      "note": "the interval's v 1 message is published; its v 2 signing fails and leaves no entry, so the device holds no nonce and a nonce from the failed signing matches nothing"
+    },
+    {
+      "name": "failed_signing_eviction_stands",
+      "per_device_bound": 2,
+      "total_bound": 100000,
+      "events": [
+        {
+          "kind": "sign_liveness",
+          "t_ns": 1000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 1,
+          "nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "sign_liveness",
+          "t_ns": 2000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 2,
+          "nonce": "1da4dd2aab84b54a19e394966a9925af"
+        },
+        {
+          "kind": "sign_failed",
+          "t_ns": 3000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 3,
+          "nonce": "b1f424405f8d69e729a615e26151eb41"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 4000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 4000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 101,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "1da4dd2aab84b54a19e394966a9925af"
+        },
+        {
+          "kind": "query",
+          "t_ns": 4000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "none"
+          }
+        },
+        {
+          "kind": "query",
+          "t_ns": 4000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 101
+          },
+          "expected": {
+            "bound": "upper",
+            "age_upper_ns": 2000000000,
+            "age_upper_ms_rounded_up": 2000
+          }
+        }
+      ],
+      "note": "recording the failed signing's entry evicted the earliest; discarding it does not restore what it evicted"
+    },
+    {
+      "name": "rollout_reading_after_pair_bounded_by_v2",
+      "per_device_bound": 240,
+      "total_bound": 100000,
+      "events": [
+        {
+          "kind": "sign_liveness_v1",
+          "t_ns": 1000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 10
+        },
+        {
+          "kind": "sign_liveness",
+          "t_ns": 1001000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 11,
+          "nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 3000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "query",
+          "t_ns": 3000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "upper",
+            "age_upper_ns": 1999000000,
+            "age_upper_ms_rounded_up": 1999
+          }
+        }
+      ],
+      "note": "a reading measured after the device accepted the pair carries the v 2 nonce and is bounded by its signing start"
+    },
+    {
+      "name": "rollout_reading_between_pair_unbounded",
+      "per_device_bound": 240,
+      "total_bound": 100000,
+      "events": [
+        {
+          "kind": "sign_liveness_v1",
+          "t_ns": 1000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 10
+        },
+        {
+          "kind": "accept",
+          "t_ns": 1000500000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": null
+        },
+        {
+          "kind": "sign_liveness",
+          "t_ns": 1001000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 11,
+          "nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "query",
+          "t_ns": 2000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "none"
+          }
+        }
+      ],
+      "note": "a reading measured after the device accepted the v 1 message and before the v 2 message carries null and has no bound"
+    },
+    {
+      "name": "restart_before_acceptance",
+      "per_device_bound": 240,
+      "total_bound": 100000,
+      "events": [
+        {
+          "kind": "sign_liveness",
+          "t_ns": 1000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 1,
+          "nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "restart",
+          "t_ns": 2000000000
+        },
+        {
+          "kind": "accept",
+          "t_ns": 4000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "query",
+          "t_ns": 4000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "none"
+          }
+        }
+      ],
+      "note": "a restart empties the table"
+    },
+    {
+      "name": "restart_after_acceptance",
+      "per_device_bound": 240,
+      "total_bound": 100000,
+      "events": [
+        {
+          "kind": "sign_liveness",
+          "t_ns": 1000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 1,
+          "nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 4000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "query",
+          "t_ns": 4000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "upper",
+            "age_upper_ns": 3000000000,
+            "age_upper_ms_rounded_up": 3000
+          }
+        },
+        {
+          "kind": "restart",
+          "t_ns": 5000000000
+        },
+        {
+          "kind": "query",
+          "t_ns": 6000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "none"
+          }
+        },
+        {
+          "kind": "query",
+          "t_ns": 6000000000,
+          "channel": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "channel": "ch0"
+          },
+          "expected": {
+            "latest": null,
+            "bound": "none"
+          }
+        }
+      ],
+      "note": "a restart drops the signing start held with an accepted message; the stored reading has no bound and the channel has no latest reading"
+    },
+    {
+      "name": "live_store_restore_reissues_runtime_seq",
+      "per_device_bound": 240,
+      "total_bound": 100000,
+      "events": [
+        {
+          "kind": "sign_liveness",
+          "t_ns": 10000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 5,
+          "nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 12000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "store_restore",
+          "t_ns": 20000000000
+        },
+        {
+          "kind": "sign_liveness",
+          "t_ns": 30000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 5,
+          "nonce": "1da4dd2aab84b54a19e394966a9925af"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 40000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 101,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "query",
+          "t_ns": 40000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 101
+          },
+          "expected": {
+            "bound": "upper",
+            "age_upper_ns": 30000000000,
+            "age_upper_ms_rounded_up": 30000
+          }
+        },
+        {
+          "kind": "query",
+          "t_ns": 40000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "upper",
+            "age_upper_ns": 30000000000,
+            "age_upper_ms_rounded_up": 30000
+          }
+        }
+      ],
+      "note": "a store restore while the runtime runs reissues runtime_seq 5 under a fresh nonce; the device refuses it and keeps signing the first nonce, which the table still dates by its own signing start"
+    },
+    {
+      "name": "restart_and_restore_reissue_with_fresh_nonce",
+      "per_device_bound": 240,
+      "total_bound": 100000,
+      "events": [
+        {
+          "kind": "sign_liveness",
+          "t_ns": 10000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 5,
+          "nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "restart",
+          "t_ns": 20000000000
+        },
+        {
+          "kind": "store_restore",
+          "t_ns": 21000000000
+        },
+        {
+          "kind": "sign_liveness",
+          "t_ns": 30000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 5,
+          "nonce": "1da4dd2aab84b54a19e394966a9925af"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 3600000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "query",
+          "t_ns": 3600000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "none"
+          }
+        },
+        {
+          "kind": "sign_liveness",
+          "t_ns": 3601000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 6,
+          "nonce": "b1f424405f8d69e729a615e26151eb41"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 3602000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 101,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "b1f424405f8d69e729a615e26151eb41"
+        },
+        {
+          "kind": "query",
+          "t_ns": 3602000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 101
+          },
+          "expected": {
+            "bound": "upper",
+            "age_upper_ns": 1000000000,
+            "age_upper_ms_rounded_up": 1000
+          }
+        }
+      ],
+      "note": "after a restart and a restore, runtime_seq 5 is reissued under nonce B; an old reading carrying nonce A has no bound, where a bound keyed by runtime_seq would date it by B's signing; the next runtime_seq the device accepts bounds again"
+    },
+    {
+      "name": "heartbeat_does_not_refresh_channel",
+      "per_device_bound": 240,
+      "total_bound": 100000,
+      "events": [
+        {
+          "kind": "sign_liveness",
+          "t_ns": 1000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 1,
+          "nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 2000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "sign_liveness",
+          "t_ns": 16000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 2,
+          "nonce": "1da4dd2aab84b54a19e394966a9925af"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 17000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 101,
+          "channels": [],
+          "liveness_nonce": "1da4dd2aab84b54a19e394966a9925af"
+        },
+        {
+          "kind": "query",
+          "t_ns": 20000000000,
+          "channel": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "channel": "ch0"
+          },
+          "expected": {
+            "latest": {
+              "boot_id": 41,
+              "seq": 100
+            },
+            "bound": "upper",
+            "age_upper_ns": 19000000000,
+            "age_upper_ms_rounded_up": 19000
+          }
+        },
+        {
+          "kind": "query",
+          "t_ns": 20000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 101
+          },
+          "expected": {
+            "bound": "upper",
+            "age_upper_ns": 4000000000,
+            "age_upper_ms_rounded_up": 4000
+          }
+        }
+      ],
+      "note": "the channel's latest reading is still the reading; the heartbeat's own bound is newer and says nothing about the channel"
+    },
+    {
+      "name": "unclocked_signing",
+      "per_device_bound": 240,
+      "total_bound": 100000,
+      "events": [
+        {
+          "kind": "sign_liveness",
+          "t_ns": null,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 1,
+          "nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 4000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "query",
+          "t_ns": 4000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "none"
+          }
+        }
+      ],
+      "note": "a signing whose start could not be read records no entry"
+    },
+    {
+      "name": "suspended_time_counts",
+      "per_device_bound": 240,
+      "total_bound": 100000,
+      "events": [
+        {
+          "kind": "sign_liveness",
+          "t_ns": 1000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 1,
+          "nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "suspend",
+          "t_ns": 2000000000,
+          "resume_t_ns": 1802000000000
+        },
+        {
+          "kind": "accept",
+          "t_ns": 1803000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "query",
+          "t_ns": 1803000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "upper",
+            "age_upper_ns": 1802000000000,
+            "age_upper_ms_rounded_up": 1802000
+          }
+        }
+      ],
+      "note": "the clock counts the thirty minutes the host was suspended, so the bound includes them"
+    },
+    {
+      "name": "drained_backlog",
+      "per_device_bound": 240,
+      "total_bound": 100000,
+      "events": [
+        {
+          "kind": "sign_liveness",
+          "t_ns": 1000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 1,
+          "nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "sign_liveness",
+          "t_ns": 16000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 2,
+          "nonce": "1da4dd2aab84b54a19e394966a9925af"
+        },
+        {
+          "kind": "sign_liveness",
+          "t_ns": 31000000000,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "runtime_seq": 3,
+          "nonce": "b1f424405f8d69e729a615e26151eb41"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 900000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 100,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 900000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 101,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "c9a1da7f16443010253a43946e2d92fa"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 900000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 102,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "1da4dd2aab84b54a19e394966a9925af"
+        },
+        {
+          "kind": "accept",
+          "t_ns": 901000000000,
+          "v": 2,
+          "device_id": "ori-fw-7c9f2b3a",
+          "boot_id": 41,
+          "capability_hash": "sha256:13751b5335ccedcd4ffcc82bbda28ebfb7558859f36a74e710f1a0b0ab23da8d",
+          "seq": 103,
+          "channels": [
+            "ch0"
+          ],
+          "liveness_nonce": "b1f424405f8d69e729a615e26151eb41"
+        },
+        {
+          "kind": "query",
+          "t_ns": 901000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 100
+          },
+          "expected": {
+            "bound": "upper",
+            "age_upper_ns": 900000000000,
+            "age_upper_ms_rounded_up": 900000
+          }
+        },
+        {
+          "kind": "query",
+          "t_ns": 901000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 102
+          },
+          "expected": {
+            "bound": "upper",
+            "age_upper_ns": 885000000000,
+            "age_upper_ms_rounded_up": 885000
+          }
+        },
+        {
+          "kind": "query",
+          "t_ns": 901000000000,
+          "message": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "boot_id": 41,
+            "seq": 103
+          },
+          "expected": {
+            "bound": "upper",
+            "age_upper_ns": 870000000000,
+            "age_upper_ms_rounded_up": 870000
+          }
+        },
+        {
+          "kind": "query",
+          "t_ns": 901000000000,
+          "channel": {
+            "device_id": "ori-fw-7c9f2b3a",
+            "channel": "ch0"
+          },
+          "expected": {
+            "latest": {
+              "boot_id": 41,
+              "seq": 103
+            },
+            "bound": "upper",
+            "age_upper_ns": 870000000000,
+            "age_upper_ms_rounded_up": 870000
+          }
+        }
+      ],
+      "note": "readings polled under older nonces and delivered together after an outage are each bounded by the nonce they were measured under"
+    }
+  ]
+}
