@@ -16,7 +16,7 @@ import asyncio
 import json
 import logging
 from concurrent.futures import Future as ConcurrentFuture
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_url
 from ori.hal.base import MeasurementRefusedError, refuse_unusable_reading
@@ -84,7 +84,9 @@ class MqttFirmwareTelemetrySubscriber:
         # whole liveness feature silently inert, and ``Any`` let a wrongly
         # typed object through to fail at the first accepted reading
         # rather than at construction.
-        if not isinstance(liveness_supervisor, FirmwareLivenessSupervisor):
+        if not isinstance(
+            cast(object, liveness_supervisor), FirmwareLivenessSupervisor
+        ):
             raise TypeError(
                 "liveness_supervisor must be the FirmwareLivenessSupervisor "
                 "shared with the firmware command service"

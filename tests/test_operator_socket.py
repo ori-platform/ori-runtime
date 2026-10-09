@@ -33,6 +33,7 @@ from ori.operator_socket import (
     ReconcileRequest,
 )
 from ori.runtime import OriRuntime
+from ori.utils.platform import runtime_platform
 
 REPO = Path(__file__).resolve().parents[1]
 VALID = {
@@ -162,7 +163,7 @@ async def test_the_real_peer_is_admitted_as_the_operator_identity(
     assert peer.uid == os.geteuid()
     assert answer["result"]["operator"]["uid"] == os.geteuid()
     assert req.proposal_id == "AB12CD34"
-    if sys.platform.startswith("linux"):
+    if runtime_platform().startswith("linux"):
         assert peer.pid == os.getpid()
         text = Path("/proc/self/loginuid").read_text().strip()
         unset = text == str(op.UNSET_LOGIN_UID)
@@ -188,7 +189,7 @@ async def test_a_real_peer_that_is_not_admitted_learns_nothing(short_dir: Path) 
 
 
 @pytest.mark.skipif(
-    not sys.platform.startswith("linux") or os.geteuid() != 0,
+    not runtime_platform().startswith("linux") or os.geteuid() != 0,
     reason="setting an audit login user ID needs root on Linux",
 )
 async def test_a_pinned_peers_audit_login_uid_is_recorded(short_dir: Path) -> None:
@@ -219,7 +220,7 @@ async def test_a_pinned_peers_audit_login_uid_is_recorded(short_dir: Path) -> No
     assert peer.login_uid == 4242
 
 
-LINUX = sys.platform.startswith("linux")
+LINUX = runtime_platform().startswith("linux")
 
 
 class _PidfdSock:

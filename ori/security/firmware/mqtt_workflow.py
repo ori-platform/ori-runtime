@@ -104,18 +104,22 @@ class FirmwareMqttProvisioningWorkflow:
             raise FirmwareMqttCertificateError(
                 "prepare_install requires an issued create_csr request"
             )
-        validated_csr: x509.CertificateSigningRequest | None = None
+        # A list, not a nonlocal: the validator runs inside verify_response,
+        # and a checker that cannot see that write would treat the rest of this
+        # method as unreachable and stop checking it.
+        validated: list[x509.CertificateSigningRequest] = []
 
         def validate_csr_response(value: dict[str, Any]) -> None:
-            nonlocal validated_csr
             try:
                 csr_pem = base64.b64decode(
                     str(value["csr_pem_b64"]).encode("ascii"),
                     validate=True,
                 )
-                validated_csr = self._certificate_authority.validate_device_csr(
-                    csr_pem,
-                    device_id=issued_csr_request.device_id,
+                validated.append(
+                    self._certificate_authority.validate_device_csr(
+                        csr_pem,
+                        device_id=issued_csr_request.device_id,
+                    )
                 )
             except (KeyError, UnicodeEncodeError, ValueError) as exc:
                 raise FirmwareMqttResponseValidationError(
@@ -128,10 +132,10 @@ class FirmwareMqttProvisioningWorkflow:
             csr_response_message,
             semantic_validator=validate_csr_response,
         )
-        if validated_csr is None:
+        if len(validated) != 1:
             raise RuntimeError("CSR validator completed without a validated CSR")
         certificate = self._certificate_authority.issue_client_certificate(
-            validated_csr,
+            validated[0],
             device_id=issued_csr_request.device_id,
             now=now,
         )

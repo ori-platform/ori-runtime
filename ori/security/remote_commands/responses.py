@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from ori.security.remote_commands.policy import (
     STATUS_AUDIT_ONLY,
     STATUS_DRY_RUN,
@@ -33,7 +35,7 @@ def format_remote_command_execution_response(
     max_chars: int = _DEFAULT_MAX_CHARS,
 ) -> str:
     """Return a concise SMS/WhatsApp-safe execution outcome message."""
-    if not isinstance(result, RemoteCommandExecutionResult):
+    if not isinstance(cast(object, result), RemoteCommandExecutionResult):
         return _clip("Ori command accepted; execution result unavailable.", max_chars)
 
     command = str(result.command or "command")

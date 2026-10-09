@@ -715,8 +715,9 @@ def test_composed_reinstall_integrates_config_dac_and_live_health_socket(
     ) as root:
         layout = InstallLayout.resolve(Path(root) / "ori")
         socket_path = layout.data / "health.sock"
-        server: socket.socket | None = None
-        server_thread: threading.Thread | None = None
+        # Lists, not nonlocals, so the teardown stays visible to the checker.
+        servers: list[socket.socket] = []
+        server_threads: list[threading.Thread] = []
         server_errors: list[Exception] = []
 
         class Preparer:
@@ -761,15 +762,14 @@ def test_composed_reinstall_integrates_config_dac_and_live_health_socket(
                 return lambda: None
 
             def restart(self) -> None:
-                nonlocal server, server_thread
-                if server is not None:
+                if servers:
                     return
                 server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                servers.append(server)
                 server.bind(str(socket_path))
                 server.listen(2)
 
                 def serve() -> None:
-                    assert server is not None
                     try:
                         for _ in range(2):
                             connection, _ = server.accept()
@@ -783,6 +783,7 @@ def test_composed_reinstall_integrates_config_dac_and_live_health_socket(
                         server_errors.append(exc)
 
                 server_thread = threading.Thread(target=serve, daemon=True)
+                server_threads.append(server_thread)
                 server_thread.start()
 
             def stop(self) -> None:
@@ -822,12 +823,12 @@ def test_composed_reinstall_integrates_config_dac_and_live_health_socket(
             assert (layout.data / "ori.yaml").stat().st_mode & 0o777 == 0o600
             assert layout.current.resolve() == layout.release("2.3.0")
         finally:
-            if server is not None:
+            for server in servers:
                 server.close()
-            if server_thread is not None:
+            for server_thread in server_threads:
                 server_thread.join(timeout=5)
         assert server_errors == []
-        assert server_thread is not None and not server_thread.is_alive()
+        assert len(server_threads) == 1 and not server_threads[0].is_alive()
 
 
 def test_release_is_revalidated_after_staging_move(tmp_path: Path) -> None:
@@ -1280,6 +1281,45 @@ def test_rollback_failure_has_distinct_error(tmp_path: Path) -> None:
             check_health=lambda _path: (_ for _ in ()).throw(RuntimeError("unhealthy")),
         )
     assert exc.value.code == "rollback_failed"
+
+
+def test_a_rollback_failing_twice_reports_its_first_failure(tmp_path: Path) -> None:
+    """The first rollback step that fails is the one named, and the cause."""
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    install_release(
+        layout=layout,
+        version="2.3.0",
+        prepare=_prepare,
+        validate=_validate,
+        restart_service=lambda: None,
+        stop_service=lambda: None,
+        check_health=lambda _path: None,
+    )
+    restarts: list[int] = []
+    first = RuntimeError("restart-during-rollback")
+
+    def restart() -> None:
+        restarts.append(1)
+        if len(restarts) > 1:
+            raise first
+
+    def check_health(_path: Path) -> None:
+        raise RuntimeError("unhealthy")
+
+    with pytest.raises(LinuxInstallError) as exc:
+        install_release(
+            layout=layout,
+            version="2.4.0",
+            prepare=_prepare,
+            validate=_validate,
+            restart_service=restart,
+            stop_service=lambda: None,
+            check_health=check_health,
+        )
+    assert exc.value.code == "rollback_failed"
+    # Both the rollback's restart and its health check failed; the first wins.
+    assert "restart-during-rollback" in str(exc.value)
+    assert exc.value.__cause__ is first
 
 
 def test_same_version_is_idempotent_and_downgrade_requires_opt_in(

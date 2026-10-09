@@ -30,7 +30,7 @@ import struct
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, NoReturn, cast
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -326,7 +326,7 @@ def sign_payload_fields(
         _refuse("envelope", "invalid_signature_envelope", "runtime_version form")
     if not isinstance(key_id, str) or not _KEY_ID_RE.fullmatch(key_id):
         _refuse("envelope", "invalid_signature_envelope", "key_id form")
-    if not isinstance(stripped, bool):
+    if not isinstance(cast(object, stripped), bool):
         _refuse("envelope", "invalid_signature_envelope", "stripped form")
     if target not in TARGETS:
         _refuse("identity", "unsupported_target", f"{target} is not a v2 target")
@@ -402,7 +402,7 @@ def verify_payload(
     """
     envelope = _parse_envelope(envelope_text)
     _verify_signature(envelope, registry)
-    if artifact is not None and not isinstance(artifact, bytes):
+    if artifact is not None and not isinstance(cast(object, artifact), bytes):
         raise TypeError("artifact must be bytes or None")
 
     if envelope["runtime_version"] != runtime_version:

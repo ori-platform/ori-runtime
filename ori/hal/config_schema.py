@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 import math
-from typing import Any
+from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
@@ -613,7 +613,7 @@ def validate_document(
     paths must resolve at configuration load, and skipping them when no context
     is supplied would silently drop a security bound.
     """
-    if not isinstance(schema, ValidatedSchema):
+    if not isinstance(cast(object, schema), ValidatedSchema):
         raise SchemaError(
             "validate_document requires a schema returned by validate_schema; "
             f"got {type(schema).__name__}. An unvalidated declaration cannot be "
@@ -626,7 +626,7 @@ def validate_document(
     # operator for a missing field rather than for the shape of the document.
     # `_resolve_mapping` performs the same check for every nested level; this
     # one covers the boundary it never sees.
-    if not isinstance(document, dict):
+    if not isinstance(cast(object, document), dict):
         raise DocumentError(
             f"{context}: expected object, got {type(document).__name__} "
             f"({_show(document)})"

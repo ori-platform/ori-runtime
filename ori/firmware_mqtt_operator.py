@@ -14,7 +14,6 @@ import os
 import socket
 import stat
 import struct
-import sys
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -29,6 +28,7 @@ from ori.security.firmware.mqtt_provisioning import (
     validate_time_server,
 )
 from ori.security.firmware.mqtt_workflow import FirmwareMqttProvisioningWorkflow
+from ori.utils.platform import os_name, runtime_platform
 from ori.utils.time_utils import now_ms
 
 _CONTRACT = "ori.runtime.firmware-mqtt-operator"
@@ -461,7 +461,7 @@ class FirmwareMqttOperatorServer:
         self._server: asyncio.AbstractServer | None = None
 
     async def start(self) -> str:
-        if os.name == "nt":
+        if os_name() == "nt":
             raise RuntimeError("firmware MQTT operator socket requires AF_UNIX")
         await asyncio.to_thread(self._prepare_path)
         self._server = await asyncio.start_unix_server(
@@ -611,14 +611,16 @@ def _peer_uid(peer_socket: Any) -> int:
             "authentication_failed",
             "peer credentials are unavailable",
         )
+    platform = runtime_platform()
     so_peercred = getattr(socket, "SO_PEERCRED", None)
-    if sys.platform.startswith("linux") and so_peercred is not None:
+    if platform.startswith("linux") and so_peercred is not None:
         raw = peer_socket.getsockopt(socket.SOL_SOCKET, so_peercred, 12)
         _, uid, _ = struct.unpack("=3i", raw)
         return int(uid)
-    if sys.platform == "darwin" and hasattr(socket, "LOCAL_PEERCRED"):
+    local_peercred = getattr(socket, "LOCAL_PEERCRED", None)
+    if platform == "darwin" and local_peercred is not None:
         # Darwin's xucred begins with cr_version (u32), then cr_uid (uid_t).
-        raw = peer_socket.getsockopt(0, socket.LOCAL_PEERCRED, 8)
+        raw = peer_socket.getsockopt(0, local_peercred, 8)
         _, uid = struct.unpack("=II", raw)
         return int(uid)
     raise FirmwareMqttOperatorError(

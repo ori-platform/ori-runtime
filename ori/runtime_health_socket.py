@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from ori.utils.path_utils import shown
+from ori.utils.platform import os_name
 
 # The ways "the packaged default socket path is not usable on this host"
 # presents. Anything else is a real failure of this socket rather than of the
@@ -148,7 +149,7 @@ class RuntimeHealthSocketServer:
 
     async def start(self) -> str:
         """Start serving health requests and return bound socket path."""
-        if os.name == "nt":
+        if os_name() == "nt":
             raise RuntimeError("Unix domain sockets are unsupported on Windows.")
 
         try:

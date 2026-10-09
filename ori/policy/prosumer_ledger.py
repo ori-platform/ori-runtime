@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Any
+from typing import Any, cast
 
 PROSUMER_METER_OF_RECORD_BOUNDARY = (
     "Ori fast-loop ledger values are operational estimates. DisCo revenue-grade "
@@ -176,7 +176,7 @@ def kwh_from_watts(watts: float, hours: float) -> float:
 def load_settlement_statement_data(data: dict[str, Any]) -> SettlementStatement:
     """Validate a monthly settlement statement supplied by provisioning/cloud."""
 
-    if not isinstance(data, dict):
+    if not isinstance(cast(object, data), dict):
         raise ProsumerLedgerError("settlement statement must be an object")
 
     period_start = _date_text(data, "period_start")

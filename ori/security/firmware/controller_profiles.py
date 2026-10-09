@@ -18,7 +18,6 @@ import json
 import logging
 import os
 import stat
-import sys
 import time
 from dataclasses import dataclass, field
 from fractions import Fraction
@@ -32,6 +31,7 @@ from ori.security.firmware.telemetry import (
     canonical_json_bytes,
     is_fleet_identifier,
 )
+from ori.utils.platform import runtime_platform
 
 logger = logging.getLogger(__name__)
 
@@ -598,7 +598,7 @@ def suspend_counting_clock() -> Callable[[], int] | None:
     None elsewhere, and then no alarm state stands at all.
     """
     clock_id = getattr(time, "CLOCK_BOOTTIME", None)
-    if clock_id is None and sys.platform == "darwin":
+    if clock_id is None and runtime_platform() == "darwin":
         clock_id = getattr(time, "CLOCK_MONOTONIC", None)
     if clock_id is None:
         return None

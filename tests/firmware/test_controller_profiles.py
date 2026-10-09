@@ -684,14 +684,15 @@ def test_the_bound_is_three_polls_and_thirty_seconds() -> None:
 
 
 def test_the_receiver_clock_counts_suspend_where_the_runtime_ships() -> None:
-    import sys
     import time
 
+    from ori.utils.platform import runtime_platform
+
     clock = suspend_counting_clock()
-    if sys.platform.startswith("linux"):
+    if runtime_platform().startswith("linux"):
         assert clock is not None
         assert abs(clock() - time.clock_gettime_ns(time.CLOCK_BOOTTIME) // 10**6) < 1000
-    elif sys.platform == "darwin":
+    elif runtime_platform() == "darwin":
         assert clock is not None
 
 

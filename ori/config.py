@@ -722,7 +722,7 @@ class Config:
         # scalar *values*; a key is never expanded, so one cannot name a key.
         # This is the same in every deployment, signed or not — there is one
         # loader, and a signature changes what is checked, not what is read.
-        data: dict[str, Any] = _load_config_document(raw_text, path, expand_env=True)
+        data = _load_config_document(raw_text, path, expand_env=True)
 
         if not isinstance(data, dict):
             raise ConfigValidationError(

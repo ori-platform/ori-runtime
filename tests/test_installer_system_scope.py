@@ -43,6 +43,7 @@ from ori import doctor
 from ori.installer import activation, trusted_paths
 from ori.installer.linux import InstallLayout, SystemdServiceProfile, install_release
 from ori.installer.trusted_paths import trust_failure
+from ori.utils.platform import runtime_platform
 
 _REQUIRED = os.environ.get("ORI_REQUIRE_ROOT_TESTS") == "1"
 
@@ -52,7 +53,7 @@ pytestmark = [
         reason="set ORI_REQUIRE_ROOT_TESTS=1 and run as root to select these",
     ),
     pytest.mark.skipif(
-        sys.platform != "linux",
+        runtime_platform() != "linux",
         reason="system scope, root ownership and 0777 symlink modes are Linux "
         "behaviour",
     ),

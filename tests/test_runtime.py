@@ -17,10 +17,17 @@ import textwrap
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+)
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    PublicFormat,
+)
 
 from ori.actions.alert_delivery import (
     AlertDeliveryReceipt,
@@ -78,23 +85,6 @@ from tests.conftest import (
     run_runtime_until,
 )
 from tests.waiting import DEADLINE_S, settle, wait_until
-
-if TYPE_CHECKING:
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-else:  # pragma: no cover - environment without cryptography support
-    try:
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
-            Ed25519PrivateKey,
-        )
-        from cryptography.hazmat.primitives.serialization import (
-            Encoding,
-            PublicFormat,
-        )
-    except Exception:
-        Ed25519PrivateKey = None
-        Encoding = None
-        PublicFormat = None
 
 
 async def _end_loop_once_warned(runtime, *, timeout: float = 15.0) -> None:
@@ -5429,10 +5419,6 @@ class TestRemoteDevicePolicy:
         raw_payload = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
         return payload, raw_payload, public_key_b64
 
-    @pytest.mark.skipif(
-        Ed25519PrivateKey is None,
-        reason="cryptography ed25519 is unavailable",
-    )
     async def test_applies_verified_remote_policy(self, tmp_path, monkeypatch):
         runtime = OriRuntime(config_path="ori.yaml")
         runtime._state_store = StateStore(str(tmp_path / "policy-apply.db"))
@@ -5535,10 +5521,6 @@ class TestRemoteDevicePolicy:
         finally:
             await runtime._state_store.close()
 
-    @pytest.mark.skipif(
-        Ed25519PrivateKey is None,
-        reason="cryptography ed25519 is unavailable",
-    )
     async def test_load_cached_policy_applies_when_signature_valid(self, tmp_path):
         runtime = OriRuntime(config_path="ori.yaml")
         runtime._state_store = StateStore(str(tmp_path / "policy-cache-valid.db"))
@@ -5570,10 +5552,6 @@ class TestRemoteDevicePolicy:
         finally:
             await runtime._state_store.close()
 
-    @pytest.mark.skipif(
-        Ed25519PrivateKey is None,
-        reason="cryptography ed25519 is unavailable",
-    )
     async def test_load_cached_policy_rejects_invalid_signature_audits(self, tmp_path):
         runtime = OriRuntime(config_path="ori.yaml")
         runtime._state_store = StateStore(str(tmp_path / "policy-cache-bad.db"))
@@ -5617,10 +5595,6 @@ class TestRemoteDevicePolicy:
         finally:
             await runtime._state_store.close()
 
-    @pytest.mark.skipif(
-        Ed25519PrivateKey is None,
-        reason="cryptography ed25519 is unavailable",
-    )
     async def test_policy_refresh_loop_applies_and_caches_policy(
         self, tmp_path, monkeypatch
     ):

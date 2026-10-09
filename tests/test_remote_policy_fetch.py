@@ -5,9 +5,10 @@ import base64
 import hashlib
 import json
 import time
-from typing import TYPE_CHECKING
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from ori.policy.device_policy import DevicePolicy
 from ori.policy.remote_fetch import (
@@ -16,18 +17,6 @@ from ori.policy.remote_fetch import (
     fetch_remote_device_policy_bundle_by_reference,
 )
 from ori.skills.signing import canonical_signed_payload
-
-if TYPE_CHECKING:
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-else:  # pragma: no cover - environment without cryptography support
-    try:
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-    except Exception:
-        Ed25519PrivateKey = None
-        Encoding = None
-        PublicFormat = None
 
 
 def _base_config(public_key_b64: str) -> dict:
@@ -58,10 +47,6 @@ def _signed_payload(private_key, **overrides) -> dict:
     return payload
 
 
-@pytest.mark.skipif(
-    Ed25519PrivateKey is None,
-    reason="cryptography ed25519 is unavailable",
-)
 @pytest.mark.asyncio
 async def test_fetch_remote_policy_accepts_valid_signed_payload(monkeypatch):
     private_key = Ed25519PrivateKey.generate()
@@ -84,10 +69,6 @@ async def test_fetch_remote_policy_accepts_valid_signed_payload(monkeypatch):
     assert policy.signature.startswith("ed25519:")
 
 
-@pytest.mark.skipif(
-    Ed25519PrivateKey is None,
-    reason="cryptography ed25519 is unavailable",
-)
 @pytest.mark.asyncio
 async def test_fetch_remote_policy_accepts_alert_caps(monkeypatch):
     private_key = Ed25519PrivateKey.generate()
@@ -128,10 +109,6 @@ async def test_fetch_remote_policy_accepts_alert_caps(monkeypatch):
     )
 
 
-@pytest.mark.skipif(
-    Ed25519PrivateKey is None,
-    reason="cryptography ed25519 is unavailable",
-)
 @pytest.mark.asyncio
 async def test_fetch_remote_policy_rejects_alert_cap_below_minus_one(monkeypatch):
     private_key = Ed25519PrivateKey.generate()
@@ -168,10 +145,6 @@ def test_device_policy_constructor_rejects_alert_cap_below_minus_one() -> None:
         )
 
 
-@pytest.mark.skipif(
-    Ed25519PrivateKey is None,
-    reason="cryptography ed25519 is unavailable",
-)
 @pytest.mark.asyncio
 async def test_fetch_remote_policy_bundle_returns_exact_raw_payload(monkeypatch):
     private_key = Ed25519PrivateKey.generate()
@@ -193,10 +166,6 @@ async def test_fetch_remote_policy_bundle_returns_exact_raw_payload(monkeypatch)
     assert fetched.policy.policy_version == int(payload["policy_version"])
 
 
-@pytest.mark.skipif(
-    Ed25519PrivateKey is None,
-    reason="cryptography ed25519 is unavailable",
-)
 @pytest.mark.asyncio
 async def test_fetch_remote_policy_rejects_stale_timestamp(monkeypatch):
     private_key = Ed25519PrivateKey.generate()
@@ -219,10 +188,6 @@ async def test_fetch_remote_policy_rejects_stale_timestamp(monkeypatch):
     assert exc.value.code == "stale_timestamp"
 
 
-@pytest.mark.skipif(
-    Ed25519PrivateKey is None,
-    reason="cryptography ed25519 is unavailable",
-)
 @pytest.mark.asyncio
 async def test_fetch_remote_policy_rejects_version_downgrade(monkeypatch):
     private_key = Ed25519PrivateKey.generate()
@@ -246,10 +211,6 @@ async def test_fetch_remote_policy_rejects_version_downgrade(monkeypatch):
     assert exc.value.code == "version_downgrade"
 
 
-@pytest.mark.skipif(
-    Ed25519PrivateKey is None,
-    reason="cryptography ed25519 is unavailable",
-)
 @pytest.mark.asyncio
 async def test_fetch_remote_policy_rejects_invalid_signature(monkeypatch):
     private_key = Ed25519PrivateKey.generate()
@@ -274,10 +235,6 @@ async def test_fetch_remote_policy_rejects_invalid_signature(monkeypatch):
     assert exc.value.code == "invalid_signature"
 
 
-@pytest.mark.skipif(
-    Ed25519PrivateKey is None,
-    reason="cryptography ed25519 is unavailable",
-)
 @pytest.mark.asyncio
 async def test_fetch_remote_policy_refuses_a_lone_surrogate_as_invalid(monkeypatch):
     private_key = Ed25519PrivateKey.generate()
@@ -353,10 +310,6 @@ async def test_fetch_remote_policy_reference_rejects_hash_mismatch(monkeypatch):
     assert exc.value.code == "hash_mismatch"
 
 
-@pytest.mark.skipif(
-    Ed25519PrivateKey is None,
-    reason="cryptography ed25519 is unavailable",
-)
 @pytest.mark.asyncio
 async def test_fetch_remote_policy_reference_accepts_hash_and_signed_payload(
     monkeypatch,

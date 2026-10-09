@@ -29,7 +29,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
@@ -410,7 +410,7 @@ def load_profile_data(
 ) -> InverterProfile:
     """Validate a profile mapping and return an :class:`InverterProfile`."""
 
-    if not isinstance(data, dict):
+    if not isinstance(cast(object, data), dict):
         raise InverterProfileError("profile must be a mapping")
 
     name = str(data.get("profile", profile_name) or profile_name).strip()

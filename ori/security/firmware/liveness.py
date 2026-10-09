@@ -34,7 +34,7 @@ import base64
 import re
 import time
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 __all__ = [
     "FirmwareLivenessError",
@@ -252,7 +252,7 @@ class FirmwareLivenessSigner:
         # it would refuse every device forever — the feature absent rather
         # than broken, and silent either way. The caller must say which
         # supervisor this signer reads.
-        if not isinstance(supervisor, FirmwareLivenessSupervisor):
+        if not isinstance(cast(object, supervisor), FirmwareLivenessSupervisor):
             raise FirmwareLivenessError(
                 "supervisor must be the FirmwareLivenessSupervisor fed by "
                 "accepted telemetry"

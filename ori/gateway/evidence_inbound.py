@@ -27,7 +27,7 @@ import json
 import logging
 import threading
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_url
 from ori.gateway.route_io import RouteIO, Slots
@@ -123,7 +123,9 @@ class EvidenceInboundRouter:
         # would let the raw service through -- and it raises
         # `sqlite3.ProgrammingError` only once a gateway actually delivers
         # something, which no offline test reaches.
-        if ingest is not None and not isinstance(ingest, BoundIngestService):
+        if ingest is not None and not isinstance(
+            cast(object, ingest), BoundIngestService
+        ):
             raise TypeError(
                 "inbound evidence must be applied through BoundIngestService; "
                 f"{type(ingest).__name__} would be called on this thread"
