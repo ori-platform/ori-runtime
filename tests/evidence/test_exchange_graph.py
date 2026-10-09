@@ -565,6 +565,11 @@ VECTOR_CONSUMERS = {
         "firmware/test_fault_v2.py"
         "::test_every_refusal_is_refused_for_its_reason_and_consumes_nothing",
     ),
+    ("firmware_telemetry", "manifest-vectors-v2"): (
+        "firmware/test_manifest_vectors_v2.py::test_every_accepted_case_registers",
+        "firmware/test_manifest_vectors_v2.py"
+        "::test_every_refusal_is_refused_for_its_reason_and_stores_nothing",
+    ),
 }
 
 #: Vendored vectors this runtime cannot exercise yet.
