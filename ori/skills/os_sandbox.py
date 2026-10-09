@@ -836,8 +836,10 @@ def _run_child(hooks_path: str, _method: str) -> int:
             return 3
 
     # In-process execution of community hook code is refused, always: this
-    # raises, and there is no path to a hook's code after it.
-    load_hooks_restricted(hooks_path)
+    # raises, and there is no path to a hook's code after it. Returned rather
+    # than called alone so every exit is explicit to tools that do not model
+    # NoReturn; a statement after it would be unreachable code.
+    return load_hooks_restricted(hooks_path)
 
 
 def _main() -> int:
