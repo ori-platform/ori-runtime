@@ -35,6 +35,13 @@ release is cut.
   stored manifest fails them, its telemetry and faults are refused with that
   code and its pending anchor is not approved. Re-register it from a manifest
   that follows `firmware-telemetry/v2`.
+- A firmware manifest's bridged channel (`source: foreign_device`) must now
+  name its controller profile in `controller_profile`, and must be on
+  `modbus_rtu`; `controller_alarm_word` and `bitmask` are refused anywhere
+  but a bridged alarm word. A device registered with a bridged channel before
+  this release has its telemetry and faults refused until it re-registers
+  from a manifest that names its profiles, which needs edge firmware that
+  signs them.
 
 ## Added
 
@@ -51,6 +58,19 @@ release is cut.
   and the runtime does not reissue the command. At `v` 1 the same token is
   refused, as is any `v` other than the integer 1 or 2. Faults still never
   reach readings, skills, dispatch or Tier D.
+- Firmware Controller Profiles (`firmware-telemetry/v2`). Registration
+  applies the four new refusals and the one-profile rule. Profile documents
+  are held from `gateway.firmware_telemetry.controller_profiles_dir`, by
+  digest, and only when their bytes are canonical and valid. A bridged
+  measurement outside its document's range is refused as a producer defect,
+  and a bridged reading carries the profile and qualification of the manifest
+  it was accepted under in its metadata. A foreign controller's alarm word
+  never becomes a reading: health's `firmware_controller_profiles` shows each
+  alarm channel as unknown or as of the reading it came from, by key epoch
+  and `(boot_id, seq)`. That state becomes unknown on silence
+  (`3 x poll_interval_ms + 30000` on a clock that counts suspend), a
+  `sensor_fault` for the channel, any promotion, rotation or revocation, and
+  a restart.
 
 ## Changed
 

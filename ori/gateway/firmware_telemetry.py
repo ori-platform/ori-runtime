@@ -95,6 +95,10 @@ class MqttFirmwareTelemetrySubscriber:
         self._client: Any = None
         self._loop: asyncio.AbstractEventLoop | None = None
 
+    @property
+    def telemetry_gate(self) -> FirmwareTelemetryGate:
+        return self._telemetry_gate
+
     async def serve_until(self, shutdown_event: asyncio.Event) -> None:
         self._loop = asyncio.get_running_loop()
         client = self._client_factory(client_id=f"ori-fw-{self._runtime_device_id}")

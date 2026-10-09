@@ -46,6 +46,13 @@ BRIDGED = {
     "protocol": "modbus_rtu",
     "source": "foreign_device",
     "quality_floor": 0.8,
+    "controller_profile": {
+        "id": "example-rectifier",
+        "digest": "sha256:" + "ab" * 32,
+        "profile_channel": "output_current",
+        "qualification": "unqualified",
+        "record": None,
+    },
 }
 ACTION = {"action": "relay_open", "channel": "relay0", "authority": "runtime_commanded"}
 

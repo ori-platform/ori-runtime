@@ -22,6 +22,11 @@ Trust boundary rules enforced here:
 * The device claims order and origin; the runtime claims time. Reading
   timestamps are the trusted receipt time, and the device's advisory
   ``emitted_at_ms`` and uptime ride along in metadata, clearly labelled.
+* A bridged reading carries the controller profile the manifest it was
+  accepted under names, qualification included. A bridged measurement outside
+  its usable document's range is a producer defect and is not used. An alarm
+  word never becomes a ``SensorReading``: it is a bitmask, not a quantity, and
+  goes to the alarm tracker as a snapshot of its poll.
 """
 
 from __future__ import annotations
@@ -32,7 +37,14 @@ import time
 from typing import Any, Callable, TypeVar
 
 from ori.network.events import SensorReading
+from ori.security.firmware.controller_profiles import (
+    ControllerAlarmTracker,
+    ControllerProfileLibrary,
+    interpret_alarm_word,
+    measurement_in_range,
+)
 from ori.security.firmware.telemetry import (
+    ALARM_WORD_SENSOR_TYPE,
     ERR_BOOT_ROLLBACK,
     ERR_DEVICE_NOT_APPROVED,
     ERR_DEVICE_REVOKED,
@@ -74,12 +86,26 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _activation_id(row: dict[str, Any]) -> int:
+    """The row's activation; -1 never matches an active anchor's."""
+    value = row.get("activation_id")
+    return value if isinstance(value, int) else -1
+
+
 class FirmwareTelemetryGate:
     """Registry-backed verification of firmware telemetry messages."""
 
-    def __init__(self, store: Any) -> None:
+    def __init__(
+        self,
+        store: Any,
+        *,
+        profiles: ControllerProfileLibrary | None = None,
+        alarms: ControllerAlarmTracker | None = None,
+    ) -> None:
         self._store = store
         self._manifest_policy: dict[tuple[str, str, str], tuple[str, str] | None] = {}
+        self.profiles = profiles if profiles is not None else ControllerProfileLibrary()
+        self.alarms = alarms if alarms is not None else ControllerAlarmTracker()
 
     def _stored_manifest_refusal(
         self, device_id: str, capability_hash: str, manifest: Any
@@ -177,8 +203,12 @@ class FirmwareTelemetryGate:
                 return verification, row
             attempts += 1
             current = await self._store.get_firmware_device(device_id)
-            if current is not None and all(
-                current[column] == row[column] for column in FIRMWARE_ANCHOR_COLUMNS
+            if (
+                current is not None
+                and all(
+                    current[column] == row[column] for column in FIRMWARE_ANCHOR_COLUMNS
+                )
+                and current.get("activation_id") == row.get("activation_id")
             ):
                 # The mark moved: the message is refused against the mark it
                 # now faces, under that reason.
@@ -466,30 +496,101 @@ class FirmwareTelemetryGate:
         emitted_at = None
         if isinstance(envelope, dict):
             emitted_at = envelope.get("emitted_at_ms")
-        readings = [
-            SensorReading(
-                sensor_id=f"{verification.device_id}:{reading['channel']}",
-                sensor_type=reading["sensor_type"],
-                value=reading["value"],
-                unit=reading["unit"],
-                timestamp=received,
-                quality=reading["quality"],
-                metadata={
-                    "source": "firmware",
-                    "attestation": verification.grade,
-                    "posture": verification.posture,
-                    "firmware_device_id": verification.device_id,
-                    "boot_id": verification.boot_id,
-                    "seq": verification.seq,
-                    "capability_hash": row["capability_hash"],
-                    "device_uptime_ms": verification.device_uptime_ms,
-                    # Advisory only; never a freshness or ordering proof.
-                    "device_emitted_at_ms": emitted_at,
-                },
+        readings: list[SensorReading] = []
+        for reading in verification.readings:
+            channel = row["channel_map"].get(reading["channel"], {})
+            binding = channel.get("controller_profile")
+            metadata: dict[str, Any] = {
+                "source": "firmware",
+                "attestation": verification.grade,
+                "posture": verification.posture,
+                "firmware_device_id": verification.device_id,
+                "boot_id": verification.boot_id,
+                "seq": verification.seq,
+                "capability_hash": row["capability_hash"],
+                "device_uptime_ms": verification.device_uptime_ms,
+                # Advisory only; never a freshness or ordering proof.
+                "device_emitted_at_ms": emitted_at,
+            }
+            if binding is not None:
+                if channel.get("sensor_type") == ALARM_WORD_SENSOR_TYPE:
+                    self._note_alarm_word(
+                        verification, row, reading, channel, binding, received
+                    )
+                    continue
+                status, _document, profile_channel = self.profiles.resolve(
+                    binding, channel
+                )
+                if profile_channel is not None and not measurement_in_range(
+                    profile_channel, reading["value"]
+                ):
+                    logger.warning(
+                        "firmware producer defect: device=%s channel=%s value=%r is "
+                        "not the decode of any raw count in profile %s channel %s; "
+                        "the reading is not used",
+                        verification.device_id,
+                        reading["channel"],
+                        reading["value"],
+                        binding["digest"],
+                        binding["profile_channel"],
+                    )
+                    continue
+                metadata["controller_profile"] = dict(binding)
+                metadata["controller_profile_status"] = status
+            readings.append(
+                SensorReading(
+                    sensor_id=f"{verification.device_id}:{reading['channel']}",
+                    sensor_type=reading["sensor_type"],
+                    value=reading["value"],
+                    unit=reading["unit"],
+                    timestamp=received,
+                    quality=reading["quality"],
+                    metadata=metadata,
+                )
             )
-            for reading in verification.readings
-        ]
         return verification, readings
+
+    def _note_alarm_word(
+        self,
+        verification: TelemetryVerification,
+        row: dict[str, Any],
+        reading: dict[str, Any],
+        channel: dict[str, Any],
+        binding: dict[str, Any],
+        received: int,
+    ) -> None:
+        """Make an accepted alarm-word reading its channel's latest reading."""
+        status, document, profile_channel = self.profiles.resolve(binding, channel)
+        interpretation = None
+        not_interpreted = ""
+        if profile_channel is None:
+            not_interpreted = f"profile_{status}"
+        elif len(verification.readings) != 1:
+            # Two values under one label could be read two ways.
+            not_interpreted = "shared_envelope"
+        else:
+            interpretation = interpret_alarm_word(profile_channel, reading["value"])
+            if interpretation is None:
+                not_interpreted = "value_not_a_word"
+        self.alarms.note_reading(
+            device_id=verification.device_id,
+            channel=reading["channel"],
+            activation=(str(row["anchor_epoch_id"]), _activation_id(row)),
+            key_epoch_id=str(row["key_epoch_id"]),
+            boot_id=verification.boot_id,
+            seq=verification.seq,
+            received_at_ms=received,
+            value=reading["value"],
+            poll_interval_ms=None if document is None else document.poll_interval_ms,
+            interpretation=interpretation,
+            not_interpreted=not_interpreted,
+            profile=binding,
+            profile_status=status,
+        )
+
+    async def alarm_states(self) -> list[dict[str, Any]]:
+        """Every tracked alarm-word channel's state against its active anchor."""
+        return await self.alarms.states(self._store.get_firmware_device)
 
     async def ingest_fault(
         self,
@@ -555,6 +656,15 @@ class FirmwareTelemetryGate:
         if row is None:
             self._log_fault_rejection(verification)
             return verification
+
+        if verification.code == "sensor_fault":
+            channel = row["channel_map"].get(verification.subject, {})
+            if channel.get("sensor_type") == ALARM_WORD_SENSOR_TYPE:
+                self.alarms.note_fault(
+                    device_id=verification.device_id,
+                    channel=verification.subject,
+                    activation=(str(row["anchor_epoch_id"]), _activation_id(row)),
+                )
 
         logger.warning(
             "firmware fault accepted: device=%s code=%s subject=%s detail=%s",

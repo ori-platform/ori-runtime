@@ -55,6 +55,8 @@ from typing import Any, Mapping
 from ori.security.ed25519_keys import admit_public_key, refused_public_key_clause
 
 __all__ = [
+    "ALARM_WORD_SENSOR_TYPE",
+    "ALARM_WORD_UNIT",
     "DEVICE_MODES",
     "MANIFEST_POLICY_REVISION",
     "FirmwareFaultVerification",
@@ -80,7 +82,7 @@ PRODUCTION_POSTURES = ("sealed_flash", "hardware_key")
 DEVICE_MODES = frozenset({"sensor_node", "bridge_node", "actuator_node", "mixed"})
 # Names the rules validate_manifest_policy applies, so a stored anchor is
 # re-checked when they change rather than once for all time.
-MANIFEST_POLICY_REVISION = "firmware-telemetry/v2"
+MANIFEST_POLICY_REVISION = "firmware-telemetry/v2 controller-profiles"
 SUPPORTED_TRANSPORTS = frozenset({"mqtt", "uart", "rs485"})
 SUPPORTED_CHANNEL_PROTOCOLS = frozenset(
     {"adc", "gpio", "i2c", "uart", "modbus_rtu", "rs232", "pulse", "one_wire"}
@@ -141,6 +143,25 @@ ERR_KEY_CHANGE_REQUIRES_REPROVISIONING = "key_change_requires_reprovisioning"
 # rotation reversible by whoever still holds the old key.
 ERR_SAME_KEY_NOT_A_ROTATION = "same_key_not_a_rotation"
 ERR_KEY_EPOCH_REUSED = "key_epoch_reused"
+# firmware-telemetry/v2 Controller Profiles.
+ERR_CONTROLLER_PROFILE_MISSING = "controller_profile_missing"
+ERR_CONTROLLER_PROFILE_UNEXPECTED = "controller_profile_unexpected"
+ERR_INVALID_CONTROLLER_PROFILE = "invalid_controller_profile"
+ERR_INVALID_ALARM_CHANNEL = "invalid_alarm_channel"
+
+BRIDGED_SOURCE = "foreign_device"
+BRIDGED_PROTOCOL = "modbus_rtu"
+ALARM_WORD_SENSOR_TYPE = "controller_alarm_word"
+ALARM_WORD_UNIT = "bitmask"
+FLEET_IDENTIFIER_MAX_LEN = 48
+_CONTROLLER_PROFILE_FIELDS = frozenset(
+    {"id", "digest", "profile_channel", "qualification", "record"}
+)
+_RECORD_MAX_LEN = 127
+_RECORD_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-/"
+)
+_DIGEST_HEX = frozenset("0123456789abcdef")
 
 
 def key_epoch_id(*, device_id: str, public_key_b64: str) -> str:
@@ -289,6 +310,25 @@ FAULT_TOKEN_MAX_LEN = 63
 _FLEET_TOKEN_CHARS = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-"
 )
+
+
+def is_fleet_identifier(value: Any) -> bool:
+    """A string of 1 to 48 characters from the fleet alphabet."""
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= FLEET_IDENTIFIER_MAX_LEN
+        and _FLEET_TOKEN_CHARS.issuperset(value)
+    )
+
+
+def is_profile_digest(value: Any) -> bool:
+    """``sha256:`` and 64 lowercase hex."""
+    return (
+        isinstance(value, str)
+        and len(value) == 71
+        and value.startswith("sha256:")
+        and _DIGEST_HEX.issuperset(value[7:])
+    )
 
 
 class FirmwareVerificationError(Exception):
@@ -494,7 +534,7 @@ def manifest_channel_map(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
             raise FirmwareVerificationError(
                 ERR_UNSUPPORTED_CHANNEL, f"channel {index} is not an object"
             )
-        if set(channel) != allowed_keys:
+        if set(channel) - {"controller_profile"} != allowed_keys:
             raise FirmwareVerificationError(
                 ERR_UNSUPPORTED_CHANNEL, f"channel {index} has unexpected fields"
             )
@@ -521,14 +561,122 @@ def manifest_channel_map(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
             raise FirmwareVerificationError(
                 ERR_INVALID_READING, f"invalid quality_floor for channel {name!r}"
             )
-        out[name] = {
+        entry: dict[str, Any] = {
             "sensor_type": sensor_type,
             "unit": unit,
             "protocol": protocol,
             "source": source,
             "quality_floor": float(quality_floor),
         }
+        profile = _validate_channel_profile(name, channel)
+        if profile is not None:
+            entry["controller_profile"] = profile
+        out[name] = entry
+    _validate_one_profile_per_id(out)
     return out
+
+
+def _validate_channel_profile(
+    name: str, channel: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """firmware-telemetry/v2's per-channel Controller Profiles rules."""
+    bridged = channel["source"] == BRIDGED_SOURCE
+    if bridged and "controller_profile" not in channel:
+        raise FirmwareVerificationError(
+            ERR_CONTROLLER_PROFILE_MISSING,
+            f"bridged channel {name!r} names no controller profile",
+        )
+    if not bridged and "controller_profile" in channel:
+        raise FirmwareVerificationError(
+            ERR_CONTROLLER_PROFILE_UNEXPECTED,
+            f"channel {name!r} is not bridged and names a controller profile",
+        )
+    profile: dict[str, Any] | None = None
+    if bridged:
+        profile = _validate_profile_binding(name, channel["controller_profile"])
+        if channel["protocol"] != BRIDGED_PROTOCOL:
+            raise FirmwareVerificationError(
+                ERR_INVALID_CONTROLLER_PROFILE,
+                f"bridged channel {name!r} is not on {BRIDGED_PROTOCOL}",
+            )
+    alarm_type = channel["sensor_type"] == ALARM_WORD_SENSOR_TYPE
+    alarm_unit = channel["unit"] == ALARM_WORD_UNIT
+    if (alarm_type or alarm_unit) and not (bridged and alarm_type and alarm_unit):
+        raise FirmwareVerificationError(
+            ERR_INVALID_ALARM_CHANNEL,
+            f"channel {name!r} declares {ALARM_WORD_SENSOR_TYPE} or "
+            f"{ALARM_WORD_UNIT} without being a bridged alarm word",
+        )
+    return profile
+
+
+def _validate_profile_binding(name: str, profile: Any) -> dict[str, Any]:
+    def refuse(why: str) -> FirmwareVerificationError:
+        return FirmwareVerificationError(
+            ERR_INVALID_CONTROLLER_PROFILE,
+            f"channel {name!r} controller_profile {why}",
+        )
+
+    if not isinstance(profile, dict) or set(profile) != _CONTROLLER_PROFILE_FIELDS:
+        raise refuse("is not an object with exactly its five fields")
+    if not is_fleet_identifier(profile["id"]):
+        raise refuse("id is not a fleet identifier")
+    if not is_profile_digest(profile["digest"]):
+        raise refuse("digest is not sha256: and 64 lowercase hex")
+    if not is_fleet_identifier(profile["profile_channel"]):
+        raise refuse("profile_channel is not a fleet identifier")
+    qualification = profile["qualification"]
+    record = profile["record"]
+    if qualification == "unqualified":
+        if record is not None:
+            raise refuse("is unqualified and names a record")
+    elif qualification == "qualified":
+        if not _is_record_path(record):
+            raise refuse("is qualified without a valid record path")
+    else:
+        raise refuse("qualification is neither qualified nor unqualified")
+    return {
+        "id": profile["id"],
+        "digest": profile["digest"],
+        "profile_channel": profile["profile_channel"],
+        "qualification": qualification,
+        "record": record,
+    }
+
+
+def _is_record_path(record: Any) -> bool:
+    return (
+        isinstance(record, str)
+        and 1 <= len(record) <= _RECORD_MAX_LEN
+        and _RECORD_CHARS.issuperset(record)
+        and not record.startswith("/")
+        and not record.endswith("/")
+        and "//" not in record
+        and ".." not in record
+    )
+
+
+def _validate_one_profile_per_id(channels: Mapping[str, Mapping[str, Any]]) -> None:
+    """One id names one digest, qualification and record, and one digest one id."""
+    by_id: dict[str, tuple[Any, Any, Any]] = {}
+    by_digest: dict[str, str] = {}
+    for name, channel in channels.items():
+        profile = channel.get("controller_profile")
+        if profile is None:
+            continue
+        held = (profile["digest"], profile["qualification"], profile["record"])
+        if by_id.setdefault(profile["id"], held) != held:
+            raise FirmwareVerificationError(
+                ERR_INVALID_CONTROLLER_PROFILE,
+                f"channel {name!r} names profile {profile['id']!r} with another "
+                "digest, qualification or record",
+            )
+        if by_digest.setdefault(profile["digest"], profile["id"]) != profile["id"]:
+            raise FirmwareVerificationError(
+                ERR_INVALID_CONTROLLER_PROFILE,
+                f"channel {name!r} names digest {profile['digest']} under a "
+                "second profile id",
+            )
 
 
 def _is_version_one(value: Any) -> bool:
@@ -791,8 +939,14 @@ def _validate_reading(
                 ERR_INVALID_READING,
                 f"reading {index} does not match the accepted manifest channel",
             )
+        # Quality describes a measurement, so an alarm word is not held to the
+        # floor (firmware-telemetry/v2 Controller Profiles).
         quality_floor = expected.get("quality_floor")
-        if quality_floor is not None and float(quality) < float(quality_floor):
+        if (
+            quality_floor is not None
+            and expected.get("sensor_type") != ALARM_WORD_SENSOR_TYPE
+            and float(quality) < float(quality_floor)
+        ):
             raise FirmwareVerificationError(
                 ERR_INVALID_READING,
                 f"reading {index} quality below manifest floor",

@@ -565,6 +565,20 @@ VECTOR_CONSUMERS = {
         "firmware/test_fault_v2.py"
         "::test_every_refusal_is_refused_for_its_reason_and_consumes_nothing",
     ),
+    ("firmware_telemetry", "controller-profile-vectors-v2"): (
+        "firmware/test_controller_profiles.py"
+        "::test_every_document_is_held_with_its_canonical_bytes_and_digest",
+        "firmware/test_controller_profiles.py"
+        "::test_every_refused_document_is_refused_by_the_grammar",
+        "firmware/test_controller_profiles.py"
+        "::test_every_non_canonical_byte_string_is_refused_on_its_bytes",
+        "firmware/test_controller_profiles.py"
+        "::test_every_interpretation_through_the_gate",
+        "firmware/test_controller_profiles.py::test_every_range_case_through_the_gate",
+        "firmware/test_controller_profiles.py"
+        "::test_every_agreement_case_through_the_gate",
+        "firmware/test_controller_profiles.py::test_every_state_case_through_the_gate",
+    ),
     ("firmware_telemetry", "manifest-vectors-v2"): (
         "firmware/test_manifest_vectors_v2.py::test_every_accepted_case_registers",
         "firmware/test_manifest_vectors_v2.py"

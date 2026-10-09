@@ -193,6 +193,10 @@ from ori.security.firmware.confirmation import (
 from ori.security.firmware.confirmation import (
     FirmwareConfirmationCoordinator,
 )
+from ori.security.firmware.controller_profiles import (
+    ControllerAlarmTracker,
+    ControllerProfileLibrary,
+)
 from ori.security.firmware.ingest import FirmwareTelemetryGate
 from ori.security.firmware.liveness import (
     LIVENESS_PUBLISH_INTERVAL_S,
@@ -535,6 +539,8 @@ class OriRuntime:
         self._firmware_command_publisher: MqttFirmwareCommandPublisher | None = None
         self._firmware_command_service: FirmwareCommandService | None = None
         self._firmware_liveness_scheduler: FirmwareLivenessScheduler | None = None
+        self._firmware_profile_library: ControllerProfileLibrary | None = None
+        self._firmware_alarm_tracker: ControllerAlarmTracker | None = None
         self._telemetry_exporter: HttpTelemetryExporter | None = None
         # Startup and stop must not run at once; these order them.
         self._startup_complete = False
@@ -1818,6 +1824,14 @@ class OriRuntime:
                 )
             )
 
+        # Built here, not read back from the subscriber, so health reaches the
+        # documents and alarm snapshots without holding anything of the stack.
+        firmware_telemetry_cfg = _firmware_telemetry_config(config)
+        if firmware_telemetry_cfg is not None:
+            self._firmware_profile_library = _firmware_profile_library(
+                firmware_telemetry_cfg
+            )
+            self._firmware_alarm_tracker = ControllerAlarmTracker()
         (
             self._firmware_liveness_supervisor,
             firmware_telemetry_subscriber,
@@ -1832,6 +1846,8 @@ class OriRuntime:
             # evidence attestor decides whether a reconciler exists at all,
             # so the callback reads it when a reconnect actually happens.
             self._nudge_firmware_confirmations,
+            profiles=self._firmware_profile_library,
+            alarms=self._firmware_alarm_tracker,
         )
         if firmware_telemetry_subscriber is not None:
             self._background_tasks.append(
@@ -2097,6 +2113,8 @@ class OriRuntime:
             self._firmware_command_publisher = None
             self._firmware_command_service = None
             self._firmware_liveness_scheduler = None
+        self._firmware_profile_library = None
+        self._firmware_alarm_tracker = None
 
         # 2e. Stop local health socket service.
         if self._health_socket_server is not None:
@@ -3799,6 +3817,9 @@ class OriRuntime:
             "community_skills": community_skills_health,
             "config_authority": config_authority_health,
             "firmware_liveness": firmware_liveness_health,
+            "firmware_controller_profiles": (
+                await self._firmware_controller_profiles_health()
+            ),
             "telemetry_export": self._telemetry_export_health(),
         }
         # `runtime-health/v3` types this as an array and reads absence as
@@ -3995,6 +4016,29 @@ class OriRuntime:
             # authority; it is the ordinary development convenience the toggle
             # is documented as. What is reportable is the combination.
             "unsigned_value_source": decided and (required or verified),
+        }
+
+    async def _firmware_controller_profiles_health(self) -> dict[str, Any]:
+        """Profile documents held and each foreign controller's alarm state.
+
+        An alarm state is shown as of the reading it came from, named by key
+        epoch and (boot_id, seq), never as the controller's state now; the
+        acceptance time beside it is the runtime's, never the poll's.
+        """
+        library = self._firmware_profile_library
+        tracker = self._firmware_alarm_tracker
+        if library is None or tracker is None or self._state_store is None:
+            return {"enabled": False}
+        try:
+            alarm_channels = await tracker.states(self._state_store.get_firmware_device)
+        except Exception:
+            logger.exception("[health] could not read controller alarm states")
+            alarm_channels = []
+        return {
+            "enabled": True,
+            "documents_held": library.held(),
+            "documents_refused": list(library.refused),
+            "alarm_channels": alarm_channels,
         }
 
     def _firmware_liveness_health(self) -> dict[str, Any]:
@@ -7117,15 +7161,8 @@ def _build_evidence_outbound_publisher(
     return publisher
 
 
-def _build_firmware_telemetry_subscriber(
-    config: Config,
-    event_bus: EventBus,
-    state_store: StateStore,
-    deduplicator: EventDeduplicator | None,
-    liveness_supervisor: FirmwareLivenessSupervisor,
-    on_connected: Callable[[], None] | None = None,
-) -> MqttFirmwareTelemetrySubscriber | None:
-    """Instantiate the signed firmware telemetry subscriber when configured."""
+def _firmware_telemetry_config(config: Config) -> dict[str, Any] | None:
+    """The firmware telemetry section when the subscriber is enabled, else None."""
     if not bool(config.gateway.enabled):
         return None
     firmware_cfg = (
@@ -7135,10 +7172,40 @@ def _build_firmware_telemetry_subscriber(
     )
     if not bool(firmware_cfg.get("enabled", False)):
         return None
+    return firmware_cfg
+
+
+def _firmware_profile_library(
+    firmware_cfg: dict[str, Any],
+) -> ControllerProfileLibrary:
+    """The controller profile documents held, read once at start."""
+    return ControllerProfileLibrary.from_directory(
+        str(firmware_cfg.get("controller_profiles_dir", "") or "") or None
+    )
+
+
+def _build_firmware_telemetry_subscriber(
+    config: Config,
+    event_bus: EventBus,
+    state_store: StateStore,
+    deduplicator: EventDeduplicator | None,
+    liveness_supervisor: FirmwareLivenessSupervisor,
+    on_connected: Callable[[], None] | None = None,
+    profiles: ControllerProfileLibrary | None = None,
+    alarms: ControllerAlarmTracker | None = None,
+) -> MqttFirmwareTelemetrySubscriber | None:
+    """Instantiate the signed firmware telemetry subscriber when configured."""
+    firmware_cfg = _firmware_telemetry_config(config)
+    if firmware_cfg is None:
+        return None
+    if profiles is None:
+        profiles = _firmware_profile_library(firmware_cfg)
     try:
         subscriber = MqttFirmwareTelemetrySubscriber(
             broker_url=config.gateway.broker_url,
-            telemetry_gate=FirmwareTelemetryGate(state_store),
+            telemetry_gate=FirmwareTelemetryGate(
+                state_store, profiles=profiles, alarms=alarms
+            ),
             event_bus=event_bus,
             state_store=state_store,
             runtime_device_id=config.device.id,
@@ -7237,6 +7304,8 @@ def _build_firmware_liveness_stack(
     state_store: StateStore,
     deduplicator: EventDeduplicator | None,
     on_telemetry_connected: Callable[[], None] | None = None,
+    profiles: ControllerProfileLibrary | None = None,
+    alarms: ControllerAlarmTracker | None = None,
 ) -> tuple[
     FirmwareLivenessSupervisor,
     MqttFirmwareTelemetrySubscriber | None,
@@ -7266,6 +7335,8 @@ def _build_firmware_liveness_stack(
         deduplicator,
         supervisor,
         on_connected=on_telemetry_connected,
+        profiles=profiles,
+        alarms=alarms,
     )
     command_pair = _build_firmware_command_service(
         config,
