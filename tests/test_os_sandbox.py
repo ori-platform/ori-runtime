@@ -196,3 +196,47 @@ async def test_elevator_never_runs_async_hook_methods():
     assert called["post"] is False
     assert dispatched
     assert dispatched[0][2] != "post hook updated"
+
+
+def test_the_child_entry_point_never_runs_a_hooks_file(tmp_path: Path) -> None:
+    """The worker child, driven as a parent would start it, refuses the file.
+
+    A hooks file that would leave a marker if its code ran at import or call
+    time is handed to `--child` with a well-formed init line. The child must
+    exit unsuccessfully, report no successful result, and leave no marker.
+    """
+    import json
+    import subprocess
+    import sys
+
+    marker = tmp_path / "ran"
+    hooks = _write_hooks(
+        tmp_path / "community-skill" / "hooks.py",
+        f"""
+        from pathlib import Path
+        Path({str(marker)!r}).write_text("imported")
+
+        def pre_trigger_eval(context):
+            Path({str(marker)!r}).write_text("called")
+        """,
+    )
+    init = json.dumps({"payload": {"hook_ctx": {}}}) + "\n"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "ori.skills.os_sandbox",
+            "--child",
+            str(hooks),
+            "pre_trigger_eval",
+        ],
+        input=init,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert completed.returncode != 0
+    assert '"ok": true' not in completed.stdout and '"ok":true' not in completed.stdout
+    assert "in-process execution of community hooks is disabled" in completed.stderr
+    assert not marker.exists()

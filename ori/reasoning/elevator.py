@@ -2256,7 +2256,7 @@ class IntelligenceElevator:
         """Sanitize untrusted values before interpolation into prompt text."""
         import re
 
-        if not isinstance(text, str):
+        if not isinstance(cast(object, text), str):
             text = str(text)
         if is_reply:
             text = re.sub(r"[<>{}\[\]\\$`]", "", text)

@@ -1,11 +1,14 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
-"""Community skill hook execution with optional OS-level sandboxing.
+"""Community skill hooks: refused, with the parent half of an isolated worker kept.
 
-This module provides a two-way JSON-RPC bridge between parent runtime and a
-child hook subprocess. The child can execute untrusted hook code while
-requesting history/state reads/writes from the parent process via RPC.
+Community hook execution is blocked. `load_community_hooks` refuses on every
+host, and the child entry point refuses the hooks file through
+`load_hooks_restricted` and runs nothing after it, so no untrusted hook code
+executes here. What remains is scaffolding for the isolated-worker contract
+still being specified: the parent's JSON-RPC bridge, its state and history
+proxies, the sandbox probe, and Landlock/seccomp installation.
 """
 
 from __future__ import annotations
@@ -21,10 +24,11 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from ori.network.events import history_as_of
 from ori.skills.sandbox import SkillSecurityError, load_hooks_restricted
+from ori.utils.platform import os_name, runtime_platform
 
 logger = logging.getLogger(__name__)
 
@@ -174,9 +178,9 @@ def _normalize_os_sandbox_config(raw: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def probe_os_sandbox_support() -> OSSandboxSupport:
-    if os.name != "posix":
+    if os_name() != "posix":
         return OSSandboxSupport(False, "os_not_posix")
-    if sys.platform != "linux":
+    if runtime_platform() != "linux":
         return OSSandboxSupport(False, "kernel_not_linux")
     machine = os.uname().machine
     if machine not in _SECCOMP_ARCH:
@@ -228,8 +232,10 @@ def load_community_hooks(
     it is meant to meet. Refusing everywhere keeps the posture the release notes
     describe: community hook execution is off, uniformly, until that arc lands.
 
-    :class:`OSSandboxHookRunner` is retained, unreferenced by this factory, as
-    the starting point for that work.
+    :class:`OSSandboxHookRunner` and the RPC proxies it serves are retained,
+    unreferenced by this factory, as the parent half of that work. The child
+    half that would have loaded and called a hook is gone: the child refuses
+    the hooks file through `load_hooks_restricted` and runs nothing after it.
 
     Raises:
         SkillSecurityError: Always.
@@ -250,7 +256,11 @@ def load_community_hooks(
 
 
 class OSSandboxHookRunner:
-    """Async hook runner for community hooks in child subprocess."""
+    """Parent half of an isolated hook worker, retained as scaffolding.
+
+    Nothing constructs it: `load_community_hooks` refuses, and the child it
+    would start runs no hook.
+    """
 
     def __init__(
         self,
@@ -535,7 +545,7 @@ def _serialize_hook_context(
 
 
 def _apply_hook_updates(hook_ctx: Any, updated: dict[str, Any]) -> None:
-    if not isinstance(updated, dict):
+    if not isinstance(cast(object, updated), dict):
         return
     derived = updated.get("derived")
     if isinstance(derived, dict):
@@ -544,7 +554,7 @@ def _apply_hook_updates(hook_ctx: Any, updated: dict[str, Any]) -> None:
 
 
 def _apply_reasoning_updates(reasoning_result: Any, updated: dict[str, Any]) -> None:
-    if not isinstance(updated, dict):
+    if not isinstance(cast(object, updated), dict):
         return
     if "text" in updated:
         reasoning_result.text = str(updated.get("text") or "")
@@ -793,7 +803,7 @@ def _build_readonly_allow_paths(hooks_path: str) -> list[str]:
     return sorted(p for p in paths if Path(p).exists())
 
 
-def _run_child(hooks_path: str, method: str) -> int:
+def _run_child(hooks_path: str, _method: str) -> int:
     init_line = sys.stdin.readline()
     if not init_line:
         sys.stdout.write(
@@ -801,9 +811,9 @@ def _run_child(hooks_path: str, method: str) -> int:
         )
         sys.stdout.flush()
         return 2
-    init = json.loads(init_line)
-    payload = init.get("payload", {})
-    hook_raw = payload.get("hook_ctx", {}) if isinstance(payload, dict) else {}
+    # Malformed JSON fails here, before the sandbox is installed; any other
+    # init reaches the refusal below.
+    json.loads(init_line)
 
     support = probe_os_sandbox_support()
     if support.supported:
@@ -825,66 +835,9 @@ def _run_child(hooks_path: str, method: str) -> int:
             sys.stdout.flush()
             return 3
 
-    module = load_hooks_restricted(hooks_path)
-    if module is None:
-        sys.stdout.write(
-            json.dumps({"type": _RESULT, "ok": False, "error": "hooks_not_found"})
-            + "\n"
-        )
-        sys.stdout.flush()
-        return 4
-
-    next_id = [1]
-
-    def rpc(method_name: str, params: dict[str, Any]) -> Any:
-        return _child_rpc_call(
-            stdin=sys.stdin,
-            stdout=sys.stdout,
-            next_id=next_id,
-            method=method_name,
-            params=params,
-        )
-
-    hook_ctx = _ChildHookContext(hook_raw, rpc)
-
-    try:
-        if method == "pre_trigger_eval":
-            fn = getattr(module, "pre_trigger_eval", None)
-            if callable(fn):
-                fn(hook_ctx)
-            out = {"hook_ctx": {"derived": dict(hook_ctx.derived)}}
-        elif method == "post_reasoning":
-            fn = getattr(module, "post_reasoning", None)
-            rr = SimpleNamespace(**dict(payload.get("reasoning_result") or {}))
-            if callable(fn):
-                returned = fn(rr, hook_ctx)
-                if returned is not None:
-                    rr = returned
-            out = {
-                "hook_ctx": {"derived": dict(hook_ctx.derived)},
-                "reasoning_result": {
-                    "text": str(getattr(rr, "text", "") or ""),
-                    "action_tier": str(getattr(rr, "action_tier", "") or ""),
-                    "proposed_action": str(getattr(rr, "proposed_action", "") or ""),
-                },
-            }
-        else:
-            raise RuntimeError(f"unknown_hook_method:{method}")
-        msg = {"type": _RESULT, "ok": True}
-        msg.update(out)
-        sys.stdout.write(json.dumps(msg, separators=(",", ":")) + "\n")
-        sys.stdout.flush()
-        return 0
-    except Exception as exc:
-        sys.stdout.write(
-            json.dumps(
-                {"type": _RESULT, "ok": False, "error": f"hook_execution_failed:{exc}"},
-                separators=(",", ":"),
-            )
-            + "\n"
-        )
-        sys.stdout.flush()
-        return 5
+    # In-process execution of community hook code is refused, always: this
+    # raises, and there is no path to a hook's code after it.
+    load_hooks_restricted(hooks_path)
 
 
 def _main() -> int:

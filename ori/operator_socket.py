@@ -24,7 +24,6 @@ import socket
 import sqlite3
 import stat
 import struct
-import sys
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,6 +42,7 @@ from ori.runtime_health_socket import (
 )
 from ori.security.evidence.registration import RegistrationStatus, is_digest
 from ori.utils.path_utils import shown
+from ori.utils.platform import os_name, runtime_platform
 
 logger = logging.getLogger(__name__)
 
@@ -434,9 +434,11 @@ def peer_credentials(sock: Any) -> PeerCredentials | None:
     """
     if sock is None:
         return None
-    if sys.platform.startswith("linux"):
+    platform = runtime_platform()
+    so_peercred = getattr(socket, "SO_PEERCRED", None)
+    if platform.startswith("linux") and so_peercred is not None:
         try:
-            raw = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+            raw = sock.getsockopt(socket.SOL_SOCKET, so_peercred, 12)
             pid, uid, _gid = struct.unpack("=iII", raw)
         except (OSError, struct.error):
             return None
@@ -445,10 +447,11 @@ def peer_credentials(sock: Any) -> PeerCredentials | None:
             pid=int(pid) if pid > 0 else None,
             login_uid=_pinned_login_uid(sock, pid),
         )
-    if sys.platform == "darwin" and hasattr(socket, "LOCAL_PEERCRED"):
+    local_peercred = getattr(socket, "LOCAL_PEERCRED", None)
+    if platform == "darwin" and local_peercred is not None:
         try:
             # xucred begins with cr_version (u32), then cr_uid (uid_t).
-            raw = sock.getsockopt(0, socket.LOCAL_PEERCRED, 8)
+            raw = sock.getsockopt(0, local_peercred, 8)
             _version, uid = struct.unpack("=II", raw)
         except (OSError, struct.error):
             return None
@@ -457,7 +460,7 @@ def peer_credentials(sock: Any) -> PeerCredentials | None:
 
 
 def _pinned_login_uid(sock: Any, pid: int) -> int | None:
-    if not sys.platform.startswith("linux") or pid <= 0:
+    if not runtime_platform().startswith("linux") or pid <= 0:
         return None
     try:
         pidfd = sock.getsockopt(socket.SOL_SOCKET, _SO_PEERPIDFD)
@@ -651,21 +654,34 @@ def _set_exact_access(
     if operator_uid is None:
         _remove_acl(path)
         return
-    if not sys.platform.startswith("linux"):
+    setxattr = _linux_xattr("setxattr")
+    if setxattr is None:
         raise AccessGrantError("this platform has no access-control lists")
     try:
-        os.setxattr(
+        setxattr(
             path, _ACL_XATTR, _exact_acl((mode >> 6) & 0o7, operator_uid, operator_perm)
         )
     except OSError as exc:
         raise AccessGrantError(f"{shown(str(path))}: {exc.strerror or exc}") from exc
 
 
+def _linux_xattr(name: str) -> Callable[..., Any] | None:
+    """An extended-attribute call, on Linux only; None elsewhere.
+
+    Looked up rather than named, so every platform's branch is type-checked.
+    """
+    if not runtime_platform().startswith("linux"):
+        return None
+    call = getattr(os, name, None)
+    return call if callable(call) else None
+
+
 def _remove_acl(path: Path) -> None:
-    if not sys.platform.startswith("linux"):
+    removexattr = _linux_xattr("removexattr")
+    if removexattr is None:
         return
     try:
-        os.removexattr(path, _ACL_XATTR)
+        removexattr(path, _ACL_XATTR)
     except OSError as exc:
         if exc.errno not in (errno.ENODATA, errno.ENOTSUP, errno.EOPNOTSUPP):
             raise
@@ -692,11 +708,13 @@ def _operator_gids(uid: int) -> set[int]:
 
 def _grant_search(path: Path, operator_uid: int) -> None:
     """Add search for the operator to *path*'s entries, keeping every other."""
-    if not sys.platform.startswith("linux"):
+    getxattr = _linux_xattr("getxattr")
+    setxattr = _linux_xattr("setxattr")
+    if getxattr is None or setxattr is None:
         raise AccessGrantError("this platform has no access-control lists")
     info = os.lstat(path)
     try:
-        entries = _decode_acl(os.getxattr(path, _ACL_XATTR))
+        entries = _decode_acl(getxattr(path, _ACL_XATTR))
     except OSError as exc:
         if exc.errno not in (errno.ENODATA,):
             raise AccessGrantError(
@@ -732,7 +750,7 @@ def _grant_search(path: Path, operator_uid: int) -> None:
     kept.append((_ACL_USER, current | 0o1, operator_uid))
     kept.append((_ACL_MASK, mask | 0o1, _ACL_UNDEFINED_ID))
     try:
-        os.setxattr(path, _ACL_XATTR, _encode_acl(kept))
+        setxattr(path, _ACL_XATTR, _encode_acl(kept))
     except OSError as exc:
         raise AccessGrantError(f"{shown(str(path))}: {exc.strerror or exc}") from exc
 
@@ -798,7 +816,7 @@ class OperatorSocketServer:
 
     async def start(self) -> Path:
         """Bind, or raise leaving no socket behind."""
-        if os.name == "nt":
+        if os_name() == "nt":
             raise RuntimeError("the operator socket requires AF_UNIX")
         await asyncio.to_thread(self._prepare)
         operator_uid = await asyncio.to_thread(self._operator_uid)

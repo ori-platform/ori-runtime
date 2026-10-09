@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Any
+from typing import Any, cast
 
 NET_BILLING_BOUNDARY = (
     "Ori tracks operator-supplied net-billing compliance context for advice "
@@ -272,7 +272,7 @@ def load_net_billing_compliance_data(
 ) -> NetBillingComplianceProfile:
     """Validate a net-billing compliance snapshot from signed provisioning data."""
 
-    if not isinstance(data, dict):
+    if not isinstance(cast(object, data), dict):
         raise NetBillingComplianceError("net-billing compliance must be an object")
 
     status = _text(data, "status")

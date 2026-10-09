@@ -210,6 +210,16 @@ extraPaths = ["scripts"]
 # version moves it too. These are the values the baseline was measured at.
 pythonPlatform = "Linux"
 pythonVersion = "3.12"
+# pyright does not type-check code it decides cannot run, so such a region is
+# code whose type errors are never reported. Type analysis catches it here:
+# remove it when dead, or make it visible (a guard checks `cast(object, value)`,
+# a value written through a closure is held in a list). pyright exempts static
+# conditions (comparisons of `sys.platform`, `os.name` or `sys.version_info`, a
+# branch on TYPE_CHECKING other than its body, a falsy literal) from this report
+# and from checking, so tests/test_static_reachability.py refuses those; read
+# the platform through ori.utils.platform instead.
+enableReachabilityAnalysis = true
+reportUnreachable = "error"
 
 [tool.mypy]
 python_version = "3.11"

@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import base64
 import re
-from typing import Any
+from typing import Any, cast
 
 from ori.security.ed25519_keys import refused_public_key_clause
 
@@ -111,7 +111,7 @@ def build_command_bytes(
 
 
 def _require_canonical_b64_32(value: str, field: str) -> str:
-    if not isinstance(value, str):
+    if not isinstance(cast(object, value), str):
         raise FirmwareCommandError(f"{field} must be canonical base64")
     try:
         raw = base64.b64decode(value.encode("ascii"), validate=True)

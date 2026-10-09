@@ -144,7 +144,7 @@ def _sequence(value: int) -> int:
 
 
 def _reason(value: str) -> str:
-    if not isinstance(value, str):
+    if not isinstance(cast(object, value), str):
         raise FirmwareMqttProvisioningError("reason must be UTF-8 text")
     try:
         encoded = value.encode("utf-8")
@@ -162,7 +162,7 @@ def _reason(value: str) -> str:
 
 
 def _canonical_pem_b64(value: str, field: str) -> str:
-    if not isinstance(value, str):
+    if not isinstance(cast(object, value), str):
         raise FirmwareMqttProvisioningError(f"{field} must be canonical base64")
     try:
         decoded = base64.b64decode(value.encode("ascii"), validate=True)
@@ -866,7 +866,7 @@ def verify_device_message(
 ) -> dict[str, Any]:
     """Verify exact device response bytes and return the signed object."""
 
-    if not isinstance(message, bytes):
+    if not isinstance(cast(object, message), bytes):
         raise FirmwareMqttProvisioningError("device message must be bytes")
     outer = _strict_object(message)
     if set(outer) not in ({"response", "signature"}, {"result", "signature"}):

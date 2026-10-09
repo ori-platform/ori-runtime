@@ -203,7 +203,7 @@ class FirmwareMqttCertificateAuthority:
     ) -> IssuedFirmwareMqttCertificate:
         """Issue a leaf certificate containing only runtime-owned constraints."""
 
-        if not isinstance(csr, x509.CertificateSigningRequest):
+        if not isinstance(cast(object, csr), x509.CertificateSigningRequest):
             raise FirmwareMqttCertificateError("a validated device CSR is required")
         expected_device_id = _device_id(device_id)
         # Revalidate at the issuance boundary so a caller cannot bypass the

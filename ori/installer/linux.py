@@ -1965,11 +1965,6 @@ def _validate_release_symlink(
                     "unsafe_install_root", "release symlink target has wrong type"
                 )
             return
-
-    if require_internal:
-        raise LinuxInstallError(
-            "unsafe_install_root", "release directory symlink escapes its release"
-        )
     # An external target's own mode is not the whole question: replacing a file
     # needs write permission on the directory holding it, so everything leading
     # to it is verified as well, through the same primitive the root-execution
@@ -2564,8 +2559,10 @@ def install_composed_release(
         expected_device_id=values.device_id,
     )
     rollbacks: list[Callable[[], None]] = []
-    health: dict[str, object] | None = None
-    persistence: BootPersistence | None = None
+    # Lists, not nonlocals: install_release calls these steps, and a checker
+    # that cannot see those writes would treat the result below as unreachable.
+    health: list[dict[str, object]] = []
+    persistence: list[BootPersistence] = []
 
     def rollback_assets() -> None:
         first_error: Exception | None = None
@@ -2597,13 +2594,12 @@ def install_composed_release(
             raise
 
     def check_health(release: Path) -> None:
-        nonlocal health
-        health = verifier.verify(release)
+        health.append(verifier.verify(release))
 
     def enable_service(release: Path) -> None:
-        nonlocal persistence
-        persistence = service_manager.enable()
-        if service_profile.scope == "system" and not persistence.enabled:
+        enabled = service_manager.enable()
+        persistence.append(enabled)
+        if service_profile.scope == "system" and not enabled.enabled:
             raise LinuxInstallError(
                 "service_start_failed", "system service is not enabled for boot"
             )
@@ -2629,11 +2625,11 @@ def install_composed_release(
         commit_activation=enable_service,
         allowed_data_sockets=(socket_path,),
     )
-    if health is None or persistence is None:
+    if not health or not persistence:
         raise LinuxInstallError(
             "post_install_health_failed", "installer result is incomplete"
         )
-    return ComposedInstallResult(install, health, persistence)
+    return ComposedInstallResult(install, health[-1], persistence[-1])
 
 
 def _repair_relocated_shebangs(staging: Path, destination: Path) -> None:
@@ -3040,15 +3036,15 @@ def _install_release(
         if commit_activation is not None:
             commit_activation(destination)
     except Exception as activation_error:
-        rollback_error: Exception | None = None
+        # A list, not a nonlocal, so the rollback_failed raise below stays
+        # visible to the type checker.
+        rollback_errors: list[Exception] = []
 
         def attempt_rollback(operation: Callable[[], None]) -> None:
-            nonlocal rollback_error
             try:
                 operation()
             except Exception as exc:
-                if rollback_error is None:
-                    rollback_error = exc
+                rollback_errors.append(exc)
 
         if previous is None:
             attempt_rollback(lambda: layout.current.unlink(missing_ok=True))
@@ -3061,7 +3057,8 @@ def _install_release(
                 attempt_rollback(rollback_activation)
             attempt_rollback(restart_service)
             attempt_rollback(lambda: check_health(previous))
-        if rollback_error is not None:
+        if rollback_errors:
+            rollback_error = rollback_errors[0]
             raise LinuxInstallError(
                 "rollback_failed",
                 f"activation failed ({activation_error}); rollback failed ({rollback_error})",

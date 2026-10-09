@@ -20,7 +20,7 @@ from __future__ import annotations
 import base64
 import hashlib
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from ori.security.evidence.canonical import canonical_json
 
@@ -127,7 +127,7 @@ class EvidenceCapabilityProfile:
         read as "none declared": the contract says a profile declaring none
         omits the member, so an empty array is a malformed profile.
         """
-        if not isinstance(document, dict):
+        if not isinstance(cast(object, document), dict):
             raise AnchorDerivationError("the capability profile must be an object")
         unknown = sorted(set(document) - PROFILE_MEMBERS)
         if unknown:

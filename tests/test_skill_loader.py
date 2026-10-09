@@ -7,11 +7,17 @@ import logging
 import secrets
 import textwrap
 from pathlib import Path
-from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import yaml
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+)
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    PublicFormat,
+)
 
 from ori.network.event_bus import EventBus
 from ori.network.events import OriEvent, SensorReading
@@ -29,23 +35,6 @@ from ori.skills.signing import (
     canonical_skill_payload,
     verify_community_skill_signature,
 )
-
-if TYPE_CHECKING:
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
-else:  # pragma: no cover - environment without cryptography support
-    try:
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
-            Ed25519PrivateKey,
-        )
-        from cryptography.hazmat.primitives.serialization import (
-            Encoding,
-            PublicFormat,
-        )
-    except Exception:
-        Ed25519PrivateKey = None
-        Encoding = None
-        PublicFormat = None
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -476,10 +465,6 @@ class TestLoadOne:
         with pytest.raises(FileNotFoundError):
             loader.load_one(skill_dir)
 
-    @pytest.mark.skipif(
-        Ed25519PrivateKey is None,
-        reason="cryptography ed25519 is unavailable",
-    )
     def test_loads_valid_signed_community_skill(self, tmp_path, monkeypatch):
         skill_dir = tmp_path / "community-valid"
         raw = _community_skill_mapping()
@@ -502,10 +487,6 @@ class TestLoadOne:
             skill = loader.load_one(skill_dir)
         assert skill.name == raw["name"]
 
-    @pytest.mark.skipif(
-        Ed25519PrivateKey is None,
-        reason="cryptography ed25519 is unavailable",
-    )
     def test_rejects_tampered_community_skill(self, tmp_path, monkeypatch):
         skill_dir = tmp_path / "community-tampered"
         raw = _community_skill_mapping()
@@ -584,10 +565,6 @@ class TestLoadOne:
             ):
                 loader.load_one(skill_dir)
 
-    @pytest.mark.skipif(
-        Ed25519PrivateKey is None,
-        reason="cryptography ed25519 is unavailable",
-    )
     def test_loads_signed_community_skill_with_env_trust_anchor(
         self, tmp_path, monkeypatch
     ):
@@ -614,10 +591,6 @@ class TestLoadOne:
             skill = loader.load_one(skill_dir)
         assert skill.name == raw["name"]
 
-    @pytest.mark.skipif(
-        Ed25519PrivateKey is None,
-        reason="cryptography ed25519 is unavailable",
-    )
     def test_constructor_trust_anchor_overrides_env(self, tmp_path, monkeypatch):
         skill_dir = tmp_path / "community-valid-ctor-anchor"
         raw = _community_skill_mapping()
@@ -647,10 +620,6 @@ class TestLoadOne:
             skill = loader.load_one(skill_dir)
         assert skill.name == raw["name"]
 
-    @pytest.mark.skipif(
-        Ed25519PrivateKey is None,
-        reason="cryptography ed25519 is unavailable",
-    )
     def test_a_published_hub_anchor_refuses_a_community_skill(
         self, tmp_path, monkeypatch
     ):
@@ -686,10 +655,6 @@ class TestLoadOne:
         assert "private seed is published" in str(refusal.value)
         assert "ORI_HUB_ROOT_PUBLIC_KEY_B64" in str(refusal.value)
 
-    @pytest.mark.skipif(
-        Ed25519PrivateKey is None,
-        reason="cryptography ed25519 is unavailable",
-    )
     def test_a_published_key_is_refused_from_the_constructor_too(
         self, tmp_path, monkeypatch
     ):
@@ -713,10 +678,6 @@ class TestLoadOne:
         assert "private seed is published" in str(refusal.value)
         assert "given to SkillLoader" in str(refusal.value)
 
-    @pytest.mark.skipif(
-        Ed25519PrivateKey is None,
-        reason="cryptography ed25519 is unavailable",
-    )
     def test_a_malformed_hub_anchor_is_the_deployments_fault(
         self, tmp_path, monkeypatch
     ):
@@ -1691,10 +1652,6 @@ class TestCommunityAnchorAdmission:
             == "community skill verification trust anchor is not configured"
         )
 
-    @pytest.mark.skipif(
-        Ed25519PrivateKey is None,
-        reason="cryptography ed25519 is unavailable",
-    )
     @pytest.mark.parametrize(
         ("anchor", "expected"),
         [
@@ -1805,10 +1762,6 @@ class TestCommunityAnchorAdmission:
         assert "\x1b" not in emitted
         assert "\\x1b[2K" in emitted
 
-    @pytest.mark.skipif(
-        Ed25519PrivateKey is None,
-        reason="cryptography ed25519 is unavailable",
-    )
     def test_a_usable_anchor_admits_a_community_skill_and_reports_clean(
         self, tmp_path, monkeypatch
     ):
@@ -1845,14 +1798,6 @@ class TestCommunityAnchorAdmission:
         assert admission.anchor_usable is False
         assert admission.refused_skills == 0
 
-    @pytest.mark.skipif(
-        Ed25519PrivateKey is None,
-        reason="cryptography ed25519 is unavailable",
-    )
-    @pytest.mark.skipif(
-        Ed25519PrivateKey is None,
-        reason="cryptography ed25519 is unavailable",
-    )
     def test_an_anchor_that_verifies_nothing_is_still_counted(
         self, tmp_path, monkeypatch
     ):
@@ -1896,10 +1841,6 @@ class TestCommunityAnchorAdmission:
         assert loader.load_all(str(tmp_path)) == []
         assert loader.community_admission().refused_skills == 0
 
-    @pytest.mark.skipif(
-        Ed25519PrivateKey is None,
-        reason="cryptography ed25519 is unavailable",
-    )
     @pytest.mark.parametrize(
         "anchor",
         [

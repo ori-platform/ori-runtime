@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Any
+from typing import Any, cast
 
 _VALID_STATUSES = frozenset(
     {"draft", "operator_provided", "published_order", "field_verified"}
@@ -149,7 +149,7 @@ def load_tariff_profile_data(data: dict[str, Any]) -> TariffProfile:
     shape economic recommendations.
     """
 
-    if not isinstance(data, dict):
+    if not isinstance(cast(object, data), dict):
         raise TariffProfileError("tariff profile must be an object")
 
     status = _text(data, "status")

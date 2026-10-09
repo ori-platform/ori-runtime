@@ -585,7 +585,7 @@ def test_shared_os_components_are_not_installable(as_root: None) -> None:
         with pytest.raises(LinuxInstallError) as excinfo:
             prerequisites.install_command([package])
         assert excinfo.value.code == prerequisites.FAILURE_CODE
-        assert package in prerequisites.PROTECTED or True
+        assert package in prerequisites.PROTECTED
 
 
 def test_the_installer_claims_only_the_authority_it_needs() -> None:

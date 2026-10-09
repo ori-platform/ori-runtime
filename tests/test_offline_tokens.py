@@ -4,30 +4,16 @@
 import base64
 import json
 import time
-from typing import TYPE_CHECKING
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from ori.security.offline_tokens import OfflineTierCTokenVerifier
 from ori.skills.signing import canonical_signed_payload
 from ori.state.store import StateStore
 
-if TYPE_CHECKING:
-    from cryptography.hazmat.primitives import serialization
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-else:  # pragma: no cover - environment without cryptography support
-    try:
-        from cryptography.hazmat.primitives import serialization
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    except Exception:
-        Ed25519PrivateKey = None
-        serialization = None
 
-
-@pytest.mark.skipif(
-    Ed25519PrivateKey is None or serialization is None,
-    reason="cryptography Ed25519 unavailable",
-)
 class TestOfflineTierCTokenVerifier:
     @staticmethod
     def _mint_token(
@@ -194,9 +180,6 @@ _HOSTILE_TOKENS = {
 }
 
 
-@pytest.mark.skipif(
-    Ed25519PrivateKey is None, reason="cryptography Ed25519 unavailable"
-)
 @pytest.mark.parametrize("name", sorted(_HOSTILE_TOKENS))
 async def test_a_hostile_token_is_refused_never_raised(name: str, tmp_path) -> None:
     """Whatever an operator types, the verifier answers; it approves nothing."""
