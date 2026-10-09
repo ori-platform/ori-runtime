@@ -55,6 +55,8 @@ from typing import Any, Mapping
 from ori.security.ed25519_keys import admit_public_key, refused_public_key_clause
 
 __all__ = [
+    "DEVICE_MODES",
+    "MANIFEST_POLICY_REVISION",
     "FirmwareFaultVerification",
     "FirmwareVerificationError",
     "TelemetryVerification",

@@ -811,12 +811,12 @@ class TestPromotionIsTheConfirmedCandidate:
     def test_a_candidate_replaced_after_the_key_was_confirmed_is_not_promoted(
         self, bench, monkeypatch
     ) -> None:
-        import ori.security.firmware.ingest as ingest
+        from ori.security.firmware.ingest import FirmwareTelemetryGate
 
         assert _register(bench) == 0
         replacement_seed = os.urandom(32)
 
-        class ReplacedFirst(ingest.FirmwareTelemetryGate):
+        class ReplacedFirst(FirmwareTelemetryGate):
             async def approve_device(self, device_id, **kwargs):  # type: ignore[override]
                 await self.reprovision_device(
                     device_id=device_id,
@@ -828,7 +828,9 @@ class TestPromotionIsTheConfirmedCandidate:
                 )
                 return await super().approve_device(device_id, **kwargs)
 
-        monkeypatch.setattr(ingest, "FirmwareTelemetryGate", ReplacedFirst)
+        monkeypatch.setattr(
+            "ori.security.firmware.ingest.FirmwareTelemetryGate", ReplacedFirst
+        )
         assert _approve(bench) == 2
 
 
