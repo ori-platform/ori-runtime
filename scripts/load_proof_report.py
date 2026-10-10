@@ -1,26 +1,37 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
-"""Summarise a load-proof run's evidence, and fail unless every run counts.
+"""Summarise a load-proof run's evidence, and fail unless all of it is valid.
 
-Reads the directory the load-proof workflow fills: ``runs.txt`` (start and end
-of each loaded run, with its exit status), ``loadavg.txt`` (one-minute load
-sampled every few seconds), ``stress.txt``, ``commit.txt`` and one JUnit file
-per run, plus the unloaded budgets and scheduler-delay passes. Prints Markdown.
+Reads the directory the load-proof workflow fills: ``commit.txt``,
+``stress.txt``, ``runs.txt`` (start and end of each loaded run, with its exit
+status), ``loadavg.txt`` (one-minute load sampled every few seconds), one
+``inventory-<pass>.txt`` of collected node ids per pass, and one JUnit file per
+pass: ``budgets``, ``stall`` and ``run-<n>``. Prints Markdown.
 
-A proof counts only if it asked for at least five runs and finished all of
-them, and each of them passed; held its load, judged on the tenth percentile
-of samples taken after the first minute, with samples covering the run and no
-gap between them over half a minute; ran
-the same tests to the same outcome as every other run, the phone delivery
-tests among the passed; and both unloaded passes ran tests that passed, the
-held-back progress reader among them. It is hosted stress evidence, never a
-claim about another host or about physical safety latency.
+Evidence is refused, not repaired. A proof counts only if:
 
-    python scripts/load_proof_report.py <proof-dir> <floor> <target> <runs>
+- it is for the requested commit, with a recorded CPU count, worker count and
+  stress command;
+- at least five runs were requested, and every one finished with exit status
+  zero and no failure or error in its JUnit;
+- every pass ran its whole collected inventory, nothing failing, anything not
+  passed only skipped, and the loaded runs to the same outcomes as each other,
+  with every collected phone delivery case passed; the scheduler-delay pass
+  passed the held-back progress reader;
+- the load samples are finite, non-negative and strictly increasing in time;
+  each run's distinct samples cover its slots with no gap over half a minute;
+  and its tenth percentile of load per core after its first minute holds the
+  floor, which itself lies from 1.0 to the target.
+
+It is hosted stress evidence, never a claim about another host or about
+physical safety latency.
+
+    python scripts/load_proof_report.py <proof-dir> <floor> <target> <runs> <sha>
 """
 
 from __future__ import annotations
 
+import math
 import sys
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -33,7 +44,9 @@ SAMPLE_COVERAGE = 0.8
 SETTLE_S = 60
 MAX_SAMPLE_GAP_S = 30
 PHONE_MODULE = "tests.test_runtime_mobile_delivery_e2e"
-HELD_READER = "test_faults_land_at_their_polls_however_slowly_the_output_is_read"
+HELD_READER = (
+    f"{PHONE_MODULE}::test_faults_land_at_their_polls_however_slowly_the_output_is_read"
+)
 
 
 @dataclass(frozen=True)
@@ -51,13 +64,35 @@ class Run:
     status: int | None
 
 
+def junit_id(nodeid: str) -> str:
+    """The JUnit ``classname::name`` pytest writes for a collected node id."""
+    base, bracket, params = nodeid.partition("[")
+    parts = base.split("::")
+    module = parts[0].removesuffix(".py").replace("/", ".")
+    return f"{'.'.join([module, *parts[1:-1]])}::{parts[-1]}{bracket}{params}"
+
+
+def read_inventory(path: Path) -> frozenset[str] | None:
+    if not path.is_file():
+        return None
+    return frozenset(
+        junit_id(line.strip())
+        for line in path.read_text().splitlines()
+        if "::" in line and not line.startswith(" ")
+    )
+
+
 def read_junit(path: Path) -> JUnit | None:
     if not path.is_file():
+        return None
+    try:
+        root = ET.parse(path).getroot()
+    except ET.ParseError:
         return None
     passed: set[str] = set()
     skipped: set[str] = set()
     failed: set[str] = set()
-    for case in ET.parse(path).getroot().iter("testcase"):
+    for case in root.iter("testcase"):
         case_id = f"{case.get('classname', '')}::{case.get('name', '')}"
         tags = {child.tag for child in case}
         if tags & {"failure", "error"}:
@@ -67,10 +102,6 @@ def read_junit(path: Path) -> JUnit | None:
         else:
             passed.add(case_id)
     return JUnit(frozenset(passed), frozenset(skipped), frozenset(failed))
-
-
-def _in_phone_module(case: str) -> bool:
-    return case.split("::", 1)[0] == PHONE_MODULE
 
 
 def read_runs(path: Path) -> list[Run]:
@@ -94,27 +125,41 @@ def read_runs(path: Path) -> list[Run]:
     ]
 
 
-def read_load(path: Path) -> list[tuple[int, float]]:
+def read_load(path: Path) -> tuple[list[tuple[int, float]], list[str]]:
+    """Samples, and what is wrong with them; an invalid file yields no samples."""
+    if not path.is_file():
+        return [], ["no load samples were recorded"]
     samples: list[tuple[int, float]] = []
-    if path.is_file():
-        for line in path.read_text().splitlines():
-            parts = line.split()
-            if len(parts) >= 2:
-                try:
-                    samples.append((int(parts[0]), float(parts[1])))
-                except ValueError:
-                    continue
-    return samples
+    for number, line in enumerate(path.read_text().splitlines(), 1):
+        parts = line.split()
+        try:
+            at, value = int(parts[0]), float(parts[1])
+        except (IndexError, ValueError):
+            return [], [f"load sample line {number} is malformed"]
+        if not math.isfinite(value) or value < 0:
+            return [], [f"load sample line {number} is not a finite, non-negative load"]
+        if samples and at <= samples[-1][0]:
+            return [], [f"load sample line {number} does not advance in time"]
+        samples.append((at, value))
+    return samples, []
 
 
 def recorded(stress: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     if stress.is_file():
         for line in stress.read_text().splitlines():
+            if line.startswith("stress-ng "):
+                values["command"] = line
             key, sep, value = line.partition("=")
             if sep:
                 values[key] = value
     return values
+
+
+def positive(value: str | None) -> int | None:
+    return (
+        int(value) if value is not None and value.isdigit() and int(value) > 0 else None
+    )
 
 
 def tenth_percentile(values: list[float]) -> float:
@@ -122,55 +167,85 @@ def tenth_percentile(values: list[float]) -> float:
     return ordered[int(0.1 * (len(ordered) - 1))]
 
 
+def judge_pass(
+    label: str, result: JUnit | None, inventory: frozenset[str] | None
+) -> list[str]:
+    if result is None:
+        return [f"{label}: no readable JUnit result"]
+    if inventory is None:
+        return [f"{label}: no collected inventory"]
+    problems: list[str] = []
+    if not inventory:
+        problems.append(f"{label}: collected nothing")
+    if result.failed:
+        problems.append(f"{label}: {len(result.failed)} failed")
+    missing = inventory - result.passed - result.skipped
+    if missing:
+        problems.append(f"{label}: {len(missing)} collected tests did not run")
+    if not result.passed:
+        problems.append(f"{label}: nothing passed")
+    return problems
+
+
 def main(argv: list[str]) -> int:
     proof = Path(argv[1])
-    floor, target, expected = float(argv[2]), float(argv[3]), int(argv[4])
+    floor, target, expected, sha = float(argv[2]), float(argv[3]), int(argv[4]), argv[5]
     stress = recorded(proof / "stress.txt")
-    cores = int(stress["cores"]) if stress.get("cores", "").isdigit() else None
-    load = read_load(proof / "loadavg.txt")
+    cores = positive(stress.get("cores"))
+    workers = positive(stress.get("pytest_workers"))
+    load, problems = read_load(proof / "loadavg.txt")
     runs = read_runs(proof / "runs.txt")
-    problems: list[str] = []
 
     print("## Load proof: hosted stress evidence\n")
     commit = proof / "commit.txt"
-    print(
-        f"Commit: `{commit.read_text().strip() if commit.is_file() else 'unknown'}`\n"
-    )
+    commit_line = commit.read_text().strip() if commit.is_file() else ""
+    print(f"Commit: `{commit_line or 'not recorded'}`\n")
     print(
         f"Target {target} load per core; floor {floor} on each run's tenth "
         f"percentile after its first minute; {expected} runs asked for.\n"
     )
-    if (proof / "stress.txt").is_file():
+    if stress:
         print("```text\n" + (proof / "stress.txt").read_text().strip() + "\n```\n")
+    if not commit_line or commit_line.split()[0] != sha:
+        problems.append(f"the recorded commit is not {sha}")
     if cores is None:
-        problems.append("the stress configuration was not recorded")
+        problems.append("the CPU count was not recorded")
+    if workers is None:
+        problems.append("the pytest worker count was not recorded")
+    if "command" not in stress:
+        problems.append("the stress command was not recorded")
     if expected < MIN_RUNS:
         problems.append(f"{expected} runs asked for, fewer than {MIN_RUNS}")
     if not MIN_FLOOR <= floor <= target:
         problems.append(f"floor {floor} is outside {MIN_FLOOR}..{target}")
 
-    unloaded = (
-        ("budgets", "Latency budgets, unloaded", None),
-        ("stall", "Scheduler delay, unloaded", f"{PHONE_MODULE}::{HELD_READER}"),
-    )
-    for name, label, required in unloaded:
+    for name, label in (
+        ("budgets", "Latency budgets, unloaded"),
+        ("stall", "Scheduler delay, unloaded"),
+    ):
         result = read_junit(proof / f"{name}.xml")
-        if result is None:
-            problems.append(f"{label}: no result")
-            print(f"- {label}: no result")
-            continue
-        if result.failed or not result.passed:
-            problems.append(f"{label}: failed or passed nothing")
-        if required and required not in result.passed:
-            problems.append(f"{label}: {required} did not pass")
-        print(
-            f"- {label}: {len(result.passed)} passed, {len(result.failed)} failed, "
-            f"{len(result.skipped)} skipped"
+        problems += judge_pass(
+            label, result, read_inventory(proof / f"inventory-{name}.txt")
         )
+        if name == "stall" and (result is None or HELD_READER not in result.passed):
+            problems.append(f"{label}: {HELD_READER} did not pass")
+        if result is not None:
+            print(
+                f"- {label}: {len(result.passed)} passed, {len(result.failed)} failed, "
+                f"{len(result.skipped)} skipped"
+            )
     print()
 
+    inventory = read_inventory(proof / "inventory-suite.txt")
+    phone = frozenset(
+        case for case in inventory or () if case.split("::", 1)[0] == PHONE_MODULE
+    )
+    if inventory is not None and not phone:
+        problems.append("the suite's inventory holds no phone delivery case")
+
     print(
-        "| Run | Exit | Minutes | Samples | Mean load/core | P10 load/core | Passed | Failed | Skipped |"
+        "| Run | Exit | Minutes | Samples | Mean load/core | P10 load/core "
+        "| Passed | Failed | Skipped |"
     )
     print("|---|---|---|---|---|---|---|---|---|")
     reference: JUnit | None = None
@@ -192,8 +267,8 @@ def main(argv: list[str]) -> int:
             p10 = tenth_percentile(settled) / cores
         minutes = f"{(run.end - run.start) / 60:.1f}" if run.end is not None else "–"
         print(
-            f"| {run.index} | {run.status if run.status is not None else 'unfinished'} | {minutes} "
-            f"| {len(window)} "
+            f"| {run.index} | {run.status if run.status is not None else 'unfinished'} "
+            f"| {minutes} | {len(window)} "
             f"| {f'{mean:.2f}' if mean is not None else '–'} "
             f"| {f'{p10:.2f}' if p10 is not None else '–'} "
             f"| {len(result.passed) if result else '–'} "
@@ -213,13 +288,11 @@ def main(argv: list[str]) -> int:
                 )
         if p10 is None or p10 < floor:
             problems.append(f"run {run.index} held less than {floor} load per core")
-        if result is None or not result.passed:
-            problems.append(f"run {run.index} recorded no passing tests")
+        problems += judge_pass(f"run {run.index}", result, inventory)
+        if result is None:
             continue
-        if not any(_in_phone_module(case) for case in result.passed) or any(
-            _in_phone_module(case) for case in result.skipped
-        ):
-            problems.append(f"run {run.index} did not run the phone delivery tests")
+        if not phone <= result.passed:
+            problems.append(f"run {run.index} did not pass every phone delivery case")
         if reference is None:
             reference = result
         elif (result.passed, result.skipped) != (reference.passed, reference.skipped):
@@ -234,8 +307,8 @@ def main(argv: list[str]) -> int:
             print(f"- {problem}")
         return 1
     print(
-        "**Counts.** Every run passed, held the floor and ran the same tests "
-        "to the same outcomes. This is hosted stress evidence, not a "
+        "**Counts.** Every run passed its whole inventory, held the floor and "
+        "matched every other run. This is hosted stress evidence, not a "
         "reproduction of another host, and not a claim about physical safety "
         "latency."
     )

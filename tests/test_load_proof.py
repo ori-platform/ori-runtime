@@ -119,11 +119,23 @@ def _junit(
     ET.ElementTree(root).write(path)
 
 
+SHA = "a" * 40
 PHONE = "tests.test_runtime_mobile_delivery_e2e::test_delivers"
 HELD = (
     "tests.test_runtime_mobile_delivery_e2e::"
     "test_faults_land_at_their_polls_however_slowly_the_output_is_read"
 )
+
+
+def _nodeid(case: str) -> str:
+    module, _, name = case.partition("::")
+    return module.replace(".", "/") + ".py::" + name
+
+
+def _inventory(path: Path, cases: list[str]) -> None:
+    path.write_text(
+        "".join(_nodeid(c) + "\n" for c in cases) + f"\n{len(cases)} tests collected\n"
+    )
 
 
 def _proof(
@@ -141,18 +153,41 @@ def _proof(
     held_reader_module: str = "tests.test_runtime_mobile_delivery_e2e",
     phone_module: str = "tests.test_runtime_mobile_delivery_e2e",
     last_samples_s: int = 600,
+    junit_failure_in: int | None = None,
+    missing_case_in: int | None = None,
+    bad_sample: str | None = None,
+    duplicate_samples: bool = False,
+    commit: str | None = SHA,
+    stress_lines: tuple[str, ...] = (
+        "cores=4",
+        "pytest_workers=4",
+        "stress-ng --cpu 22 --hdd 1 --hdd-bytes 256m --timeout 320m",
+    ),
+    inventories: bool = True,
+    stall_failure: bool = False,
 ) -> Path:
     proof = tmp_path / "proof"
     proof.mkdir()
-    (proof / "commit.txt").write_text("a" * 40 + " subject\n")
-    (proof / "stress.txt").write_text("cores=4\npytest_workers=4\n")
+    if commit is not None:
+        (proof / "commit.txt").write_text(commit + " subject\n")
+    (proof / "stress.txt").write_text("\n".join(stress_lines) + "\n")
     if budgets == "passed":
         _junit(proof / "budgets.xml", ["tests.c::b1"])
     elif budgets == "skipped":
         _junit(proof / "budgets.xml", [], skipped=["tests.c::b1"])
     held = held_reader_module + "::" + HELD.split("::")[1]
-    _junit(proof / "stall.xml", ["tests.d::s1"] + ([held] if held_reader else []))
+    stall_cases = ["tests.d::s1"] + ([held] if held_reader else [])
+    _junit(
+        proof / "stall.xml",
+        stall_cases[1:] if stall_failure else stall_cases,
+        failed=["tests.d::s1"] if stall_failure else [],
+    )
     phone = phone_module + "::test_delivers"
+    suite = ["tests.a::t1", "tests.a::t2", phone]
+    if inventories:
+        _inventory(proof / "inventory-budgets.txt", ["tests.c::b1"])
+        _inventory(proof / "inventory-stall.txt", ["tests.d::s1", HELD])
+        _inventory(proof / "inventory-suite.txt", suite)
     lines, samples = [], []
     for i in range(1, runs + 1):
         start = 10_000 * i
@@ -161,12 +196,27 @@ def _proof(
             lines.append(f"{start + 600} end {i} {run_status if i == runs else 0}")
         for t in range(0, last_samples_s + 1, sample_every):
             value = tail_load if tail_load is not None and t > 480 else load
-            samples.append(f"{start + t} {value:.2f} 0 0")
+            text = (
+                bad_sample
+                if bad_sample is not None and i == 2 and t == 300
+                else f"{value:.2f}"
+            )
+            samples.append(f"{start + t} {text} 0 0")
+            if duplicate_samples:
+                samples.append(f"{start + t} {text} 0 0")
         skip_phone = phone_skipped_from is not None and i >= phone_skipped_from
+        passed = ["tests.a::t1", "tests.a::t2"] + ([] if skip_phone else [phone])
+        if missing_case_in == i:
+            passed.remove("tests.a::t2")
+        failed = []
+        if junit_failure_in == i:
+            passed.remove("tests.a::t1")
+            failed = ["tests.a::t1"]
         _junit(
             proof / f"run-{i}.xml",
-            ["tests.a::t1"] + ([] if skip_phone else [phone]),
+            passed,
             skipped=[phone] if skip_phone else [],
+            failed=failed,
         )
     (proof / "runs.txt").write_text("\n".join(lines) + "\n")
     (proof / "loadavg.txt").write_text("\n".join(samples) + "\n")
@@ -174,9 +224,13 @@ def _proof(
 
 
 def _judge(
-    proof: Path, floor: str = "5.0", target: str = "6.5", runs: str = "5"
+    proof: Path,
+    floor: str = "5.0",
+    target: str = "6.5",
+    runs: str = "5",
+    sha: str = SHA,
 ) -> int:
-    return _report().main(["", str(proof), floor, target, runs])
+    return _report().main(["", str(proof), floor, target, runs, sha])
 
 
 def test_a_proof_that_held_its_load_and_passed_counts(tmp_path, capsys):
@@ -194,25 +248,26 @@ def test_a_proof_that_held_its_load_and_passed_counts(tmp_path, capsys):
         ({"runs": 1}, {"runs": "1"}, "1 runs asked for, fewer than 5"),
         ({"runs": 3}, {}, "3 of 5 runs finished"),
         ({"finished": 4}, {}, "4 of 5 runs finished"),
-        ({"phone_skipped_from": 2}, {}, "run 2 did not run the phone delivery tests"),
+        ({"phone_skipped_from": 2}, {}, "run 2 did not pass every phone delivery case"),
         (
             {"phone_skipped_from": 2},
             {},
             "ran different tests, or to different outcomes",
         ),
-        ({"budgets": "missing"}, {}, "Latency budgets, unloaded: no result"),
         (
-            {"budgets": "skipped"},
+            {"budgets": "missing"},
             {},
-            "Latency budgets, unloaded: failed or passed nothing",
+            "Latency budgets, unloaded: no readable JUnit result",
         ),
+        ({"budgets": "skipped"}, {}, "Latency budgets, unloaded: nothing passed"),
         (
             {"held_reader": False},
             {},
-            "Scheduler delay, unloaded: " + HELD,
+            "Scheduler delay, unloaded: " + HELD + " did not pass",
         ),
         ({}, {"floor": "0"}, "floor 0.0 is outside 1.0..6.5"),
         ({}, {"floor": "7"}, "floor 7.0 is outside 1.0..6.5"),
+        ({}, {"floor": "nan"}, "floor nan is outside 1.0..6.5"),
         ({"sample_every": 120}, {}, "too few load samples"),
         ({"tail_load": 0.4}, {}, "held less than 5.0 load per core"),
         ({"runs": 0}, {}, "0 of 5 runs finished"),
@@ -225,8 +280,49 @@ def test_a_proof_that_held_its_load_and_passed_counts(tmp_path, capsys):
         (
             {"phone_module": "tests.test_runtime_mobile_delivery_e2e_extra"},
             {},
-            "did not run the phone delivery tests",
+            "the suite's inventory holds no phone delivery case",
         ),
+        ({"junit_failure_in": 3}, {}, "run 3: 1 failed"),
+        ({"missing_case_in": 4}, {}, "run 4: 1 collected tests did not run"),
+        ({"stall_failure": True}, {}, "Scheduler delay, unloaded: 1 failed"),
+        ({"bad_sample": "nan"}, {}, "is not a finite, non-negative load"),
+        ({"bad_sample": "inf"}, {}, "is not a finite, non-negative load"),
+        ({"bad_sample": "-1"}, {}, "is not a finite, non-negative load"),
+        ({"bad_sample": "x"}, {}, "is malformed"),
+        (
+            {"duplicate_samples": True, "sample_every": 30},
+            {},
+            "does not advance in time",
+        ),
+        ({"commit": None}, {}, "the recorded commit is not " + SHA),
+        ({}, {"sha": "b" * 40}, "the recorded commit is not " + "b" * 40),
+        (
+            {"stress_lines": ("cores=4", "stress-ng --cpu 22 --timeout 320m")},
+            {},
+            "the pytest worker count was not recorded",
+        ),
+        (
+            {"stress_lines": ("pytest_workers=4", "stress-ng --cpu 22 --timeout 320m")},
+            {},
+            "the CPU count was not recorded",
+        ),
+        (
+            {
+                "stress_lines": (
+                    "cores=0",
+                    "pytest_workers=4",
+                    "stress-ng --cpu 1 --timeout 1m",
+                )
+            },
+            {},
+            "the CPU count was not recorded",
+        ),
+        (
+            {"stress_lines": ("cores=4", "pytest_workers=4")},
+            {},
+            "the stress command was not recorded",
+        ),
+        ({"inventories": False}, {}, "no collected inventory"),
     ],
 )
 def test_a_proof_short_of_anything_does_not_count(
@@ -236,6 +332,18 @@ def test_a_proof_short_of_anything_does_not_count(
     out = capsys.readouterr().out
     assert "**Does not count:**" in out
     assert problem in out
+
+
+@pytest.mark.parametrize(
+    ("nodeid", "expected"),
+    [
+        ("tests/test_x.py::test_y", "tests.test_x::test_y"),
+        ("tests/sub/test_x.py::TestA::test_y", "tests.sub.test_x.TestA::test_y"),
+        ("tests/test_x.py::test_y[a::b-c]", "tests.test_x::test_y[a::b-c]"),
+    ],
+)
+def test_a_collected_node_id_maps_to_its_junit_id(nodeid, expected):
+    assert _report().junit_id(nodeid) == expected
 
 
 def test_the_judge_is_the_workflow_s_own_revision():
@@ -272,3 +380,27 @@ def test_one_failed_unloaded_pass_does_not_cost_the_loaded_runs():
     assert "-n auto" not in run
     assert "upload" not in run
     assert "run_attempt" in steps["Upload the evidence"]["with"]["name"]
+
+
+def test_every_pass_collects_its_inventory_before_it_runs():
+    steps = _steps()
+    names = list(steps)
+    assert names.index("Collect the suite's inventory") < names.index(
+        "Run the full suite under load"
+    )
+    assert "inventory-suite.txt" in steps["Collect the suite's inventory"]["run"]
+    stall = steps["Run the scheduler-delay regressions, unloaded"]["run"]
+    assert stall.index("inventory-stall.txt") < stall.index("stall.xml")
+    budgets = steps["Run the latency budgets alone, unloaded"]["run"]
+    assert budgets.index("inventory-budgets.txt") < budgets.index("budgets.xml")
+    assert '"$SHA"' in steps["Report what each run held"]["run"]
+
+
+def test_an_inventory_ignores_the_warning_lines_beneath_a_node_id(tmp_path):
+    inventory = tmp_path / "inventory.txt"
+    inventory.write_text(
+        "tests/test_x.py::test_y\n"
+        "  /lib/mod.py:10: DeprecationWarning: see tests/test_z.py::test_w\n"
+        "\n1 test collected\n"
+    )
+    assert _report().read_inventory(inventory) == {"tests.test_x::test_y"}

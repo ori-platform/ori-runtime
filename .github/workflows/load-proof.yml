@@ -148,6 +148,9 @@ jobs:
           argv = shlex.split(step["run"])
           assert argv[0] == "pytest", argv
           proof = os.path.join(os.environ["RUNNER_TEMP"], "proof")
+          # What the pass must run, collected before it runs.
+          with open(f"{proof}/inventory-budgets.txt", "w") as out:
+              subprocess.run(argv + ["--collect-only", "-q"], stdout=out, check=True)
           argv += [f"--junitxml={proof}/budgets.xml"]
           with open(f"{proof}/budgets.log", "w") as log:
               status = subprocess.run(argv, stdout=log, stderr=subprocess.STDOUT).returncode
@@ -166,14 +169,18 @@ jobs:
           ORI_TEST_STALL_MS: "3"
           ORI_REQUIRE_MQTT_BROKER: "1"
         run: |
-          pytest -q -p no:xdist -m "not hardware" \
-            tests/evidence/test_inbound_route.py \
-            tests/safety/test_registry.py \
-            tests/test_dispatch_never_waits_on_delivery.py \
-            tests/test_runtime.py::TestSkillReload \
-            tests/test_tier_c_approval_sequences.py \
-            tests/test_tier_d_never_waits_on_hooks.py \
-            "tests/test_runtime_mobile_delivery_e2e.py::test_faults_land_at_their_polls_however_slowly_the_output_is_read" \
+          targets=(
+            tests/evidence/test_inbound_route.py
+            tests/safety/test_registry.py
+            tests/test_dispatch_never_waits_on_delivery.py
+            tests/test_runtime.py::TestSkillReload
+            tests/test_tier_c_approval_sequences.py
+            tests/test_tier_d_never_waits_on_hooks.py
+            "tests/test_runtime_mobile_delivery_e2e.py::test_faults_land_at_their_polls_however_slowly_the_output_is_read"
+          )
+          pytest -q -p no:xdist -m "not hardware" --collect-only "${targets[@]}" \
+            > "${RUNNER_TEMP}/proof/inventory-stall.txt"
+          pytest -q -p no:xdist -m "not hardware" "${targets[@]}" \
             --junitxml="${RUNNER_TEMP}/proof/stall.xml" 2>&1 | tee "${RUNNER_TEMP}/proof/stall.log"
           test "${PIPESTATUS[0]}" -eq 0
 
@@ -217,6 +224,15 @@ jobs:
           sleep 90
           tail -1 "${RUNNER_TEMP}/proof/loadavg.txt"
 
+      # What every loaded run must run, collected once before any of them.
+      - name: Collect the suite's inventory
+        if: ${{ !cancelled() && steps.validate.outcome == 'success' && steps.confirm.outcome == 'success' }}
+        env:
+          ORI_REQUIRE_MQTT_BROKER: "1"
+        run: |
+          pytest tests/ -q -p no:xdist -m "not hardware" --collect-only \
+            > "${RUNNER_TEMP}/proof/inventory-suite.txt"
+
       # The complete functional suite, phone delivery included, with no
       # retries: every run is reported, and one failure fails the proof.
       - name: Run the full suite under load
@@ -240,6 +256,8 @@ jobs:
           done
           exit "$failed"
 
+      # GitHub may force-stop a cancelled job's steps, so this is best effort;
+      # stress-ng's own --timeout and the disposable runner are the backstops.
       - name: Stop the burners and the sampler
         if: always()
         run: |
@@ -255,9 +273,10 @@ jobs:
           FLOOR: ${{ inputs.floor_per_core }}
           TARGET: ${{ inputs.target_per_core }}
           RUNS: ${{ inputs.runs }}
+          SHA: ${{ inputs.sha }}
         run: |
           python "${RUNNER_TEMP}/judge/load_proof_report.py" \
-            "${RUNNER_TEMP}/proof" "$FLOOR" "$TARGET" "$RUNS" >> "$GITHUB_STEP_SUMMARY"
+            "${RUNNER_TEMP}/proof" "$FLOOR" "$TARGET" "$RUNS" "$SHA" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the evidence
         if: always()
