@@ -31,14 +31,23 @@ boot and would otherwise reject a restarted runtime forever.
 from __future__ import annotations
 
 import base64
+import logging
 import re
+import secrets
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, cast
 
+from ori.security.firmware.reading_age import (
+    LivenessEntry,
+    LivenessTable,
+    signing_clock_ns,
+)
+
 __all__ = [
     "FirmwareLivenessError",
     "FirmwareLivenessSigner",
+    "LivenessPair",
     "FirmwareLivenessSupervisor",
     "SupervisedDevice",
     "build_liveness_bytes",
@@ -48,10 +57,16 @@ __all__ = [
     "MAX_LIVENESS_PUBLISH_INTERVAL_S",
 ]
 
-_FLEET_ID = re.compile(r"^[A-Za-z0-9._-]{1,48}$")
-_CAPABILITY_HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
+logger = logging.getLogger(__name__)
+
+_FLEET_ID = re.compile(r"^[A-Za-z0-9._-]{1,48}\Z")
+_CAPABILITY_HASH = re.compile(r"^sha256:[0-9a-f]{64}\Z")
 _RUNTIME_SEQ_MAX = 2**53 - 1
 _BOOT_ID_MAX = 2**32 - 1
+_NONCE = re.compile(r"^[0-9a-f]{32}\Z")
+# A 128-bit CSPRNG draw that collides with the live table is already
+# vanishingly rare; failing several times in a row means the source is broken.
+_NONCE_ATTEMPTS = 8
 
 # firmware-commands/v1, provisional pending bench measurement. The
 # supervision window is deliberately SHORTER than the device's expiry
@@ -114,10 +129,12 @@ def build_liveness_bytes(
     capability_hash: str,
     device_id: str,
     runtime_seq: int,
+    nonce: str | None = None,
 ) -> bytes:
     """The exact signed bytes of one liveness object, per the fixed
-    grammar. Raises :class:`FirmwareLivenessError` on any field the
-    device verifier would refuse — never sign what cannot be accepted.
+    grammar: ``v`` 1 without a nonce, ``v`` 2 with one. Raises
+    :class:`FirmwareLivenessError` on any field the device verifier would
+    refuse — never sign what cannot be accepted.
     """
     if not isinstance(device_id, str) or not _FLEET_ID.match(device_id):
         raise FirmwareLivenessError(
@@ -146,6 +163,14 @@ def build_liveness_bytes(
         or not (1 <= runtime_seq <= _RUNTIME_SEQ_MAX)
     ):
         raise FirmwareLivenessError(f"runtime_seq out of range: {runtime_seq!r}")
+    if nonce is not None:
+        if not isinstance(nonce, str) or not _NONCE.match(nonce):
+            raise FirmwareLivenessError("nonce must be 32 lowercase hex characters")
+        return (
+            '{"boot_id":%d,"capability_hash":"%s","device_id":"%s","nonce":"%s",'
+            '"runtime_seq":%d,"v":2}'
+            % (boot_id, capability_hash, device_id, nonce, runtime_seq)
+        ).encode("utf-8")
     return (
         '{"boot_id":%d,"capability_hash":"%s","device_id":"%s",'
         '"runtime_seq":%d,"v":1}' % (boot_id, capability_hash, device_id, runtime_seq)
@@ -226,6 +251,15 @@ class FirmwareLivenessSupervisor:
         )
 
 
+@dataclass(frozen=True)
+class LivenessPair:
+    """One interval's publication: ``v`` 1 always, ``v`` 2 when it could be signed."""
+
+    v1: bytes
+    v2: bytes | None
+    v2_error: str = ""
+
+
 class FirmwareLivenessSigner:
     """Signs liveness messages with the runtime command key and allocates
     strictly increasing, durable per-device sequence numbers.
@@ -240,6 +274,9 @@ class FirmwareLivenessSigner:
         private_key_bytes: bytes,
         *,
         supervisor: FirmwareLivenessSupervisor,
+        table: LivenessTable | None = None,
+        nonce_source: Callable[[], bytes] = lambda: secrets.token_bytes(16),
+        clock: Callable[[], int | None] = signing_clock_ns,
     ) -> None:
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -260,10 +297,17 @@ class FirmwareLivenessSigner:
         self._store = store
         self._key = Ed25519PrivateKey.from_private_bytes(private_key_bytes)
         self._supervisor = supervisor
+        self._table = table
+        self._nonce_source = nonce_source
+        self._clock = clock
 
     @property
     def supervisor(self) -> FirmwareLivenessSupervisor:
         return self._supervisor
+
+    @property
+    def table(self) -> LivenessTable | None:
+        return self._table
 
     def public_key_bytes(self) -> bytes:
         from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
@@ -282,32 +326,74 @@ class FirmwareLivenessSigner:
             + b'"}'
         )
 
-    async def sign_liveness(
+    def _fresh_nonce(self) -> str:
+        """128 fresh CSPRNG bits, never one the live table holds."""
+        for _ in range(_NONCE_ATTEMPTS):
+            raw = self._nonce_source()
+            if not isinstance(raw, bytes) or len(raw) != 16:
+                raise FirmwareLivenessError("nonce source must return 16 bytes")
+            nonce = raw.hex()
+            if self._table is None or not self._table.holds(nonce):
+                return nonce
+        raise FirmwareLivenessError(
+            f"nonce source collided with the live table {_NONCE_ATTEMPTS} times"
+        )
+
+    def sign_liveness_v2_bytes(
         self,
         *,
         device_id: str,
         boot_id: int,
         capability_hash: str,
+        runtime_seq: int,
     ) -> bytes:
-        """Allocate a sequence and sign one liveness message.
+        """Sign one ``v`` 2 message, recording its entry at a signing start read first.
 
-        Refuses when the device is not currently supervised. That refusal
-        is the whole mechanism: a runtime that has stopped receiving from
-        a device must stop asserting that it is watching, and the device
-        has no way to check, so this side must not be able to publish by
-        accident.
+        No await between the collision check and the recording, so no other
+        signing can take the nonce in between. A signing that fails discards
+        its entry; whatever its recording evicted stays evicted.
         """
-        if not self._supervisor.supervised(
-            device_id=device_id, boot_id=boot_id, capability_hash=capability_hash
-        ):
-            raise FirmwareLivenessError(
-                f"{device_id}: not supervised — no accepted telemetry for this "
-                f"boot and manifest epoch within the supervision window"
+        nonce = self._fresh_nonce()
+        liveness = build_liveness_bytes(
+            boot_id=boot_id,
+            capability_hash=capability_hash,
+            device_id=device_id,
+            runtime_seq=runtime_seq,
+            nonce=nonce,
+        )
+        signing_start: int | None = None
+        if self._table is not None:
+            try:
+                signing_start = self._clock()
+            except Exception:
+                logger.warning(
+                    "[firmware-liveness] signing clock unreadable", exc_info=True
+                )
+        recorded = False
+        if self._table is not None and signing_start is not None:
+            self._table.record(
+                LivenessEntry(
+                    nonce=nonce,
+                    device_id=device_id,
+                    boot_id=boot_id,
+                    capability_hash=capability_hash,
+                    signing_start_ns=signing_start,
+                )
             )
+            recorded = True
         try:
-            runtime_seq = await self._store.allocate_firmware_runtime_seq(
+            return self.sign_liveness_bytes(liveness)
+        except BaseException:
+            if recorded and self._table is not None:
+                self._table.discard(nonce)
+            raise
+
+    async def _allocate(self, device_id: str, capability_hash: str) -> int:
+        try:
+            runtime_seq: int = await self._store.allocate_firmware_runtime_seq(
                 device_id, capability_hash=capability_hash
             )
+            return runtime_seq
         except PermissionError as exc:
             raise FirmwareLivenessError(
                 f"{device_id}: revoked, unapproved, unconfirmed or re-manifested "
@@ -320,6 +406,37 @@ class FirmwareLivenessSigner:
             # An exhausted counter: the device cannot accept a higher value in
             # this boot, so this is a refusal, not a failed delivery.
             raise FirmwareLivenessError(f"{device_id}: {exc}") from exc
+
+    def _require_supervised(
+        self, *, device_id: str, boot_id: int, capability_hash: str
+    ) -> None:
+        # The refusal is the whole mechanism: a runtime that has stopped
+        # receiving from a device must stop asserting that it is watching, and
+        # the device has no way to check, so this side must not be able to
+        # publish by accident.
+        if not self._supervisor.supervised(
+            device_id=device_id, boot_id=boot_id, capability_hash=capability_hash
+        ):
+            raise FirmwareLivenessError(
+                f"{device_id}: not supervised — no accepted telemetry for this "
+                f"boot and manifest epoch within the supervision window"
+            )
+
+    async def sign_liveness(
+        self,
+        *,
+        device_id: str,
+        boot_id: int,
+        capability_hash: str,
+    ) -> bytes:
+        """Allocate a sequence and sign one ``v`` 1 liveness message.
+
+        Refuses when the device is not currently supervised.
+        """
+        self._require_supervised(
+            device_id=device_id, boot_id=boot_id, capability_hash=capability_hash
+        )
+        runtime_seq = await self._allocate(device_id, capability_hash)
         liveness = build_liveness_bytes(
             boot_id=boot_id,
             capability_hash=capability_hash,
@@ -327,3 +444,35 @@ class FirmwareLivenessSigner:
             runtime_seq=runtime_seq,
         )
         return self.sign_liveness_bytes(liveness)
+
+    async def sign_liveness_pair(
+        self,
+        *,
+        device_id: str,
+        boot_id: int,
+        capability_hash: str,
+    ) -> LivenessPair:
+        """Sign one interval's ``v`` 1 message at N, then its ``v`` 2 message at N+1.
+
+        firmware-commands/v2 Publication during rollout. A ``v`` 2 failure,
+        whether allocating, generating or signing, never suppresses ``v`` 1.
+        """
+        v1 = await self.sign_liveness(
+            device_id=device_id, boot_id=boot_id, capability_hash=capability_hash
+        )
+        try:
+            runtime_seq = await self._allocate(device_id, capability_hash)
+            v2 = self.sign_liveness_v2_bytes(
+                device_id=device_id,
+                boot_id=boot_id,
+                capability_hash=capability_hash,
+                runtime_seq=runtime_seq,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[firmware-liveness] v 2 liveness for %s not signed; v 1 stands: %s",
+                device_id,
+                exc,
+            )
+            return LivenessPair(v1=v1, v2=None, v2_error=f"{type(exc).__name__}: {exc}")
+        return LivenessPair(v1=v1, v2=v2)

@@ -393,6 +393,11 @@ gateway:
     # still derives runtime_reachable from broker connectivity, so this
     # setting does not yet affect orphan state.
     liveness_interval_s: 15.0        # 1.0 .. 20.0; must be <= expiry window (60s) / 3
+    # Also publish v 2 liveness, which carries a nonce the runtime uses to
+    # bound how old a firmware reading is (firmware-commands/v2). Turn on only
+    # once every supervised device accepts v 2 and keeps command capacity from
+    # liveness; until then each interval publishes v 1 alone.
+    publish_liveness_v2: false
     # Firmware authority becomes effective only when this runtime and the
     # evidence store agree on the same anchor_epoch_id. Approval records that
     # obligation durably but cannot itself reach the store, so a confirmation

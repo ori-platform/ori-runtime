@@ -27,7 +27,7 @@ from urllib.request import Request, urlopen
 from ori.config import Config, ConfigValidationError, read_config_bytes
 from ori.utils.path_utils import shown
 
-_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\Z")
 # Named apart from `ori.config._MAX_SOURCE_CONFIG_BYTES`, which bounds the runtime's
 # own `ori.yaml` at 1 MiB. Two different documents, two different limits.
 _MAX_SOURCE_CONFIG_BYTES = 512 * 1024

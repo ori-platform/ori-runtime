@@ -22,6 +22,8 @@
 # repository is cloned into a temporary directory.
 
 set -euo pipefail
+# A set with no vendored file yet must loop over nothing, not over its glob.
+shopt -s nullglob
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APPLY="${ORI_VECTORS_APPLY:-0}"
@@ -75,6 +77,10 @@ SETS=(
   # repository's and live in tests/fixtures; this set is the contract's own
   # corpus, so it is drift-checked against ori-specs like the others.
   "firmware-telemetry:tests/vectors/firmware_telemetry:v2"
+  # firmware-commands/v2 runtime liveness at v 2. The runtime signs these
+  # messages, so the corpus holds its signer to the device's bytes. The v1
+  # liveness corpus is pinned by digest in tests/fixtures.
+  "firmware-commands:tests/vectors/firmware_commands:v2"
 )
 
 if [ -n "${ORI_SPECS_DIR:-}" ]; then

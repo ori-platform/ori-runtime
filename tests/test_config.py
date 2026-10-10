@@ -5357,6 +5357,7 @@ actions:
             "confirmation_retry_interval_s": 60.0,
             "runtime_command_key_env": "",
             "provisioner_key_env": "",
+            "publish_liveness_v2": False,
         }
 
     def test_accepts_explicit_firmware_telemetry_subscription(self, tmp_path):
@@ -5459,6 +5460,7 @@ actions:
             "confirmation_retry_interval_s": 60.0,
             "runtime_command_key_env": "ORI_FW_RUNTIME_COMMAND_KEY",
             "provisioner_key_env": "ORI_FW_PROVISIONER_KEY",
+            "publish_liveness_v2": False,
         }
 
     @pytest.mark.parametrize(
@@ -5516,6 +5518,39 @@ actions:
                         "    runtime_command_key_env: ORI_FW_RUNTIME_COMMAND_KEY\n"
                         "    provisioner_key_env: ORI_FW_PROVISIONER_KEY\n"
                         "    qos: 0\n"
+                    ),
+                )
+            )
+
+    def test_liveness_v2_is_published_only_when_asked(self, tmp_path):
+        cfg = Config.load(
+            _write_yaml(
+                tmp_path,
+                self._yaml(
+                    "  firmware_commands:\n"
+                    "    enabled: true\n"
+                    "    runtime_command_key_env: ORI_FW_RUNTIME_COMMAND_KEY\n"
+                    "    provisioner_key_env: ORI_FW_PROVISIONER_KEY\n"
+                    "    publish_liveness_v2: true\n"
+                ),
+            )
+        )
+        assert cfg.gateway.firmware_commands["publish_liveness_v2"] is True
+
+    @pytest.mark.parametrize("value", ['"true"', "1", "yes_please", "null"])
+    def test_rejects_a_liveness_v2_switch_that_is_not_a_boolean(self, tmp_path, value):
+        with pytest.raises(
+            ConfigValidationError, match="firmware_commands.publish_liveness_v2"
+        ):
+            Config.load(
+                _write_yaml(
+                    tmp_path,
+                    self._yaml(
+                        "  firmware_commands:\n"
+                        "    enabled: true\n"
+                        "    runtime_command_key_env: ORI_FW_RUNTIME_COMMAND_KEY\n"
+                        "    provisioner_key_env: ORI_FW_PROVISIONER_KEY\n"
+                        f"    publish_liveness_v2: {value}\n"
                     ),
                 )
             )

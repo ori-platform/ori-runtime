@@ -148,6 +148,27 @@ ERR_CONTROLLER_PROFILE_MISSING = "controller_profile_missing"
 ERR_CONTROLLER_PROFILE_UNEXPECTED = "controller_profile_unexpected"
 ERR_INVALID_CONTROLLER_PROFILE = "invalid_controller_profile"
 ERR_INVALID_ALARM_CHANNEL = "invalid_alarm_channel"
+# firmware-telemetry/v2 Reading Envelope at v 2, in the order the sixth step checks them.
+ERR_UNSUPPORTED_VERSION = "unsupported_version"
+ERR_LIVENESS_NONCE_AT_V1 = "liveness_nonce_at_v1"
+ERR_LIVENESS_NONCE_MISSING = "liveness_nonce_missing"
+ERR_INVALID_LIVENESS_NONCE = "invalid_liveness_nonce"
+ERR_UNEXPECTED_FIELD = "unexpected_field"
+ENVELOPE_V2_FIELDS = frozenset(
+    {
+        "v",
+        "alg",
+        "device_id",
+        "boot_id",
+        "seq",
+        "capability_hash",
+        "posture",
+        "device_uptime_ms",
+        "emitted_at_ms",
+        "liveness_nonce",
+        "readings",
+    }
+)
 
 BRIDGED_SOURCE = "foreign_device"
 BRIDGED_PROTOCOL = "modbus_rtu"
@@ -684,6 +705,35 @@ def _is_version_one(value: Any) -> bool:
     return type(value) is int and value == 1
 
 
+def is_liveness_nonce(value: Any) -> bool:
+    """Exactly 32 lowercase hexadecimal characters."""
+    return (
+        type(value) is str and len(value) == 32 and all(c in _DIGEST_HEX for c in value)
+    )
+
+
+def _envelope_version(envelope: dict[str, Any]) -> tuple[int, str | None]:
+    """The envelope's `v` and its `liveness_nonce`, under that version's grammar."""
+    version = envelope.get("v")
+    if type(version) is not int or version not in (1, 2):
+        raise FirmwareVerificationError(ERR_UNSUPPORTED_VERSION, repr(version)[:64])
+    if version == 1:
+        if "liveness_nonce" in envelope:
+            raise FirmwareVerificationError(ERR_LIVENESS_NONCE_AT_V1)
+        return 1, None
+    if "liveness_nonce" not in envelope:
+        raise FirmwareVerificationError(ERR_LIVENESS_NONCE_MISSING)
+    nonce = envelope["liveness_nonce"]
+    if nonce is not None and not is_liveness_nonce(nonce):
+        raise FirmwareVerificationError(ERR_INVALID_LIVENESS_NONCE)
+    extra = set(envelope) - ENVELOPE_V2_FIELDS
+    if extra:
+        raise FirmwareVerificationError(
+            ERR_UNEXPECTED_FIELD, ", ".join(sorted(extra))[:128]
+        )
+    return 2, nonce
+
+
 def _validate_manifest_interlocks(manifest: dict[str, Any]) -> None:
     interlocks = _require_list(manifest, "interlocks", ERR_INVALID_ENVELOPE)
     for index, interlock in enumerate(interlocks):
@@ -864,6 +914,8 @@ class TelemetryVerification:
     readings: list[dict[str, Any]] = field(default_factory=list)
     error_code: str = ""
     error_detail: str = ""
+    version: int = 0
+    liveness_nonce: str | None = None
 
     @property
     def accepted(self) -> bool:
@@ -1002,10 +1054,9 @@ def verify_telemetry_message(
             )
         envelope: dict[str, Any] = message["envelope"]
 
-        if not _is_version_one(envelope.get("v")):
-            raise FirmwareVerificationError(
-                ERR_INVALID_ENVELOPE, "unsupported envelope version"
-            )
+        # v1's consumer flow: alg, the capability hash and the signature come
+        # before any field is validated, so a v 2 envelope's nonce, posture and
+        # readings are judged only once the anchored key has signed them.
         if envelope.get("alg") != SUPPORTED_ALG:
             raise FirmwareVerificationError(
                 ERR_UNSUPPORTED_ALG, str(envelope.get("alg"))
@@ -1028,6 +1079,16 @@ def verify_telemetry_message(
                 ERR_CAPABILITY_HASH_MISMATCH,
                 "capability hash does not match pinned manifest",
             )
+
+        # Signature over the canonical envelope bytes, against the
+        # anchored key only — never a key carried in the message.
+        canonical = canonical_json_bytes(envelope)
+        public_key = _decode_public_key(anchor_public_key_b64)
+        signature = _decode_wire_signature(str(message.get("signature", "")))
+        _verify_signature(public_key, canonical, signature)
+
+        # The sixth step, whose version checks come first (firmware-telemetry/v2).
+        version, liveness_nonce = _envelope_version(envelope)
 
         posture = _require_str(envelope, "posture", ERR_INVALID_POSTURE)
         if posture not in POSTURES:
@@ -1064,13 +1125,6 @@ def verify_telemetry_message(
             for i, r in enumerate(readings_raw)
         ]
 
-        # Signature over the canonical envelope bytes, against the
-        # anchored key only — never a key carried in the message.
-        canonical = canonical_json_bytes(envelope)
-        public_key = _decode_public_key(anchor_public_key_b64)
-        signature = _decode_wire_signature(str(message.get("signature", "")))
-        _verify_signature(public_key, canonical, signature)
-
         # Freshness after signature: a rejected counter on a validly
         # signed envelope is a replay signal worth recording as such.
         if boot_id < last_boot_id:
@@ -1102,6 +1156,8 @@ def verify_telemetry_message(
             device_uptime_ms=uptime,
             is_heartbeat=len(readings) == 0,
             readings=readings,
+            version=version,
+            liveness_nonce=liveness_nonce,
         )
     except FirmwareVerificationError as exc:
         return rejected(exc.code, exc.detail)

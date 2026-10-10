@@ -25,7 +25,7 @@ from cryptography.hazmat.primitives.serialization import (
 from ori.security.release_bundles import ReleaseBundleError, ReleaseKey
 
 _ARN_RE = re.compile(
-    r"^arn:aws:kms:(?P<region>[a-z0-9-]+):[0-9]{12}:key/[0-9a-f-]{36}$"
+    r"^arn:aws:kms:(?P<region>[a-z0-9-]+):[0-9]{12}:key/[0-9a-f-]{36}\Z"
 )
 _ALGORITHM = "ED25519_SHA_512"
 

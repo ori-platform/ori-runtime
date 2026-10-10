@@ -31,7 +31,7 @@ from ori.utils.path_utils import shown
 
 _VERSION_RE = re.compile(
     r"^(?P<major>[0-9]+)\.(?P<minor>[0-9]+)\.(?P<patch>[0-9]+)"
-    r"(?:-(?P<suffix>[a-zA-Z0-9][a-zA-Z0-9.-]*))?$"
+    r"(?:-(?P<suffix>[a-zA-Z0-9][a-zA-Z0-9.-]*))?\Z"
 )
 
 

@@ -172,7 +172,7 @@ def _refuse_asynchronous_hooks(skill_name: str, hooks: Any) -> None:
             )
 
 
-_TRIGGER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+_TRIGGER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*\Z")
 _HISTORY_PLACEHOLDER_PATTERN = re.compile(r"\{history\.[^{}]+\}")
 _MAX_HISTORY_PLACEHOLDERS = 16
 _BUNDLED_SIGNATURE_SENTINEL = "bundled"
@@ -235,7 +235,7 @@ _MAX_DIRECTORY_ENTRIES = 4096
 _MAX_NAME_LENGTH = 64
 _MAX_AUTHOR_LENGTH = 128
 _MAX_VERSION_LENGTH = 32
-_SKILL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_SKILL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
 
 # ── Exceptions ────────────────────────────────────────────────────────────────

@@ -321,6 +321,11 @@ Reply YES-AB12CD34 to approve  |  Reply NO-AB12CD34 to cancel
 Auto-cancel in 5 minutes if no response.
 ```
 
+`Measured:` is the reading's own time. A firmware device reports none, so for
+its readings the line reads `not reported by device`, followed by `polled no
+more than A ago, as of T` when the runtime can bound how long ago the device
+polled.
+
 The message is delivered over SMS (primary for Nigeria deployments) with automatic
 failover to WhatsApp when SMS is unavailable, or WhatsApp-first when configured.
 The same message format is used on both channels.

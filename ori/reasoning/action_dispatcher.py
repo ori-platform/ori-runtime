@@ -555,8 +555,13 @@ class ActionDispatcher:
         evidence_attestor: Any = None,
         binding_seq_in_force: Callable[[], int | None] | None = None,
         authority_facts: Callable[[str | None], Any] | None = None,
+        measured_time: Callable[[Any, str], str | None] | None = None,
     ) -> None:
         self._state_store = state_store
+        # What the approval request's Measured line may say about a reading,
+        # given the device timezone: None keeps the reading's own timestamp.
+        # Supplied by the runtime, so nothing here reads where a reading came from.
+        self._measured_time = measured_time
         # The commissioned binding in force when a physical action is logged,
         # looked up at the moment of logging so a revision between two actions
         # attributes each to the arrangement it was taken under.
@@ -2600,6 +2605,7 @@ class ActionDispatcher:
             device_timezone=self._config.get("device_timezone", "Africa/Lagos"),
             proposal_id=proposal_id,
             received_at_ms=detected_at_ms,
+            reading=context.event.reading if context.event else None,
         )
         approval_alert = build_outbound_alert(
             intent=AlertIntent.TIER_C_APPROVAL,
@@ -3577,6 +3583,7 @@ class ActionDispatcher:
             device_timezone=self._config.get("device_timezone", "Africa/Lagos"),
             proposal_id=proposal_id,
             received_at_ms=detected_at_ms,
+            reading=context.event.reading if context.event else None,
         )
         # The provider template reads "Ori proposes {action} at {time}": the
         # time Ori proposed it, which is the runtime's own clock, never the
@@ -4407,12 +4414,15 @@ class ActionDispatcher:
         device_timezone: str = "Africa/Lagos",
         proposal_id: str | None = None,
         received_at_ms: int | None = None,
+        reading: Any = None,
     ) -> str:
         """Format the WhatsApp/SMS approval request message.
 
         Args:
             device_id: The device that triggered the action.
             timestamp_ms: The reading's own time, as the device reported it.
+                Not shown where the runtime's ``measured_time`` states otherwise.
+            reading: The triggering reading, handed to ``measured_time``.
             received_at_ms: The runtime's clock when it saw the reading; now
                 when not given. Shown beside the measured time, under its own
                 name, so a device clock that runs ahead is visible rather
@@ -4429,7 +4439,7 @@ class ActionDispatcher:
         Returns:
             Formatted approval message string matching the README template.
         """
-        measured_time = self._format_local_time(timestamp_ms, device_timezone)
+        measured_time = self._measured_line(reading, timestamp_ms, device_timezone)
         detected_time = self._format_local_time(
             received_at_ms if received_at_ms and received_at_ms > 0 else now_ms(),
             device_timezone,
@@ -4468,6 +4478,22 @@ class ActionDispatcher:
             f"Bare YES/NO is accepted only for the active pending proposal.\n"
             f"Auto-cancel in {timeout_seconds} seconds if no response."
         )
+
+    def _measured_line(
+        self, reading: Any, timestamp_ms: int, device_timezone: str
+    ) -> str:
+        """The reading's own time, unless the runtime says what else Measured may claim."""
+        if self._measured_time is not None:
+            try:
+                stated = self._measured_time(reading, device_timezone)
+            except Exception:
+                # A statement that cannot be composed claims no time at all,
+                # rather than falling back to a timestamp it may not describe.
+                logger.exception("ActionDispatcher: could not state the measured time")
+                return "unavailable"
+            if stated is not None:
+                return stated
+        return self._format_local_time(timestamp_ms, device_timezone)
 
     @staticmethod
     def _format_local_time(timestamp_ms: int, device_timezone: str) -> str:

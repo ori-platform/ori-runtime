@@ -644,7 +644,9 @@ The approval message template that appears on the operator's WhatsApp:
 ```text
 ORI ALERT — Action Required
 Device: {device_id}
-Measured: {day_name} {HH:MM}   ← the reading's own time, as the device reported it
+Measured: {day_name} {HH:MM}   ← the reading's own time, as the device reported it;
+                               for a firmware reading "not reported by device",
+                               then "polled no more than A ago, as of T" when bounded
 Detected: {day_name} {HH:MM}   ← the runtime's clock when it saw the reading
                                both local to device.timezone (default: Africa/Lagos)
 

@@ -237,6 +237,9 @@ CREATE TABLE IF NOT EXISTS tier_c_decision_log (
     sensor_type              TEXT    NOT NULL DEFAULT '',
     reading_value            REAL,
     reading_unit             TEXT    NOT NULL DEFAULT '',
+    -- The reading's timestamp: the producer's own time where it reports one.
+    -- A firmware device reports none, so for its readings this is the time the
+    -- runtime received the reading, never when it was measured.
     reading_timestamp        INTEGER,
     history_window_json      TEXT    NOT NULL DEFAULT 'null',
     skill_name               TEXT    NOT NULL DEFAULT '',
@@ -905,7 +908,10 @@ _HISTORY_DDL_STATEMENTS: tuple[str, ...] = (
     sensor_type TEXT    NOT NULL,
     value       REAL    NOT NULL,
     unit        TEXT    NOT NULL,
-    timestamp   INTEGER NOT NULL,   -- the producer's clock, kept raw, never a ranking key
+    -- The producer's clock, kept raw, never a ranking key. A firmware device
+    -- reports no measurement time, so for its readings this is the runtime's
+    -- receipt time.
+    timestamp   INTEGER NOT NULL,
     quality     REAL    NOT NULL,
     metadata    TEXT    NOT NULL DEFAULT '{}',
     received_at_ms INTEGER NOT NULL CHECK (received_at_ms > 0)  -- the store's clock at insert

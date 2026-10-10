@@ -144,7 +144,10 @@ detected the risk, proposed the action, or timed out — never the reading's own
 timestamp, which a device reports from a clock nobody can vouch for. The Tier C
 approval body carries both, under their own names (`Measured:` and
 `Detected:`), so a device clock that runs ahead is visible rather than
-corrected. A Tier A body carries whatever the skill composed, and the runtime's
+corrected. A firmware device reports no measurement time, so for its readings
+`Measured:` reads `not reported by device`, followed by `polled no more than A
+ago, as of T` when the runtime that signed the reading's liveness nonce can
+bound how long ago the device polled. A Tier A body carries whatever the skill composed, and the runtime's
 fallback body carries the value alone.
 
 Template wording must be purpose-specific and fixed around those fields. Do not

@@ -278,6 +278,10 @@ NOT_HOLDERS = {
         "in-memory alarm-word snapshots and a clock; it holds no key and "
         "publishes nothing"
     ),
+    "_firmware_reading_age": (
+        "the liveness nonce table and the signing starts matched against it, in "
+        "memory; it holds no key, no topic and no store, and publishes nothing"
+    ),
 }
 
 #: Where the authority keys come from, and the builders that sign with them.
@@ -479,6 +483,13 @@ RUNTIME_TOUCHES: dict[str, str] = {
     ),
     "_build_firmware_command_service|str|provisioner_key_env": (
         "the construction site loads the provisioner key into the service"
+    ),
+    "_firmware_reading_age|load|firmware_commands": (
+        "sizes the liveness table from whether command egress is enabled and "
+        "its liveness interval; it builds nothing that signs or publishes"
+    ),
+    "_firmware_reading_age|str|firmware_commands": (
+        "the configuration key the table sizing reads"
     ),
     "_build_firmware_liveness_stack|load|firmware_commands": (
         "composition root: reads whether command egress is enabled"
@@ -1859,6 +1870,10 @@ def _fold(text: str) -> str:
     for device in FIRMWARE_DEVICES:
         text = text.replace(f"{device}:0", "<sensor>").replace(device, "<source>")
     text = text.replace(SENSOR, "<sensor>")
+    # What Measured may claim depends on whether the producer reports a
+    # measurement time (firmware-telemetry/v2 What a receiver may present), and
+    # it is folded only for that reason; the rest of the message is compared.
+    text = re.sub(r"Measured: [^\\\n]*", "Measured: <measured>", text)
     text = re.sub(r"\b\d{1,2}:\d{2}\b", "<hh:mm>", text)
     return re.sub(r"\b(Mon|Tues|Wednes|Thurs|Fri|Satur|Sun)day\b", "<day>", text)
 

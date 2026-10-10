@@ -61,6 +61,17 @@ def telemetry_message(case_name: str) -> dict:
     return {"envelope": copy.deepcopy(case["input"]), "signature": wire_signature(case)}
 
 
+def signed_envelope(envelope: dict) -> dict:
+    """An envelope signed with the golden seed, so field checks are reached."""
+    signature = Ed25519PrivateKey.from_private_bytes(GOLDEN_SEED).sign(
+        canonical_json_bytes(envelope)
+    )
+    return {
+        "envelope": envelope,
+        "signature": "ed25519:" + base64.b64encode(signature).decode("ascii"),
+    }
+
+
 def manifest_message(case_name: str) -> dict:
     case = CASES[case_name]
     return {
@@ -559,6 +570,7 @@ class TestFailClosed:
     def test_extra_reading_fields_rejected(self) -> None:
         message = telemetry_message("telemetry_single_reading")
         message["envelope"]["readings"][0]["note"] = "extra"
+        message = signed_envelope(message["envelope"])
         result = verify_telemetry_message(
             message,
             anchor_device_id=SEALED_DEVICE,

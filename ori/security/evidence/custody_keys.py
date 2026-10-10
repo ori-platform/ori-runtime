@@ -36,12 +36,12 @@ CUSTODY_KEY_ID_BYTES = 16
 
 #: Exact wire shape. A verifier compares identifiers as bytes and never
 #: case-folds, so uppercase hex is malformed rather than equivalent.
-CUSTODY_KEY_ID_RE = re.compile(r"^hkdf-sha256:[0-9a-f]{32}$")
+CUSTODY_KEY_ID_RE = re.compile(r"^hkdf-sha256:[0-9a-f]{32}\Z")
 
 #: The authenticator's exact shape. Checked before the MAC is compared, so a
 #: value that was never a candidate authenticator is malformed rather than a
 #: failed authentication.
-CUSTODY_MAC_RE = re.compile(r"^hmac-sha256:[0-9a-f]{64}$")
+CUSTODY_MAC_RE = re.compile(r"^hmac-sha256:[0-9a-f]{64}\Z")
 
 #: The purpose this key material is registered under. Named here so the
 #: verifier can tell "held for something else" from "not held at all".

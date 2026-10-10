@@ -673,10 +673,10 @@ _KINDS_BY_TIER: dict[str, frozenset[str]] = {
     "D": frozenset({"tier_d_profile", "tier_d_qualification", "tier_d_legacy_skill"}),
 }
 
-_PROPOSAL_ID = re.compile(r"^[A-Z0-9]{8}$")
-_PROFILE_ID = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+\.v[1-9][0-9]*$")
-_SKILL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
-_FIXTURE_HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
+_PROPOSAL_ID = re.compile(r"^[A-Z0-9]{8}\Z")
+_PROFILE_ID = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+\.v[1-9][0-9]*\Z")
+_SKILL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+_FIXTURE_HASH = re.compile(r"^sha256:[0-9a-f]{64}\Z")
 _FORBIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Cs"})
 _INTEGER_MAX = 9007199254740991
 
