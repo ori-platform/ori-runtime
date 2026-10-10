@@ -134,6 +134,24 @@ release is cut.
 
 ## Fixed
 
+- The health socket compares a request's bytes exactly. A request is the
+  bytes up to and including its first line feed, or up to the end of the
+  stream; what follows the line feed is discarded, not judged, so a request
+  is the same however the transport splits it. The socket answers
+  `GET_HEALTH` and the empty request, each optionally ended by its line
+  feed, and refuses everything else as `unsupported_request`. Before this,
+  only the first read was judged, invalid UTF-8 was dropped and surrounding
+  whitespace was stripped as Python defines it, which includes the
+  separators `\x1c` to `\x1f`, NEL, NBSP and U+2028, so requests such as
+  `GET_\xffHEALTH` were answered. A request longer than 1024 bytes is
+  `request_too_large` however it arrives. A request not completed within 5
+  seconds is refused as `unsupported_request` and its connection released,
+  where an idle client could previously hold a connection open
+  indefinitely; a bare `GET_HEALTH` sent with neither a line feed nor a
+  half-close now waits for that bound and is refused. A client that hangs
+  up before reading the answer no longer logs an unhandled-exception
+  traceback. `ori-cli`, the CLI bridge and the Python SDK already send an
+  accepted form and end it.
 - The Tier C approval request no longer presents a firmware reading's receipt
   time as its measurement time. The device reports none, so the "Measured"
   line reads "not reported by device", followed by "polled no more than A
