@@ -4,8 +4,10 @@
 import asyncio
 import errno
 import json
+import logging
 import os
 import socket
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -13,7 +15,7 @@ from typing import Any, cast
 import pytest
 
 from ori.runtime import OriRuntime
-from ori.runtime_health_socket import RuntimeHealthSocketServer
+from ori.runtime_health_socket import RuntimeHealthSocketServer, _peer_disconnected
 from ori.state.store import StateStore
 from ori.utils.time_utils import now_ms
 
@@ -68,6 +70,215 @@ async def test_health_socket_serves_snapshot_and_rejects_unsupported_request():
         await server.close()
 
     assert not os.path.exists(socket_path)
+
+
+async def _exchange_and_half_close(path: str, request: bytes) -> dict[str, Any]:
+    reader, writer = await asyncio.open_unix_connection(path)
+    writer.write(request)
+    writer.write_eof()
+    await writer.drain()
+    raw = await reader.readline()
+    writer.close()
+    await writer.wait_closed()
+    return json.loads(raw.decode("utf-8"))
+
+
+_ACCEPTED_REQUESTS = [
+    b"",
+    b"\n",
+    b"GET_HEALTH",
+    b"GET_HEALTH\n",
+    # Line-framed: what follows the first line feed is discarded, not judged.
+    b"\n\n",
+    b"GET_HEALTH\n\n",
+    b"\nGET_HEALTH",
+    b"GET_HEALTH\n\xffjunk",
+]
+
+_REFUSED_REQUESTS = [
+    b"GET_\xffHEALTH\n",
+    b"\xff",
+    b"GET_HEALTH\xff",
+    b"GET_HEALTH\r\n",
+    b"\r",
+    b" GET_HEALTH",
+    b"GET_HEALTH ",
+    b"\tGET_HEALTH\n",
+    b"\x1cGET_HEALTH\x1d",
+    b"\x0bGET_HEALTH\x0c",
+    b"\x1e",
+    b"\x1f\n",
+    " GET_HEALTH".encode(),
+    "GET_HEALTH\u0085".encode(),
+    "GET_HEALTH ".encode(),
+    " ".encode(),
+    "　GET_HEALTH\n".encode(),
+    "﻿GET_HEALTH".encode(),
+    b"GET_HEALTH\x00",
+    b"\x00",
+    b"get_health\n",
+    b"GET_HEALTH now\n",
+]
+
+
+@pytest.mark.asyncio
+async def test_health_socket_accepts_exactly_the_contract_framing():
+    _require_unix_socket_bindable()
+    socket_path = _short_socket_path("framing")
+    server = RuntimeHealthSocketServer(
+        socket_path=socket_path,
+        mode=0o660,
+        snapshot_provider=lambda: {"device_id": "dev-01"},
+    )
+    bound = await server.start()
+    try:
+        for request in _ACCEPTED_REQUESTS:
+            resp = await _exchange_and_half_close(bound, request)
+            assert resp["ok"] is True, request
+            assert resp["health"]["device_id"] == "dev-01", request
+        for request in _REFUSED_REQUESTS:
+            resp = await _exchange_and_half_close(bound, request)
+            assert resp["ok"] is False, request
+            assert resp["error"]["code"] == "unsupported_request", request
+    finally:
+        await server.close()
+
+
+def _exchange_in_pieces_blocking(
+    path: str, pieces: list[bytes], half_close: bool
+) -> dict[str, Any]:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(10)
+        client.connect(path)
+        try:
+            for piece in pieces:
+                client.sendall(piece)
+                time.sleep(0.05)
+            if half_close:
+                client.shutdown(socket.SHUT_WR)
+        except OSError:
+            # The server answers at the request's line feed and closes; later
+            # pieces have nowhere to go, and the answer is already sent.
+            pass
+        received = bytearray()
+        while b"\n" not in received:
+            chunk = client.recv(65536)
+            if not chunk:
+                break
+            received += chunk
+    return json.loads(bytes(received).decode("utf-8"))
+
+
+async def _exchange_in_pieces(
+    path: str, pieces: list[bytes], *, half_close: bool
+) -> dict[str, Any]:
+    return await asyncio.to_thread(
+        _exchange_in_pieces_blocking, path, pieces, half_close
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("pieces", "half_close", "code"),
+    [
+        ([b"GET_", b"HEALTH\n"], False, None),
+        ([b"GET_", b"HEALTH"], True, None),
+        ([b"G", b"E", b"T_HEALTH", b"\n"], False, None),
+        ([b"\n"], False, None),
+        ([b"GET_HEALTH\n\xffjunk"], False, None),
+        ([b"GET_HEALTH\n", b"\xffjunk"], False, None),
+        ([b"GET_HEALTH", b"\n\n"], False, None),
+        ([b"\n", b"\n"], False, None),
+        ([b"GET_\xff", b"HEALTH\n", b"tail"], False, "unsupported_request"),
+        ([b"x" * 1023, b"\n"], False, "unsupported_request"),
+        ([b"x" * 1024, b"\n"], False, "request_too_large"),
+        ([b"x" * 1000, b"x" * 25], False, "request_too_large"),
+        ([b"x" * 1000, b"x" * 24], True, "unsupported_request"),
+    ],
+)
+async def test_a_request_is_judged_whole_however_it_arrives(pieces, half_close, code):
+    _require_unix_socket_bindable()
+    socket_path = _short_socket_path("pieces")
+    server = RuntimeHealthSocketServer(
+        socket_path=socket_path,
+        mode=0o660,
+        snapshot_provider=lambda: {"device_id": "dev-01"},
+    )
+    bound = await server.start()
+    try:
+        resp = await _exchange_in_pieces(bound, pieces, half_close=half_close)
+    finally:
+        await server.close()
+    if code is None:
+        assert resp["ok"] is True
+    else:
+        assert resp["ok"] is False
+        assert resp["error"]["code"] == code
+
+
+@pytest.mark.asyncio
+async def test_a_client_that_never_finishes_its_request_is_answered_and_released(
+    monkeypatch,
+):
+    _require_unix_socket_bindable()
+    monkeypatch.setattr(
+        "ori.runtime_health_socket._HEALTH_SOCKET_REQUEST_TIMEOUT_S", 0.2
+    )
+    socket_path = _short_socket_path("idle")
+    server = RuntimeHealthSocketServer(
+        socket_path=socket_path,
+        mode=0o660,
+        snapshot_provider=lambda: {"device_id": "dev-01"},
+    )
+    bound = await server.start()
+    try:
+        for sent in (b"", b"GET_HEALTH"):
+            reader, writer = await asyncio.open_unix_connection(bound)
+            try:
+                writer.write(sent)
+                await writer.drain()
+                raw = await asyncio.wait_for(reader.readline(), timeout=5)
+                resp = json.loads(raw.decode("utf-8"))
+                assert resp["ok"] is False, sent
+                assert resp["error"]["code"] == "unsupported_request", sent
+                assert await asyncio.wait_for(reader.read(), timeout=5) == b"", sent
+            finally:
+                writer.close()
+                await writer.wait_closed()
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_a_peer_that_hangs_up_before_the_answer_is_not_an_error(caplog):
+    _require_unix_socket_bindable()
+    socket_path = _short_socket_path("hangup")
+    served = asyncio.Event()
+
+    async def slow_snapshot() -> dict[str, Any]:
+        served.set()
+        await asyncio.sleep(0.1)
+        return {"device_id": "dev-01", "pad": "x" * 512 * 1024}
+
+    server = RuntimeHealthSocketServer(
+        socket_path=socket_path,
+        mode=0o660,
+        snapshot_provider=slow_snapshot,
+    )
+    bound = await server.start()
+    caplog.set_level(logging.ERROR)
+    try:
+        for _ in range(3):
+            served.clear()
+            _, writer = await asyncio.open_unix_connection(bound)
+            writer.write(b"GET_HEALTH\n")
+            await writer.drain()
+            await asyncio.wait_for(served.wait(), timeout=5)
+            writer.transport.abort()
+        await asyncio.sleep(0.5)
+    finally:
+        await server.close()
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
 
 @pytest.mark.asyncio
@@ -733,3 +944,19 @@ def test_cleanup_leaves_a_stale_socket_that_is_not_the_one_this_server_bound():
         assert path.exists(), "cleanup removed a socket this server never bound"
     finally:
         path.unlink(missing_ok=True)
+
+
+@pytest.mark.parametrize(
+    ("exc", "disconnected"),
+    [
+        (ConnectionResetError("Connection lost"), True),
+        (BrokenPipeError(errno.EPIPE, "Broken pipe"), True),
+        (OSError(errno.EPROTOTYPE, "Protocol wrong type for socket"), True),
+        (OSError(errno.ENOTCONN, "not connected"), True),
+        (OSError(errno.ENOSPC, "no space"), False),
+        (OSError(errno.EBADF, "bad descriptor"), False),
+        (OSError("no errno"), False),
+    ],
+)
+def test_only_a_peer_hanging_up_is_suppressed_at_the_answer(exc, disconnected):
+    assert _peer_disconnected(exc) is disconnected

@@ -38,7 +38,44 @@ logger = logging.getLogger(__name__)
 
 _HEALTH_SOCKET_MAX_REQUEST_BYTES = 1024
 _HEALTH_SOCKET_DEFAULT_DEV_FALLBACK_PATH = "/tmp/ori-health.sock"
-_HEALTH_SOCKET_ALLOWED_REQUESTS = {"", "GET_HEALTH"}
+# Compared as bytes, never decoded: each accepted request, optionally ended by
+# its line feed, and nothing else.
+_HEALTH_SOCKET_ALLOWED_REQUESTS = frozenset(
+    {b"", b"\n", b"GET_HEALTH", b"GET_HEALTH\n"}
+)
+_HEALTH_SOCKET_REQUEST_TIMEOUT_S = 5.0
+# What a peer that hangs up mid-answer raises; EPROTOTYPE is macOS's.
+_PEER_DISCONNECT_ERRNOS = frozenset(
+    {
+        errno.EPIPE,
+        errno.ECONNRESET,
+        errno.ECONNABORTED,
+        errno.ENOTCONN,
+        errno.ESHUTDOWN,
+        errno.EPROTOTYPE,
+    }
+)
+
+
+def _peer_disconnected(exc: OSError) -> bool:
+    return isinstance(exc, ConnectionError) or exc.errno in _PEER_DISCONNECT_ERRNOS
+
+
+async def _read_request(reader: asyncio.StreamReader) -> bytes:
+    """The request: bytes through its first line feed, or to end of stream.
+
+    Line-framed, so bytes after the line feed are discarded rather than
+    judged, and the request is the same however the transport split it. Past
+    the cap, what was read is returned as is for the size refusal.
+    """
+    received = bytearray()
+    while b"\n" not in received and len(received) <= _HEALTH_SOCKET_MAX_REQUEST_BYTES:
+        chunk = await reader.read(_HEALTH_SOCKET_MAX_REQUEST_BYTES + 1 - len(received))
+        if not chunk:
+            break
+        received += chunk
+    end = received.find(b"\n")
+    return bytes(received if end == -1 else received[: end + 1])
 
 
 def _socket_identity(socket_path: str) -> tuple[int, int, int] | None:
@@ -259,15 +296,24 @@ class RuntimeHealthSocketServer:
     ) -> None:
         response: dict[str, Any]
         try:
-            raw = await reader.read(_HEALTH_SOCKET_MAX_REQUEST_BYTES + 1)
-            if len(raw) > _HEALTH_SOCKET_MAX_REQUEST_BYTES:
+            try:
+                raw = await asyncio.wait_for(
+                    _read_request(reader), timeout=_HEALTH_SOCKET_REQUEST_TIMEOUT_S
+                )
+            except TimeoutError:
+                raw = None
+            if raw is None:
+                response = self._error_response(
+                    code="unsupported_request",
+                    detail="the request was not completed in time",
+                )
+            elif len(raw) > _HEALTH_SOCKET_MAX_REQUEST_BYTES:
                 response = self._error_response(
                     code="request_too_large",
                     detail="request exceeded maximum size",
                 )
             else:
-                request = raw.decode("utf-8", errors="ignore").strip()
-                if request not in _HEALTH_SOCKET_ALLOWED_REQUESTS:
+                if raw not in _HEALTH_SOCKET_ALLOWED_REQUESTS:
                     response = self._error_response(
                         code="unsupported_request",
                         detail="send GET_HEALTH or empty request",
@@ -291,9 +337,18 @@ class RuntimeHealthSocketServer:
             payload = json.dumps(response, separators=(",", ":")).encode("utf-8")
             writer.write(payload + b"\n")
             await writer.drain()
+        except OSError as exc:
+            # A peer that hangs up before reading the answer is its own
+            # business, not an error in this runtime.
+            if not _peer_disconnected(exc):
+                raise
         finally:
             writer.close()
-            await writer.wait_closed()
+            try:
+                await writer.wait_closed()
+            except OSError as exc:
+                if not _peer_disconnected(exc):
+                    raise
 
     def _error_response(self, *, code: str, detail: str) -> dict[str, Any]:
         return {
