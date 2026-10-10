@@ -9,7 +9,8 @@ per run, plus the unloaded budgets and scheduler-delay passes. Prints Markdown.
 
 A proof counts only if it asked for at least five runs and finished all of
 them, and each of them passed; held its load, judged on the tenth percentile
-of samples taken after the first minute, with samples covering the run; ran
+of samples taken after the first minute, with samples covering the run and no
+gap between them over half a minute; ran
 the same tests to the same outcome as every other run, the phone delivery
 tests among the passed; and both unloaded passes ran tests that passed, the
 held-back progress reader among them. It is hosted stress evidence, never a
@@ -30,7 +31,8 @@ MIN_FLOOR = 1.0
 SAMPLE_INTERVAL_S = 5
 SAMPLE_COVERAGE = 0.8
 SETTLE_S = 60
-PHONE_MODULE = "test_runtime_mobile_delivery_e2e"
+MAX_SAMPLE_GAP_S = 30
+PHONE_MODULE = "tests.test_runtime_mobile_delivery_e2e"
 HELD_READER = "test_faults_land_at_their_polls_however_slowly_the_output_is_read"
 
 
@@ -65,6 +67,10 @@ def read_junit(path: Path) -> JUnit | None:
         else:
             passed.add(case_id)
     return JUnit(frozenset(passed), frozenset(skipped), frozenset(failed))
+
+
+def _in_phone_module(case: str) -> bool:
+    return case.split("::", 1)[0] == PHONE_MODULE
 
 
 def read_runs(path: Path) -> list[Run]:
@@ -145,7 +151,7 @@ def main(argv: list[str]) -> int:
 
     unloaded = (
         ("budgets", "Latency budgets, unloaded", None),
-        ("stall", "Scheduler delay, unloaded", HELD_READER),
+        ("stall", "Scheduler delay, unloaded", f"{PHONE_MODULE}::{HELD_READER}"),
     )
     for name, label, required in unloaded:
         result = read_junit(proof / f"{name}.xml")
@@ -155,9 +161,7 @@ def main(argv: list[str]) -> int:
             continue
         if result.failed or not result.passed:
             problems.append(f"{label}: failed or passed nothing")
-        if required and not any(
-            case.endswith(f"::{required}") for case in result.passed
-        ):
+        if required and required not in result.passed:
             problems.append(f"{label}: {required} did not pass")
         print(
             f"- {label}: {len(result.passed)} passed, {len(result.failed)} failed, "
@@ -202,13 +206,18 @@ def main(argv: list[str]) -> int:
             due = (run.end - run.start) / SAMPLE_INTERVAL_S * SAMPLE_COVERAGE
             if len(window) < due:
                 problems.append(f"run {run.index} has too few load samples")
+            edges = [run.start] + [at for at, _ in window] + [run.end]
+            if max(b - a for a, b in zip(edges, edges[1:])) > MAX_SAMPLE_GAP_S:
+                problems.append(
+                    f"run {run.index} has a gap in its load samples over {MAX_SAMPLE_GAP_S} s"
+                )
         if p10 is None or p10 < floor:
             problems.append(f"run {run.index} held less than {floor} load per core")
         if result is None or not result.passed:
             problems.append(f"run {run.index} recorded no passing tests")
             continue
-        if not any(PHONE_MODULE in case for case in result.passed) or any(
-            PHONE_MODULE in case for case in result.skipped
+        if not any(_in_phone_module(case) for case in result.passed) or any(
+            _in_phone_module(case) for case in result.skipped
         ):
             problems.append(f"run {run.index} did not run the phone delivery tests")
         if reference is None:

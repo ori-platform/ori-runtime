@@ -138,6 +138,9 @@ def _proof(
     phone_skipped_from: int | None = None,
     budgets: str = "passed",
     held_reader: bool = True,
+    held_reader_module: str = "tests.test_runtime_mobile_delivery_e2e",
+    phone_module: str = "tests.test_runtime_mobile_delivery_e2e",
+    last_samples_s: int = 600,
 ) -> Path:
     proof = tmp_path / "proof"
     proof.mkdir()
@@ -147,21 +150,23 @@ def _proof(
         _junit(proof / "budgets.xml", ["tests.c::b1"])
     elif budgets == "skipped":
         _junit(proof / "budgets.xml", [], skipped=["tests.c::b1"])
-    _junit(proof / "stall.xml", ["tests.d::s1"] + ([HELD] if held_reader else []))
+    held = held_reader_module + "::" + HELD.split("::")[1]
+    _junit(proof / "stall.xml", ["tests.d::s1"] + ([held] if held_reader else []))
+    phone = phone_module + "::test_delivers"
     lines, samples = [], []
     for i in range(1, runs + 1):
         start = 10_000 * i
         lines.append(f"{start} start {i}")
         if finished is None or i <= finished:
             lines.append(f"{start + 600} end {i} {run_status if i == runs else 0}")
-        for t in range(0, 601, sample_every):
+        for t in range(0, last_samples_s + 1, sample_every):
             value = tail_load if tail_load is not None and t > 480 else load
             samples.append(f"{start + t} {value:.2f} 0 0")
         skip_phone = phone_skipped_from is not None and i >= phone_skipped_from
         _junit(
             proof / f"run-{i}.xml",
-            ["tests.a::t1"] + ([] if skip_phone else [PHONE]),
-            skipped=[PHONE] if skip_phone else [],
+            ["tests.a::t1"] + ([] if skip_phone else [phone]),
+            skipped=[phone] if skip_phone else [],
         )
     (proof / "runs.txt").write_text("\n".join(lines) + "\n")
     (proof / "loadavg.txt").write_text("\n".join(samples) + "\n")
@@ -204,13 +209,24 @@ def test_a_proof_that_held_its_load_and_passed_counts(tmp_path, capsys):
         (
             {"held_reader": False},
             {},
-            "Scheduler delay, unloaded: " + HELD.split("::")[1],
+            "Scheduler delay, unloaded: " + HELD,
         ),
         ({}, {"floor": "0"}, "floor 0.0 is outside 1.0..6.5"),
         ({}, {"floor": "7"}, "floor 7.0 is outside 1.0..6.5"),
         ({"sample_every": 120}, {}, "too few load samples"),
         ({"tail_load": 0.4}, {}, "held less than 5.0 load per core"),
         ({"runs": 0}, {}, "0 of 5 runs finished"),
+        ({"last_samples_s": 480}, {}, "gap in its load samples over 30 s"),
+        (
+            {"held_reader_module": "tests.test_load_proof"},
+            {},
+            "Scheduler delay, unloaded: tests.test_runtime_mobile_delivery_e2e::",
+        ),
+        (
+            {"phone_module": "tests.test_runtime_mobile_delivery_e2e_extra"},
+            {},
+            "did not run the phone delivery tests",
+        ),
     ],
 )
 def test_a_proof_short_of_anything_does_not_count(
@@ -233,7 +249,8 @@ def test_the_judge_is_the_workflow_s_own_revision():
 def test_inputs_refuse_fewer_than_five_runs_and_a_floor_off_its_range():
     run = _steps()["Validate inputs"]["run"]
     assert "^([5-9]|[1-9][0-9])$" in run
-    assert "1.0 <= f <= t" in run
+    assert "1.0 <= f <= t <= 20.0" in run
+    assert "os.environ" in run
 
 
 def test_one_failed_unloaded_pass_does_not_cost_the_loaded_runs():
@@ -242,7 +259,15 @@ def test_one_failed_unloaded_pass_does_not_cost_the_loaded_runs():
         "Start the burners and the load sampler",
         "Run the full suite under load",
     ):
-        assert steps[name].get("if") == "${{ !cancelled() }}", name
+        assert steps[name].get("if") == (
+            "${{ !cancelled() && steps.validate.outcome == 'success' "
+            "&& steps.confirm.outcome == 'success' }}"
+        ), name
+    for step in steps.values():
+        for line in step.get("run", "").splitlines():
+            if "python" in line:
+                assert "${TARGET}" not in line and "$TARGET" not in line, line
+                assert "${FLOOR}" not in line and "$FLOOR" not in line, line
     run = steps["Run the full suite under load"]["run"]
     assert "-n auto" not in run
     assert "upload" not in run

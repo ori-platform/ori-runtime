@@ -58,6 +58,7 @@ jobs:
           egress-policy: audit
 
       - name: Validate inputs
+        id: validate
         env:
           SHA: ${{ inputs.sha }}
           RUNS: ${{ inputs.runs }}
@@ -66,9 +67,9 @@ jobs:
         run: |
           [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "sha must be a full 40-character commit"; exit 1; }
           [[ "$RUNS" =~ ^([5-9]|[1-9][0-9])$ ]] || { echo "runs must be 5..99"; exit 1; }
-          [[ "$TARGET" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "target_per_core must be a number"; exit 1; }
+          [[ "$TARGET" =~ ^([1-9]|1[0-9]|20)(\.[0-9]+)?$ ]] || { echo "target_per_core must be a number from 1 to 20"; exit 1; }
           [[ "$FLOOR" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "floor_per_core must be a number"; exit 1; }
-          python3 -c "import sys; f, t = float('$FLOOR'), float('$TARGET'); sys.exit(0 if 1.0 <= f <= t else 1)" \
+          python3 -c "import os, sys; f, t = float(os.environ['FLOOR']), float(os.environ['TARGET']); sys.exit(0 if 1.0 <= f <= t <= 20.0 else 1)" \
             || { echo "floor_per_core must be at least 1.0 and at most target_per_core"; exit 1; }
 
       # The judge is this workflow's own revision, never the commit under
@@ -92,6 +93,7 @@ jobs:
           fetch-depth: 0
 
       - name: Confirm the checked-out commit
+        id: confirm
         env:
           SHA: ${{ inputs.sha }}
         run: |
@@ -178,7 +180,7 @@ jobs:
       # Loaded steps run even when an unloaded pass failed, so one flaky pass
       # does not cost the loaded evidence; the report still refuses the proof.
       - name: Start the burners and the load sampler
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.validate.outcome == 'success' && steps.confirm.outcome == 'success' }}
         env:
           TARGET: ${{ inputs.target_per_core }}
           FLOOR: ${{ inputs.floor_per_core }}
@@ -191,7 +193,7 @@ jobs:
           # spinners make up the rest of the target. One small disk writer adds
           # I/O pressure on top, so held load can exceed the target; what each
           # run actually held is measured, not assumed.
-          total="$(python -c "import math; print(math.ceil(${TARGET} * ${cores}))")"
+          total="$(CORES="${cores}" python3 -c "import math, os; print(math.ceil(float(os.environ['TARGET']) * int(os.environ['CORES'])))")"
           cpu_workers="$(( total - workers ))"
           [ "$cpu_workers" -ge 1 ] || cpu_workers=1
           mkdir -p "${RUNNER_TEMP}/stress"
@@ -218,7 +220,7 @@ jobs:
       # The complete functional suite, phone delivery included, with no
       # retries: every run is reported, and one failure fails the proof.
       - name: Run the full suite under load
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.validate.outcome == 'success' && steps.confirm.outcome == 'success' }}
         env:
           RUNS: ${{ inputs.runs }}
           ORI_REQUIRE_MQTT_BROKER: "1"
