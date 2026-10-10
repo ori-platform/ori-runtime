@@ -1,0 +1,276 @@
+name: Load proof
+
+# Hosted stress evidence for the suite's tolerance of a loaded host: the full
+# functional suite, run repeatedly on one reviewed commit while burners hold
+# the runner's cores oversubscribed. It is triggered by hand, never on a push,
+# and closes nothing by itself: the maintainer reads the artifacts.
+#
+# It runs only when dispatched on main, and proves exactly the commit main
+# pointed to at dispatch (github.sha), which every artifact records. Nothing
+# else is ever checked out, so no unmerged code runs with this workflow's
+# access. Being on main admits a commit; it does not prove it safe.
+#
+# Load average is not comparable across machines; it counts runnable and
+# blocked tasks, so the target is per core (load average / CPU count), and
+# every run records the CPU count, the workers, the stress configuration and
+# the load it actually held. A run whose held load falls short of the floor
+# does not count. This is not a reproduction of any other host's scheduling,
+# and it says nothing about physical safety latency.
+
+on:
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Loaded full-suite runs (at least 5)
+        required: true
+        default: "5"
+        type: string
+      target_per_core:
+        description: Load average per core the burners aim for
+        required: true
+        default: "6.5"
+        type: string
+      floor_per_core:
+        description: Load per core a run's tenth percentile must hold to count (1.0 up to the target)
+        required: true
+        default: "5.0"
+        type: string
+
+permissions:
+  contents: read
+  id-token: none
+
+concurrency:
+  group: load-proof
+  cancel-in-progress: false
+
+jobs:
+  load-proof:
+    name: Load proof
+    # Refused before any checkout or installation unless dispatched on main.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Hosted runners stop at six hours; this stops first, and every loaded run
+    # has its own bound below.
+    timeout-minutes: 330
+
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2
+        with:
+          egress-policy: audit
+
+      - name: Validate inputs
+        id: validate
+        env:
+          RUNS: ${{ inputs.runs }}
+          TARGET: ${{ inputs.target_per_core }}
+          FLOOR: ${{ inputs.floor_per_core }}
+        run: |
+          [[ "$RUNS" =~ ^([5-9]|[1-9][0-9])$ ]] || { echo "runs must be 5..99"; exit 1; }
+          [[ "$TARGET" =~ ^([1-9]|1[0-9]|20)(\.[0-9]+)?$ ]] || { echo "target_per_core must be a number from 1 to 20"; exit 1; }
+          [[ "$FLOOR" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "floor_per_core must be a number"; exit 1; }
+          python3 -c "import os, sys; f, t = float(os.environ['FLOOR']), float(os.environ['TARGET']); sys.exit(0 if 1.0 <= f <= t <= 20.0 else 1)" \
+            || { echo "floor_per_core must be at least 1.0 and at most target_per_core"; exit 1; }
+
+      - name: Checkout the dispatched commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+
+      # The report that judges the proof is copied outside the checkout before
+      # anything from the commit runs. It is not a sandbox: the commit's tests
+      # run as the same user, on the same runner, as the judge and the evidence.
+      - name: Confirm the commit and keep the judge outside the checkout
+        id: confirm
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$SHA"
+          mkdir -p "${RUNNER_TEMP}/proof" "${RUNNER_TEMP}/judge"
+          git log -1 --format='%H %s' > "${RUNNER_TEMP}/proof/commit.txt"
+          cp scripts/load_proof_report.py "${RUNNER_TEMP}/judge/"
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install hash-locked dependencies
+        run: |
+          python -m pip install --require-hashes -r requirements/dev.txt
+          python -m pip install --no-deps -e .
+
+      - name: Refuse a retry plugin that could mask a failure
+        run: |
+          if python -m pip show pytest-rerunfailures pytest-retry flaky >/dev/null 2>&1; then
+            echo "a retry plugin is installed"; exit 1
+          fi
+
+      - name: Install the MQTT broker and the burners
+        timeout-minutes: 10
+        run: |
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
+            install -y --no-install-recommends mosquitto stress-ng
+          sudo systemctl stop mosquitto || true
+          command -v mosquitto
+          command -v stress-ng
+
+      # The phone tests build the Rust payload themselves; building it now, on
+      # an idle runner, keeps a compile out of the loaded runs.
+      - name: Build the phone payload
+        timeout-minutes: 20
+        run: |
+          cd mobile/ori-runtime-mobile
+          cargo build --locked
+
+      # The wall-clock budgets hold only one test at a time on an idle runner,
+      # so they run before any burner starts. The module list is CI's own
+      # step, read from ci.yml, so the two cannot drift apart.
+      - name: Run the latency budgets alone, unloaded
+        timeout-minutes: 20
+        run: |
+          python - <<'PY'
+          import os, subprocess, sys
+          sys.path.insert(0, os.path.join(os.environ["RUNNER_TEMP"], "judge"))
+          from load_proof_report import budgets_argv, collect_argv
+          argv = budgets_argv(".github/workflows/ci.yml")
+          proof = os.path.join(os.environ["RUNNER_TEMP"], "proof")
+          # What the pass must run, collected before it runs.
+          with open(f"{proof}/inventory-budgets.txt", "w") as out:
+              subprocess.run(collect_argv(argv), stdout=out, check=True)
+          argv += [f"--junitxml={proof}/budgets.xml"]
+          with open(f"{proof}/budgets.log", "w") as log:
+              status = subprocess.run(argv, stdout=log, stderr=subprocess.STDOUT).returncode
+          print(open(f"{proof}/budgets.log").read()[-2000:])
+          sys.exit(status)
+          PY
+
+      # A deterministic scheduler delay: every event-loop iteration blocks for
+      # ORI_TEST_STALL_MS, so a test that waits a fixed window instead of the
+      # event fails every time rather than once in a while. Over the modules
+      # whose tests once failed only on a loaded host, in a fixed order, plus the
+      # phone case whose progress reader is held back.
+      - name: Run the scheduler-delay regressions, unloaded
+        timeout-minutes: 30
+        env:
+          ORI_TEST_STALL_MS: "3"
+          ORI_REQUIRE_MQTT_BROKER: "1"
+        run: |
+          targets=(
+            tests/evidence/test_inbound_route.py
+            tests/safety/test_registry.py
+            tests/test_dispatch_never_waits_on_delivery.py
+            tests/test_runtime.py::TestSkillReload
+            tests/test_tier_c_approval_sequences.py
+            tests/test_tier_d_never_waits_on_hooks.py
+            "tests/test_runtime_mobile_delivery_e2e.py::test_faults_land_at_their_polls_however_slowly_the_output_is_read"
+          )
+          pytest -q -p no:xdist -m "not hardware" --collect-only "${targets[@]}" \
+            > "${RUNNER_TEMP}/proof/inventory-stall.txt"
+          pytest -q -p no:xdist -m "not hardware" "${targets[@]}" \
+            --junitxml="${RUNNER_TEMP}/proof/stall.xml" 2>&1 | tee "${RUNNER_TEMP}/proof/stall.log"
+          test "${PIPESTATUS[0]}" -eq 0
+
+      # Loaded steps run even when an unloaded pass failed, so one flaky pass
+      # does not cost the loaded evidence; the report still refuses the proof.
+      - name: Start the burners and the load sampler
+        if: ${{ !cancelled() && steps.validate.outcome == 'success' && steps.confirm.outcome == 'success' }}
+        env:
+          TARGET: ${{ inputs.target_per_core }}
+          FLOOR: ${{ inputs.floor_per_core }}
+          RUNS: ${{ inputs.runs }}
+        run: |
+          cores="$(nproc)"
+          workers="${cores}"
+          # pytest runs exactly one worker per logical CPU (-n is set
+          # explicitly below, since -n auto counts physical cores); CPU
+          # spinners make up the rest of the target. One small disk writer adds
+          # I/O pressure on top, so held load can exceed the target; what each
+          # run actually held is measured, not assumed.
+          total="$(CORES="${cores}" python3 -c "import math, os; print(math.ceil(float(os.environ['TARGET']) * int(os.environ['CORES'])))")"
+          cpu_workers="$(( total - workers ))"
+          [ "$cpu_workers" -ge 1 ] || cpu_workers=1
+          mkdir -p "${RUNNER_TEMP}/stress"
+          {
+            echo "cores=${cores}"
+            echo "pytest_workers=${workers}"
+            echo "target_per_core=${TARGET}"
+            echo "floor_per_core=${FLOOR}"
+            echo "runs=${RUNS}"
+            echo "stress-ng --cpu ${cpu_workers} --hdd 1 --hdd-bytes 256m --timeout 320m"
+          } > "${RUNNER_TEMP}/proof/stress.txt"
+          echo "${workers}" > "${RUNNER_TEMP}/workers"
+          nohup stress-ng --cpu "${cpu_workers}" --hdd 1 --hdd-bytes 256m \
+            --temp-path "${RUNNER_TEMP}/stress" \
+            --timeout 320m > "${RUNNER_TEMP}/proof/stress-ng.log" 2>&1 &
+          echo $! > "${RUNNER_TEMP}/stress.pid"
+          nohup bash -c 'while true; do echo "$(date +%s) $(cut -d" " -f1-3 /proc/loadavg)"; sleep 5; done' \
+            > "${RUNNER_TEMP}/proof/loadavg.txt" 2>/dev/null &
+          echo $! > "${RUNNER_TEMP}/sampler.pid"
+          # Let the one-minute average climb before the first run.
+          sleep 90
+          tail -1 "${RUNNER_TEMP}/proof/loadavg.txt"
+
+      # What every loaded run must run, collected once before any of them.
+      - name: Collect the suite's inventory
+        if: ${{ !cancelled() && steps.validate.outcome == 'success' && steps.confirm.outcome == 'success' }}
+        env:
+          ORI_REQUIRE_MQTT_BROKER: "1"
+        run: |
+          pytest tests/ -q -p no:xdist -m "not hardware" --collect-only \
+            > "${RUNNER_TEMP}/proof/inventory-suite.txt"
+
+      # The complete functional suite, phone delivery included, with no
+      # retries: every run is reported, and one failure fails the proof.
+      - name: Run the full suite under load
+        if: ${{ !cancelled() && steps.validate.outcome == 'success' && steps.confirm.outcome == 'success' }}
+        env:
+          RUNS: ${{ inputs.runs }}
+          ORI_REQUIRE_MQTT_BROKER: "1"
+        run: |
+          failed=0
+          for i in $(seq 1 "$RUNS"); do
+            echo "$(date +%s) start ${i}" >> "${RUNNER_TEMP}/proof/runs.txt"
+            set +e
+            timeout 55m pytest tests/ -q -n "$(cat "${RUNNER_TEMP}/workers")" --dist loadgroup -m "not hardware" \
+              --junitxml="${RUNNER_TEMP}/proof/run-${i}.xml" \
+              > "${RUNNER_TEMP}/proof/run-${i}.log" 2>&1
+            status=$?
+            set -e
+            echo "$(date +%s) end ${i} ${status}" >> "${RUNNER_TEMP}/proof/runs.txt"
+            tail -3 "${RUNNER_TEMP}/proof/run-${i}.log"
+            [ "$status" -eq 0 ] || failed=1
+          done
+          exit "$failed"
+
+      # GitHub may force-stop a cancelled job's steps, so this is best effort;
+      # stress-ng's own --timeout and the disposable runner are the backstops.
+      - name: Stop the burners and the sampler
+        if: always()
+        run: |
+          for f in stress.pid sampler.pid; do
+            if [ -f "${RUNNER_TEMP}/${f}" ]; then kill "$(cat "${RUNNER_TEMP}/${f}")" 2>/dev/null || true; fi
+          done
+          pkill -x stress-ng 2>/dev/null || true
+          pkill -f stress-ng 2>/dev/null || true
+
+      - name: Report what each run held
+        if: always()
+        env:
+          FLOOR: ${{ inputs.floor_per_core }}
+          TARGET: ${{ inputs.target_per_core }}
+          RUNS: ${{ inputs.runs }}
+          SHA: ${{ github.sha }}
+        run: |
+          python "${RUNNER_TEMP}/judge/load_proof_report.py" \
+            "${RUNNER_TEMP}/proof" "$FLOOR" "$TARGET" "$RUNS" "$SHA" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: load-proof-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/proof
+          if-no-files-found: error
