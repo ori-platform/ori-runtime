@@ -435,3 +435,27 @@ def test_the_workflow_collects_budgets_through_the_judge_s_helpers():
     run = _steps()["Run the latency budgets alone, unloaded"]["run"]
     assert "budgets_argv(" in run and "collect_argv(argv)" in run
     assert '"--collect-only", "-q"' not in run
+
+
+@pytest.mark.parametrize(("omitted", "counts"), [(25, False), (24, True)])
+def test_a_sample_at_a_run_s_end_opens_no_slot(tmp_path, capsys, omitted, counts):
+    proof = _proof(tmp_path)
+    # Each run is 600 s, so 120 five-second slots; drop slots spread through
+    # the run, never two adjacent, so no gap exceeds the bound.
+    dropped = {i for i in range(120) if i % 5 == 2} | (
+        {118} if omitted == 25 else set()
+    )
+    assert len(dropped) == omitted
+    lines = []
+    for i in range(1, 6):
+        start = 10_000 * i
+        lines += [
+            f"{start + 5 * slot} 26.00 0 0"
+            for slot in range(120)
+            if slot not in dropped
+        ]
+        lines.append(f"{start + 600} 26.00 0 0")
+    (proof / "loadavg.txt").write_text("\n".join(lines) + "\n")
+    assert (_judge(proof) == 0) is counts
+    out = capsys.readouterr().out
+    assert ("cover 95 of 120 slots" in out) is not counts

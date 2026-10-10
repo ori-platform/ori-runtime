@@ -304,7 +304,12 @@ def main(argv: list[str]) -> int:
             problems.append(f"run {run.index} did not pass")
         if run.end is not None:
             slots = math.ceil((run.end - run.start) / SAMPLE_INTERVAL_S) or 1
-            occupied = {(at - run.start) // SAMPLE_INTERVAL_S for at, _ in window}
+            # Half-open: a sample exactly at the run's end opens no slot of its own.
+            occupied = {
+                (at - run.start) // SAMPLE_INTERVAL_S
+                for at, _ in window
+                if at < run.end
+            }
             if len(occupied) < slots * SAMPLE_COVERAGE:
                 problems.append(
                     f"run {run.index}'s load samples cover {len(occupied)} of {slots} slots"
