@@ -103,11 +103,15 @@ fn run() -> Result<(), String> {
     let mut last_reported = (exporter.counters().clone(), status.counters().clone());
     let mut last_held = (exporter.queued_events(), exporter.retained_events());
     let mut last_report_at = Instant::now();
+    let mut poll: u64 = 0;
 
     loop {
+        poll += 1;
+        let mut read = 0usize;
         for sensor in &sensors {
             match read_pzem_sensor(sensor) {
                 Ok(reading) => {
+                    read += 1;
                     status.record_success(&sensor.id, reading.timestamp);
                     exporter.enqueue(sensor_event(&config.device.id, reading));
                 }
@@ -125,7 +129,8 @@ fn run() -> Result<(), String> {
         // retained and retried on a backoff; it does not return out of here,
         // and it does not stop the next poll.
         let now = Instant::now();
-        if exporter.has_pending() && exporter.attempt_due(now) {
+        let flushed = exporter.has_pending() && exporter.attempt_due(now);
+        if flushed {
             exporter.flush(now, |batch| send_batch(&config, &api_key, batch));
         }
 
@@ -134,7 +139,8 @@ fn run() -> Result<(), String> {
         // Timed from here rather than from before the flush, so a slow upload
         // does not bring the next interval snapshot forward.
         let status_now = Instant::now();
-        if !exporter.is_suspended() && status.snapshot_due(status_now) {
+        let status_due = !exporter.is_suspended() && status.snapshot_due(status_now);
+        if status_due {
             let mut snapshot = status.take_snapshot(&config.device.id, now_ms(), status_now);
             snapshot["export"] = exporter.export_state();
             let outcome = send_status(&config, &api_key, &snapshot, status.declared_sensors());
@@ -166,6 +172,15 @@ fn run() -> Result<(), String> {
             last_report_at = now;
         }
 
+        if args.progress {
+            // After everything this poll did, so a caller that has seen poll N
+            // has seen every effect of it.
+            eprintln!(
+                "[ori-runtime-mobile] progress: poll={poll} read={read} failed={} \
+                 flushed={flushed} status={status_due}",
+                sensors.len() - read
+            );
+        }
         if args.once {
             break;
         }
@@ -400,12 +415,16 @@ fn signed_post(
 struct Args {
     config_path: PathBuf,
     once: bool,
+    /// One line per poll on stderr, so a caller can wait for the polls it needs
+    /// rather than for a stretch of wall-clock time. Off unless asked for.
+    progress: bool,
 }
 
 impl Args {
     fn parse(args: Vec<String>) -> Result<Self, String> {
         let mut config_path: Option<PathBuf> = None;
         let mut once = false;
+        let mut progress = false;
         let mut i = 0;
         while i < args.len() {
             match args[i].as_str() {
@@ -417,8 +436,9 @@ impl Args {
                     config_path = Some(PathBuf::from(value));
                 }
                 "--once" => once = true,
+                "--progress" => progress = true,
                 "--help" | "-h" => {
-                    println!("Usage: ori-runtime-mobile --config <ori.yaml> [--once]");
+                    println!("Usage: ori-runtime-mobile --config <ori.yaml> [--once] [--progress]");
                     std::process::exit(0);
                 }
                 other => return Err(format!("unknown argument {other:?}")),
@@ -428,6 +448,7 @@ impl Args {
         Ok(Self {
             config_path: config_path.ok_or_else(|| "--config is required".to_string())?,
             once,
+            progress,
         })
     }
 }
@@ -1165,6 +1186,19 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn progress_is_off_unless_asked_for() {
+        let plain = Args::parse(vec!["--config".into(), "c.yaml".into()]).unwrap();
+        assert!(!plain.progress);
+        let asked = Args::parse(vec![
+            "--config".into(),
+            "c.yaml".into(),
+            "--progress".into(),
+        ])
+        .unwrap();
+        assert!(asked.progress);
+    }
 
     fn le_hex(hex: &str) -> [u8; 32] {
         let mut out = [0u8; 32];

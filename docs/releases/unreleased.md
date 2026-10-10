@@ -103,6 +103,12 @@ release is cut.
 
 ## Changed
 
+- The Android payload accepts `--progress`, which prints one line per poll on
+  stderr naming the poll, how many sensors it read and failed, and whether it
+  attempted an upload or a status snapshot. Without the flag its output is
+  unchanged. The delivery tests use it to wait for the polls they assert on
+  rather than for a stretch of wall-clock time.
+
 - A skill's triggers and `actions.available` entries accept only the keys
   the loader reads. Any other key, including a misspelling such as
   `Requires_Approval`, is refused at load with an error naming the skill,

@@ -20,6 +20,7 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import os
 import re
 import shutil
@@ -86,16 +87,21 @@ def _crc16_modbus(frame: bytes) -> int:
 class _FakePzem(threading.Thread):
     """Answers each read with a valid Modbus frame carrying a new value.
 
-    `mode` may be changed while the payload runs: `answer`, `silent` (the
-    request is read and nothing is sent, as a meter without mains behaves) or
-    `bad_crc`.
+    `mode` is `answer`, `silent` (the request is read and nothing is sent, as a
+    meter without mains behaves), `alternate` or `bad_crc`. A `schedule` of
+    `(request, mode)` switches the mode as the meter takes that request: the
+    payload reads the meter once a poll, so the fault lands at that poll
+    whatever any other thread is doing.
     """
 
     daemon = True
 
-    def __init__(self, mode: str = "answer") -> None:
+    def __init__(
+        self, mode: str = "answer", schedule: list[tuple[int, str]] | None = None
+    ) -> None:
         super().__init__()
         self.mode = mode
+        self.schedule = sorted(schedule or [])
         self.requests = 0
         self.sock = socket.socket()
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -121,6 +127,8 @@ class _FakePzem(threading.Thread):
                 except OSError:
                     return
                 self.requests += 1
+                while self.schedule and self.requests >= self.schedule[0][0]:
+                    self.mode = self.schedule.pop(0)[1]
                 if self.mode == "silent" or (
                     self.mode == "alternate" and self.requests % 2 == 0
                 ):
@@ -156,9 +164,11 @@ class _Receiver(threading.Thread):
         self.calls: list[dict] = []
         self.status_calls: list[dict] = []
         self.stored: dict[str, float] = {}
-        # Until this monotonic time every request is dropped unanswered, as an
-        # endpoint the network cannot reach behaves.
-        self.down_until = 0.0
+        # Until the meter has taken this many reads, every request is dropped
+        # unanswered, as an endpoint the network cannot reach behaves. Counted
+        # in the meter's reads, one per poll, so the outage ends at a poll.
+        self.down_for_reads = 0
+        self.meter: _FakePzem | None = None
         case = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -168,7 +178,7 @@ class _Receiver(threading.Thread):
             def do_POST(self) -> None:  # noqa: N802
                 length = int(self.headers.get("Content-Length", "0"))
                 raw = self.rfile.read(length) or b"{}"
-                if time.monotonic() < case.down_until:
+                if case.meter is not None and case.meter.requests < case.down_for_reads:
                     self.close_connection = True
                     return
                 if self.path.endswith("/sensor-status"):
@@ -418,27 +428,96 @@ def _signed_config(
     return base64.b64encode(key.public_key().public_bytes_raw()).decode()
 
 
-def _run(binary: Path, config: Path, anchor: str, seconds: float):
+#: The configured poll interval, and how long a run may take to reach the poll
+#: it needs before the run fails naming it. The deadline bounds a hang, not a
+#: speed: a loaded host reaches the poll later, never fewer polls.
+POLL_S = 0.2
+RUN_DEADLINE_S = 120.0
+_PROGRESS = re.compile(r"progress: poll=(\d+)")
+
+
+class _Ran(tuple):
+    """A run's result, unpacked as before, with the wall time it took."""
+
+    elapsed_s: float
+
+
+def _polls(seconds: float) -> int:
+    """The polls a window of *seconds* holds at the configured interval."""
+    return max(1, round(seconds / POLL_S))
+
+
+def _run(
+    binary: Path,
+    config: Path,
+    anchor: str,
+    seconds: float,
+    *,
+    read_delay_s: float = 0.0,
+) -> _Ran:
+    """Run the payload until it has completed the polls *seconds* holds.
+
+    Measured in the payload's own polls, which it reports with `--progress`, so a
+    loaded host stretches the run instead of cutting it short. A payload that
+    exits ends the run at once; one that never reaches its polls fails naming it.
+    *read_delay_s* holds the reader back before its first line, as a starved
+    test process would be; nothing a case asserts may depend on the reader.
+    """
     env = dict(
         os.environ,
         ORI_DEVICE_API_KEY="e2e-secret",
         ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64=anchor,
     )
+    needed = _polls(seconds)
+    polls = 0
+    reached = threading.Event()
+    lines: list[str] = []
+    started = time.monotonic()
     process = subprocess.Popen(
-        [str(binary), "--config", str(config)],
+        [str(binary), "--config", str(config), "--progress"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         env=env,
         text=True,
     )
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline and process.poll() is None:
-        time.sleep(0.05)
+
+    def read() -> None:
+        nonlocal polls
+        assert process.stdout is not None
+        if read_delay_s:
+            time.sleep(read_delay_s)
+        for line in process.stdout:
+            lines.append(line)
+            found = _PROGRESS.search(line)
+            if found:
+                polls = int(found.group(1))
+                if polls >= needed:
+                    reached.set()
+        reached.set()
+
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    finished = reached.wait(RUN_DEADLINE_S)
     still_running = process.poll() is None
     if still_running:
         process.terminate()
-    output, _ = process.communicate(timeout=30)
-    return still_running, process.returncode, output
+    try:
+        process.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=30)
+    # Measured once the process has stopped, so the span covers every post it
+    # made, including any between reaching its polls and being stopped.
+    elapsed = time.monotonic() - started
+    reader.join(30)
+    output = "".join(lines)
+    assert finished, (
+        f"the payload reached poll {polls} of {needed} in {RUN_DEADLINE_S}s: "
+        f"{output[-800:]}"
+    )
+    ran = _Ran((still_running, process.returncode, output))
+    ran.elapsed_s = elapsed
+    return ran
 
 
 def _counters(output: str) -> dict[str, Any]:
@@ -468,8 +547,14 @@ def _drive(
     schedule: list[tuple[float, str]] | None = None,
     down_for: float = 0.0,
     extra_sensors: list[dict] | None = None,
+    read_delay_s: float = 0.0,
 ):
-    pzem = _FakePzem(pzem_mode)
+    # Faults and the outage change at a poll, counted by the meter as it is
+    # read, so they land where the case puts them however slowly the test reads
+    # the payload's output.
+    pzem = _FakePzem(
+        pzem_mode, [(_polls(delay), mode) for delay, mode in schedule or []]
+    )
     pzem.start()
     port = pzem.port
     if unplugged:
@@ -478,7 +563,8 @@ def _drive(
         port = closed.getsockname()[1]
         closed.close()
     receiver = _Receiver(script, status_script)
-    receiver.down_until = time.monotonic() + down_for
+    receiver.meter = pzem
+    receiver.down_for_reads = _polls(down_for) if down_for > 0 else 0
     receiver.start()
     config = tmp_path / "ori.yaml"
     anchor = _signed_config(
@@ -489,12 +575,11 @@ def _drive(
         flush_interval_s,
         extra_sensors,
     )
-    for delay, mode in schedule or []:
-        timer = threading.Timer(delay, lambda mode=mode: setattr(pzem, "mode", mode))
-        timer.daemon = True
-        timer.start()
-    running, code, output = _run(payload, config, anchor, seconds)
-    return running, code, output, receiver, pzem, _counters(output)
+    ran = _run(payload, config, anchor, seconds, read_delay_s=read_delay_s)
+    running, code, output = ran
+    driven = _Ran((running, code, output, receiver, pzem, _counters(output)))
+    driven.elapsed_s = ran.elapsed_s
+    return driven
 
 
 def _states(receiver: _Receiver) -> list[tuple[str, str]]:
@@ -645,14 +730,17 @@ def test_the_poll_loop_honours_the_retry_backoff(payload: Path, tmp_path: Path) 
     503s allow a handful of attempts (1 s, 2 s, 4 s apart); without it, one per
     poll, around twenty-five.
     """
-    running, _code, _out, receiver, pzem, _counters = _drive(
-        payload, tmp_path, [("status", 503)] * 500, 5.0
-    )
+    ran = _drive(payload, tmp_path, [("status", 503)] * 500, 5.0)
+    running, _code, _out, receiver, pzem, _counters = ran
 
     assert running
     assert pzem.served >= 15, "the meter was polled throughout"
-    assert len(receiver.calls) <= 7, (
-        f"{len(receiver.calls)} posts in five seconds; the backoff was not consulted"
+    # Attempts 1, 2, 4, ... seconds apart fit floor(log2(T + 1)) + 1 into T
+    # seconds, however long the run took; one per poll is pzem.served.
+    allowed = math.floor(math.log2(ran.elapsed_s + 1)) + 3
+    assert len(receiver.calls) <= allowed, (
+        f"{len(receiver.calls)} posts in {ran.elapsed_s:.1f}s over "
+        f"{pzem.served} polls; the backoff was not consulted"
     )
 
 
@@ -715,14 +803,16 @@ def test_a_silent_meter_is_reported_as_not_answering_once(
     edge, and the interval is longer than the run.
     """
     before_ms = time.time() * 1000
-    running, _code, _out, receiver, _pzem, counters = _drive(
-        payload, tmp_path, [], 3.0, pzem_mode="silent"
-    )
+    ran = _drive(payload, tmp_path, [], 3.0, pzem_mode="silent")
+    running, _code, _out, receiver, _pzem, counters = ran
     after_ms = time.time() * 1000
 
     assert running
     assert receiver.calls == [], "a silent meter posts no readings"
-    assert _states(receiver) == [("never_read", "no_response")], _states(receiver)
+    # One snapshot per thirty-second interval, and none per failed poll.
+    states = _states(receiver)
+    assert 1 <= len(states) <= 1 + math.floor(ran.elapsed_s / 30), states
+    assert set(states) == {("never_read", "no_response")}, states
     call = receiver.status_calls[0]
     assert call["signed"], "the snapshot is signed with the device key"
     entry = call["snapshot"]["sensors"][0]
@@ -733,7 +823,7 @@ def test_a_silent_meter_is_reported_as_not_answering_once(
     assert before_ms - 1 <= sent_at <= after_ms + 1, (before_ms, sent_at, after_ms)
     for leak in (b"socket://", b"127.0.0.1", b"e2e-secret", b"Modbus", b"timeout"):
         assert leak not in call["raw"], f"the snapshot carries {leak!r}"
-    assert counters["status_accepted"] == 1, counters
+    assert counters["status_accepted"] == len(states), counters
     assert call["snapshot"]["export"] == {
         "delivered_events": 0,
         "duplicate_events": 0,
@@ -778,16 +868,18 @@ def test_a_meter_that_stops_and_resumes_is_reported_both_ways(
 ) -> None:
     """Worked, then stopped, then worked: three changes, each reported.
 
-    A change is sent once five seconds have passed since the previous snapshot,
-    so the stop and the recovery are spaced to show each one and nothing else.
+    The stop and the recovery are spaced well past the five-second change
+    spacing, so each edge is sent once and nothing else is. Whether that spacing
+    is enforced is shown by the alternating meter, not here.
     """
-    running, _code, _out, receiver, _pzem, _counters_ = _drive(
+    ran = _drive(
         payload,
         tmp_path,
         [("accept", None)] * 400,
         13.5,
         schedule=[(1.0, "silent"), (6.5, "answer")],
     )
+    running, _code, _out, receiver, _pzem, _counters_ = ran
 
     assert running
     states = _states(receiver)
@@ -800,7 +892,20 @@ def test_a_meter_that_stops_and_resumes_is_reported_both_ways(
         if call["snapshot"]["sensors"][0]["state"] == "failing"
     )
     assert failing["last_success_ms"] > 0, "a failing sensor says when it last read"
-    assert len(states) == 3, f"one snapshot per edge and none between: {states}"
+    # Each edge is reported once. A slow host may add the thirty-second interval
+    # restatement of a state, which repeats it rather than adding an edge.
+    edges = [
+        state for i, state in enumerate(states) if i == 0 or states[i - 1] != state
+    ]
+    assert edges == [
+        ("reading", "none"),
+        ("failing", "no_response"),
+        ("reading", "none"),
+    ], f"one snapshot per edge and none between: {states}"
+    restated = len(states) - len(edges)
+    assert restated <= math.floor(ran.elapsed_s / 30), (
+        f"{restated} restatement(s) in {ran.elapsed_s:.1f}s: {states}"
+    )
 
 
 @pytest.mark.slow
@@ -812,7 +917,7 @@ def test_a_receiver_without_the_status_route_costs_one_request_per_interval(
     Readings are unaffected, and the snapshot is not re-sent on every poll: the
     poll interval is 200 ms and the flush interval one second.
     """
-    running, _code, output, receiver, _pzem, counters = _drive(
+    ran = _drive(
         payload,
         tmp_path,
         [("accept", None)] * 200,
@@ -820,13 +925,16 @@ def test_a_receiver_without_the_status_route_costs_one_request_per_interval(
         status_script=[("http", 404)] * 200,
         flush_interval_s=1.0,
     )
+    running, _code, output, receiver, _pzem, counters = ran
 
     assert running
     assert receiver.stored, "readings are delivered whatever the status route says"
     assert counters["suspended"] == "false", counters
     assert "export suspended" not in output
-    assert 2 <= len(receiver.status_calls) <= 6, (
-        f"{len(receiver.status_calls)} status posts in four seconds"
+    # One per one-second interval, never one per 200 ms poll.
+    allowed = math.floor(ran.elapsed_s) + 2
+    assert 2 <= len(receiver.status_calls) <= allowed, (
+        f"{len(receiver.status_calls)} status posts in {ran.elapsed_s:.1f}s"
     )
     assert counters["status_discarded"] >= 2, counters
     assert counters["status_accepted"] == 0, counters
@@ -1055,13 +1163,16 @@ def test_a_meter_answering_every_other_poll_does_not_post_every_poll(
     payload: Path, tmp_path: Path
 ) -> None:
     """Every poll is a change. Spaced, seven seconds is two snapshots at most."""
-    running, _code, _out, receiver, pzem, _counters_ = _drive(
+    ran = _drive(
         payload, tmp_path, [("accept", None)] * 400, 7.0, pzem_mode="alternate"
     )
+    running, _code, _out, receiver, pzem, _counters_ = ran
 
     assert running
     assert pzem.requests >= 10, "the meter was polled throughout"
-    assert 1 <= len(receiver.status_calls) <= 2, _states(receiver)
+    # Changes are sent at least five seconds apart, however long the run took.
+    allowed = math.floor(ran.elapsed_s / 5) + 1
+    assert 1 <= len(receiver.status_calls) <= allowed, _states(receiver)
 
 
 @pytest.mark.slow
@@ -1069,7 +1180,7 @@ def test_a_flapping_meter_costs_a_receiver_without_the_route_one_request(
     payload: Path, tmp_path: Path
 ) -> None:
     """After a discard only the interval sends, however often a sensor changes."""
-    running, _code, _out, receiver, _pzem, _counters_ = _drive(
+    ran = _drive(
         payload,
         tmp_path,
         [("accept", None)] * 400,
@@ -1077,16 +1188,19 @@ def test_a_flapping_meter_costs_a_receiver_without_the_route_one_request(
         pzem_mode="alternate",
         status_script=[("http", 404)] * 50,
     )
+    running, _code, _out, receiver, _pzem, _counters_ = ran
 
     assert running
-    assert len(receiver.status_calls) == 1, _states(receiver)
+    # Only the thirty-second interval sends after a discard.
+    allowed = 1 + math.floor(ran.elapsed_s / 30)
+    assert 1 <= len(receiver.status_calls) <= allowed, _states(receiver)
 
 
 @pytest.mark.slow
 def test_rejected_sensor_entries_are_counted_and_logged(
     payload: Path, tmp_path: Path
 ) -> None:
-    running, _code, output, receiver, _pzem, counters = _drive(
+    ran = _drive(
         payload,
         tmp_path,
         [],
@@ -1094,10 +1208,12 @@ def test_rejected_sensor_entries_are_counted_and_logged(
         pzem_mode="silent",
         status_script=[("partial", None)],
     )
+    running, _code, output, receiver, _pzem, counters = ran
 
     assert running
-    assert len(receiver.status_calls) == 1
-    assert counters["status_accepted"] == 1, counters
+    # One per thirty-second interval; only the first is answered partially.
+    assert 1 <= len(receiver.status_calls) <= 1 + math.floor(ran.elapsed_s / 30)
+    assert counters["status_accepted"] == len(receiver.status_calls), counters
     assert counters["status_rejected_sensors"] == 1, counters
     assert "rejected 1 sensor status entry" in output
 
@@ -1381,3 +1497,43 @@ def test_what_was_dropped_and_held_is_reported_off_the_phone(
         later["dropped_events"] >= earlier["dropped_events"]
         for earlier, later in zip(exports, exports[1:])
     ), exports
+
+
+@pytest.mark.slow
+def test_faults_land_at_their_polls_however_slowly_the_output_is_read(
+    payload: Path, tmp_path: Path
+) -> None:
+    """A starved reader must not move a fault, an outage or a recovery.
+
+    The meter and the receiver count the payload's own reads, so a reader held
+    back for eight seconds, longer than the scheduled stop, still sees the
+    stop, the recovery and the outage where the case put them.
+    """
+    (tmp_path / "meter").mkdir()
+    ran = _drive(
+        payload,
+        tmp_path / "meter",
+        [("accept", None)] * 400,
+        13.5,
+        schedule=[(1.0, "silent"), (6.5, "answer")],
+        read_delay_s=8.0,
+    )
+    running, _code, _out, receiver, _pzem, _counters_ = ran
+    assert running
+    states = _states(receiver)
+    edges = [
+        state for i, state in enumerate(states) if i == 0 or states[i - 1] != state
+    ]
+    assert edges == [
+        ("reading", "none"),
+        ("failing", "no_response"),
+        ("reading", "none"),
+    ], states
+
+    (tmp_path / "outage").mkdir()
+    running, _code, _out, receiver, pzem, counters = _drive(
+        payload, tmp_path / "outage", [], 7.0, queue=3, down_for=3.0, read_delay_s=8.0
+    )
+    assert running
+    assert counters["dropped"] > 0, f"the outage outlasted the bound: {counters}"
+    assert counters["delivered"] > 0, "delivery resumed when the endpoint returned"
