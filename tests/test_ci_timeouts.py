@@ -11,6 +11,7 @@ composite action is outside what they see.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,9 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOWS = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
 #: The longest any job may be bounded at.
 MAX_JOB_MINUTES = 60
+#: The longest a job may be bounded at when nothing but a person can start it:
+#: it holds no pull request's checks, and a long run is what it was started for.
+MAX_MANUAL_JOB_MINUTES = 330
 #: The longest a package-manager step may be bounded at.
 MAX_INSTALL_MINUTES = 10
 APT_OPTIONS = ("Acquire::Retries=", "Acquire::http::Timeout=")
@@ -33,6 +37,18 @@ def _jobs() -> list[tuple[str, str, dict[str, Any]]]:
         for name, job in (doc.get("jobs") or {}).items():
             out.append((path.name, name, job))
     return out
+
+
+def _manual_only(workflow: str) -> bool:
+    """True when the workflow's only trigger is ``workflow_dispatch``."""
+    doc = yaml.safe_load(
+        (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+    )
+    # PyYAML reads the bare key `on` as True.
+    triggers = doc.get("on", doc.get(True))
+    if isinstance(triggers, str):
+        triggers = [triggers]
+    return set(triggers or ()) == {"workflow_dispatch"}
 
 
 JOBS = _jobs()
@@ -49,9 +65,10 @@ def test_every_job_is_bounded(workflow: str, name: str, job: dict[str, Any]) -> 
     if "uses" in job:
         pytest.skip("a reusable workflow call carries its own jobs' bounds")
     minutes = job.get("timeout-minutes")
-    assert isinstance(minutes, int) and 0 < minutes <= MAX_JOB_MINUTES, (
+    limit = MAX_MANUAL_JOB_MINUTES if _manual_only(workflow) else MAX_JOB_MINUTES
+    assert isinstance(minutes, int) and 0 < minutes <= limit, (
         f"{workflow}:{name} must set timeout-minutes to an integer in "
-        f"1..{MAX_JOB_MINUTES}; without it a hung step holds the runner for six "
+        f"1..{limit}; without it a hung step holds the runner for six "
         f"hours. Found {minutes!r}. This guard reads YAML only: an expression "
         "or a value set through a composite action is not seen."
     )
@@ -79,3 +96,23 @@ def test_every_apt_step_is_bounded_and_retries(
                 assert not missing, (
                     f"{label}: apt-get without {missing}: {line.strip()}"
                 )
+
+
+@pytest.mark.parametrize(
+    ("on", "manual"),
+    [
+        ("on: workflow_dispatch", True),
+        ("on:\n  workflow_dispatch:\n    inputs: {}", True),
+        ("on: [push, workflow_dispatch]", False),
+        ("on:\n  pull_request:\n  workflow_dispatch:", False),
+        ("on: push", False),
+    ],
+)
+def test_only_a_workflow_nothing_but_a_person_starts_gets_the_long_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, on: str, manual: bool
+) -> None:
+    workflows = tmp_path / ".github" / "workflows"
+    workflows.mkdir(parents=True)
+    (workflows / "w.yml").write_text(f"name: w\n{on}\njobs: {{}}\n", encoding="utf-8")
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", tmp_path)
+    assert _manual_only("w.yml") is manual
