@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import importlib.util
 import shlex
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from collections.abc import Sequence
@@ -60,14 +61,9 @@ def test_the_burners_are_stopped_and_the_evidence_kept_whatever_happens():
 
 
 def test_the_budgets_are_ci_s_own_step_and_it_exists():
-    ci_steps = yaml.safe_load(CI.read_text())["jobs"]["test"]["steps"]
-    (step,) = [s for s in ci_steps if s.get("name") == "Run the latency budgets alone"]
-    argv = shlex.split(step["run"])
+    argv = _report().budgets_argv(str(CI))
     assert argv[0] == "pytest"
-    assert (
-        "Run the latency budgets alone"
-        in _steps()["Run the latency budgets alone, unloaded"]["run"]
-    )
+    assert any(arg.startswith("tests/") for arg in argv)
 
 
 def test_nothing_skips_the_phone_tests_and_nothing_retries():
@@ -165,6 +161,7 @@ def _proof(
     ),
     inventories: bool = True,
     stall_failure: bool = False,
+    clustered: bool = False,
 ) -> Path:
     proof = tmp_path / "proof"
     proof.mkdir()
@@ -194,7 +191,12 @@ def _proof(
         lines.append(f"{start} start {i}")
         if finished is None or i <= finished:
             lines.append(f"{start + 600} end {i} {run_status if i == runs else 0}")
-        for t in range(0, last_samples_s + 1, sample_every):
+        offsets = (
+            [b + k for b in range(0, last_samples_s + 1, 30) for k in range(5)]
+            if clustered
+            else range(0, last_samples_s + 1, sample_every)
+        )
+        for t in offsets:
             value = tail_load if tail_load is not None and t > 480 else load
             text = (
                 bad_sample
@@ -268,7 +270,8 @@ def test_a_proof_that_held_its_load_and_passed_counts(tmp_path, capsys):
         ({}, {"floor": "0"}, "floor 0.0 is outside 1.0..6.5"),
         ({}, {"floor": "7"}, "floor 7.0 is outside 1.0..6.5"),
         ({}, {"floor": "nan"}, "floor nan is outside 1.0..6.5"),
-        ({"sample_every": 120}, {}, "too few load samples"),
+        ({"sample_every": 120}, {}, "slots"),
+        ({"clustered": True}, {}, "slots"),
         ({"tail_load": 0.4}, {}, "held less than 5.0 load per core"),
         ({"runs": 0}, {}, "0 of 5 runs finished"),
         ({"last_samples_s": 480}, {}, "gap in its load samples over 30 s"),
@@ -404,3 +407,31 @@ def test_an_inventory_ignores_the_warning_lines_beneath_a_node_id(tmp_path):
         "\n1 test collected\n"
     )
     assert _report().read_inventory(inventory) == {"tests.test_x::test_y"}
+
+
+def test_the_budgets_collection_lists_node_ids(tmp_path):
+    report = _report()
+    argv = report.budgets_argv(str(CI))
+    command = report.collect_argv(argv)
+    assert command.count("-q") == 1 and "-qq" not in command
+    inventory = tmp_path / "inventory-budgets.txt"
+    with inventory.open("w") as out:
+        subprocess.run(
+            [sys.executable, "-m", *command], stdout=out, check=True, cwd=ROOT
+        )
+    collected = report.read_inventory(inventory)
+    assert collected
+    modules = {
+        a.removesuffix(".py").replace("/", ".")
+        for a in argv[1:]
+        if a.startswith("tests/")
+    }
+    for case in collected:
+        classname = case.split("::")[0]
+        assert classname in modules or classname.rsplit(".", 1)[0] in modules, case
+
+
+def test_the_workflow_collects_budgets_through_the_judge_s_helpers():
+    run = _steps()["Run the latency budgets alone, unloaded"]["run"]
+    assert "budgets_argv(" in run and "collect_argv(argv)" in run
+    assert '"--collect-only", "-q"' not in run

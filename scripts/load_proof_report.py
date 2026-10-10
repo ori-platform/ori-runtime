@@ -19,7 +19,7 @@ Evidence is refused, not repaired. A proof counts only if:
   with every collected phone delivery case passed; the scheduler-delay pass
   passed the held-back progress reader;
 - the load samples are finite, non-negative and strictly increasing in time;
-  each run's distinct samples cover its slots with no gap over half a minute;
+  each run's samples occupy most of its five-second slots with no gap over half a minute;
   and its tenth percentile of load per core after its first minute holds the
   floor, which itself lies from 1.0 to the target.
 
@@ -70,6 +70,31 @@ def junit_id(nodeid: str) -> str:
     parts = base.split("::")
     module = parts[0].removesuffix(".py").replace("/", ".")
     return f"{'.'.join([module, *parts[1:-1]])}::{parts[-1]}{bracket}{params}"
+
+
+def budgets_argv(ci_workflow: str) -> list[str]:
+    """CI's own "Run the latency budgets alone" command, as an argument list."""
+    import shlex
+
+    import yaml
+
+    with open(ci_workflow) as handle:
+        steps = yaml.safe_load(handle)["jobs"]["test"]["steps"]
+    (step,) = [s for s in steps if s.get("name") == "Run the latency budgets alone"]
+    argv = shlex.split(step["run"])
+    if argv[0] != "pytest":
+        raise ValueError(f"the budgets step does not run pytest: {argv[0]!r}")
+    return argv
+
+
+def collect_argv(argv: list[str]) -> list[str]:
+    """*argv* collecting its node ids, one per line, instead of running them.
+
+    Exactly one ``-q``: a second one makes pytest print per-file counts rather
+    than node ids, which would leave the inventory empty.
+    """
+    kept = [arg for arg in argv if arg not in {"-q", "-qq", "--quiet"}]
+    return [*kept, "-q", "--collect-only"]
 
 
 def read_inventory(path: Path) -> frozenset[str] | None:
@@ -278,9 +303,12 @@ def main(argv: list[str]) -> int:
         if run.status != 0:
             problems.append(f"run {run.index} did not pass")
         if run.end is not None:
-            due = (run.end - run.start) / SAMPLE_INTERVAL_S * SAMPLE_COVERAGE
-            if len(window) < due:
-                problems.append(f"run {run.index} has too few load samples")
+            slots = math.ceil((run.end - run.start) / SAMPLE_INTERVAL_S) or 1
+            occupied = {(at - run.start) // SAMPLE_INTERVAL_S for at, _ in window}
+            if len(occupied) < slots * SAMPLE_COVERAGE:
+                problems.append(
+                    f"run {run.index}'s load samples cover {len(occupied)} of {slots} slots"
+                )
             edges = [run.start] + [at for at, _ in window] + [run.end]
             if max(b - a for a, b in zip(edges, edges[1:])) > MAX_SAMPLE_GAP_S:
                 problems.append(

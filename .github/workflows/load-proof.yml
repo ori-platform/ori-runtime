@@ -142,15 +142,14 @@ jobs:
         timeout-minutes: 20
         run: |
           python - <<'PY'
-          import os, shlex, subprocess, sys, yaml
-          steps = yaml.safe_load(open(".github/workflows/ci.yml"))["jobs"]["test"]["steps"]
-          (step,) = [s for s in steps if s.get("name") == "Run the latency budgets alone"]
-          argv = shlex.split(step["run"])
-          assert argv[0] == "pytest", argv
+          import os, subprocess, sys
+          sys.path.insert(0, os.path.join(os.environ["RUNNER_TEMP"], "judge"))
+          from load_proof_report import budgets_argv, collect_argv
+          argv = budgets_argv(".github/workflows/ci.yml")
           proof = os.path.join(os.environ["RUNNER_TEMP"], "proof")
           # What the pass must run, collected before it runs.
           with open(f"{proof}/inventory-budgets.txt", "w") as out:
-              subprocess.run(argv + ["--collect-only", "-q"], stdout=out, check=True)
+              subprocess.run(collect_argv(argv), stdout=out, check=True)
           argv += [f"--junitxml={proof}/budgets.xml"]
           with open(f"{proof}/budgets.log", "w") as log:
               status = subprocess.run(argv, stdout=log, stderr=subprocess.STDOUT).returncode
