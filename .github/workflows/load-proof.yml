@@ -20,7 +20,7 @@ on:
         required: true
         type: string
       runs:
-        description: Loaded full-suite runs
+        description: Loaded full-suite runs (at least 5)
         required: true
         default: "5"
         type: string
@@ -30,7 +30,7 @@ on:
         default: "6.5"
         type: string
       floor_per_core:
-        description: Mean load per core a run must hold to count
+        description: Load per core a run's tenth percentile must hold to count (1.0 up to the target)
         required: true
         default: "5.0"
         type: string
@@ -65,9 +65,25 @@ jobs:
           FLOOR: ${{ inputs.floor_per_core }}
         run: |
           [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "sha must be a full 40-character commit"; exit 1; }
-          [[ "$RUNS" =~ ^[1-9][0-9]?$ ]] || { echo "runs must be 1..99"; exit 1; }
+          [[ "$RUNS" =~ ^([5-9]|[1-9][0-9])$ ]] || { echo "runs must be 5..99"; exit 1; }
           [[ "$TARGET" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "target_per_core must be a number"; exit 1; }
           [[ "$FLOOR" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "floor_per_core must be a number"; exit 1; }
+          python3 -c "import sys; f, t = float('$FLOOR'), float('$TARGET'); sys.exit(0 if 1.0 <= f <= t else 1)" \
+            || { echo "floor_per_core must be at least 1.0 and at most target_per_core"; exit 1; }
+
+      # The judge is this workflow's own revision, never the commit under
+      # proof, so a proven commit cannot supply its own pass and fail logic.
+      - name: Checkout the judge
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: judge
+
+      - name: Keep the judge's report outside the checkout
+        run: |
+          mkdir -p "${RUNNER_TEMP}/judge"
+          cp judge/scripts/load_proof_report.py "${RUNNER_TEMP}/judge/"
+          rm -rf judge
 
       - name: Checkout the commit under proof
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -159,24 +175,37 @@ jobs:
             --junitxml="${RUNNER_TEMP}/proof/stall.xml" 2>&1 | tee "${RUNNER_TEMP}/proof/stall.log"
           test "${PIPESTATUS[0]}" -eq 0
 
+      # Loaded steps run even when an unloaded pass failed, so one flaky pass
+      # does not cost the loaded evidence; the report still refuses the proof.
       - name: Start the burners and the load sampler
+        if: ${{ !cancelled() }}
         env:
           TARGET: ${{ inputs.target_per_core }}
+          FLOOR: ${{ inputs.floor_per_core }}
+          RUNS: ${{ inputs.runs }}
         run: |
           cores="$(nproc)"
-          # pytest runs one worker per core; the burners make up the rest of
-          # the target, split between CPU spinners and mixed I/O.
+          workers="${cores}"
+          # pytest runs exactly one worker per logical CPU (-n is set
+          # explicitly below, since -n auto counts physical cores); CPU
+          # spinners make up the rest of the target. One small disk writer adds
+          # I/O pressure on top, so held load can exceed the target; what each
+          # run actually held is measured, not assumed.
           total="$(python -c "import math; print(math.ceil(${TARGET} * ${cores}))")"
-          io_workers="$(( cores / 2 > 0 ? cores / 2 : 1 ))"
-          cpu_workers="$(( total - cores - io_workers ))"
+          cpu_workers="$(( total - workers ))"
           [ "$cpu_workers" -ge 1 ] || cpu_workers=1
+          mkdir -p "${RUNNER_TEMP}/stress"
           {
             echo "cores=${cores}"
-            echo "pytest_workers=${cores} (-n auto)"
+            echo "pytest_workers=${workers}"
             echo "target_per_core=${TARGET}"
-            echo "stress-ng --cpu ${cpu_workers} --iomix ${io_workers} --timeout 320m"
+            echo "floor_per_core=${FLOOR}"
+            echo "runs=${RUNS}"
+            echo "stress-ng --cpu ${cpu_workers} --hdd 1 --hdd-bytes 256m --timeout 320m"
           } > "${RUNNER_TEMP}/proof/stress.txt"
-          nohup stress-ng --cpu "${cpu_workers}" --iomix "${io_workers}" \
+          echo "${workers}" > "${RUNNER_TEMP}/workers"
+          nohup stress-ng --cpu "${cpu_workers}" --hdd 1 --hdd-bytes 256m \
+            --temp-path "${RUNNER_TEMP}/stress" \
             --timeout 320m > "${RUNNER_TEMP}/proof/stress-ng.log" 2>&1 &
           echo $! > "${RUNNER_TEMP}/stress.pid"
           nohup bash -c 'while true; do echo "$(date +%s) $(cut -d" " -f1-3 /proc/loadavg)"; sleep 5; done' \
@@ -189,6 +218,7 @@ jobs:
       # The complete functional suite, phone delivery included, with no
       # retries: every run is reported, and one failure fails the proof.
       - name: Run the full suite under load
+        if: ${{ !cancelled() }}
         env:
           RUNS: ${{ inputs.runs }}
           ORI_REQUIRE_MQTT_BROKER: "1"
@@ -197,7 +227,7 @@ jobs:
           for i in $(seq 1 "$RUNS"); do
             echo "$(date +%s) start ${i}" >> "${RUNNER_TEMP}/proof/runs.txt"
             set +e
-            timeout 55m pytest tests/ -q -n auto --dist loadgroup -m "not hardware" \
+            timeout 55m pytest tests/ -q -n "$(cat "${RUNNER_TEMP}/workers")" --dist loadgroup -m "not hardware" \
               --junitxml="${RUNNER_TEMP}/proof/run-${i}.xml" \
               > "${RUNNER_TEMP}/proof/run-${i}.log" 2>&1
             status=$?
@@ -221,12 +251,16 @@ jobs:
         if: always()
         env:
           FLOOR: ${{ inputs.floor_per_core }}
-        run: python scripts/load_proof_report.py "${RUNNER_TEMP}/proof" "$FLOOR" >> "$GITHUB_STEP_SUMMARY"
+          TARGET: ${{ inputs.target_per_core }}
+          RUNS: ${{ inputs.runs }}
+        run: |
+          python "${RUNNER_TEMP}/judge/load_proof_report.py" \
+            "${RUNNER_TEMP}/proof" "$FLOOR" "$TARGET" "$RUNS" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: load-proof-${{ inputs.sha }}
+          name: load-proof-${{ inputs.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/proof
           if-no-files-found: error

@@ -8,6 +8,7 @@ import importlib.util
 import shlex
 import sys
 import xml.etree.ElementTree as ET
+from collections.abc import Sequence
 from pathlib import Path
 from types import ModuleType
 
@@ -98,85 +99,151 @@ def test_the_unloaded_passes_run_before_any_burner_starts():
     assert names.index("Run the full suite under load") > burners
 
 
-def _junit(path: Path, ids: list[str], failures: int = 0) -> None:
-    suite = ET.Element(
-        "testsuite",
-        tests=str(len(ids)),
-        failures=str(failures),
-        errors="0",
-        skipped="0",
-    )
-    for case_id in ids:
-        classname, _, name = case_id.partition("::")
-        ET.SubElement(suite, "testcase", classname=classname, name=name)
+def _junit(
+    path: Path,
+    passed: list[str],
+    skipped: Sequence[str] = (),
+    failed: Sequence[str] = (),
+) -> None:
     root = ET.Element("testsuites")
-    root.append(suite)
+    suite = ET.SubElement(root, "testsuite")
+    for case_id, outcome in (
+        [(c, None) for c in passed]
+        + [(c, "skipped") for c in skipped]
+        + [(c, "failure") for c in failed]
+    ):
+        classname, _, name = case_id.partition("::")
+        case = ET.SubElement(suite, "testcase", classname=classname, name=name)
+        if outcome:
+            ET.SubElement(case, outcome)
     ET.ElementTree(root).write(path)
+
+
+PHONE = "tests.test_runtime_mobile_delivery_e2e::test_delivers"
+HELD = (
+    "tests.test_runtime_mobile_delivery_e2e::"
+    "test_faults_land_at_their_polls_however_slowly_the_output_is_read"
+)
 
 
 def _proof(
     tmp_path: Path,
     *,
-    runs: int = 2,
+    runs: int = 5,
+    finished: int | None = None,
     load: float = 26.0,
+    tail_load: float | None = None,
+    sample_every: int = 5,
     run_status: int = 0,
-    different_ids: bool = False,
-    budgets: bool = True,
-    stall_failures: int = 0,
+    phone_skipped_from: int | None = None,
+    budgets: str = "passed",
+    held_reader: bool = True,
 ) -> Path:
     proof = tmp_path / "proof"
     proof.mkdir()
     (proof / "commit.txt").write_text("a" * 40 + " subject\n")
     (proof / "stress.txt").write_text("cores=4\npytest_workers=4\n")
-    ids = ["tests.a::t1", "tests.b::t2"]
-    if budgets:
+    if budgets == "passed":
         _junit(proof / "budgets.xml", ["tests.c::b1"])
-    _junit(proof / "stall.xml", ["tests.d::s1"], failures=stall_failures)
+    elif budgets == "skipped":
+        _junit(proof / "budgets.xml", [], skipped=["tests.c::b1"])
+    _junit(proof / "stall.xml", ["tests.d::s1"] + ([HELD] if held_reader else []))
     lines, samples = [], []
     for i in range(1, runs + 1):
-        start = 1000 * i
-        lines += [
-            f"{start} start {i}",
-            f"{start + 600} end {i} {run_status if i == runs else 0}",
-        ]
-        samples += [f"{start + t} {load:.2f} 0 0" for t in range(0, 601, 5)]
+        start = 10_000 * i
+        lines.append(f"{start} start {i}")
+        if finished is None or i <= finished:
+            lines.append(f"{start + 600} end {i} {run_status if i == runs else 0}")
+        for t in range(0, 601, sample_every):
+            value = tail_load if tail_load is not None and t > 480 else load
+            samples.append(f"{start + t} {value:.2f} 0 0")
+        skip_phone = phone_skipped_from is not None and i >= phone_skipped_from
         _junit(
             proof / f"run-{i}.xml",
-            ids + (["tests.e::extra"] if different_ids and i == runs else []),
+            ["tests.a::t1"] + ([] if skip_phone else [PHONE]),
+            skipped=[PHONE] if skip_phone else [],
         )
     (proof / "runs.txt").write_text("\n".join(lines) + "\n")
     (proof / "loadavg.txt").write_text("\n".join(samples) + "\n")
     return proof
 
 
+def _judge(
+    proof: Path, floor: str = "5.0", target: str = "6.5", runs: str = "5"
+) -> int:
+    return _report().main(["", str(proof), floor, target, runs])
+
+
 def test_a_proof_that_held_its_load_and_passed_counts(tmp_path, capsys):
-    proof = _proof(tmp_path)
-    assert _report().main(["", str(proof), "5.0"]) == 0
-    assert "**Counts.**" in capsys.readouterr().out
+    assert _judge(_proof(tmp_path)) == 0
+    out = capsys.readouterr().out
+    assert "**Counts.**" in out
+    assert "Target 6.5 load per core; floor 5.0" in out
 
 
 @pytest.mark.parametrize(
-    ("kwargs", "problem"),
+    ("proof_kwargs", "judge_kwargs", "problem"),
     [
-        ({"run_status": 1}, "did not pass"),
-        ({"load": 12.0}, "held less than 5.0 load per core"),
-        ({"different_ids": True}, "ran a different set of tests"),
-        ({"budgets": False}, "Latency budgets, unloaded: no result"),
-        ({"runs": 0}, "no loaded run started"),
-        ({"stall_failures": 1}, "Scheduler delay, unloaded: failed or ran nothing"),
+        ({"run_status": 1}, {}, "run 5 did not pass"),
+        ({"load": 12.0}, {}, "held less than 5.0 load per core"),
+        ({"runs": 1}, {"runs": "1"}, "1 runs asked for, fewer than 5"),
+        ({"runs": 3}, {}, "3 of 5 runs finished"),
+        ({"finished": 4}, {}, "4 of 5 runs finished"),
+        ({"phone_skipped_from": 2}, {}, "run 2 did not run the phone delivery tests"),
+        (
+            {"phone_skipped_from": 2},
+            {},
+            "ran different tests, or to different outcomes",
+        ),
+        ({"budgets": "missing"}, {}, "Latency budgets, unloaded: no result"),
+        (
+            {"budgets": "skipped"},
+            {},
+            "Latency budgets, unloaded: failed or passed nothing",
+        ),
+        (
+            {"held_reader": False},
+            {},
+            "Scheduler delay, unloaded: " + HELD.split("::")[1],
+        ),
+        ({}, {"floor": "0"}, "floor 0.0 is outside 1.0..6.5"),
+        ({}, {"floor": "7"}, "floor 7.0 is outside 1.0..6.5"),
+        ({"sample_every": 120}, {}, "too few load samples"),
+        ({"tail_load": 0.4}, {}, "held less than 5.0 load per core"),
+        ({"runs": 0}, {}, "0 of 5 runs finished"),
     ],
 )
-def test_a_proof_short_of_anything_does_not_count(tmp_path, capsys, kwargs, problem):
-    proof = _proof(tmp_path, **kwargs)
-    assert _report().main(["", str(proof), "5.0"]) == 1
+def test_a_proof_short_of_anything_does_not_count(
+    tmp_path, capsys, proof_kwargs, judge_kwargs, problem
+):
+    assert _judge(_proof(tmp_path, **proof_kwargs), **judge_kwargs) == 1
     out = capsys.readouterr().out
     assert "**Does not count:**" in out
     assert problem in out
 
 
-def test_an_unfinished_run_does_not_count(tmp_path, capsys):
-    proof = _proof(tmp_path)
-    runs = proof / "runs.txt"
-    runs.write_text("\n".join(runs.read_text().splitlines()[:-1]) + "\n")
-    assert _report().main(["", str(proof), "5.0"]) == 1
-    assert "run 2 did not pass" in capsys.readouterr().out
+def test_the_judge_is_the_workflow_s_own_revision():
+    steps = _steps()
+    assert steps["Checkout the judge"]["with"]["ref"] == "${{ github.sha }}"
+    report = steps["Report what each run held"]["run"]
+    assert "${RUNNER_TEMP}/judge/load_proof_report.py" in report
+    assert "scripts/load_proof_report.py" not in report
+
+
+def test_inputs_refuse_fewer_than_five_runs_and_a_floor_off_its_range():
+    run = _steps()["Validate inputs"]["run"]
+    assert "^([5-9]|[1-9][0-9])$" in run
+    assert "1.0 <= f <= t" in run
+
+
+def test_one_failed_unloaded_pass_does_not_cost_the_loaded_runs():
+    steps = _steps()
+    for name in (
+        "Start the burners and the load sampler",
+        "Run the full suite under load",
+    ):
+        assert steps[name].get("if") == "${{ !cancelled() }}", name
+    run = steps["Run the full suite under load"]["run"]
+    assert "-n auto" not in run
+    assert "upload" not in run
+    assert "run_attempt" in steps["Upload the evidence"]["with"]["name"]
