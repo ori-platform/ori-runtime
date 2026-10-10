@@ -458,6 +458,7 @@ def test_only_main_runs_and_only_the_dispatched_commit_is_checked_out():
     job = workflow["jobs"]["load-proof"]
     assert job["if"] == "github.ref == 'refs/heads/main'"
     triggers = workflow.get("on", workflow.get(True))
+    assert triggers is not None
     assert "sha" not in (triggers["workflow_dispatch"].get("inputs") or {})
     assert "inputs.sha" not in WORKFLOW.read_text()
     checkouts = [
