@@ -714,9 +714,11 @@ def test_a_silent_meter_is_reported_as_not_answering_once(
     One snapshot, not one per poll: repeated failures of one class are not an
     edge, and the interval is longer than the run.
     """
+    before_ms = time.time() * 1000
     running, _code, _out, receiver, _pzem, counters = _drive(
         payload, tmp_path, [], 3.0, pzem_mode="silent"
     )
+    after_ms = time.time() * 1000
 
     assert running
     assert receiver.calls == [], "a silent meter posts no readings"
@@ -727,7 +729,8 @@ def test_a_silent_meter_is_reported_as_not_answering_once(
     assert entry["sensor_id"] == "phone-main-power"
     assert "last_success_ms" not in entry, "absent, never null, on never_read"
     sent_at = call["snapshot"]["sent_at_ms"]
-    assert abs(sent_at - time.time() * 1000) < 60_000, sent_at
+    # Taken while the payload ran: bracketed, so no load can move it outside.
+    assert before_ms - 1 <= sent_at <= after_ms + 1, (before_ms, sent_at, after_ms)
     for leak in (b"socket://", b"127.0.0.1", b"e2e-secret", b"Modbus", b"timeout"):
         assert leak not in call["raw"], f"the snapshot carries {leak!r}"
     assert counters["status_accepted"] == 1, counters

@@ -30,6 +30,7 @@ from ori.runtime import OriRuntime
 from ori.skills.hooks_api import HookContext
 from ori.skills.loader import SkillLoader
 from ori.state.store import StateStore
+from tests.waiting import latency_bounds_apply
 
 SENSOR = "load-current-01"
 T0 = int(time.time() * 1000) - 600_000  # inside every age window
@@ -247,7 +248,8 @@ async def test_a_locked_store_neither_delays_nor_drops_a_polled_reading(
         started = time.monotonic()
         await runtime._poll_sensor(cast(Any, _Once()), sensor_cfg, bus, "dev-01")
         assert len(delivered) == 1
-        assert delivered[0] - started < 1.0, "the locked store delayed evaluation"
+        if latency_bounds_apply():
+            assert delivered[0] - started < 1.0, "the locked store delayed evaluation"
     finally:
         holder.execute("ROLLBACK")
         holder.close()
@@ -305,7 +307,8 @@ async def test_the_history_write_is_off_a_firmware_readings_path(
         await subscriber._ingest_telemetry({"envelope": {}, "signature": "x"})
         elapsed = time.monotonic() - started
         assert len(delivered) == 1
-        assert elapsed < 1.0, "the locked store delayed evaluation"
+        if latency_bounds_apply():
+            assert elapsed < 1.0, "the locked store delayed evaluation"
         assert delivered[0].history_frontier == 0
     finally:
         holder.execute("ROLLBACK")

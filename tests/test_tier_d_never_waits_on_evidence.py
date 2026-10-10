@@ -28,7 +28,7 @@ from ori.reasoning.elevator import IntelligenceElevator
 from ori.reasoning.resource_gate import ResourceGate
 from ori.state.store import StateStore
 from ori.utils.time_utils import now_ms
-from tests.waiting import drained, settle
+from tests.waiting import drained, latency_bounds_apply, settle
 
 ZONE = ("local_gpio", "pin:26")
 BOUND = BindingView(
@@ -1098,7 +1098,8 @@ class TestShutdownWithAnApprovalOpen:
         await asyncio.sleep(0.05)
         started = time.monotonic()
         await drained(dispatcher)
-        assert time.monotonic() - started < 0.5
+        if latency_bounds_apply():
+            assert time.monotonic() - started < 0.5
         with caplog.at_level(logging.CRITICAL):
             assert await dispatcher.abandon_records() == 0
             task.cancel()

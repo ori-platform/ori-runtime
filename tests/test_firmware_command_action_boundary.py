@@ -2462,26 +2462,27 @@ async def test_every_dispatch_route_leaves_the_gate_alone(
     }
     widest = max(gaps.values())
     longest = max(max(by_source.values()) for by_source in fastest.values())
-    slower = sorted(
-        f"{route} source={source}: +{gap:.3f}s"
-        for (route, source), gap in gaps.items()
-        if gap > FIRMWARE_DELAY_BOUND_S
-    )
-    assert not slower or not latency_bounds_apply(), (
-        "an unconfirmed firmware epoch made a dispatch slower than the same "
-        f"dispatch from a local reading by more than {FIRMWARE_DELAY_BOUND_S}s "
-        f"(fastest of {REPEATS}): {slower} (widest {widest:.4f}s). " + _LIMIT
-    )
-    overdue = sorted(
-        f"{route} source={source or 'local'}: {spent:.3f}s"
-        for route, by_source in fastest.items()
-        for source, spent in by_source.items()
-        if spent > DISPATCH_BOUND_S
-    )
-    assert not overdue or not latency_bounds_apply(), (
-        f"a dispatch took longer than {DISPATCH_BOUND_S}s on every one of "
-        f"{REPEATS} repeats: {overdue} (longest {longest:.4f}s). " + _LIMIT
-    )
+    if latency_bounds_apply():
+        slower = sorted(
+            f"{route} source={source}: +{gap:.3f}s"
+            for (route, source), gap in gaps.items()
+            if gap > FIRMWARE_DELAY_BOUND_S
+        )
+        assert not slower, (
+            "an unconfirmed firmware epoch made a dispatch slower than the same "
+            f"dispatch from a local reading by more than {FIRMWARE_DELAY_BOUND_S}s "
+            f"(fastest of {REPEATS}): {slower} (widest {widest:.4f}s). " + _LIMIT
+        )
+        overdue = sorted(
+            f"{route} source={source or 'local'}: {spent:.3f}s"
+            for route, by_source in fastest.items()
+            for source, spent in by_source.items()
+            if spent > DISPATCH_BOUND_S
+        )
+        assert not overdue, (
+            f"a dispatch took longer than {DISPATCH_BOUND_S}s on every one of "
+            f"{REPEATS} repeats: {overdue} (longest {longest:.4f}s). " + _LIMIT
+        )
     assert any(done for _, done in confirmation_reads), (
         "no firmware-sourced dispatch reached evidence attestation after "
         "executing, so the ordering assertion below would pass while observing "

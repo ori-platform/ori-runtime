@@ -537,7 +537,11 @@ def test_arrival_is_timed_on_the_monotonic_clock() -> None:
     import time
 
     with patch("time.time", lambda: 1e12):
-        assert abs(cache_arrival() - time.monotonic()) < 1.0
+        before = time.monotonic()
+        arrival = cache_arrival()
+        after = time.monotonic()
+    # Bracketed by two reads of the same clock, so no load can move it outside.
+    assert before <= arrival <= after, (before, arrival, after)
 
 
 def test_a_cached_value_with_no_arrival_is_refused(clock: _Clock) -> None:

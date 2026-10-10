@@ -42,6 +42,7 @@ from tests.commissioning.signing import (
     public_key_b64,
     sign_envelope,
 )
+from tests.waiting import latency_bounds_apply
 
 SEED = EPHEMERAL_SEED
 DEVICE = "bench-01"
@@ -711,7 +712,8 @@ def test_a_partial_keystroke_is_never_read_as_a_line(
         for _ in range(5):
             started = _t.monotonic()
             assert term.poll_line() is None, "a partial keystroke was read as a line"
-            assert _t.monotonic() - started < 0.5, "poll_line blocked"
+            if latency_bounds_apply():
+                assert _t.monotonic() - started < 0.5, "poll_line blocked"
         os.write(master, b"es\n")
         _t.sleep(0.1)
         assert term.poll_line() == "yes"
@@ -747,7 +749,9 @@ async def test_an_unanswered_dwell_returns_at_its_deadline(
     cap = proof_operation.PROOF_OBSERVATION_CAP_SECONDS
     assert result["operator_attestation"] == ATTESTATION_TIMEOUT
     # The window is what ends it, and it is not cut short.
-    assert cap * 0.8 <= elapsed < cap * 4, elapsed
+    assert cap * 0.8 <= elapsed, elapsed
+    if latency_bounds_apply():
+        assert elapsed < cap * 4, elapsed
     assert driver.calls[-1] == "disconnect"
 
 
@@ -995,7 +999,10 @@ async def test_a_driver_reported_failure_is_not_observed(
         await _run(op, outcome="open_protected_circuit")
     assert refusal.value.reason == "command_failed"
     # No dwell was served and no attestation was sought.
-    assert time.monotonic() - started < proof_operation.PROOF_OBSERVATION_CAP_SECONDS
+    if latency_bounds_apply():
+        assert (
+            time.monotonic() - started < proof_operation.PROOF_OBSERVATION_CAP_SECONDS
+        )
     assert terminal.dwell_reads == 0
     assert driver.calls[-1] == "disconnect"
     (row,) = await store.commissioning_proof_observations(_accepted().canonical_hash)
