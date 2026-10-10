@@ -5,6 +5,11 @@ name: Load proof
 # the runner's cores oversubscribed. It is triggered by hand, never on a push,
 # and closes nothing by itself: the maintainer reads the artifacts.
 #
+# It runs only when dispatched on main, and proves exactly the commit main
+# pointed to at dispatch (github.sha), which every artifact records. Nothing
+# else is ever checked out, so no unmerged code runs with this workflow's
+# access. Being on main admits a commit; it does not prove it safe.
+#
 # Load average is not comparable across machines; it counts runnable and
 # blocked tasks, so the target is per core (load average / CPU count), and
 # every run records the CPU count, the workers, the stress configuration and
@@ -15,10 +20,6 @@ name: Load proof
 on:
   workflow_dispatch:
     inputs:
-      sha:
-        description: Full 40-character commit to prove (the reviewed commit)
-        required: true
-        type: string
       runs:
         description: Loaded full-suite runs (at least 5)
         required: true
@@ -46,6 +47,8 @@ concurrency:
 jobs:
   load-proof:
     name: Load proof
+    # Refused before any checkout or installation unless dispatched on main.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     # Hosted runners stop at six hours; this stops first, and every loaded run
     # has its own bound below.
@@ -60,53 +63,33 @@ jobs:
       - name: Validate inputs
         id: validate
         env:
-          SHA: ${{ inputs.sha }}
           RUNS: ${{ inputs.runs }}
           TARGET: ${{ inputs.target_per_core }}
           FLOOR: ${{ inputs.floor_per_core }}
         run: |
-          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "sha must be a full 40-character commit"; exit 1; }
           [[ "$RUNS" =~ ^([5-9]|[1-9][0-9])$ ]] || { echo "runs must be 5..99"; exit 1; }
           [[ "$TARGET" =~ ^([1-9]|1[0-9]|20)(\.[0-9]+)?$ ]] || { echo "target_per_core must be a number from 1 to 20"; exit 1; }
           [[ "$FLOOR" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "floor_per_core must be a number"; exit 1; }
           python3 -c "import os, sys; f, t = float(os.environ['FLOOR']), float(os.environ['TARGET']); sys.exit(0 if 1.0 <= f <= t <= 20.0 else 1)" \
             || { echo "floor_per_core must be at least 1.0 and at most target_per_core"; exit 1; }
 
-      # The judge is this workflow's own revision, never the commit under
-      # proof, so a proven commit cannot supply its own pass and fail logic.
-      - name: Checkout the judge
+      - name: Checkout the dispatched commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
-          path: judge
 
-      - name: Keep the judge's report outside the checkout
-        run: |
-          mkdir -p "${RUNNER_TEMP}/judge"
-          cp judge/scripts/load_proof_report.py "${RUNNER_TEMP}/judge/"
-          rm -rf judge
-
-      - name: Checkout the commit under proof
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.sha }}
-          fetch-depth: 0
-
-      # Only reviewed code runs here: the commit must already be on main. This
-      # runs before anything from the commit executes, so an unmerged commit,
-      # a fork's included, never runs with this workflow's default-branch
-      # access, its cache among it.
-      - name: Confirm the checked-out commit is on main
+      # The report that judges the proof is copied outside the checkout before
+      # anything from the commit runs. It is not a sandbox: the commit's tests
+      # run as the same user, on the same runner, as the judge and the evidence.
+      - name: Confirm the commit and keep the judge outside the checkout
         id: confirm
         env:
-          SHA: ${{ inputs.sha }}
+          SHA: ${{ github.sha }}
         run: |
           test "$(git rev-parse HEAD)" = "$SHA"
-          git fetch --no-tags --quiet origin "+refs/heads/main:refs/remotes/origin/main"
-          git merge-base --is-ancestor "$SHA" refs/remotes/origin/main \
-            || { echo "sha must be a commit on main"; exit 1; }
-          mkdir -p "${RUNNER_TEMP}/proof"
+          mkdir -p "${RUNNER_TEMP}/proof" "${RUNNER_TEMP}/judge"
           git log -1 --format='%H %s' > "${RUNNER_TEMP}/proof/commit.txt"
+          cp scripts/load_proof_report.py "${RUNNER_TEMP}/judge/"
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -279,7 +262,7 @@ jobs:
           FLOOR: ${{ inputs.floor_per_core }}
           TARGET: ${{ inputs.target_per_core }}
           RUNS: ${{ inputs.runs }}
-          SHA: ${{ inputs.sha }}
+          SHA: ${{ github.sha }}
         run: |
           python "${RUNNER_TEMP}/judge/load_proof_report.py" \
             "${RUNNER_TEMP}/proof" "$FLOOR" "$TARGET" "$RUNS" "$SHA" >> "$GITHUB_STEP_SUMMARY"
@@ -288,6 +271,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: load-proof-${{ inputs.sha }}-${{ github.run_attempt }}
+          name: load-proof-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/proof
           if-no-files-found: error

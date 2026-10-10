@@ -349,14 +349,6 @@ def test_a_collected_node_id_maps_to_its_junit_id(nodeid, expected):
     assert _report().junit_id(nodeid) == expected
 
 
-def test_the_judge_is_the_workflow_s_own_revision():
-    steps = _steps()
-    assert steps["Checkout the judge"]["with"]["ref"] == "${{ github.sha }}"
-    report = steps["Report what each run held"]["run"]
-    assert "${RUNNER_TEMP}/judge/load_proof_report.py" in report
-    assert "scripts/load_proof_report.py" not in report
-
-
 def test_inputs_refuse_fewer_than_five_runs_and_a_floor_off_its_range():
     run = _steps()["Validate inputs"]["run"]
     assert "^([5-9]|[1-9][0-9])$" in run
@@ -461,15 +453,31 @@ def test_a_sample_at_a_run_s_end_opens_no_slot(tmp_path, capsys, omitted, counts
     assert ("cover 95 of 120 slots" in out) is not counts
 
 
-def test_only_a_commit_already_on_main_is_run():
+def test_only_main_runs_and_only_the_dispatched_commit_is_checked_out():
+    workflow = _workflow()
+    job = workflow["jobs"]["load-proof"]
+    assert job["if"] == "github.ref == 'refs/heads/main'"
+    triggers = workflow.get("on", workflow.get(True))
+    assert "sha" not in (triggers["workflow_dispatch"].get("inputs") or {})
+    assert "inputs.sha" not in WORKFLOW.read_text()
+    checkouts = [
+        s
+        for s in job["steps"]
+        if str(s.get("uses", "")).startswith("actions/checkout@")
+    ]
+    assert [c["with"]["ref"] for c in checkouts] == ["${{ github.sha }}"]
+
+
+def test_the_judge_leaves_the_checkout_before_anything_from_it_runs():
     steps = _steps()
     names = list(steps)
-    confirm = steps["Confirm the checked-out commit is on main"]
+    confirm = steps["Confirm the commit and keep the judge outside the checkout"]
     assert confirm["id"] == "confirm"
-    assert (
-        'git merge-base --is-ancestor "$SHA" refs/remotes/origin/main' in confirm["run"]
-    )
-    # Nothing from the commit runs before it is confirmed.
-    assert names.index("Confirm the checked-out commit is on main") < names.index(
-        "Install hash-locked dependencies"
-    )
+    assert 'test "$(git rev-parse HEAD)" = "$SHA"' in confirm["run"]
+    assert confirm["env"]["SHA"] == "${{ github.sha }}"
+    assert 'cp scripts/load_proof_report.py "${RUNNER_TEMP}/judge/"' in confirm["run"]
+    assert names.index(
+        "Confirm the commit and keep the judge outside the checkout"
+    ) < names.index("Install hash-locked dependencies")
+    report = steps["Report what each run held"]["run"]
+    assert "${RUNNER_TEMP}/judge/load_proof_report.py" in report
