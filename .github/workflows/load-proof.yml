@@ -92,12 +92,19 @@ jobs:
           ref: ${{ inputs.sha }}
           fetch-depth: 0
 
-      - name: Confirm the checked-out commit
+      # Only reviewed code runs here: the commit must already be on main. This
+      # runs before anything from the commit executes, so an unmerged commit,
+      # a fork's included, never runs with this workflow's default-branch
+      # access, its cache among it.
+      - name: Confirm the checked-out commit is on main
         id: confirm
         env:
           SHA: ${{ inputs.sha }}
         run: |
           test "$(git rev-parse HEAD)" = "$SHA"
+          git fetch --no-tags --quiet origin "+refs/heads/main:refs/remotes/origin/main"
+          git merge-base --is-ancestor "$SHA" refs/remotes/origin/main \
+            || { echo "sha must be a commit on main"; exit 1; }
           mkdir -p "${RUNNER_TEMP}/proof"
           git log -1 --format='%H %s' > "${RUNNER_TEMP}/proof/commit.txt"
 

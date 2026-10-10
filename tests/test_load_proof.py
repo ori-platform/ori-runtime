@@ -459,3 +459,17 @@ def test_a_sample_at_a_run_s_end_opens_no_slot(tmp_path, capsys, omitted, counts
     assert (_judge(proof) == 0) is counts
     out = capsys.readouterr().out
     assert ("cover 95 of 120 slots" in out) is not counts
+
+
+def test_only_a_commit_already_on_main_is_run():
+    steps = _steps()
+    names = list(steps)
+    confirm = steps["Confirm the checked-out commit is on main"]
+    assert confirm["id"] == "confirm"
+    assert (
+        'git merge-base --is-ancestor "$SHA" refs/remotes/origin/main' in confirm["run"]
+    )
+    # Nothing from the commit runs before it is confirmed.
+    assert names.index("Confirm the checked-out commit is on main") < names.index(
+        "Install hash-locked dependencies"
+    )
