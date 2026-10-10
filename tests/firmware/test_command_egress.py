@@ -326,6 +326,7 @@ async def test_service_publishes_approval_from_registry_anchor(store) -> None:
         runtime_command_key_bytes=RUNTIME_SEED,
         provisioner_key_bytes=PROVISIONER_SEED,
         liveness_supervisor=FirmwareLivenessSupervisor(),
+        liveness_table=None,
     )
 
     message = await service.publish_provisioning_approval(device_id)
@@ -353,6 +354,7 @@ async def test_service_refuses_approval_for_unapproved_or_revoked_device(store) 
         runtime_command_key_bytes=RUNTIME_SEED,
         provisioner_key_bytes=PROVISIONER_SEED,
         liveness_supervisor=FirmwareLivenessSupervisor(),
+        liveness_table=None,
     )
 
     with pytest.raises(FirmwareCommandError, match="not approved"):
@@ -377,6 +379,7 @@ async def test_service_publishes_signed_command_without_retaining(store) -> None
         runtime_command_key_bytes=RUNTIME_SEED,
         provisioner_key_bytes=PROVISIONER_SEED,
         liveness_supervisor=FirmwareLivenessSupervisor(),
+        liveness_table=None,
     )
 
     message = await service.publish_command(
@@ -441,6 +444,7 @@ async def test_service_refuses_to_publish_liveness_for_an_unsupervised_device(
             runtime_command_key_bytes=secrets.token_bytes(32),
             provisioner_key_bytes=bytes(range(32, 64)),
             liveness_supervisor=FirmwareLivenessSupervisor(),
+            liveness_table=None,
         )
 
         with pytest.raises(FirmwareLivenessError, match="not supervised"):

@@ -42,18 +42,18 @@ __all__ = [
     "verify_device_message",
 ]
 
-_FLEET_ID = re.compile(r"^[A-Za-z0-9._-]+$")
-_ANCHOR_EPOCH = re.compile(r"^sha256:[0-9a-f]{64}$")
+_FLEET_ID = re.compile(r"^[A-Za-z0-9._-]+\Z")
+_ANCHOR_EPOCH = re.compile(r"^sha256:[0-9a-f]{64}\Z")
 _CERTIFICATE_SHA256 = _ANCHOR_EPOCH
 _BROKER_URI = re.compile(
     r"^mqtts://(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*"
     r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
-    r"(?::(?P<port>[0-9]{1,5}))?$"
+    r"(?::(?P<port>[0-9]{1,5}))?\Z"
 )
 _DNS_HOST = re.compile(
     r"^(?=.{1,255}$)"
     r"(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*"
-    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z"
 )
 _SEQ_MAX = 2**53 - 1
 _PEM_MAX = 4095

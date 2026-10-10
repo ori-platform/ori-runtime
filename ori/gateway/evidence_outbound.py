@@ -97,7 +97,7 @@ _SHUTDOWN_DRAIN_S = 5.0
 #: Acknowledgements being applied at once. Past it one is dropped; the
 #: artifact stays retained and its next attempt draws another.
 ACK_IN_FLIGHT_BOUND = 16
-_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}\Z")
 
 
 def artifact_digest(wire: bytes) -> str:

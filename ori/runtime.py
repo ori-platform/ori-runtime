@@ -15,10 +15,12 @@ Or via the CLI entry point::
 
 import asyncio
 import datetime as dt
+import functools
 import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import signal
 import stat
@@ -77,7 +79,10 @@ from ori.gateway.firmware_commands import (
     MqttFirmwareCommandPublisher,
     load_raw_ed25519_seed_from_env,
 )
-from ori.gateway.firmware_liveness_publisher import FirmwareLivenessScheduler
+from ori.gateway.firmware_liveness_publisher import (
+    MIN_LIVENESS_PUBLISH_INTERVAL_S,
+    FirmwareLivenessScheduler,
+)
 from ori.gateway.firmware_telemetry import MqttFirmwareTelemetrySubscriber
 from ori.gateway.heartbeat import MqttGatewayHeartbeatSubscriber
 from ori.gateway.node_heartbeat import (
@@ -205,6 +210,13 @@ from ori.security.firmware.liveness import (
 from ori.security.firmware.mqtt_certificate import FirmwareMqttCertificateAuthority
 from ori.security.firmware.mqtt_provisioning import FirmwareMqttProvisioningService
 from ori.security.firmware.mqtt_workflow import FirmwareMqttProvisioningWorkflow
+from ori.security.firmware.reading_age import (
+    DEFAULT_TOTAL_BOUND,
+    LivenessTable,
+    ReadingAgeTracker,
+    default_per_device_bound,
+    measured_statement,
+)
 from ori.security.firmware.reconciliation import (
     DEFAULT_INTERVAL_S as CONFIRMATION_RETRY_INTERVAL_S,
 )
@@ -539,6 +551,7 @@ class OriRuntime:
         self._firmware_command_publisher: MqttFirmwareCommandPublisher | None = None
         self._firmware_command_service: FirmwareCommandService | None = None
         self._firmware_liveness_scheduler: FirmwareLivenessScheduler | None = None
+        self._firmware_reading_age: ReadingAgeTracker | None = None
         self._firmware_profile_library: ControllerProfileLibrary | None = None
         self._firmware_alarm_tracker: ControllerAlarmTracker | None = None
         self._telemetry_exporter: HttpTelemetryExporter | None = None
@@ -1134,7 +1147,19 @@ class OriRuntime:
                     ),
                 )
 
+        # Built before the dispatcher, which reads reading-age bounds when it
+        # composes an operator message, and fresh on every start: the table
+        # and the signing starts it matches are memory only.
+        self._firmware_reading_age = _firmware_reading_age(config)
+        reading_age = self._firmware_reading_age
         dispatcher = ActionDispatcher(
+            # What Measured may say is decided here, off the action path: the
+            # dispatcher composes the line and never reads a reading's provenance.
+            measured_time=(
+                None
+                if reading_age is None
+                else functools.partial(measured_statement, reading_age)
+            ),
             state_store=self._state_store,
             alert_sender=alert_sender,
             emergency_sms_sender=sms_action,
@@ -1848,6 +1873,7 @@ class OriRuntime:
             self._nudge_firmware_confirmations,
             profiles=self._firmware_profile_library,
             alarms=self._firmware_alarm_tracker,
+            reading_age=self._firmware_reading_age,
         )
         if firmware_telemetry_subscriber is not None:
             self._background_tasks.append(
@@ -3817,6 +3843,7 @@ class OriRuntime:
             "community_skills": community_skills_health,
             "config_authority": config_authority_health,
             "firmware_liveness": firmware_liveness_health,
+            "firmware_reading_age": self._firmware_reading_age_health(),
             "firmware_controller_profiles": (
                 await self._firmware_controller_profiles_health()
             ),
@@ -4018,6 +4045,23 @@ class OriRuntime:
             "unsigned_value_source": decided and (required or verified),
         }
 
+    def _firmware_reading_age_health(self) -> dict[str, Any]:
+        """Per device, how long ago its latest accepted reading was polled, at most.
+
+        Only a bound this runtime computed from its own liveness signing, named
+        and anchored to the instant it was computed, or "unbounded". Never a
+        claim that a reading is fresh, current or live.
+        """
+        tracker = self._firmware_reading_age
+        if tracker is None:
+            # No firmware telemetry is accepted, so there is no reading to bound.
+            return {"enabled": False}
+        return {
+            "enabled": True,
+            "signing_runtime": tracker.table is not None,
+            "devices": tracker.health(),
+        }
+
     async def _firmware_controller_profiles_health(self) -> dict[str, Any]:
         """Profile documents held and each foreign controller's alarm state.
 
@@ -4034,6 +4078,27 @@ class OriRuntime:
         except Exception:
             logger.exception("[health] could not read controller alarm states")
             alarm_channels = []
+        reading_age = self._firmware_reading_age
+        for state in alarm_channels:
+            reading = state.get("reading") or state.get("latest_reading")
+            if not isinstance(reading, dict):
+                continue
+            bound = (
+                None
+                if reading_age is None
+                else reading_age.message_bound(
+                    str(state.get("device_id")),
+                    str(reading["key_epoch_id"]),
+                    reading["boot_id"],
+                    reading["seq"],
+                )
+            )
+            # A snapshot of the device's poll, never the controller's state now.
+            reading["liveness_bound"] = (
+                "unbounded"
+                if bound is None
+                else {**bound.as_health(), "text": f"snapshot {bound.text()}"}
+            )
         return {
             "enabled": True,
             "documents_held": library.held(),
@@ -7193,6 +7258,7 @@ def _build_firmware_telemetry_subscriber(
     on_connected: Callable[[], None] | None = None,
     profiles: ControllerProfileLibrary | None = None,
     alarms: ControllerAlarmTracker | None = None,
+    reading_age: ReadingAgeTracker | None = None,
 ) -> MqttFirmwareTelemetrySubscriber | None:
     """Instantiate the signed firmware telemetry subscriber when configured."""
     firmware_cfg = _firmware_telemetry_config(config)
@@ -7204,7 +7270,7 @@ def _build_firmware_telemetry_subscriber(
         subscriber = MqttFirmwareTelemetrySubscriber(
             broker_url=config.gateway.broker_url,
             telemetry_gate=FirmwareTelemetryGate(
-                state_store, profiles=profiles, alarms=alarms
+                state_store, profiles=profiles, alarms=alarms, reading_age=reading_age
             ),
             event_bus=event_bus,
             state_store=state_store,
@@ -7226,10 +7292,51 @@ def _build_firmware_telemetry_subscriber(
     return subscriber
 
 
+def _firmware_reading_age(config: Config) -> ReadingAgeTracker | None:
+    """The reading-age tracker, with a liveness table only where this runtime signs liveness.
+
+    None when no firmware telemetry is accepted. The per-device bound holds an
+    hour of a device's ``v`` 2 messages at the configured interval
+    (firmware-telemetry/v2 The bound); the total bound is fixed, so a short
+    interval cannot grow the table without limit.
+    """
+    if _firmware_telemetry_config(config) is None:
+        return None
+    command_cfg = (
+        config.gateway.firmware_commands
+        if isinstance(getattr(config.gateway, "firmware_commands", {}), dict)
+        else {}
+    )
+    if not (
+        bool(config.gateway.enabled)
+        and bool(command_cfg.get("enabled", False))
+        and command_cfg.get("publish_liveness_v2") is True
+    ):
+        # No v 2 nonce is signed, so nothing could match a table.
+        return ReadingAgeTracker(None)
+    interval = command_cfg.get("liveness_interval_s", LIVENESS_PUBLISH_INTERVAL_S)
+    if (
+        isinstance(interval, bool)
+        or not isinstance(interval, (int, float))
+        or not math.isfinite(interval)
+        or interval < MIN_LIVENESS_PUBLISH_INTERVAL_S
+    ):
+        # The scheduler refuses this interval itself; the table still needs a size.
+        interval = LIVENESS_PUBLISH_INTERVAL_S
+    per_device = default_per_device_bound(float(interval))
+    return ReadingAgeTracker(
+        LivenessTable(
+            per_device_bound=per_device,
+            total_bound=max(per_device, DEFAULT_TOTAL_BOUND),
+        )
+    )
+
+
 def _build_firmware_command_service(
     config: Config,
     state_store: StateStore,
     liveness_supervisor: FirmwareLivenessSupervisor,
+    liveness_table: LivenessTable | None = None,
 ) -> tuple[MqttFirmwareCommandPublisher, FirmwareCommandService] | None:
     """Instantiate firmware command egress when explicitly configured."""
     if not bool(config.gateway.enabled):
@@ -7263,6 +7370,8 @@ def _build_firmware_command_service(
             runtime_command_key_bytes=runtime_key,
             provisioner_key_bytes=provisioner_key,
             liveness_supervisor=liveness_supervisor,
+            liveness_table=liveness_table,
+            publish_liveness_v2=command_cfg.get("publish_liveness_v2") is True,
         )
     except Exception:
         logger.exception("[runtime] invalid firmware command egress configuration")
@@ -7306,6 +7415,7 @@ def _build_firmware_liveness_stack(
     on_telemetry_connected: Callable[[], None] | None = None,
     profiles: ControllerProfileLibrary | None = None,
     alarms: ControllerAlarmTracker | None = None,
+    reading_age: ReadingAgeTracker | None = None,
 ) -> tuple[
     FirmwareLivenessSupervisor,
     MqttFirmwareTelemetrySubscriber | None,
@@ -7337,11 +7447,15 @@ def _build_firmware_liveness_stack(
         on_connected=on_telemetry_connected,
         profiles=profiles,
         alarms=alarms,
+        reading_age=reading_age,
     )
+    # The same table the gate matches nonces against, for the same reason as
+    # the shared supervisor: a second one would bound nothing.
     command_pair = _build_firmware_command_service(
         config,
         state_store,
         supervisor,
+        None if reading_age is None else reading_age.table,
     )
 
     # The scheduler is composed here rather than in ``start`` for the same

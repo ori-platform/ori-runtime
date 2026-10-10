@@ -20,8 +20,10 @@ Trust boundary rules enforced here:
 * Heartbeat envelopes advance freshness and liveness but produce no
   readings and must never reach reasoning or actions.
 * The device claims order and origin; the runtime claims time. Reading
-  timestamps are the trusted receipt time, and the device's advisory
-  ``emitted_at_ms`` and uptime ride along in metadata, clearly labelled.
+  timestamps are the trusted receipt time, never a measurement time the
+  device does not report, and the device's advisory ``emitted_at_ms`` and
+  uptime ride along in metadata, clearly labelled. How long ago the reading
+  was polled is bounded only by the reading-age tracker, at use.
 * A bridged reading carries the controller profile the manifest it was
   accepted under names, qualification included. A bridged measurement outside
   its usable document's range is a producer defect and is not used. An alarm
@@ -43,6 +45,7 @@ from ori.security.firmware.controller_profiles import (
     interpret_alarm_word,
     measurement_in_range,
 )
+from ori.security.firmware.reading_age import ReadingAgeTracker
 from ori.security.firmware.telemetry import (
     ALARM_WORD_SENSOR_TYPE,
     ERR_BOOT_ROLLBACK,
@@ -101,11 +104,16 @@ class FirmwareTelemetryGate:
         *,
         profiles: ControllerProfileLibrary | None = None,
         alarms: ControllerAlarmTracker | None = None,
+        reading_age: ReadingAgeTracker | None = None,
     ) -> None:
         self._store = store
         self._manifest_policy: dict[tuple[str, str, str], tuple[str, str] | None] = {}
         self.profiles = profiles if profiles is not None else ControllerProfileLibrary()
         self.alarms = alarms if alarms is not None else ControllerAlarmTracker()
+        # Without a liveness table nothing matches, so every reading is unbounded.
+        self.reading_age = (
+            reading_age if reading_age is not None else ReadingAgeTracker(None)
+        )
 
     def _stored_manifest_refusal(
         self, device_id: str, capability_hash: str, manifest: Any
@@ -488,6 +496,18 @@ class FirmwareTelemetryGate:
             self._log_rejection(verification)
             return verification, []
 
+        # Matched at acceptance, after every check (firmware-telemetry/v2).
+        self.reading_age.note_accepted(
+            version=verification.version,
+            device_id=verification.device_id,
+            boot_id=verification.boot_id,
+            capability_hash=verification.capability_hash,
+            seq=verification.seq,
+            channels=[reading["channel"] for reading in verification.readings],
+            liveness_nonce=verification.liveness_nonce,
+            key_epoch_id=str(row["key_epoch_id"]),
+        )
+
         if verification.is_heartbeat:
             # Liveness/posture/freshness proof only: no readings, no
             # reasoning, no actions.
@@ -508,6 +528,9 @@ class FirmwareTelemetryGate:
                 "boot_id": verification.boot_id,
                 "seq": verification.seq,
                 "capability_hash": row["capability_hash"],
+                # The key the message was verified under: (boot_id, seq) restart
+                # with a new key, so this names the message with them.
+                "key_epoch_id": str(row["key_epoch_id"]),
                 "device_uptime_ms": verification.device_uptime_ms,
                 # Advisory only; never a freshness or ordering proof.
                 "device_emitted_at_ms": emitted_at,

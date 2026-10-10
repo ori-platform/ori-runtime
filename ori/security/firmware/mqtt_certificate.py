@@ -35,7 +35,7 @@ _CaPublicKey = (
     | ed25519.Ed25519PublicKey
     | ed448.Ed448PublicKey
 )
-_DEVICE_ID = re.compile(r"^[A-Za-z0-9._-]{1,48}$")
+_DEVICE_ID = re.compile(r"^[A-Za-z0-9._-]{1,48}\Z")
 
 
 class FirmwareMqttCertificateError(ValueError):

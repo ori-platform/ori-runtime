@@ -110,7 +110,7 @@ PROFILE_KEYS = frozenset(
     }
 )
 
-DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+DIGEST = re.compile(r"^sha256:[0-9a-f]{64}\Z")
 
 # The field-type table decides a number's spelling. An `integer` field carries
 # no fractional part; a `number` field carries one. Both are checked against

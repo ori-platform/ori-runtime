@@ -356,12 +356,12 @@ async def test_service_signs_only_after_the_shared_supervisor_is_populated(
     # Telemetry arrives on the subscriber; the service can now sign.
     await subscriber._ingest_telemetry(_telemetry_message("telemetry_single_reading"))
     device = shared.supervised_devices()[0]
-    message = await service.publish_runtime_liveness(
+    pair = await service.publish_runtime_liveness(
         device_id=device.device_id,
         boot_id=device.boot_id,
         capability_hash=device.capability_hash,
     )
-    assert b'"liveness"' in message
+    assert b'"v":1}' in pair.v1 and pair.v2 is None
     assert fake.published == [(f"ori/fw/{SEALED_DEVICE}/runtime", 1, False)]
 
     await publisher.close()
@@ -498,6 +498,7 @@ async def test_scheduler_publishes_only_for_telemetry_established_devices(
 
     await subscriber._ingest_telemetry(_telemetry_message("telemetry_single_reading"))
 
+    # v 2 publication is off by default, so a tick sends v 1 alone.
     assert (await scheduler.publish_once()).sent == 1
     assert fake.published == [(f"ori/fw/{SEALED_DEVICE}/runtime", 1, False)]
 
@@ -507,6 +508,42 @@ async def test_scheduler_publishes_only_for_telemetry_established_devices(
     assert len(fake.published) == 2
 
     await publisher.close()
+
+
+async def test_the_gate_matches_nonces_against_the_table_the_signer_records_in(
+    store, command_keys, monkeypatch
+) -> None:
+    """One table, or a reading carrying a nonce this runtime signed would match nothing."""
+    from ori.runtime import _firmware_reading_age
+
+    monkeypatch.setattr(
+        "ori.gateway.firmware_commands._default_client_factory",
+        lambda **_: _FakeClient(),
+    )
+    cfg = _command_cfg()
+    cfg.gateway.firmware_commands["publish_liveness_v2"] = True
+    tracker = _firmware_reading_age(cfg)
+    assert tracker is not None
+    _supervisor, subscriber, pair, _scheduler = _build_firmware_liveness_stack(
+        cfg, _fakebus(), store, None, reading_age=tracker
+    )
+    assert subscriber is not None and pair is not None
+    assert tracker.table is not None
+    assert subscriber.telemetry_gate.reading_age is tracker
+    assert pair[1]._liveness.table is tracker.table
+    assert pair[1]._publish_liveness_v2 is True
+
+    await pair[0].connect()
+    await _provision(store)
+    await subscriber._ingest_telemetry(_telemetry_message("telemetry_single_reading"))
+    device = _supervisor.supervised_devices()[0]
+    published = await pair[1].publish_runtime_liveness(
+        device_id=device.device_id,
+        boot_id=device.boot_id,
+        capability_hash=device.capability_hash,
+    )
+    assert published.v2 is not None and len(tracker.table) == 1
+    await pair[0].close()
 
 
 def test_a_configured_interval_above_the_contract_ceiling_fails_startup(

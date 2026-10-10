@@ -425,6 +425,7 @@ async def _publish(
             # asserting supervision from a CLI that is about to exit is
             # precisely the claim a device must not be given.
             liveness_supervisor=FirmwareLivenessSupervisor(),
+            liveness_table=None,
         )
         return await service.publish_provisioning_approval(device_id)
     except FirmwareCommandError as exc:

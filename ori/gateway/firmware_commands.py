@@ -37,8 +37,10 @@ from ori.security.firmware.commands import (
 from ori.security.firmware.liveness import (
     FirmwareLivenessSigner,
     FirmwareLivenessSupervisor,
+    LivenessPair,
     SupervisedDevice,
 )
+from ori.security.firmware.reading_age import LivenessTable
 from ori.security.published_test_keys import is_published_seed
 
 logger = logging.getLogger(__name__)
@@ -52,7 +54,7 @@ except ImportError:  # pragma: no cover - paho is installed in production images
     mqtt = None
     _PAHO_AVAILABLE = False
 
-_FLEET_ID = re.compile(r"^[A-Za-z0-9._-]{1,48}$")
+_FLEET_ID = re.compile(r"^[A-Za-z0-9._-]{1,48}\Z")
 
 
 class FirmwareCommandPublishError(RuntimeError):
@@ -235,8 +237,13 @@ class FirmwareCommandService:
         runtime_command_key_bytes: bytes,
         provisioner_key_bytes: bytes,
         liveness_supervisor: FirmwareLivenessSupervisor,
+        liveness_table: LivenessTable | None,
+        publish_liveness_v2: bool = False,
     ) -> None:
         self._store = store
+        # Off until the supervised devices accept v 2 and keep command capacity
+        # from liveness: each interval then publishes v 1 alone.
+        self._publish_liveness_v2 = publish_liveness_v2 is True
         self._publisher = publisher
         self._signer = FirmwareCommandSigner(store, runtime_command_key_bytes)
         # Required, and never defaulted. Supervision is established on the
@@ -252,6 +259,9 @@ class FirmwareCommandService:
             store,
             runtime_command_key_bytes,
             supervisor=liveness_supervisor,
+            # Required, like the supervisor: the telemetry gate matches
+            # nonces against this table, so a private one would bound nothing.
+            table=liveness_table,
         )
         self._runtime_public_key_b64 = base64.b64encode(
             self._signer.public_key_bytes()
@@ -320,8 +330,8 @@ class FirmwareCommandService:
         device_id: str,
         boot_id: int,
         capability_hash: str,
-    ) -> bytes:
-        """Sign and publish one liveness message for a supervised device.
+    ) -> LivenessPair:
+        """Sign and publish one interval's liveness for a supervised device.
 
         This is the application-facing API, and the publisher's raw
         ``publish_runtime_liveness`` is transport glue beneath it. Going
@@ -329,14 +339,40 @@ class FirmwareCommandService:
         the signer declines when this runtime is no longer receiving from
         the device, and nothing is published. Calling the transport
         directly bypasses that, so application code must not.
+
+        firmware-commands/v2 Publication during rollout, when
+        ``publish_liveness_v2`` is on: ``v`` 1 first, then ``v`` 2, and a
+        ``v`` 2 failure never suppresses ``v`` 1. A ``v`` 1 publish failure is
+        raised once ``v`` 2 has been attempted. Off, ``v`` 1 alone.
         """
-        message = await self._liveness.sign_liveness(
+        if not self._publish_liveness_v2:
+            v1 = await self._liveness.sign_liveness(
+                device_id=device_id, boot_id=boot_id, capability_hash=capability_hash
+            )
+            await self._publisher.publish_runtime_liveness(device_id, v1)
+            return LivenessPair(v1=v1, v2=None, v2_error="v 2 publication is off")
+        pair = await self._liveness.sign_liveness_pair(
             device_id=device_id,
             boot_id=boot_id,
             capability_hash=capability_hash,
         )
-        await self._publisher.publish_runtime_liveness(device_id, message)
-        return message
+        v1_error: Exception | None = None
+        try:
+            await self._publisher.publish_runtime_liveness(device_id, pair.v1)
+        except Exception as exc:
+            v1_error = exc
+        if pair.v2 is not None:
+            try:
+                await self._publisher.publish_runtime_liveness(device_id, pair.v2)
+            except Exception:
+                logger.warning(
+                    "[firmware-liveness] v 2 liveness publish failed for %s",
+                    device_id,
+                    exc_info=True,
+                )
+        if v1_error is not None:
+            raise v1_error
+        return pair
 
     async def _require_approved_device(self, device_id: str) -> dict[str, Any]:
         row = await self._store.get_firmware_device(device_id)

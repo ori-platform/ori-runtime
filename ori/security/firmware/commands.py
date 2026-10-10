@@ -47,8 +47,8 @@ __all__ = [
     "build_provisioning_approval_bytes",
 ]
 
-_FLEET_ID = re.compile(r"^[A-Za-z0-9._-]{1,48}$")
-_CAPABILITY_HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
+_FLEET_ID = re.compile(r"^[A-Za-z0-9._-]{1,48}\Z")
+_CAPABILITY_HASH = re.compile(r"^sha256:[0-9a-f]{64}\Z")
 _ACTION_MAX = 31
 _CHANNEL_MAX = 31
 _CMD_SEQ_MAX = 2**53 - 1

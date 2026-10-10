@@ -40,7 +40,7 @@ _SIGNATURE_FIELDS = {
 _MANIFEST_FIELDS = {"files", "python", "runtime_version", "schema", "target"}
 _KEY_REGISTRY_FIELDS = {"keys", "schema"}
 _KEY_FIELDS = {"key_id", "public_key_b64", "purpose", "status"}
-_SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+_SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}\Z")
 # One canonical release identity, and exactly one spelling of it. The release
 # pipeline carries two version vocabularies — SemVer for the git tag, the
 # signature envelope and the artifact name; PEP 440 for the wheel, its metadata
@@ -49,10 +49,10 @@ _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 # spelling would put that ambiguity back inside the signed identity itself:
 # `2.4.0-rc2` and `2.4.0-rc.2` are one candidate under two artifact names.
 _VERSION_RE = re.compile(
-    r"^(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}(?:-rc\.[1-9][0-9]*)?$"
+    r"^(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}(?:-rc\.[1-9][0-9]*)?\Z"
 )
-_TARGET_RE = re.compile(r"^linux-(?:x86_64|aarch64)-python3\.(?:11|12|13)$")
-_KEY_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+_TARGET_RE = re.compile(r"^linux-(?:x86_64|aarch64)-python3\.(?:11|12|13)\Z")
+_KEY_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}\Z")
 _MAX_JSON_BYTES = 1024 * 1024
 _MAX_ARTIFACT_BYTES = 4 * 1024 * 1024 * 1024
 _MAX_ARCHIVE_MEMBERS = 4096

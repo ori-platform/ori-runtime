@@ -211,6 +211,7 @@ async def test_a_rate_limited_refusal_is_recorded_and_nothing_is_reissued(
             runtime_command_key_bytes=RUNTIME_SEED,
             provisioner_key_bytes=PROVISIONER_SEED,
             liveness_supervisor=FirmwareLivenessSupervisor(),
+            liveness_table=None,
         )
         before = _other_tasks()
         await service.publish_command(
@@ -252,6 +253,7 @@ async def test_a_failed_command_publish_is_not_retried(tmp_path: Path) -> None:
             runtime_command_key_bytes=RUNTIME_SEED,
             provisioner_key_bytes=PROVISIONER_SEED,
             liveness_supervisor=FirmwareLivenessSupervisor(),
+            liveness_table=None,
         )
         before = _other_tasks()
         with pytest.raises(ConnectionError):
@@ -479,6 +481,9 @@ EGRESS_CALLEES = frozenset(
         "sign_command",
         "sign_command_bytes",
         "sign_liveness",
+        # Signs one interval's liveness pair; it allocates runtime_seq and
+        # signs liveness only, never a command.
+        "sign_liveness_pair",
         "sleep",
         "sock_of",
         "str",
@@ -486,6 +491,10 @@ EGRESS_CALLEES = frozenset(
         "supervised_devices",
         "to_thread",
         "username_pw_set",
+        # Logging only.
+        "warning",
+        # A frozen record of what one interval signed; it publishes nothing.
+        "LivenessPair",
     }
 )
 

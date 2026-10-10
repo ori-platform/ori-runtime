@@ -631,6 +631,16 @@ else
   bad "a later version's file the pin never carried is not a stale pin" "exit ${code}: ${out}"
 fi
 
+# A set vendored for the first time has an empty destination, whose glob must
+# match nothing rather than be reported as a vector upstream removed.
+box="$(new_fixture first-vendoring)"
+out="$(check "${box}")"; code=$?
+if [ "${code}" -ne 0 ] && grep -q "^NEW " <<< "${out}" && ! grep -q '\*\.json' <<< "${out}"; then
+  ok "a first vendoring reports only new vectors, never its own glob"
+else
+  bad "a first vendoring reports only new vectors, never its own glob" "exit ${code}: ${out}"
+fi
+
 echo
 printf '%d passed, %d failed\n' "${PASS}" "${FAIL}"
 [ "${FAIL}" -eq 0 ]

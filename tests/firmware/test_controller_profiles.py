@@ -229,8 +229,9 @@ class Device:
         seq: int,
         readings: list[dict[str, Any]],
         capability_hash: str | None = None,
+        liveness_nonce: str | None | object = ...,
     ) -> dict[str, Any]:
-        body = {
+        body: dict[str, Any] = {
             "v": 1,
             "alg": "ed25519",
             "device_id": DEVICE,
@@ -242,6 +243,9 @@ class Device:
             "emitted_at_ms": None,
             "readings": readings,
         }
+        if liveness_nonce is not ...:
+            body["v"] = 2
+            body["liveness_nonce"] = liveness_nonce
         return _signed("envelope", body, epoch)
 
     def fault(self, *, epoch: int, boot_id: int, seq: int) -> dict[str, Any]:
@@ -935,6 +939,7 @@ async def test_the_runtime_holds_its_configured_documents_and_reports_alarms(
         SimpleNamespace(
             _firmware_profile_library=gate.profiles,
             _firmware_alarm_tracker=gate.alarms,
+            _firmware_reading_age=gate.reading_age,
             _state_store=store,
         )  # type: ignore[arg-type]
     )
@@ -1090,3 +1095,115 @@ async def test_a_fault_racing_a_repromotion_still_holds_the_channel(
     state = await device.alarm_state()
     assert state["state"] == "unknown"
     assert state["reason"] == "sensor_fault"
+
+
+async def test_runtime_health_presents_alarm_snapshots_and_readings_with_an_anchored_bound(
+    store: StateStore, tmp_path: Path
+) -> None:
+    """The sections the runtime serves: a matched alarm reading is a snapshot polled
+    no more than A ago, as of T; an unmatched one is unbounded; no A goes without T."""
+    import re
+    from types import SimpleNamespace
+
+    from ori.runtime import OriRuntime, _build_firmware_telemetry_subscriber
+    from ori.security.firmware.liveness import (
+        FirmwareLivenessSigner,
+        FirmwareLivenessSupervisor,
+    )
+    from ori.security.firmware.reading_age import LivenessTable, ReadingAgeTracker
+    from tests.firmware.test_liveness_composition import _cfg, _fakebus
+
+    profiles = tmp_path / "profiles"
+    profiles.mkdir()
+    (profiles / "rectifier.json").write_bytes(
+        bytes.fromhex(DOCUMENTS["rectifier"]["canonical_hex"])
+    )
+    config = _cfg()
+    config.gateway.firmware_telemetry["controller_profiles_dir"] = str(profiles)
+    now = [10_000_000_000]
+    table = LivenessTable(per_device_bound=8, total_bound=64)
+    tracker = ReadingAgeTracker(table, clock=lambda: now[0])
+    subscriber = _build_firmware_telemetry_subscriber(
+        config,
+        _fakebus(),
+        store,
+        None,
+        FirmwareLivenessSupervisor(),
+        reading_age=tracker,
+    )
+    assert subscriber is not None
+    gate = subscriber.telemetry_gate
+    device = Device(
+        store,
+        gate.profiles,
+        [
+            _bridged(
+                ALARM_CHANNEL,
+                "controller_alarm_word",
+                "bitmask",
+                _binding("rectifier", "alarm_word_1"),
+            )
+        ],
+    )
+    device.gate = gate
+    await device.provision()
+    signer = FirmwareLivenessSigner(
+        None,
+        bytes([0x11]) * 32,
+        supervisor=FirmwareLivenessSupervisor(),
+        table=table,
+        clock=lambda: now[0],
+    )
+    signed = signer.sign_liveness_v2_bytes(
+        device_id=DEVICE, boot_id=1, capability_hash=device.hashes[0], runtime_seq=1
+    )
+    nonce = re.search(rb'"nonce":"([0-9a-f]{32})"', signed)
+    assert nonce is not None
+    runtime = SimpleNamespace(
+        _firmware_profile_library=gate.profiles,
+        _firmware_alarm_tracker=gate.alarms,
+        _firmware_reading_age=tracker,
+        _state_store=store,
+    )
+
+    now[0] += 2_000_000_000
+    await subscriber._ingest_telemetry(
+        device.envelope(
+            epoch=0,
+            boot_id=1,
+            seq=1,
+            readings=[_alarm(9)],
+            liveness_nonce=nonce.group(1).decode(),
+        )
+    )
+    now[0] += 1_500_000_000
+    profiles_health = await OriRuntime._firmware_controller_profiles_health(runtime)  # type: ignore[arg-type]
+    (channel,) = profiles_health["alarm_channels"]
+    bound = channel["reading"]["liveness_bound"]
+    assert bound["age_upper_ms"] == 3500
+    assert re.fullmatch(
+        r"snapshot polled no more than 4 s ago, as of \S+", bound["text"]
+    ), bound
+    assert bound["text"].endswith(bound["as_of"])
+    (latest,) = OriRuntime._firmware_reading_age_health(runtime)["devices"]  # type: ignore[arg-type]
+    assert latest["latest_reading"]["seq"] == 1
+    assert latest["liveness_bound"]["text"].startswith(
+        "polled no more than 4 s ago, as of "
+    )
+
+    await subscriber._ingest_telemetry(
+        device.envelope(
+            epoch=0, boot_id=1, seq=2, readings=[_alarm(9)], liveness_nonce=None
+        )
+    )
+    profiles_health = await OriRuntime._firmware_controller_profiles_health(runtime)  # type: ignore[arg-type]
+    (channel,) = profiles_health["alarm_channels"]
+    assert channel["reading"]["seq"] == 2
+    assert channel["reading"]["liveness_bound"] == "unbounded"
+    reading_health = OriRuntime._firmware_reading_age_health(runtime)  # type: ignore[arg-type]
+    assert reading_health["devices"][0]["liveness_bound"] == "unbounded"
+    # Every A that leaves in either section is named with its T.
+    for text in re.findall(
+        r"no more than [^,]+, as of [^\"]+", str(profiles_health) + str(reading_health)
+    ):
+        assert ", as of " in text

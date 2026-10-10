@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-PROFILE_ID = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+\.v[1-9][0-9]*$")
+PROFILE_ID = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+\.v[1-9][0-9]*\Z")
 PROFILE_KEYS = frozenset({"v", "id", "status", "observes", "condition", "outcome"})
 OBSERVES_KEYS = frozenset({"quantity", "unit"})
 CONDITION_KEYS: dict[str, frozenset[str]] = {

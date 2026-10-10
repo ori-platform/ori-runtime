@@ -95,6 +95,7 @@ async def _service(store: StateStore) -> tuple[FirmwareCommandService, Any, str]
         runtime_command_key_bytes=RUNTIME_SEED,
         provisioner_key_bytes=PROVISIONER_SEED,
         liveness_supervisor=FirmwareLivenessSupervisor(),
+        liveness_table=None,
     )
     return service, publisher, device_id
 

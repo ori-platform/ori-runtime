@@ -42,6 +42,19 @@ release is cut.
   this release has its telemetry and faults refused until it re-registers
   from a manifest that names its profiles, which needs edge firmware that
   signs them.
+- Firmware telemetry is now judged in `firmware-telemetry/v1`'s order of
+  steps: an envelope's signature is verified before its version, posture,
+  counters or readings. A tampered envelope that also carries a bad field
+  is refused `signature_verification_failed` where it was refused for the
+  field. An envelope whose `v` is not the integer 1 or 2 is refused
+  `unsupported_version`, which was `invalid_envelope`.
+- `gateway.firmware_commands.publish_liveness_v2` is new and defaults to
+  `false`, so liveness is published as before, at `v` 1 alone. Set it to
+  `true` only once every supervised device accepts liveness at `v` 2 and keeps
+  command capacity from liveness: the runtime then publishes `v` 1 and `v` 2
+  every interval. The reference firmware still holds inbound messages in one
+  four-deep queue shared with commands, dropping what arrives when it is full.
+  Any value other than `true` or `false` is refused at config load.
 
 ## Added
 
@@ -72,6 +85,22 @@ release is cut.
   `sensor_fault` for the channel, any promotion, rotation or revocation, and
   a restart.
 
+- Firmware reading envelopes at `v` 2, and how old a firmware reading is
+  (`firmware-telemetry/v2`, `firmware-commands/v2`). An envelope may carry
+  `liveness_nonce`, the nonce of the last `v` 2 liveness message the device
+  accepted before the measurement began. The runtime signs that nonce into
+  each interval's `v` 2 liveness message, when `publish_liveness_v2` is on,
+  and records, in memory only, when it began signing it, on a clock that counts suspended time. A reading whose
+  nonce this process signed for the same device, boot and manifest within an
+  hour was polled no more than `now - signing start` ago. Health's new
+  `firmware_reading_age` shows each device's latest reading with that bound
+  as "polled no more than A ago, as of T", or `unbounded`; alarm snapshots in
+  `firmware_controller_profiles` carry the same. A restart empties the table,
+  so no reading read back from storage has a bound, and only the runtime that
+  signed the nonce computes one. The bound dates the device's poll, not the
+  measured quantity, and is not a safety input. The three contract corpora
+  are vendored and driven.
+
 ## Changed
 
 - A skill's triggers and `actions.available` entries accept only the keys
@@ -98,6 +127,15 @@ release is cut.
   phone to an edge node.
 
 ## Fixed
+
+- The Tier C approval request no longer presents a firmware reading's receipt
+  time as its measurement time. The device reports none, so the "Measured"
+  line reads "not reported by device", followed by "polled no more than A
+  ago, as of T" when this runtime can bound the reading's age. "Detected"
+  remains the receipt time. The Tier C decision log's `reading_timestamp` is
+  documented as the receipt time for a firmware reading.
+- `scripts/refresh-evidence-vectors.sh` no longer reports a vector set's own
+  glob as removed when it vendors that set for the first time.
 
 - An admitted firmware fault event is durable. The fault row and the device's
   freshness advance commit in one transaction, so a failure between them
@@ -178,6 +216,13 @@ release is cut.
   greater than zero, and an exhausted `cmd_seq` counter is a refusal.
 
 ## Security
+
+- No validating pattern in the runtime accepts a trailing newline. A pattern
+  ending in `$` also matches before a final newline, so thirteen validators
+  that used `match` accepted one, among them the firmware liveness and
+  command builders, which could then sign a raw control character into JSON
+  bytes, and the evidence, commissioning and Tier C admission digest checks.
+  Every pattern now ends in `\Z`, and a test refuses a new one ending in `$`.
 
 - The three RFC 8032 section 7.1 test keys, and the signer key of the
   `ed25519-verification/v1` corpus, are refused as trust anchors and as

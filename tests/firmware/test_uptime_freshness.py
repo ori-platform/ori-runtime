@@ -392,7 +392,8 @@ async def test_a_message_version_that_only_equals_one_is_refused(
         verification = await gate.ingest_fault(
             _signed("fault", fault), received_at_ms=1
         )
-    assert not verification.accepted and verification.error_code == "invalid_envelope"
+    expected = "unsupported_version" if family == "envelope" else "invalid_envelope"
+    assert not verification.accepted and verification.error_code == expected
 
 
 def test_the_verifiers_refuse_a_regression_themselves() -> None:
