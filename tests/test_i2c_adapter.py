@@ -28,6 +28,7 @@ from ori.hal.i2c_adapter import (
     I2CAdapter,
     _window_spec,
 )
+from tests.waiting import latency_bounds_apply
 
 # Patches of the driver globals simulate a Pi, and must land after the drivers'
 # one real load, or the first connect would overwrite them with this host's.
@@ -1355,7 +1356,8 @@ class TestAds1115ChannelSelection:
             AdapterConnectionError, match="never completed a conversion"
         ):
             await adapter.connect(_config(sensor_type="ads1115_current", channel=0))
-        assert time.monotonic() - started < 2.0
+        if latency_bounds_apply():
+            assert time.monotonic() - started < 2.0
         assert not adapter.is_connected
 
     @pytest.mark.parametrize("channel", [-1, -4, 4, 7])

@@ -116,12 +116,22 @@ async def test_quiesce_fails_on_a_spawned_task_that_never_ends() -> None:
 
 
 @pytest.mark.parametrize(
-    ("stall", "scale", "applies"),
-    [("", "", True), ("20", "", False), ("", "1000", False), ("0", "0", True)],
+    ("stall", "scale", "worker", "applies"),
+    [
+        ("", "", "", True),
+        ("20", "", "", False),
+        ("", "1000", "", False),
+        ("0", "0", "", True),
+        ("", "", "gw3", False),
+    ],
 )
-def test_a_latency_bound_is_waived_only_under_a_simulation(
-    monkeypatch: pytest.MonkeyPatch, stall: str, scale: str, applies: bool
+def test_a_latency_bound_is_waived_under_a_simulation_or_a_parallel_worker(
+    monkeypatch: pytest.MonkeyPatch, stall: str, scale: str, worker: str, applies: bool
 ) -> None:
     monkeypatch.setenv("ORI_TEST_STALL_MS", stall)
     monkeypatch.setenv("ORI_TEST_CLOCK_SCALE", scale)
+    if worker:
+        monkeypatch.setenv("PYTEST_XDIST_WORKER", worker)
+    else:
+        monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
     assert latency_bounds_apply() is applies

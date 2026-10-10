@@ -44,7 +44,7 @@ from ori.reasoning.resource_gate import (
     ResourceGate,
 )
 from ori.utils.time_utils import now_ms
-from tests.waiting import drained, quiesce, wait_until
+from tests.waiting import drained, latency_bounds_apply, quiesce, wait_until
 
 ZONE = ("local_gpio", "pin:26")
 BOUND = BindingView(
@@ -1469,7 +1469,8 @@ class TestPublishIsNotHeldByTheEvent:
         await bus.publish(OriEvent.from_reading(leak, "test-device"))
         published_in = time.perf_counter() - started
 
-        assert published_in < 0.2, f"publish held for {published_in * 1000:.0f} ms"
+        if latency_bounds_apply():
+            assert published_in < 0.2, f"publish held for {published_in * 1000:.0f} ms"
         await coordinator.drain()
         assert dispatcher.dispatch.call_args_list, "the work still has to happen"
 

@@ -161,16 +161,15 @@ def _paced(adapter: _Paced, elapsed: float) -> None:
     assert 0.8 * POLL_MS <= median, (
         f"median gap between reads {median:.0f} ms at a {POLL_MS} ms interval"
     )
-    if not latency_bounds_apply():
-        return
-    # Not slower: a wall-clock bound, which a simulated stall inflates.
-    assert adapter.reads >= int(expected * 0.6), (
-        f"{adapter.reads} reads in {elapsed:.2f}s at {POLL_MS} ms: the poll "
-        "waited more than its interval"
-    )
-    assert median <= 1.6 * POLL_MS, (
-        f"median gap between reads {median:.0f} ms at a {POLL_MS} ms interval"
-    )
+    if latency_bounds_apply():
+        # Not slower: a wall-clock bound, which a simulated stall inflates.
+        assert adapter.reads >= int(expected * 0.6), (
+            f"{adapter.reads} reads in {elapsed:.2f}s at {POLL_MS} ms: the poll "
+            "waited more than its interval"
+        )
+        assert median <= 1.6 * POLL_MS, (
+            f"median gap between reads {median:.0f} ms at a {POLL_MS} ms interval"
+        )
 
 
 async def test_a_cached_duplicate_neither_spins_the_poll_nor_starves_the_loop(
@@ -356,10 +355,11 @@ async def test_each_suppressed_duplicate_sleeps_once_and_cancels_promptly_in_the
         "exactly one poll-interval sleep"
     )
     assert task.cancelled()
-    assert took < interval / 3, (
-        f"cancellation inside the sleep took {took * 1000:.0f} ms at a "
-        f"{interval * 1000:.0f} ms interval"
-    )
+    if latency_bounds_apply():
+        assert took < interval / 3, (
+            f"cancellation inside the sleep took {took * 1000:.0f} ms at a "
+            f"{interval * 1000:.0f} ms interval"
+        )
     assert adapter.reads == 3, "a read happened after the poll was cancelled"
 
 
@@ -406,7 +406,8 @@ async def test_cancelling_the_poll_during_a_read_is_not_delayed_by_the_interval(
 
     assert not adapter.tripped
     assert task.cancelled()
-    assert took < poll_ms / 1000 / 3, (
-        f"cancellation during a read took {took * 1000:.0f} ms at a "
-        f"{poll_ms} ms interval"
-    )
+    if latency_bounds_apply():
+        assert took < poll_ms / 1000 / 3, (
+            f"cancellation during a read took {took * 1000:.0f} ms at a "
+            f"{poll_ms} ms interval"
+        )

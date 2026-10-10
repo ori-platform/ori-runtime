@@ -36,7 +36,7 @@ from tests.test_dispatch_never_waits_on_delivery import (
     _Site,
     _site,
 )
-from tests.waiting import latency_bounds_apply, wait_until
+from tests.waiting import HOLD_S, latency_bounds_apply, wait_until
 
 _SKILLS = Path(__file__).resolve().parent.parent / "skills"
 _READING_NAMES = {"value", "sensor_id", "sensor_type", "unit", "quality"}
@@ -99,6 +99,18 @@ async def _first_act(
     return fired[before][1] - started
 
 
+def _hold_without_timeout(site: Any) -> None:
+    """Let a held hook stay held for HOLD_S, not the runner's own timeout.
+
+    The hook runner gives up on a hook after its timeout, so an act that waited
+    on the hook would arrive once that timeout ran out, still while the hook
+    was held, and an assertion that the act came while the hook was held would
+    pass. With the timeout at HOLD_S, longer than every wait, such an act fails
+    its wait instead.
+    """
+    site.coordinator._elevator._hooks._timeout_s = HOLD_S
+
+
 class TestAHookCannotHoldATierDIncident:
     @pytest.mark.parametrize("name", sorted(_TIER_D_READINGS))
     async def test_a_hook_that_never_returns(self, name: str, tmp_path: Path) -> None:
@@ -108,18 +120,25 @@ class TestAHookCannotHoldATierDIncident:
             bus, (skill,) = _register(site, [name])
             never = threading.Event()
             called: list[float] = []
+            returned: list[float] = []
 
             def blocked(_context: Any) -> None:
                 called.append(time.monotonic())
-                never.wait(3.0)
+                never.wait(HOLD_S)
+                returned.append(time.monotonic())
 
             skill.hooks.pre_trigger_eval = blocked
+            _hold_without_timeout(site)
             try:
                 for _ in range(2):
                     latency = await _first_act(
                         site, bus, trigger, _reading(sensor_type, value)
                     )
-                    assert latency < _TRIP_BOUND_S, latency
+                    # Held until this test releases it: an act that waited on
+                    # the hook could not have arrived, whatever the load.
+                    assert returned == [], "the hook returned before the act"
+                    if latency_bounds_apply():
+                        assert latency < _TRIP_BOUND_S, latency
                 await wait_until(lambda: bool(called), what="bool(called)")
                 assert called, "the hook was never reached"
             finally:
@@ -133,14 +152,25 @@ class TestAHookCannotHoldATierDIncident:
         async with _site(tmp_path) as site:
             bus, (skill,) = _register(site, [name])
             called: list[float] = []
+            returned: list[float] = []
+            release = threading.Event()
 
             def blocking(_context: Any) -> None:
                 called.append(time.monotonic())
-                time.sleep(0.5)
+                release.wait(HOLD_S)
+                returned.append(time.monotonic())
 
             skill.hooks.pre_trigger_eval = blocking
-            latency = await _first_act(site, bus, trigger, _reading(sensor_type, value))
-            assert latency < _TRIP_BOUND_S, latency
+            _hold_without_timeout(site)
+            try:
+                latency = await _first_act(
+                    site, bus, trigger, _reading(sensor_type, value)
+                )
+                assert returned == [], "the hook returned before the act"
+                if latency_bounds_apply():
+                    assert latency < _TRIP_BOUND_S, latency
+            finally:
+                release.set()
             fired = site.acts.by_trigger[trigger]
             await wait_until(lambda: bool(called), what="bool(called)")
             assert called and called[0] >= fired[0][1], (
@@ -156,11 +186,14 @@ class TestAHookCannotHoldATierDIncident:
         async with _site(tmp_path) as site:
             bus, (skill,) = _register(site, [name])
             never = threading.Event()
+            returned: list[float] = []
 
             def blocked(_context: Any) -> None:
-                never.wait(3.0)
+                never.wait(HOLD_S)
+                returned.append(time.monotonic())
 
             skill.hooks.pre_trigger_eval = blocked
+            _hold_without_timeout(site)
             await site.start_routes()
             site.lock("state.db")
             site.lock("evidence.db")
@@ -170,7 +203,10 @@ class TestAHookCannotHoldATierDIncident:
                 latency = await _first_act(
                     site, bus, trigger, _reading(sensor_type, value)
                 )
-                assert latency < _TRIP_BOUND_S, latency
+                # Both stores stay locked and the hook held until the finally.
+                assert returned == [], "the hook returned before the act"
+                if latency_bounds_apply():
+                    assert latency < _TRIP_BOUND_S, latency
             finally:
                 never.set()
                 site.release()
@@ -242,8 +278,10 @@ class TestAShippedHookCannotHoldTheNextIncident:
             await asyncio.to_thread(thread.join, 5.0)
             await wait_until(lambda: bool(fired), what="bool(fired)")
             assert fired, f"{trigger} did not fire: {site.acts.by_trigger}"
+            # The state store is still locked here: the act did not wait on it.
             latency = fired[0][1] - produced[0]
-            assert latency < _TRIP_BOUND_S, latency
+            if latency_bounds_apply():
+                assert latency < _TRIP_BOUND_S, latency
             site.release()
 
 
@@ -534,7 +572,8 @@ class TestAHookWriteNeverJoinsTheWritersTransaction:
             started = time.monotonic()
             with pytest.raises(sqlite3.OperationalError):
                 store.hooks_set_skill_state("battery-lifecycle-observer", "k", "v")
-            assert time.monotonic() - started < HOOK_BUSY_TIMEOUT_S + 0.2
+            if latency_bounds_apply():
+                assert time.monotonic() - started < HOOK_BUSY_TIMEOUT_S + 0.2
             finish.set()
             await asyncio.wait_for(writer, 5.0)
             with sqlite3.connect(str(tmp_path / "state.db")) as reader:
@@ -550,22 +589,36 @@ class TestAHookWriteNeverJoinsTheWritersTransaction:
 # ── Hooks run off the event loop ─────────────────────────────────────────────
 
 
-def _stall(kind: str, release: threading.Event) -> Any:
-    """A synchronous hook that stalls the way a real one could."""
+def _stall(
+    kind: str, release: threading.Event, returned: list[float] | None = None
+) -> Any:
+    """A synchronous hook that stalls the way a real one could, until released.
+
+    Each return is appended to *returned*, so a test can show its act came while
+    the hook was still held.
+    """
 
     def hook(_context: Any) -> None:
-        if kind == "event":
-            release.wait(3.0)
-        elif kind == "sleep":
-            deadline = time.monotonic() + 3.0
-            while not release.is_set() and time.monotonic() < deadline:
-                time.sleep(0.05)
-        else:  # cpu
-            deadline = time.monotonic() + 30.0
-            while not release.is_set() and time.monotonic() < deadline:
-                sum(range(1000))
+        try:
+            _stalled(kind, release)
+        finally:
+            if returned is not None:
+                returned.append(time.monotonic())
 
     return hook
+
+
+def _stalled(kind: str, release: threading.Event) -> None:
+    if kind == "event":
+        release.wait(HOLD_S)
+    elif kind == "sleep":
+        deadline = time.monotonic() + HOLD_S
+        while not release.is_set() and time.monotonic() < deadline:
+            time.sleep(0.05)
+    else:  # cpu
+        deadline = time.monotonic() + HOLD_S
+        while not release.is_set() and time.monotonic() < deadline:
+            sum(range(1000))
 
 
 class TestAStalledHookRunsOffTheLoop:
@@ -666,9 +719,11 @@ class TestAStalledHookRunsOffTheLoop:
         trigger, sensor_type, value = _TIER_D_READINGS[name]
         normal = 5.0 if name == "energy-anomaly-detector" else 60.0
         release = threading.Event()
+        returned: list[float] = []
         async with _site(tmp_path) as site:
             bus, (skill,) = _register(site, [name])
-            skill.hooks.pre_trigger_eval = _stall(kind, release)
+            skill.hooks.pre_trigger_eval = _stall(kind, release, returned)
+            _hold_without_timeout(site)
             loop = asyncio.get_running_loop()
             fired = site.acts.by_trigger.setdefault(trigger, [])
             produced: list[float] = []
@@ -686,7 +741,11 @@ class TestAStalledHookRunsOffTheLoop:
                 await asyncio.to_thread(thread.join, 5.0)
                 await wait_until(lambda: bool(fired), what="bool(fired)")
                 assert fired, f"{trigger} did not act behind a stuck hook"
-                assert fired[0][1] - produced[0] < _TRIP_BOUND_S
+                # Released only below, and held past every wait: the act came
+                # while the hook was stuck, so it never waited on it.
+                assert returned == [], "the hook returned before the act"
+                if latency_bounds_apply():
+                    assert fired[0][1] - produced[0] < _TRIP_BOUND_S
             finally:
                 release.set()
 
@@ -759,7 +818,8 @@ class TestAStalledHookRunsOffTheLoop:
             await wait_until(lambda: runner.pending >= 1, what="runner.pending >= 1")
             started = time.monotonic()
             lost = await asyncio.wait_for(runner.close(timeout_s=0.3), 2.0)
-            assert time.monotonic() - started < 1.0
+            if latency_bounds_apply():
+                assert time.monotonic() - started < 1.0
             assert lost >= 2, lost
             assert runner.lost_at_shutdown == lost
             release.set()
@@ -986,5 +1046,7 @@ class TestAnAsynchronousHookNeverRunsOnTheLoop:
             thread.start()
             await asyncio.to_thread(thread.join, 5.0)
             await wait_until(lambda: bool(fired), what="bool(fired)")
-            assert fired and fired[0][1] - produced[0] < _TRIP_BOUND_S
+            assert fired, f"{trigger} did not fire"
+            if latency_bounds_apply():
+                assert fired[0][1] - produced[0] < _TRIP_BOUND_S
             assert ran == [], "the asynchronous hook's body ran"

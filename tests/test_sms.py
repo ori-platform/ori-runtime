@@ -16,6 +16,7 @@ import pytest
 
 from ori.actions.alert_delivery import AlertIntent, OutboundAlert
 from ori.actions.sms import SMSAction
+from tests.waiting import latency_bounds_apply
 
 # ── AT SDK stub ───────────────────────────────────────────────────────────────
 
@@ -268,7 +269,8 @@ async def test_listen_for_response_does_not_block(monkeypatch):
     start = time.monotonic()
     await action.listen_for_response("+234000", timeout_seconds=300)
     elapsed = time.monotonic() - start
-    assert elapsed < 0.5, f"listen_for_response blocked for {elapsed:.2f}s"
+    if latency_bounds_apply():
+        assert elapsed < 0.5, f"listen_for_response blocked for {elapsed:.2f}s"
 
 
 # ── webhook ingest + StateStore-backed listener ──────────────────────────────

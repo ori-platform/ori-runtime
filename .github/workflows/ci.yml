@@ -454,6 +454,29 @@ jobs:
         # payload, and this entry otherwise finishes well before the suites.
         run: pytest tests/test_runtime_mobile_delivery_e2e.py -q -n auto --durations=10
 
+      - name: Run the latency budgets alone
+        if: steps.scope.outputs.run == 'true' && matrix.role == 'checks'
+        # Wall-clock budgets are waived under parallel workers, whose clock
+        # measures the run's load; here they hold, one test at a time. After the
+        # phone step, which waits on the background payload build, so no
+        # compile runs beside them.
+        # tests/test_latency_budgets.py keeps this list equal to the modules
+        # that carry a budget.
+        run: >-
+          pytest -q -p no:xdist -m "not hardware"
+          tests/commissioning/test_proof_operation.py
+          tests/safety/test_registry.py
+          tests/test_dispatch_never_waits_on_delivery.py
+          tests/test_dispatch_plan.py
+          tests/test_firmware_command_action_boundary.py
+          tests/test_history_frontier.py
+          tests/test_i2c_adapter.py
+          tests/test_poll_interval.py
+          tests/test_registration_never_gates_actions.py
+          tests/test_sms.py
+          tests/test_tier_d_never_waits_on_evidence.py
+          tests/test_tier_d_never_waits_on_hooks.py
+
       - name: Release wheel smoke test
         if: steps.scope.outputs.run == 'true' && matrix.role == 'checks'
         run: bash scripts/smoke-release-wheel.sh

@@ -25,6 +25,13 @@ from typing import Any
 #: to stay thirty real seconds.
 DEADLINE_S = 30.0 * max(1.0, float(os.environ.get("ORI_TEST_CLOCK_SCALE", "") or 0))
 
+#: How long a test holds an obstruction it releases itself: a hook, a lock, a
+#: delivery. Longer than every wait, so an act that waited on the obstruction
+#: fails its wait instead of slipping through when the hold runs out. That is
+#: what lets "the act came while the obstruction was held" prove the act never
+#: waited on it, under any load.
+HOLD_S = 2 * DEADLINE_S
+
 _POLL_S = 0.005
 
 
@@ -32,10 +39,16 @@ def latency_bounds_apply() -> bool:
     """Whether a wall-clock latency bound means anything in this run.
 
     Under ORI_TEST_STALL_MS or ORI_TEST_CLOCK_SCALE every latency is inflated
-    or distorted by construction, so a bound on one says nothing there. Only
+    or distorted by construction, and under parallel workers it is the run's
+    load, so a bound on one says nothing there. CI runs the modules
+    that carry a budget alone, in "Run the latency budgets alone". Only
     the latency assertion consults this; every functional assertion in the
     same test runs either way.
     """
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        # A worker shares the host with every other worker, so its wall clock
+        # measures the run's load, not the code. Budgets run in a serial run.
+        return False
     return not any(
         float(os.environ.get(name, "") or 0) > 0
         for name in ("ORI_TEST_STALL_MS", "ORI_TEST_CLOCK_SCALE")

@@ -763,17 +763,17 @@ def _assert_unobstructed(case: str, trip: dict, approved: dict) -> None:
     assert approved["ran"] == 1, f"{case}: the approved act did not run: {approved}"
     assert approved["safe_default_ran"] == 0, f"{case}: the safe default ran instead"
     assert approved["decided"] == _DECIDED, f"{case}: {approved['decided']}"
-    if not latency_bounds_apply():
-        return
-    assert trip["after_s"] < _TRIP_BOUND_S, (
-        f"{case}: the trip waited {trip['after_s']:.3f}s"
-    )
-    assert approved["after_reply_s"] < _APPROVED_BOUND_S, (
-        f"{case}: the approved act waited {approved['after_reply_s']:.3f}s after YES"
-    )
-    assert approved["after_s"] < _APPROVAL_ROUND_BOUND_S, (
-        f"{case}: the approval round took {approved['after_s']:.3f}s"
-    )
+    if latency_bounds_apply():
+        assert trip["after_s"] < _TRIP_BOUND_S, (
+            f"{case}: the trip waited {trip['after_s']:.3f}s"
+        )
+        assert approved["after_reply_s"] < _APPROVED_BOUND_S, (
+            f"{case}: the approved act waited {approved['after_reply_s']:.3f}s "
+            "after YES"
+        )
+        assert approved["after_s"] < _APPROVAL_ROUND_BOUND_S, (
+            f"{case}: the approval round took {approved['after_s']:.3f}s"
+        )
 
 
 @pytest.mark.parametrize("case", CASES)
@@ -904,7 +904,8 @@ class TestATripHasNoExecutorToWaitFor:
             site.release()
             await site._finish_dispatches()
             assert tripped["ran"] == 1
-            assert tripped["after_s"] < _TRIP_BOUND_S, tripped
+            if latency_bounds_apply():
+                assert tripped["after_s"] < _TRIP_BOUND_S, tripped
             assert site.subscriber is not None and site.subscriber.shed_count > 0
 
 
@@ -942,9 +943,11 @@ class TestAFailedTripStillRaisesTheAlarm:
             started = time.monotonic()
             site._dispatch("current_clamp")
             await wait_until(lambda: bool(sent), what="bool(sent)")
-            assert attempted and attempted[0] - started < _TRIP_BOUND_S
+            assert attempted, "the trip was not attempted"
             assert sent, "no emergency notice"
-            assert sent[0] - started < _TRIP_BOUND_S, sent[0] - started
+            if latency_bounds_apply():
+                assert attempted[0] - started < _TRIP_BOUND_S
+                assert sent[0] - started < _TRIP_BOUND_S, sent[0] - started
             site.release()
 
 
@@ -964,8 +967,9 @@ class TestTheDefaultExecutorIsNotTheEvidenceRoutes:
             site.flood_inbound(_MALFORMED_RECEIPT)
             await asyncio.sleep(0.3)
             started = time.monotonic()
-            await asyncio.wait_for(asyncio.to_thread(lambda: None), _TRIP_BOUND_S)
-            assert time.monotonic() - started < _TRIP_BOUND_S
+            await asyncio.wait_for(asyncio.to_thread(lambda: None), _PROMPT_S)
+            if latency_bounds_apply():
+                assert time.monotonic() - started < _TRIP_BOUND_S
             assert site.subscriber is not None and site.subscriber.shed_count > 0
             site.release()
 
@@ -990,7 +994,8 @@ class TestTheStoreHasItsOwnThreads:
                 approved = await site.approve()
             assert approved["ran"] == 1, approved
             assert await site.decided() == _DECIDED
-            assert approved["after_reply_s"] < _APPROVED_BOUND_S, approved
+            if latency_bounds_apply():
+                assert approved["after_reply_s"] < _APPROVED_BOUND_S, approved
 
 
 class TestATripDoesNotWaitOnAnotherTriggersHistory:
@@ -1018,7 +1023,8 @@ class TestATripDoesNotWaitOnAnotherTriggersHistory:
                 held.set()
                 tripped = await asyncio.wait_for(task, _PROMPT_S)
                 await site._finish_dispatches()
-            assert tripped["after_s"] < _TRIP_BOUND_S
+            if latency_bounds_apply():
+                assert tripped["after_s"] < _TRIP_BOUND_S
             # The history-reading trigger was still evaluated, after the trip.
             assert len(site.history_reads) == 1
             assert site.history_reads[0] >= site.acts.ran["trip_relay"][0]
@@ -1086,7 +1092,8 @@ class TestAShippedTierDTriggerWithHistoryHooks:
             assert fired, "the overcurrent trigger did not fire"
             name, at = fired[0]
             assert name == "alert_whatsapp", site.acts.by_trigger
-            assert at - started < _TRIP_BOUND_S, at - started
+            if latency_bounds_apply():
+                assert at - started < _TRIP_BOUND_S, at - started
             # The hook runs after the trip, and its history reads still go
             # through the held write lock: the notices that need its baseline
             # follow promptly rather than after the store's busy timeout.
@@ -1094,7 +1101,8 @@ class TestAShippedTierDTriggerWithHistoryHooks:
             await wait_until(lambda: bool(spike), what="bool(spike)")
             assert hook_reads, "the hook never read history"
             assert spike, f"the hook never completed: {site.acts.by_trigger}"
-            assert spike[0][1] - started < 1.0, spike[0][1] - started
+            if latency_bounds_apply():
+                assert spike[0][1] - started < 1.0, spike[0][1] - started
             site.release()
 
 
@@ -1383,7 +1391,8 @@ class TestRedeliveryTiming:
             drained = time.monotonic()
             await wait_until(lambda: client.sessions >= 2, what="client.sessions >= 2")
             assert client.sessions >= 2
-            assert client.session_at[1] - drained < 0.5
+            if latency_bounds_apply():
+                assert client.session_at[1] - drained < 0.5
 
     async def test_a_failed_route_reconnects_only_after_a_growing_backoff(
         self, tmp_path: Path
@@ -1552,7 +1561,8 @@ class TestTheInFlightSlots:
                 stop.set()
                 sender.join(_PROMPT_S)
             assert ran, "the queued trip never ran"
-            assert ran[0] - unblocked < _TRIP_BOUND_S, ran[0] - unblocked
+            if latency_bounds_apply():
+                assert ran[0] - unblocked < _TRIP_BOUND_S, ran[0] - unblocked
             assert subscriber.shed_count > 1000, subscriber.shed_count
             assert peak <= INBOUND_IN_FLIGHT_BOUND, peak
             site.release()
@@ -1632,7 +1642,8 @@ class TestTheInFlightSlots:
             started = time.monotonic()
             inbound = site._tasks[1]
             await asyncio.wait_for(inbound, _PROMPT_S)
-            assert time.monotonic() - started < 1.0
+            if latency_bounds_apply():
+                assert time.monotonic() - started < 1.0
             assert subscriber._io._executor is None
             threads = {t.name for t in threading.enumerate()}
             site.release()
@@ -1931,5 +1942,6 @@ class TestABacklogOfNoticesCannotHoldAnApproval:
             approved = await site.approve()
             await asyncio.gather(*notices)
             assert approved["ran"] == 1, approved
-            assert approved["after_s"] < _APPROVAL_ROUND_BOUND_S, approved
+            if latency_bounds_apply():
+                assert approved["after_s"] < _APPROVAL_ROUND_BOUND_S, approved
             assert await site.decided() == _DECIDED
