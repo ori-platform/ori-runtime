@@ -6,7 +6,7 @@
 # process-control packages stay out of the phone wheelhouse.
 pyyaml>=6.0
 pyserial>=3.5
-tzdata>=2026.4
+tzdata>=2026.5
 httpx>=0.28
 cryptography>=50.0.2
 twilio>=9.11.2
