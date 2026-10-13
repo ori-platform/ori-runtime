@@ -276,8 +276,9 @@ release is cut.
   cannot read. A snapshot whose `status` is not one the runtime produces, or
   whose `critical` is not a boolean agreeing with it, publishes `degraded`
   with no triggers, reasons or evidence taken from it. A snapshot provider
-  that raises, or a value the heartbeat cannot convert, does the same and no
-  longer stops the heartbeat for the life of the process. A local `critical`
+  that raises, or a value the heartbeat cannot convert, does the same, and a
+  publish that fails is logged and retried on the next interval; neither
+  stops the heartbeat for the life of the process any longer. A local `critical`
   publishes `degraded`, which a lost decision record previously published as
   `healthy`, until a gateway claims the `gateway-api/v2` heartbeat rules.
 

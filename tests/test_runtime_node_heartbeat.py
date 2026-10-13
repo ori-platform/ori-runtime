@@ -530,7 +530,15 @@ async def test_a_malformed_snapshot_never_publishes_healthy(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("fault", ["provider-raises", "unmappable-evidence"])
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "provider-raises",
+        "unmappable-evidence",
+        "overflowing-evidence",
+        "trigger-str-raises",
+    ],
+)
 async def test_a_snapshot_that_cannot_be_read_publishes_degraded(monkeypatch, fault):
     """Neither a failing provider nor a value the mapping cannot convert stops
     the heartbeat or publishes healthy."""
@@ -539,9 +547,12 @@ async def test_a_snapshot_that_cannot_be_read_publishes_degraded(monkeypatch, fa
     async def _provider():
         if fault == "provider-raises":
             raise RuntimeError("store locked")
+        if fault == "trigger-str-raises":
+            return {"critical": False, "active_triggers": [_Unprintable()]}
+        gap = float("inf") if fault == "overflowing-evidence" else "many"
         return {
             "critical": False,
-            "evidence": {"enabled": True, "attestation_gap_count": "many"},
+            "evidence": {"enabled": True, "attestation_gap_count": gap},
         }
 
     client = _FakeClient()
@@ -564,3 +575,37 @@ async def test_a_snapshot_that_cannot_be_read_publishes_degraded(monkeypatch, fa
         "last_seen_ms": 1_000_000,
         "status": "degraded",
     }
+
+
+class _Unprintable:
+    def __str__(self) -> str:
+        raise LookupError("no name")
+
+
+@pytest.mark.asyncio
+async def test_a_failing_publish_does_not_end_the_heartbeat(monkeypatch):
+    """Signing, encoding or the broker call failing on one tick leaves the
+    next tick to run."""
+    calls = 0
+
+    class _FlakyClient(_FakeClient):
+        def publish(self, topic, payload, qos=0, retain=False):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise OSError("broker went away")
+            return super().publish(topic, payload, qos=qos, retain=retain)
+
+    client = _FlakyClient()
+    publisher = _publisher(client=client)
+    publisher._interval_seconds = 0.01
+    shutdown = asyncio.Event()
+    serving = asyncio.create_task(publisher.serve_until(shutdown))
+    for _ in range(200):
+        if len(client.published) >= 2 or serving.done():
+            break
+        await asyncio.sleep(0.005)
+    shutdown.set()
+    await asyncio.wait_for(serving, timeout=5.0)
+    assert len(client.published) >= 2, "the heartbeat stopped after one failure"
+    assert calls >= 3

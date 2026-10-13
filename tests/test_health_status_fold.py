@@ -182,6 +182,16 @@ def test_every_condition_branch_is_driven() -> None:
         and isinstance(node.func.value, ast.Name)
         and node.func.value.id == "severities"
     ]
+    uses = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Name) and node.id == "severities"
+    ]
+    # One declaration, one fold, and every other use an append.
+    assert len(uses) == len(appends) + 2, (
+        "`severities` is read or written other than by `.append` and the fold; "
+        f"found {len(uses) - len(appends) - 2} other use(s)"
+    )
     assert len(appends) == BRANCHES, (
         f"the builder has {len(appends)} severity contributions and CONDITIONS "
         f"drives {BRANCHES}; add a row for the new condition"

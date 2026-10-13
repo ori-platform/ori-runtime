@@ -157,7 +157,7 @@ class MqttRuntimeNodeHeartbeatPublisher:
                 self._interval_seconds,
                 "enabled" if self._authenticator is not None else "disabled",
             )
-            await self._publish_once(client)
+            await self._tick(client)
             while not shutdown_event.is_set():
                 try:
                     await asyncio.wait_for(
@@ -165,7 +165,7 @@ class MqttRuntimeNodeHeartbeatPublisher:
                     )
                     break
                 except asyncio.TimeoutError:
-                    await self._publish_once(client)
+                    await self._tick(client)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -187,6 +187,13 @@ class MqttRuntimeNodeHeartbeatPublisher:
             await asyncio.to_thread(client.disconnect)
         except Exception:
             logger.warning("[runtime-heartbeat] failed to disconnect MQTT client")
+
+    async def _tick(self, client: Any) -> None:
+        """Publish once; a failure is logged and the next tick still runs."""
+        try:
+            await self._publish_once(client)
+        except Exception:
+            logger.exception("[runtime-heartbeat] heartbeat publish failed")
 
     async def _publish_once(self, client: Any) -> None:
         payload = await self._payload()
@@ -212,7 +219,7 @@ class MqttRuntimeNodeHeartbeatPublisher:
             if fault is None and isinstance(snapshot, dict):
                 try:
                     return self._mapped(snapshot, current_ms)
-                except (TypeError, ValueError) as exc:
+                except Exception as exc:
                     fault = f"unmappable ({type(exc).__name__})"
         # A verdict the runtime cannot read may be hiding a critical one, so
         # it never publishes healthy, and nothing else is taken from it.

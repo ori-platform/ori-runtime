@@ -829,11 +829,18 @@ class EvidenceDeliveryLedger:
                 "ALTER TABLE evidence_delivery_ledger"
                 " ADD COLUMN custody_recorded_at_ms INTEGER"
             )
-        # A ledger created before the column holds the trigger without it.
-        self._connection.execute(
-            "DROP TRIGGER IF EXISTS evidence_ledger_custody_is_final"
-        )
-        self._connection.execute(_CUSTODY_FINAL_TRIGGER)
+        # A ledger created before the column holds the trigger without it. One
+        # transaction, so no write ever meets the table with no trigger at all.
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            self._connection.execute(
+                "DROP TRIGGER IF EXISTS evidence_ledger_custody_is_final"
+            )
+            self._connection.execute(_CUSTODY_FINAL_TRIGGER)
+        except BaseException:
+            self._connection.execute("ROLLBACK")
+            raise
+        self._connection.execute("COMMIT")
         # On every open, not only the first: a release rolled back to records
         # the courier's answer in last_failure, and a roll-forward must carry
         # it over or the episode it opened is reopened by the next refusal.
