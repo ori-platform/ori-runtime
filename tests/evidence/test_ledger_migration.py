@@ -489,12 +489,12 @@ async def test_a_failed_trigger_upgrade_leaves_the_previous_trigger(
 ):
     """The swap is one transaction: a failure never leaves the table with no
     custody trigger at all."""
-    import ori.security.evidence.ledger as ledger_module
 
     db = tmp_path / "evidence.db"
     _previous_release_store(db)
     monkeypatch.setattr(
-        ledger_module, "_CUSTODY_FINAL_TRIGGER", "CREATE TRIGGER broken SYNTAX"
+        "ori.security.evidence.ledger._CUSTODY_FINAL_TRIGGER",
+        "CREATE TRIGGER broken SYNTAX",
     )
     attestor = FirstPartyEvidenceAttestor(
         db_path=str(db),
@@ -531,8 +531,8 @@ async def test_a_failed_evidence_open_leaves_no_connection_open(
     tmp_path, monkeypatch, failure
 ):
     """Every connection a failed open made is closed before start() returns."""
-    import ori.security.evidence.chain as chain_module
-    import ori.security.evidence.ledger as ledger_module
+    from ori.security.evidence.chain import EvidenceChain
+    from ori.security.evidence.ledger import EvidenceDeliveryLedger
 
     opened: list[_TrackedConnection] = []
     real_connect = sqlite3.connect
@@ -544,28 +544,24 @@ async def test_a_failed_evidence_open_leaves_no_connection_open(
         opened.append(conn)
         return conn
 
-    monkeypatch.setattr(chain_module.sqlite3, "connect", _tracking_connect)
-    monkeypatch.setattr(ledger_module.sqlite3, "connect", _tracking_connect)
+    # The chain and the ledger share this one sqlite3 module.
+    monkeypatch.setattr(sqlite3, "connect", _tracking_connect)
 
     def _boom(*_args, **_kwargs):
         raise RuntimeError("injected open failure")
 
     if failure == "chain_device_check":
-        monkeypatch.setattr(chain_module.EvidenceChain, "_assert_single_device", _boom)
+        monkeypatch.setattr(EvidenceChain, "_assert_single_device", _boom)
     else:
-        monkeypatch.setattr(
-            ledger_module.EvidenceDeliveryLedger, "record_current_anchor", _boom
-        )
+        monkeypatch.setattr(EvidenceDeliveryLedger, "record_current_anchor", _boom)
     if failure == "anchor_record_and_ledger_close":
-        real_close = ledger_module.EvidenceDeliveryLedger.close
+        real_close = EvidenceDeliveryLedger.close
 
         def _close_then_raise(self):
             real_close(self)
             raise OSError("close failed")
 
-        monkeypatch.setattr(
-            ledger_module.EvidenceDeliveryLedger, "close", _close_then_raise
-        )
+        monkeypatch.setattr(EvidenceDeliveryLedger, "close", _close_then_raise)
 
     attestor = FirstPartyEvidenceAttestor(
         db_path=str(tmp_path / "evidence.db"),

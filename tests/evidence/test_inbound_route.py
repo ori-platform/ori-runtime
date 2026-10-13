@@ -438,9 +438,9 @@ def test_custody_through_the_route_awaits_a_receipt_until_one_verifies(
     attestor, monkeypatch
 ):
     """A refused receipt leaves the envelope waiting, and health can say so."""
-    import ori.security.evidence.ingest_service as ingest_service
-
-    monkeypatch.setattr(ingest_service, "now_ms", lambda: 1787000000400)
+    monkeypatch.setattr(
+        "ori.security.evidence.ingest_service.now_ms", lambda: 1787000000400
+    )
 
     async def scenario():
         artifact = await _seal_one(attestor)
@@ -466,10 +466,8 @@ def test_custody_through_the_route_awaits_a_receipt_until_one_verifies(
 
 def test_a_redelivered_custody_does_not_make_the_envelope_newer(attestor, monkeypatch):
     """The first record of custody stands: a replay later is not a later arrival."""
-    import ori.security.evidence.ingest_service as ingest_service
-
     clock = [1787000000400]
-    monkeypatch.setattr(ingest_service, "now_ms", lambda: clock[0])
+    monkeypatch.setattr("ori.security.evidence.ingest_service.now_ms", lambda: clock[0])
 
     async def scenario():
         artifact = await _seal_one(attestor)
