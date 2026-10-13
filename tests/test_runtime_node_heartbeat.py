@@ -773,3 +773,61 @@ async def test_a_publish_the_client_refuses_is_reported_as_not_sent(
         await _publisher(client=client)._tick(client)
     assert "no heartbeat was sent this tick" in caplog.text
     assert "rc=4" in caplog.text
+
+
+_WRONG_TYPES = {
+    "gap-negative-fraction": {
+        "evidence": {"enabled": True, "attestation_gap_count": -0.5}
+    },
+    "gap-fraction": {"evidence": {"enabled": True, "attestation_gap_count": 1.9}},
+    "gap-bool": {"evidence": {"enabled": True, "attestation_gap_count": True}},
+    "gap-string": {"evidence": {"enabled": True, "attestation_gap_count": "5"}},
+    "gap-object": {"evidence": {"enabled": True, "attestation_gap_count": {}}},
+    "available-string": {"evidence": {"enabled": True, "available": "false"}},
+    "available-int": {"evidence": {"enabled": True, "available": 1}},
+    "enabled-string": {"evidence": {"enabled": "false"}},
+    "enabled-int": {"evidence": {"enabled": 1}},
+    "chain-head-zero": {"evidence": {"enabled": True, "chain_head_hash": 0}},
+    "chain-head-false": {"evidence": {"enabled": True, "chain_head_hash": False}},
+    "event-type-zero": {"evidence": {"enabled": True, "action_event_type": 0}},
+    "triggers-not-a-list": {"active_triggers": "grid_sag"},
+    "trigger-not-a-string": {"active_triggers": [1]},
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", sorted(_WRONG_TYPES))
+async def test_a_value_of_the_wrong_type_never_publishes_healthy(monkeypatch, case):
+    """A type is checked before any conversion: nothing is rounded, parsed
+    or read as truthy into a value the contract admits."""
+    monkeypatch.setattr(node_heartbeat_module, "now_ms", lambda: 1_000_000)
+    client = _FakeClient()
+    snapshot = {"critical": False, **_WRONG_TYPES[case]}
+    await _publisher(client=client, snapshot=snapshot)._tick(client)
+    assert json.loads(client.published[0][1]) == {
+        "active_triggers": [],
+        "device_id": "dev-01",
+        "gateway_seen_ms": 0,
+        "last_seen_ms": 1_000_000,
+        "status": "degraded",
+    }
+
+
+@pytest.mark.asyncio
+async def test_absent_and_null_evidence_values_publish_as_empty(monkeypatch):
+    """The values the runtime emits while evidence is unavailable still map."""
+    monkeypatch.setattr(node_heartbeat_module, "now_ms", lambda: 1_000_000)
+    client = _FakeClient()
+    snapshot = {
+        "critical": False,
+        "evidence": {"enabled": True, "chain_head_hash": None, "available": False},
+    }
+    await _publisher(client=client, snapshot=snapshot)._tick(client)
+    payload = json.loads(client.published[0][1])
+    assert payload["status"] == "healthy"
+    assert payload["evidence"] == {
+        "chain_head_hash": "",
+        "attestation_gap_count": 0,
+        "available": False,
+        "action_event_type": "",
+    }

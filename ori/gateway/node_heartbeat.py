@@ -263,15 +263,17 @@ class MqttRuntimeNodeHeartbeatPublisher:
         status = "degraded" if "status" in snapshot else "healthy"
 
         active_triggers = snapshot.get("active_triggers", [])
-        if not isinstance(active_triggers, list):
-            active_triggers = []
+        if not isinstance(active_triggers, list) or not all(
+            isinstance(item, str) for item in active_triggers
+        ):
+            raise TypeError("active_triggers is not a list of strings")
 
         payload: dict[str, Any] = {
             "device_id": self._device_id,
             "status": status,
             "last_seen_ms": current_ms,
             "gateway_seen_ms": 0,
-            "active_triggers": [str(item) for item in active_triggers],
+            "active_triggers": list(active_triggers),
         }
 
         # degradation_reasons names which subsystem is degraded, so a site
@@ -305,7 +307,9 @@ class MqttRuntimeNodeHeartbeatPublisher:
         # head so the site can spot a truncated/reset local chain in near
         # real time. The persisted chain remains the evidence object.
         evidence = snapshot.get("evidence")
-        if isinstance(evidence, dict) and evidence.get("enabled"):
+        if isinstance(evidence, dict) and _wire_bool(
+            evidence.get("enabled", False), "evidence.enabled"
+        ):
             payload["evidence"] = {
                 "chain_head_hash": _wire_text(
                     evidence.get("chain_head_hash"), _CHAIN_HEAD_HASH, "chain_head_hash"
@@ -313,7 +317,9 @@ class MqttRuntimeNodeHeartbeatPublisher:
                 "attestation_gap_count": _gap_count(
                     evidence.get("attestation_gap_count")
                 ),
-                "available": bool(evidence.get("available")),
+                "available": _wire_bool(
+                    evidence.get("available", False), "evidence.available"
+                ),
                 # Emission vocabulary ('' while signing is unavailable) so
                 # the site can confirm a mixed-fleet vocabulary rollout
                 # without waiting for the first Tier C/D action.
@@ -333,15 +339,35 @@ _ACTION_EVENT_TYPE = re.compile(r"[A-Z_]{0,64}")
 
 
 def _wire_text(value: Any, shape: re.Pattern[str], name: str) -> str:
-    text = str(value or "")
+    """A string in *shape*; absent or None is the empty string, nothing else is."""
+    if value is None:
+        value = ""
+    if not isinstance(value, str):
+        raise TypeError(f"{name} is not a string")
+    text = value
     if shape.fullmatch(text) is None:
         raise ValueError(f"{name} is outside the shape gateway-api/v2 admits")
     return text
 
 
+def _wire_bool(value: Any, name: str) -> bool:
+    """A boolean, as is: a string such as "false" is refused, never read as true."""
+    if not isinstance(value, bool):
+        raise TypeError(f"{name} is not a boolean")
+    return value
+
+
 def _gap_count(value: Any) -> int:
-    """The gap count the contract admits: an integer from 0 to 2^53-1."""
-    count = int(value or 0)
+    """The gap count the contract admits: an integer from 0 to 2^53-1.
+
+    Absent or None is 0. A bool, a float or a string is refused before any
+    conversion, so nothing is rounded or parsed into a count.
+    """
+    if value is None:
+        return 0
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError("attestation_gap_count is not an integer")
+    count = value
     if not 0 <= count <= 2**53 - 1:
         raise ValueError(f"attestation_gap_count {count} is outside 0..2^53-1")
     return count

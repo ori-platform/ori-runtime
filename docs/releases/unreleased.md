@@ -275,7 +275,9 @@ release is cut.
 - The node heartbeat no longer publishes `healthy` for a health snapshot it
   cannot read. A snapshot whose `status` is not one the runtime produces, or
   whose `critical` is not a boolean agreeing with it, publishes `degraded`
-  with no triggers, reasons or evidence taken from it. A snapshot provider
+  with no triggers, reasons or evidence taken from it. So does a value of
+  the wrong type: nothing is rounded, parsed or read as truthy into a value
+  gateway-api/v2 admits. A snapshot provider
   that raises, or a value the heartbeat cannot convert, does the same, and a
   publish that fails is logged and retried on the next interval; neither
   stops the heartbeat for the life of the process any longer. A local `critical`
