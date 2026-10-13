@@ -443,6 +443,7 @@ class SocketTransport:
                 relayed.pop("already_recorded")
                 assert relayed == recorded, (relayed, recorded)
         attempts = self._attempts(replay)
+        coalesced: set[int] = set()
         if "audit_required" in expect:
             new = attempts[len(attempts_before) :]
             if expect["audit_required"]:
@@ -462,9 +463,25 @@ class SocketTransport:
                 # An identical repeat may be coalesced into the principal's
                 # existing attempt record (operator-socket/v1, Idempotency).
                 assert mine(new) == new, (new, step)
-                assert new or mine(attempts_before), (attempts_before, step)
+                assert mine(attempts), (attempts, step)
+                if not new:
+                    coalesced = {a["id"] for a in mine(attempts_before)}
+                    assert coalesced, (attempts_before, step)
             else:
                 assert new == [], (new, step)
+        # Earlier attempt records are append-only. The contract fixes a
+        # coalesced record's caller, reconciliation and kind, not which time
+        # it keeps, so only that record's time may move.
+        kept = attempts[: len(attempts_before)]
+        assert [a["id"] for a in kept] == [a["id"] for a in attempts_before], (
+            attempts_before,
+            attempts,
+            step,
+        )
+        for before, after in zip(attempts_before, kept, strict=True):
+            if before["id"] in coalesced:
+                before = {**before, "recorded_at_ms": after["recorded_at_ms"]}
+            assert after == before, (before, after, step)
         if "audit_attempts" in expect:
             got = [
                 {
