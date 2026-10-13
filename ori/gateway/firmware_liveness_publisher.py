@@ -192,6 +192,7 @@ class FirmwareLivenessScheduler:
         self._clock = clock
 
         self._started = False
+        self._started_at: float | None = None
         self._running = False
         self._stopped_cleanly = False
         self._consecutive_tick_failures = 0
@@ -261,7 +262,13 @@ class FirmwareLivenessScheduler:
         now = self._clock()
         last = self._last_successful_tick_at
         age = None if last is None else max(0.0, now - last)
-        stale = age is not None and not _within_expiry_window(age)
+        # A loop that has never completed a tick is stale once it has been
+        # running for the whole window: a broker down from boot lets every
+        # device expire without one failure ever succeeding.
+        since = age
+        if since is None and self._started_at is not None:
+            since = max(0.0, now - self._started_at)
+        stale = since is not None and not _within_expiry_window(since)
         # A scheduler that has never been started owes nothing yet, so it is
         # not degraded — otherwise every runtime would report degraded for
         # the window between building the stack and starting the loop. Once
@@ -305,12 +312,23 @@ class FirmwareLivenessScheduler:
             "last_successful_tick_age_s": age,
             "expiring_device_ids": expiring,
             "last_error": self._last_tick_error,
+            # A dead loop, a stale tick and an expired device each mean a
+            # supervised device has lost, or is losing, liveness. Failing
+            # ticks and over-capacity are risks still inside the window.
+            # An orderly stop owes nothing, so none of these holds after one.
+            "critical": bool(
+                not self._stopped_cleanly
+                and (stopped_after_starting or stale or expiring)
+            ),
             "degraded": bool(
-                stopped_after_starting
-                or stale
-                or self._consecutive_tick_failures
-                or expiring
-                or over_capacity
+                not self._stopped_cleanly
+                and (
+                    stopped_after_starting
+                    or stale
+                    or self._consecutive_tick_failures
+                    or expiring
+                    or over_capacity
+                )
             ),
         }
 
@@ -489,6 +507,7 @@ class FirmwareLivenessScheduler:
             self.supported_device_capacity,
         )
         self._started = True
+        self._started_at = self._clock()
         self._running = True
         self._stopped_cleanly = False
         next_deadline = self._clock() + self._interval_s

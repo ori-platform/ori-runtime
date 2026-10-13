@@ -1264,7 +1264,7 @@ async def test_custody_taken_before_the_stop_leaves_stopped_local_custody(site):
     assert ledger is not None
     site.attestor._executor.run(
         lambda: ledger._apply_verified_custody(
-            1, custody_at_ms=5, key_id="hkdf-sha256:" + "a" * 64
+            1, custody_at_ms=5, key_id="hkdf-sha256:" + "a" * 64, recorded_at_ms=5
         )
     )
     await _assert_partition(site, {checkpoint["artifact_digest"]})

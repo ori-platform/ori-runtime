@@ -252,6 +252,7 @@ REVIEWED_OPERATOR_MESSAGES = frozenset(
         # or anything about who receives evidence.
         "[evidence] chain head read failed (%s)",
         "[evidence] pending count read failed (%s)",
+        "[evidence] awaiting-receipt read failed (%s)",
         "[evidence] refusal summary read failed (%s)",
         # Reviewed: a closed posture token and a statement about this device's
         # own behaviour. Names no authority, registry location, or party.
@@ -472,6 +473,8 @@ EVIDENCE_HEALTH_KEYS = {
     "action_event_type",
     "chain_head_hash",
     "pending_export_count",
+    "awaiting_receipt_count",
+    "oldest_awaiting_receipt_age_ms",
     "inbound_route_connected",
     "last_attested_action_id",
     "attestation_gap_count",

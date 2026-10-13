@@ -3597,6 +3597,11 @@ class OriRuntime:
             ),
             "chain_head_hash": None,
             "pending_export_count": None,
+            # Held by a courier and not yet receipted by the authority: a
+            # receipt refused or lost shows here and nowhere else on the
+            # device. A diagnostic; it decides no severity.
+            "awaiting_receipt_count": None,
+            "oldest_awaiting_receipt_age_ms": None,
             # Whether inbound authority artifacts can currently arrive. A route
             # that is down stalls delivery without stalling anything else, so
             # nothing on the device would otherwise show it.
@@ -3649,6 +3654,12 @@ class OriRuntime:
                     health.update(registration)
             health["chain_head_hash"] = await attestor.chain_head_hash()
             health["pending_export_count"] = await attestor.pending_export_count()
+            awaiting = await attestor.awaiting_receipt(now_ms())
+            if awaiting is not None:
+                (
+                    health["awaiting_receipt_count"],
+                    health["oldest_awaiting_receipt_age_ms"],
+                ) = awaiting
             refusals = await attestor.ingest_refusal_summary()
             if refusals is not None:
                 health["ingest_refusal_count"] = refusals["count"]
@@ -3856,13 +3867,20 @@ class OriRuntime:
         if self._safety_registry is not None:
             safety_zones = self._safety_registry.safety_zones()
             snapshot["safety_zones"] = safety_zones
+        # Each condition contributes its severity and none assigns `status`, so
+        # the order they are evaluated in never lets a degraded condition
+        # overwrite a critical one.
+        severities: list[str] = []
         if firmware_liveness_health["degraded"]:
             # A stopped or stalled liveness loop puts timely publication at
             # risk for one or more supervised devices while the rest of the
-            # runtime looks healthy. Contributed rather than assigned, so this
-            # never clears a critical condition another subsystem has raised.
-            snapshot["critical"] = True
-            snapshot["status"] = "degraded"
+            # runtime looks healthy. A report that does not say which kind it
+            # is counts as critical.
+            severities.append(
+                "critical"
+                if firmware_liveness_health.get("critical", True)
+                else "degraded"
+            )
         if self._measurement_degraded:
             # A sensor that connected and then refused a run of windows is not
             # measuring either, and the reasoning one branch below applies to it
@@ -3874,7 +3892,7 @@ class OriRuntime:
             # `degradation_reasons` token because that vocabulary is closed and
             # carries none for this yet; the health contract has no token for
             # a sensor that stopped measuring.
-            snapshot["status"] = "degraded"
+            severities.append("degraded")
         if self._unconnected_sensors:
             # A configured sensor that never connected is not a healthy
             # runtime: something it was told to measure is not being measured.
@@ -3882,7 +3900,7 @@ class OriRuntime:
             # `degradation_reasons` because that vocabulary is closed and
             # carries none for this yet; the sensor
             # itself reports `connected: false` in the meantime.
-            snapshot["status"] = "degraded"
+            severities.append("degraded")
         if community_skills_health["refused_skills"]:
             # An anchor the deployment cannot verify with drops every
             # community skill on the device. Authority still failed closed, so
@@ -3893,7 +3911,7 @@ class OriRuntime:
             # The count, not the anchor, is what degrades. The default anchor
             # is unconfigured, so a device carrying only first-party skills
             # would otherwise report degraded with nothing wrong.
-            snapshot["status"] = "degraded"
+            severities.append("degraded")
         if config_authority_health["unsigned_value_source"]:
             # A signature covers the document before expansion. When a .env
             # supplied what `${VAR}` fields expanded to, the signature still
@@ -3901,11 +3919,11 @@ class OriRuntime:
             # actually running on. Hardened posture refuses the autoload
             # outright; a development deployment that asked for a signature
             # gets to keep running, and gets told.
-            snapshot["status"] = "degraded"
+            severities.append("degraded")
         if getattr(self, "_evidence_posture_problems", ()):
             # Evidence trust not established is degraded, not critical: the
             # safety path is unaffected, and what is at risk is the record.
-            snapshot["status"] = "degraded"
+            severities.append("degraded")
         records_dispatcher = getattr(self, "_dispatcher", None)
         if (
             records_dispatcher is not None
@@ -3916,7 +3934,7 @@ class OriRuntime:
             # structure full: the evidence object carries no status of its
             # own, so this is the aggregate's to say. Degraded, never critical:
             # the approval stands, and no act was replayed or delayed.
-            snapshot["status"] = "degraded"
+            severities.append("degraded")
         if self._records_lost_or_stalled():
             # A record the store never took is gone from the action log, and
             # one that has waited this long is a store that is not answering.
@@ -3924,18 +3942,18 @@ class OriRuntime:
             # critical for the same reason as above — the acts ran, the record
             # did not. runtime-health/v3 defines no row for the record queue,
             # so the condition is reported through `status` and the log alone.
-            snapshot["status"] = "degraded"
+            severities.append("degraded")
         if self._decision_records_lost():
             # An operator's decision whose record the store never took. The
             # decision invariant is the one PATF names critical, and the
             # contract's `action_records` row, which the approval admission
             # brings, classifies a lost approved decision record the same way.
-            snapshot["status"] = "critical"
+            severities.append("critical")
         commissioning = getattr(self, "_commissioning_state", None)
         if commissioning is not None and commissioning.problems:
             # Declared actuating hardware with no accepted binding is a device
             # that cannot claim protection; it must not read as healthy.
-            snapshot["status"] = "degraded"
+            severities.append("degraded")
         if any(
             zone.get("activation") == "active"
             and zone.get("protection_claim") == "unprotected"
@@ -3967,12 +3985,17 @@ class OriRuntime:
             # protection — but it is a fleet-wide change the day ratification
             # lands, and `degradation_reasons` carries no token for it, so the
             # reason is not nameable until the health contract adds one.
-            snapshot["status"] = "degraded"
+            severities.append("degraded")
 
         # Named reasons for the site view. The rich diagnostics above stay
         # local: fleet counts reveal deployment topology and per-device
         # identity is a disclosure this contract does not make. Only closed,
         # non-sensitive tokens cross the boundary.
+        status = _fold_health_status(severities)
+        if status is not None:
+            snapshot["status"] = status
+        snapshot["critical"] = status == "critical"
+
         snapshot["degradation_reasons"] = _degradation_reasons(
             firmware_liveness_degraded=bool(firmware_liveness_health["degraded"]),
         )
@@ -7387,6 +7410,17 @@ def _provisioning_anchor_bytes(config: Config) -> bytes | None:
     reading too many.
     """
     return provisioning_anchor(config.security)
+
+
+_HEALTH_SEVERITY_RANK = {"degraded": 1, "critical": 2}
+
+
+def _fold_health_status(severities: list[str]) -> str | None:
+    """The most severe condition that holds, or None when none does.
+
+    An unrecognised severity raises rather than ranking as either.
+    """
+    return max(severities, key=_HEALTH_SEVERITY_RANK.__getitem__, default=None)
 
 
 def _degradation_reasons(*, firmware_liveness_degraded: bool) -> list[str]:

@@ -50,6 +50,11 @@ class _Attestor:
     async def pending_export_count(self):
         return self.pending
 
+    awaiting: tuple[int, int | None] | None = (0, None)
+
+    async def awaiting_receipt(self, at_ms: int):
+        return self.awaiting
+
 
 class _Runtime:
     """The attributes the reconciliation and health paths actually read."""
@@ -253,6 +258,20 @@ class TestEvidenceHealth:
         assert health["chain_head_hash"] == "ef" * 32
         assert health["pending_export_count"] == 4
 
+    async def test_health_reports_envelopes_awaiting_a_receipt(self) -> None:
+        attestor = _Attestor()
+        attestor.awaiting = (2, 45_000)
+        health = await self._health(_Runtime(attestor=attestor, store=_store([])))
+        assert health["awaiting_receipt_count"] == 2
+        assert health["oldest_awaiting_receipt_age_ms"] == 45_000
+
+    async def test_an_unreadable_wait_is_reported_unknown_not_zero(self) -> None:
+        attestor = _Attestor()
+        attestor.awaiting = None
+        health = await self._health(_Runtime(attestor=attestor, store=_store([])))
+        assert health["awaiting_receipt_count"] is None
+        assert health["oldest_awaiting_receipt_age_ms"] is None
+
     async def test_health_projects_retained_ingest_refusals(self) -> None:
         """A refused receipt must not read like one that never arrived."""
         attestor = _Attestor()
@@ -305,6 +324,8 @@ class TestEvidenceHealth:
         assert health["available"] is False
         assert health["chain_head_hash"] is None
         assert health["pending_export_count"] is None
+        assert health["awaiting_receipt_count"] is None
+        assert health["oldest_awaiting_receipt_age_ms"] is None
         assert health["action_event_type"] == ""
 
     async def test_health_carries_the_attestation_gap_count(self) -> None:
@@ -344,13 +365,14 @@ class TestHeartbeatEvidenceProjection:
     async def test_the_heartbeat_carries_the_chain_head_and_gap_count(self) -> None:
         payload = await self._payload(
             {
+                "critical": False,
                 "evidence": {
                     "enabled": True,
                     "available": True,
                     "chain_head_hash": "ab" * 32,
                     "attestation_gap_count": 3,
                     "action_event_type": "SAFETY_ACTION_EXECUTED",
-                }
+                },
             }
         )
         assert payload["evidence"]["chain_head_hash"] == "ab" * 32
@@ -360,11 +382,13 @@ class TestHeartbeatEvidenceProjection:
 
     async def test_the_heartbeat_omits_evidence_when_it_is_disabled(self) -> None:
         """A device not keeping evidence must not appear to be keeping it."""
-        payload = await self._payload({"evidence": {"enabled": False}})
+        payload = await self._payload(
+            {"critical": False, "evidence": {"enabled": False}}
+        )
         assert "evidence" not in payload
 
     async def test_the_heartbeat_omits_evidence_when_absent_entirely(self) -> None:
-        payload = await self._payload({})
+        payload = await self._payload({"critical": False})
         assert "evidence" not in payload
 
     async def test_an_unavailable_chain_reports_available_false(self) -> None:
@@ -372,13 +396,14 @@ class TestHeartbeatEvidenceProjection:
         from both disabled and healthy."""
         payload = await self._payload(
             {
+                "critical": False,
                 "evidence": {
                     "enabled": True,
                     "available": False,
                     "chain_head_hash": "",
                     "attestation_gap_count": 7,
                     "action_event_type": "",
-                }
+                },
             }
         )
         assert payload["evidence"]["available"] is False

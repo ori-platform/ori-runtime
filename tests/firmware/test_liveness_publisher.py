@@ -59,8 +59,11 @@ class _VirtualScheduler(FirmwareLivenessScheduler):
         self._vclock = vclock
         self._max_waits = max_waits
         self.waits: list[float] = []
+        # Health as the loop reported it before the harness stopped it.
+        self.running_health: dict[str, object] = {}
 
     async def _wait_or_shutdown(self, shutdown_event, delay: float) -> bool:
+        self.running_health = self.health()
         if len(self.waits) >= self._max_waits:
             # Model an orderly shutdown rather than an unexplained exit, so
             # tests that end the loop do not read as the task dying.
@@ -400,6 +403,11 @@ async def test_a_failing_tick_does_not_end_the_loop(caplog) -> None:
         assert scheduler.health()["consecutive_tick_failures"] == 3, (
             "every failing tick must be counted, and the loop must reach them all"
         )
+        assert scheduler.running_health["degraded"] is True
+        # Failing ticks are a risk while supervision is inside its window.
+        assert scheduler.running_health["critical"] is False
+        # An orderly stop owes nothing.
+        assert scheduler.health()["degraded"] is False
 
     assert "tick failed" in caplog.text
     assert "devices will expire if this persists" in caplog.text
@@ -413,6 +421,7 @@ async def test_a_scheduler_that_has_never_run_is_not_degraded() -> None:
     health = scheduler.health()
     assert health["started"] is False
     assert health["degraded"] is False
+    assert health["critical"] is False
 
 
 async def test_an_orderly_shutdown_is_not_degraded() -> None:
@@ -424,6 +433,7 @@ async def test_an_orderly_shutdown_is_not_degraded() -> None:
     health = scheduler.health()
     assert health["running"] is False
     assert health["degraded"] is False
+    assert health["critical"] is False
 
 
 async def test_a_loop_that_ends_without_shutdown_is_degraded() -> None:
@@ -444,6 +454,7 @@ async def test_a_loop_that_ends_without_shutdown_is_degraded() -> None:
     assert health["running"] is False
     assert health["started"] is True
     assert health["degraded"] is True
+    assert health["critical"] is True
 
 
 async def test_a_loop_that_has_not_ticked_within_the_expiry_window_is_degraded() -> (
@@ -463,10 +474,12 @@ async def test_a_loop_that_has_not_ticked_within_the_expiry_window_is_degraded()
 
     now[0] += LIVENESS_EXPIRY_WINDOW_S - 1
     assert scheduler.health()["degraded"] is False
+    assert scheduler.health()["critical"] is False
 
     now[0] += 2
     health = scheduler.health()
     assert health["degraded"] is True
+    assert health["critical"] is True
     assert health["last_successful_tick_age_s"] > LIVENESS_EXPIRY_WINDOW_S
 
 
@@ -662,7 +675,7 @@ async def test_a_tick_that_reaches_no_device_is_a_failed_tick() -> None:
 
     assert health["consecutive_tick_failures"] == 2
     assert health["last_successful_tick_age_s"] is None
-    assert health["degraded"] is True
+    assert scheduler.running_health["degraded"] is True
     assert "delivered 0 of 2" in health["last_error"]
 
 
@@ -723,6 +736,7 @@ async def test_one_device_failing_forever_is_visible() -> None:
     health = scheduler.health()
     assert health["expiring_device_ids"] == ["ori-fw-a"]
     assert health["degraded"] is True
+    assert health["critical"] is True
 
 
 async def test_a_device_that_stops_being_supervised_is_not_reported_expiring() -> None:
@@ -759,6 +773,8 @@ def test_a_fleet_beyond_capacity_is_reported() -> None:
     assert health["supported_device_capacity"] == 32
     assert health["over_capacity"] is True
     assert health["degraded"] is True
+    # Every device is still inside its window.
+    assert health["critical"] is False
 
 
 async def test_the_startup_log_line_formats(caplog) -> None:
@@ -808,6 +824,7 @@ async def test_a_device_exactly_at_the_window_counts_as_expiring() -> None:
     health = scheduler.health()
     assert health["expiring_device_ids"] == ["ori-fw-a"]
     assert health["degraded"] is True
+    assert health["critical"] is True
 
 
 async def test_a_tick_exactly_at_the_window_counts_as_stale() -> None:
@@ -833,3 +850,52 @@ def test_a_configuration_landing_exactly_on_the_window_is_refused() -> None:
             interval_s=15.0,
             per_device_timeout_s=LIVENESS_EXPIRY_WINDOW_S - 15.0,
         )
+
+
+async def test_a_loop_that_never_ticks_successfully_goes_stale_from_its_start() -> None:
+    """A broker down from boot: no tick ever succeeds, so there is no last
+    tick to age, and the start is what the window runs from."""
+    vclock = _VirtualClock()
+    service = _AllFailingService([_device("ori-fw-a")])
+    scheduler = _VirtualScheduler(service, vclock=vclock, max_waits=200)
+    states: list[tuple[float, bool, bool]] = []
+    original = scheduler._wait_or_shutdown
+
+    async def _observe(shutdown_event, delay: float) -> bool:
+        health = scheduler.health()
+        states.append((vclock.now, bool(health["degraded"]), bool(health["critical"])))
+        return await original(shutdown_event, delay)
+
+    scheduler._wait_or_shutdown = _observe  # type: ignore[method-assign]
+    started = vclock.now
+    await asyncio.wait_for(scheduler.serve_until(asyncio.Event()), timeout=5.0)
+
+    inside = [s for s in states if s[0] - started < LIVENESS_EXPIRY_WINDOW_S]
+    past = [s for s in states if s[0] - started >= LIVENESS_EXPIRY_WINDOW_S]
+    assert inside and past
+    assert all(degraded and not critical for _, degraded, critical in inside[1:])
+    assert all(critical for _, _, critical in past)
+
+
+async def test_an_orderly_stop_holds_no_liveness_condition() -> None:
+    """Over capacity, an expired device and a stale tick all clear once the
+    loop was stopped on purpose."""
+    now = [1000.0]
+    service = _FakeService(
+        [_device("ori-fw-a")], fail={"ori-fw-a": RuntimeError("broker refused")}
+    )
+    scheduler = FirmwareLivenessScheduler(
+        service, clock=lambda: now[0], max_concurrent=1
+    )
+    await scheduler.publish_once()
+    scheduler._last_device_success.update({f"d{i}": now[0] for i in range(40)})
+    scheduler._started = True
+    scheduler._started_at = now[0]
+    now[0] += LIVENESS_EXPIRY_WINDOW_S * 3
+    running = scheduler.health()
+    assert running["critical"] is True and running["over_capacity"] is True
+
+    scheduler._stopped_cleanly = True
+    stopped = scheduler.health()
+    assert stopped["critical"] is False
+    assert stopped["degraded"] is False

@@ -173,15 +173,20 @@ class EvidenceChain:
         # bounded, so waiting is the right answer; failing turns ordinary
         # contention into a spurious evidence failure, and evidence that fails
         # because two things happened at once is worse than useless.
-        self._connection.execute("PRAGMA busy_timeout=5000")
-        self._connection.execute("PRAGMA journal_mode=WAL")
-        # Durability matters more than throughput here: a row acknowledged as
-        # signed and then lost to a power cut is worse than a slower append,
-        # because the action it attests already happened.
-        self._connection.execute("PRAGMA synchronous=FULL")
-        self._connection.execute("PRAGMA foreign_keys=ON")
-        self._connection.executescript(_SCHEMA)
-        self._assert_single_device()
+        try:
+            self._connection.execute("PRAGMA busy_timeout=5000")
+            self._connection.execute("PRAGMA journal_mode=WAL")
+            # Durability matters more than throughput here: a row acknowledged
+            # as signed and then lost to a power cut is worse than a slower
+            # append, because the action it attests already happened.
+            self._connection.execute("PRAGMA synchronous=FULL")
+            self._connection.execute("PRAGMA foreign_keys=ON")
+            self._connection.executescript(_SCHEMA)
+            self._assert_single_device()
+        except BaseException:
+            # A chain that failed to open holds no connection.
+            self._connection.close()
+            raise
 
     def _assert_single_device(self) -> None:
         """One key, one device, one chain.

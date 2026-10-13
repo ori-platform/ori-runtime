@@ -259,22 +259,35 @@ class FirstPartyEvidenceAttestor:
             device_id=self._device_id, pubkey_hex=key.public_key_hex
         )
         chain = EvidenceChain(self._db_path, key, self._device_id)
-        ledger = EvidenceDeliveryLedger(
-            self._db_path,
-            key,
-            self._device_id,
-            anchor_epoch_id=anchor.anchor_epoch_id,
-            key_id=anchor.key_id,
-        )
-        service = EvidenceIngestService(
-            ledger=ledger,
-            registry=self._authority_keys,
-            device_id=self._device_id,
-            device_pubkey_hex=key.public_key_hex,
-            custody_keys=self._custody_keys,
-            disposition_verifier=self._disposition_verifier,
-        )
-        ledger.record_current_anchor(posture=anchor.posture, recorded_at_ms=now_ms())
+        ledger: EvidenceDeliveryLedger | None = None
+        try:
+            ledger = EvidenceDeliveryLedger(
+                self._db_path,
+                key,
+                self._device_id,
+                anchor_epoch_id=anchor.anchor_epoch_id,
+                key_id=anchor.key_id,
+            )
+            service = EvidenceIngestService(
+                ledger=ledger,
+                registry=self._authority_keys,
+                device_id=self._device_id,
+                device_pubkey_hex=key.public_key_hex,
+                custody_keys=self._custody_keys,
+                disposition_verifier=self._disposition_verifier,
+            )
+            ledger.record_current_anchor(
+                posture=anchor.posture, recorded_at_ms=now_ms()
+            )
+        except BaseException:
+            # Nothing that failed to open is kept open: neither is reachable
+            # from close() until it is assigned below.
+            try:
+                if ledger is not None:
+                    ledger.close()
+            finally:
+                chain.close()
+            raise
         self._anchor = anchor
         self._device_key = key
         self._chain = chain
@@ -403,6 +416,23 @@ class FirstPartyEvidenceAttestor:
     def _pending_count_sync(self) -> int:
         assert self._ledger is not None
         return self._ledger.awaiting_custody_count()
+
+    async def awaiting_receipt(self, at_ms: int) -> tuple[int, int | None] | None:
+        """Envelopes a courier holds and the authority has not receipted.
+
+        The count and the oldest one's age at *at_ms*; None when the ledger
+        cannot be read.
+        """
+        if self._ledger is None:
+            return None
+        try:
+            return await self._executor.run_async(self._ledger.awaiting_receipt, at_ms)
+        except Exception as exc:
+            logger.warning(
+                "[evidence] awaiting-receipt read failed (%s)",
+                safe_failure_reason(exc),
+            )
+            return None
 
     async def issue_checkpoint(self) -> dict[str, Any] | None:
         """Sign a checkpoint for the current high-water mark and retain it.

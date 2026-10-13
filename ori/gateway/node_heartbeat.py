@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -157,7 +158,7 @@ class MqttRuntimeNodeHeartbeatPublisher:
                 self._interval_seconds,
                 "enabled" if self._authenticator is not None else "disabled",
             )
-            await self._publish_once(client)
+            await self._tick(client)
             while not shutdown_event.is_set():
                 try:
                     await asyncio.wait_for(
@@ -165,7 +166,7 @@ class MqttRuntimeNodeHeartbeatPublisher:
                     )
                     break
                 except asyncio.TimeoutError:
-                    await self._publish_once(client)
+                    await self._tick(client)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -188,40 +189,91 @@ class MqttRuntimeNodeHeartbeatPublisher:
         except Exception:
             logger.warning("[runtime-heartbeat] failed to disconnect MQTT client")
 
+    async def _tick(self, client: Any) -> None:
+        """Publish once; a failure is logged and the next tick still runs."""
+        try:
+            await self._publish_once(client)
+        except Exception:
+            logger.exception("[runtime-heartbeat] no heartbeat was sent this tick")
+
     async def _publish_once(self, client: Any) -> None:
         payload = await self._payload()
+        try:
+            body = self._encode(payload)
+        except Exception as exc:
+            # A mapped heartbeat that cannot be signed or encoded is replaced,
+            # not dropped: silence would read as offline rather than degraded.
+            body = self._encode(self._fallback(int(payload["last_seen_ms"])))
+            logger.warning(
+                "[runtime-heartbeat] heartbeat could not be encoded (%s); "
+                "publishing degraded",
+                type(exc).__name__,
+            )
+        info = await asyncio.to_thread(
+            client.publish, self.topic, body, qos=0, retain=False
+        )
+        # paho answers a publish it could not queue, such as one on a
+        # disconnected client, with a nonzero rc rather than an exception.
+        rc = getattr(info, "rc", 0)
+        if rc != 0:
+            raise RuntimeError(f"the broker client refused the publish (rc={rc})")
+
+    def _encode(self, payload: dict[str, Any]) -> bytes:
         if self._authenticator is not None:
             payload = self._authenticator.sign(
                 payload, message_type=RUNTIME_HEARTBEAT_MESSAGE_TYPE
             )
-        body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode(
+        return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode(
             "utf-8"
         )
-        await asyncio.to_thread(client.publish, self.topic, body, qos=0, retain=False)
 
     async def _payload(self) -> dict[str, Any]:
-        snapshot = self._health_snapshot_provider()
-        if isinstance(snapshot, Awaitable):
-            snapshot = await snapshot
-        if not isinstance(snapshot, dict):
-            snapshot = {}
-
         current_ms = now_ms()
-        raw_status = str(snapshot.get("status", "healthy") or "healthy").strip()
-        status = raw_status if raw_status in {"healthy", "degraded"} else "healthy"
-        if snapshot.get("critical"):
-            status = "degraded"
+        try:
+            snapshot = self._health_snapshot_provider()
+            if isinstance(snapshot, Awaitable):
+                snapshot = await snapshot
+            fault = _snapshot_status_fault(snapshot)
+            if fault is None and isinstance(snapshot, dict):
+                return self._mapped(snapshot, current_ms)
+        except Exception as exc:
+            fault = f"unreadable ({type(exc).__name__})"
+        # A verdict the runtime cannot read may be hiding a critical one, so
+        # it never publishes healthy, and nothing else is taken from it.
+        logger.warning(
+            "[runtime-heartbeat] health snapshot is malformed (%s); "
+            "mapping it to degraded",
+            fault,
+        )
+        return self._fallback(current_ms)
+
+    def _fallback(self, current_ms: int) -> dict[str, Any]:
+        return {
+            "device_id": self._device_id,
+            "status": "degraded",
+            "last_seen_ms": current_ms,
+            "gateway_seen_ms": 0,
+            "active_triggers": [],
+        }
+
+    def _mapped(self, snapshot: dict[str, Any], current_ms: int) -> dict[str, Any]:
+        # gateway-api/v2 holds `critical` back until a gateway claims its
+        # heartbeat rules, and until then a runtime emits only what v1
+        # accepts, so a local critical is published as degraded.
+        status = "degraded" if "status" in snapshot else "healthy"
 
         active_triggers = snapshot.get("active_triggers", [])
-        if not isinstance(active_triggers, list):
-            active_triggers = []
+        if not isinstance(active_triggers, list) or not all(
+            isinstance(item, str) for item in active_triggers
+        ):
+            raise TypeError("active_triggers is not a list of strings")
 
         payload: dict[str, Any] = {
             "device_id": self._device_id,
             "status": status,
             "last_seen_ms": current_ms,
             "gateway_seen_ms": 0,
-            "active_triggers": [str(item) for item in active_triggers],
+            "active_triggers": list(active_triggers),
         }
 
         # degradation_reasons names which subsystem is degraded, so a site
@@ -255,19 +307,89 @@ class MqttRuntimeNodeHeartbeatPublisher:
         # head so the site can spot a truncated/reset local chain in near
         # real time. The persisted chain remains the evidence object.
         evidence = snapshot.get("evidence")
-        if isinstance(evidence, dict) and evidence.get("enabled"):
+        if isinstance(evidence, dict) and _wire_bool(
+            evidence.get("enabled", False), "evidence.enabled"
+        ):
             payload["evidence"] = {
-                "chain_head_hash": str(evidence.get("chain_head_hash") or ""),
-                "attestation_gap_count": int(
-                    evidence.get("attestation_gap_count") or 0
+                "chain_head_hash": _wire_text(
+                    evidence.get("chain_head_hash"), _CHAIN_HEAD_HASH, "chain_head_hash"
                 ),
-                "available": bool(evidence.get("available")),
+                "attestation_gap_count": _gap_count(
+                    evidence.get("attestation_gap_count")
+                ),
+                "available": _wire_bool(
+                    evidence.get("available", False), "evidence.available"
+                ),
                 # Emission vocabulary ('' while signing is unavailable) so
                 # the site can confirm a mixed-fleet vocabulary rollout
                 # without waiting for the first Tier C/D action.
-                "action_event_type": str(evidence.get("action_event_type") or ""),
+                "action_event_type": _wire_text(
+                    evidence.get("action_event_type"),
+                    _ACTION_EVENT_TYPE,
+                    "action_event_type",
+                ),
             }
         return payload
+
+
+# The shapes gateway-api/v2 admits; a gateway refuses the whole heartbeat
+# otherwise, so a value outside them maps to the degraded heartbeat instead.
+_CHAIN_HEAD_HASH = re.compile(r"(?:[0-9a-f]{64})?")
+_ACTION_EVENT_TYPE = re.compile(r"[A-Z_]{0,64}")
+
+
+def _wire_text(value: Any, shape: re.Pattern[str], name: str) -> str:
+    """A string in *shape*; absent or None is the empty string, nothing else is."""
+    if value is None:
+        value = ""
+    if not isinstance(value, str):
+        raise TypeError(f"{name} is not a string")
+    text = value
+    if shape.fullmatch(text) is None:
+        raise ValueError(f"{name} is outside the shape gateway-api/v2 admits")
+    return text
+
+
+def _wire_bool(value: Any, name: str) -> bool:
+    """A boolean, as is: a string such as "false" is refused, never read as true."""
+    if not isinstance(value, bool):
+        raise TypeError(f"{name} is not a boolean")
+    return value
+
+
+def _gap_count(value: Any) -> int:
+    """The gap count the contract admits: an integer from 0 to 2^53-1.
+
+    Absent or None is 0. A bool, a float or a string is refused before any
+    conversion, so nothing is rounded or parsed into a count.
+    """
+    if value is None:
+        return 0
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError("attestation_gap_count is not an integer")
+    count = value
+    if not 0 <= count <= 2**53 - 1:
+        raise ValueError(f"attestation_gap_count {count} is outside 0..2^53-1")
+    return count
+
+
+def _snapshot_status_fault(snapshot: Any) -> str | None:
+    """Why *snapshot*'s status cannot be mapped to a heartbeat, or None.
+
+    `status` is absent when healthy, and `critical` is always a boolean equal
+    to `status == "critical"`; anything else is malformed.
+    """
+    if not isinstance(snapshot, dict):
+        return "not an object"
+    status = snapshot.get("status")
+    if "status" in snapshot and status not in ("degraded", "critical"):
+        return f"status {status!r}"
+    critical = snapshot.get("critical")
+    if not isinstance(critical, bool):
+        return f"critical {critical!r}"
+    if critical != (status == "critical"):
+        return f"critical {critical!r} with status {status!r}"
+    return None
 
 
 def _default_client_factory(*, client_id: str) -> Any:

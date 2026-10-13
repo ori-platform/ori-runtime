@@ -417,3 +417,171 @@ async def test_a_carried_answer_keeps_its_place_against_a_delayed_acknowledgemen
         assert answer == "queued"
     finally:
         attestor.close()
+
+
+async def test_custody_a_previous_release_recorded_is_aged_by_the_courier(tmp_path):
+    """The previous release kept no runtime time for custody, so the age of
+    an envelope it left held is the courier's account alone."""
+    db = tmp_path / "evidence.db"
+    _previous_release_store(db)
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "INSERT INTO evidence_delivery_ledger (local_seq, event_id, chain_seq,"
+            " device_id, anchor_epoch_id, key_id, envelope_json, envelope_digest,"
+            " chain_row_digest, sealed_at_ms, custody_state, custody_at_ms,"
+            " custody_key_id) VALUES (1, 'evt-1', 1, ?, 'e', 'k', '{}', 'd1', 'c1',"
+            " 1, 'held', 4000, 'gw-1')",
+            (DEVICE,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    attestor = FirstPartyEvidenceAttestor(
+        db_path=str(db),
+        key_path=str(tmp_path / "evidence.key"),
+        device_secret=SECRET,
+        device_id=DEVICE,
+    )
+    assert await attestor.start() is True
+    try:
+        assert await attestor.awaiting_receipt(10_000) == (1, 6_000)
+    finally:
+        attestor.close()
+
+
+async def test_an_upgraded_ledger_holds_the_recorded_custody_time_final(tmp_path):
+    """The previous release's trigger did not know the column; the upgrade
+    replaces it, so the rewrite is refused there too."""
+    db = tmp_path / "evidence.db"
+    _previous_release_store(db)
+    attestor = FirstPartyEvidenceAttestor(
+        db_path=str(db),
+        key_path=str(tmp_path / "evidence.key"),
+        device_secret=SECRET,
+        device_id=DEVICE,
+    )
+    assert await attestor.start() is True
+    attestor.close()
+
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "INSERT INTO evidence_delivery_ledger (local_seq, event_id, chain_seq,"
+            " device_id, anchor_epoch_id, key_id, envelope_json, envelope_digest,"
+            " chain_row_digest, sealed_at_ms, custody_state, custody_at_ms,"
+            " custody_key_id, custody_recorded_at_ms) VALUES (1, 'evt-1', 1, ?,"
+            " 'e', 'k', '{}', 'd1', 'c1', 1, 'held', 4000, 'gw-1', 4500)",
+            (DEVICE,),
+        )
+        conn.commit()
+        with pytest.raises(sqlite3.DatabaseError):
+            conn.execute(
+                "UPDATE evidence_delivery_ledger SET custody_recorded_at_ms = 9000"
+            )
+    finally:
+        conn.close()
+
+
+async def test_a_failed_trigger_upgrade_leaves_the_previous_trigger(
+    tmp_path, monkeypatch
+):
+    """The swap is one transaction: a failure never leaves the table with no
+    custody trigger at all."""
+
+    db = tmp_path / "evidence.db"
+    _previous_release_store(db)
+    monkeypatch.setattr(
+        "ori.security.evidence.ledger._CUSTODY_FINAL_TRIGGER",
+        "CREATE TRIGGER broken SYNTAX",
+    )
+    attestor = FirstPartyEvidenceAttestor(
+        db_path=str(db),
+        key_path=str(tmp_path / "evidence.key"),
+        device_secret=SECRET,
+        device_id=DEVICE,
+    )
+    assert await attestor.start() is False
+    writer = sqlite3.connect(str(db), timeout=0)
+    try:
+        # The failed open holds no write lock: another writer gets in at once.
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("ROLLBACK")
+    finally:
+        writer.close()
+    attestor.close()
+
+    conn = sqlite3.connect(str(db))
+    try:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger'"
+            " AND name = 'evidence_ledger_custody_is_final'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None, "the upgrade dropped the trigger and kept nothing"
+    assert "custody_recorded_at_ms" not in row[0]
+
+
+@pytest.mark.parametrize(
+    "failure", ["chain_device_check", "anchor_record", "anchor_record_and_ledger_close"]
+)
+async def test_a_failed_evidence_open_leaves_no_connection_open(
+    tmp_path, monkeypatch, failure
+):
+    """Every connection a failed open made is closed before start() returns."""
+    from ori.security.evidence.chain import EvidenceChain
+    from ori.security.evidence.ledger import EvidenceDeliveryLedger
+
+    opened: list[_TrackedConnection] = []
+    real_connect = sqlite3.connect
+
+    def _tracking_connect(*args, **kwargs):
+        # The connection lives on the evidence worker, so its use from here
+        # would fail on thread affinity alone; closing is recorded instead.
+        conn = real_connect(*args, factory=_TrackedConnection, **kwargs)
+        opened.append(conn)
+        return conn
+
+    # The chain and the ledger share this one sqlite3 module.
+    monkeypatch.setattr(sqlite3, "connect", _tracking_connect)
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("injected open failure")
+
+    if failure == "chain_device_check":
+        monkeypatch.setattr(EvidenceChain, "_assert_single_device", _boom)
+    else:
+        monkeypatch.setattr(EvidenceDeliveryLedger, "record_current_anchor", _boom)
+    if failure == "anchor_record_and_ledger_close":
+        real_close = EvidenceDeliveryLedger.close
+
+        def _close_then_raise(self):
+            real_close(self)
+            raise OSError("close failed")
+
+        monkeypatch.setattr(EvidenceDeliveryLedger, "close", _close_then_raise)
+
+    attestor = FirstPartyEvidenceAttestor(
+        db_path=str(tmp_path / "evidence.db"),
+        key_path=str(tmp_path / "evidence.key"),
+        device_secret=SECRET,
+        device_id=DEVICE,
+    )
+    try:
+        assert await attestor.start() is False
+        assert opened, "the failure was injected before any connection opened"
+        assert all(conn.closed for conn in opened), (
+            "a failed open left a connection open"
+        )
+    finally:
+        attestor.close()
+
+
+class _TrackedConnection(sqlite3.Connection):
+    closed = False
+
+    def close(self) -> None:
+        self.closed = True
+        super().close()

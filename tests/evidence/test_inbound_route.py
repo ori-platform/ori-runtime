@@ -434,6 +434,59 @@ def test_custody_does_not_report_the_envelope_delivered(attestor):
     assert awaiting_receipt == 1
 
 
+def test_custody_through_the_route_awaits_a_receipt_until_one_verifies(
+    attestor, monkeypatch
+):
+    """A refused receipt leaves the envelope waiting, and health can say so."""
+    monkeypatch.setattr(
+        "ori.security.evidence.ingest_service.now_ms", lambda: 1787000000400
+    )
+
+    async def scenario():
+        artifact = await _seal_one(attestor)
+        artifact["key_id"] = derive_custody_key_id(CUSTODY_SECRET)
+        router = EvidenceInboundRouter(device_id=DEVICE, ingest=attestor.ingest)
+        custody = json.dumps(
+            _envelope(ARTIFACT_CUSTODY, _mac(artifact, CUSTODY_SECRET))
+        ).encode()
+        assert (await asyncio.to_thread(_route_outcome, router, custody)).accepted
+        held = await attestor.awaiting_receipt(1787000005000)
+
+        forged = json.dumps(_envelope(ARTIFACT_RECEIPT, {"v": 1})).encode()
+        refused = await asyncio.to_thread(_route_outcome, router, forged)
+        return held, refused, await attestor.awaiting_receipt(1787000006000)
+
+    held, refused, after = asyncio.run(scenario())
+    # The courier's clock says 900, ahead of this runtime's 400, so the
+    # runtime's own record sets the age.
+    assert held == (1, 1787000005000 - 1787000000400)
+    assert not isinstance(refused, InboundRefusal) and refused.accepted is False
+    assert after == (1, 1787000006000 - 1787000000400)
+
+
+def test_a_redelivered_custody_does_not_make_the_envelope_newer(attestor, monkeypatch):
+    """The first record of custody stands: a replay later is not a later arrival."""
+    clock = [1787000000400]
+    monkeypatch.setattr("ori.security.evidence.ingest_service.now_ms", lambda: clock[0])
+
+    async def scenario():
+        artifact = await _seal_one(attestor)
+        artifact["key_id"] = derive_custody_key_id(CUSTODY_SECRET)
+        router = EvidenceInboundRouter(device_id=DEVICE, ingest=attestor.ingest)
+        custody = json.dumps(
+            _envelope(ARTIFACT_CUSTODY, _mac(artifact, CUSTODY_SECRET))
+        ).encode()
+        assert (await asyncio.to_thread(_route_outcome, router, custody)).accepted
+        first = await attestor.awaiting_receipt(1787000005000)
+        clock[0] = 1787000004900
+        await asyncio.to_thread(_route_outcome, router, custody)
+        return first, await attestor.awaiting_receipt(1787000005000)
+
+    first, replayed = asyncio.run(scenario())
+    assert first == (1, 1787000005000 - 1787000000400)
+    assert replayed == first
+
+
 def test_the_raw_ingest_service_is_refused_at_construction(attestor):
     """A structural protocol would admit it; it fails only across a thread."""
 
