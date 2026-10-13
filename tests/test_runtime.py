@@ -5228,7 +5228,7 @@ class TestAlertOutbox:
         assert snapshot["status"] == "degraded"
         # Degraded is the whole of it. This is a report, and nothing about the
         # protection path reads it or is gated by it.
-        assert "critical" not in snapshot
+        assert snapshot.get("critical", False) is False
 
     async def test_an_active_protected_pair_leaves_the_snapshot_healthy(self, tmp_path):
         runtime: Any = self._bare_health_runtime(tmp_path)
@@ -6021,7 +6021,7 @@ class TestEvidencePostureNeverGatesStartup:
         assert health["evidence"]["available"] is True
         assert health["evidence"]["posture_problems"] == ["authority_keys_missing"]
         assert health["status"] == "degraded"
-        assert "critical" not in health
+        assert health.get("critical", False) is False
 
     @staticmethod
     def _hardened_gateway_config(minimal_config, monkeypatch, tmp_path) -> Config:
@@ -6085,7 +6085,7 @@ class TestEvidencePostureNeverGatesStartup:
         assert evidence["available"] is True
         expected = [] if registry == "shipped" else ["authority_keys_missing"]
         assert evidence["posture_problems"] == expected
-        assert "critical" not in observed["health"]
+        assert observed["health"].get("critical", False) is False
 
     async def test_a_refused_shipped_registry_does_not_stop_the_runtime(
         self, minimal_config, monkeypatch, tmp_path
@@ -6144,7 +6144,7 @@ class TestEvidencePostureNeverGatesStartup:
         health = observed["health"]
         assert health["evidence"]["posture_problems"] == ["authority_keys_refused"]
         assert health["status"] == "degraded"
-        assert "critical" not in health
+        assert health.get("critical", False) is False
 
     @pytest.mark.parametrize(
         "purposes,expected",
@@ -6184,4 +6184,4 @@ class TestEvidencePostureNeverGatesStartup:
         await asyncio.gather(runtime.start(), _observe_then_stop())
         assert observed["health"]["evidence"]["posture_problems"] == expected
         assert (observed["health"].get("status") == "degraded") is bool(expected)
-        assert "critical" not in observed["health"]
+        assert observed["health"].get("critical", False) is False

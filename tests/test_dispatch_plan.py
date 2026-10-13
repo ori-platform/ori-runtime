@@ -1223,6 +1223,12 @@ class TestALateApprovalCannotUndoATrip:
         gate = ResourceGate()
         dispatcher = ActionDispatcher(config={"relay_enabled": True})
         dispatcher.bind_resource_gate(gate, BOUND)
+        tripped: list[str] = []
+
+        async def _trip(action: str, _context: Any) -> None:
+            tripped.append(action)
+
+        dispatcher.register_executor("trip_relay", _trip)
 
         skill = FakeSkill(triggers=[], actions={})
         context = SkillContext(
@@ -1246,7 +1252,8 @@ class TestALateApprovalCannotUndoATrip:
         outcome = await dispatcher.dispatch(
             action="trip_relay", tier="D", context=context, result=result
         )
-        assert not str(outcome.action_taken).startswith("refused_")
+        assert outcome.action_taken == "trip_relay" and outcome.executed is True
+        assert tripped == ["trip_relay"]
         assert _token(proposal).invalidated is True
 
         # The operator's YES arrives afterwards.

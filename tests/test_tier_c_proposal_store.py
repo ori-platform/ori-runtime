@@ -119,10 +119,13 @@ async def test_a_reply_to_a_proposal_no_longer_open_answers_from_its_state(
             expected = "duplicate"
         else:
             expected = f"closed:{state}"
-        assert await _admit(store, target) == expected
+        assert await _admit(store, target, offline_token_id="tok-closed") == expected
         assert await store.get_tier_c_proposal(target) == before
         assert await store.get_tier_c_proposal_records(target) == records
         assert await store.get_tier_c_safe_default_intents() == intents
+        with sqlite3.connect(path) as conn:
+            claimed = conn.execute("SELECT * FROM offline_token_consumption").fetchall()
+        assert claimed == [], claimed
     finally:
         await store.close()
 

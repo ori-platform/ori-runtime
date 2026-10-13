@@ -396,15 +396,16 @@ actions:
         )
 
         assert ran is False, "a relay fired without passing the approval workflow"
-        assert result.action_name != "trip_relay" or result.executed is False
+        assert result.action_name == result.action_taken == "log_to_dashboard"
 
-    async def test_understated_relay_reaches_approval_when_relay_is_enabled(self):
-        """With the relay wired, the raised tier lands in the approval workflow.
+    async def test_understated_relay_is_raised_and_refused_when_relay_is_enabled(self):
+        """With the relay wired, the raised Tier C action is refused uncommissioned.
 
         The previous test exercises the path where DevicePolicy suppresses the
         relay outright. This one removes that second line of defence so the
         registry escalation is the only thing standing between a Tier A
-        declaration and a physical actuation.
+        declaration and a physical actuation. With no commissioned zone the
+        action is refused before any operator is asked.
         """
         dispatcher = ActionDispatcher(config={"relay_enabled": True})
         ran = False
@@ -426,6 +427,7 @@ actions:
 
         assert ran is False, "a relay fired without operator approval"
         assert result.approved is None
+        assert result.action_taken == "refused_uncommissioned"
         assert result.tier == ActionTier.HARD_PHYSICAL
 
     async def test_execute_immediately_refuses_below_the_floor(self):
