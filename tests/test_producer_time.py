@@ -957,13 +957,12 @@ def test_a_table_another_opener_migrated_first_is_left_as_it_is(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The check before the transaction can be stale; the one inside it decides."""
-    import ori.state.store as store_module
+    from ori.state.store import _table_columns as real
 
     path = tmp_path / "state.db"
     conn = sqlite3.connect(path)
     conn.executescript(_UNBASED_HISTORY)
     StateStore._add_history_producer_time(conn)  # the other opener, first
-    real = store_module._table_columns
     stale: set[str] = set()
 
     def first_look_is_stale(connection: sqlite3.Connection, table: str) -> set[str]:
@@ -973,7 +972,7 @@ def test_a_table_another_opener_migrated_first_is_left_as_it_is(
             return columns - {"producer_time"}
         return columns
 
-    monkeypatch.setattr(store_module, "_table_columns", first_look_is_stale)
+    monkeypatch.setattr("ori.state.store._table_columns", first_look_is_stale)
     StateStore._add_history_producer_time(conn)
     assert stale == {"sensor_history"}
     conn.close()
