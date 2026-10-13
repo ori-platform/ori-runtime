@@ -65,8 +65,11 @@ release is cut.
 - A Tier C approval message for a reading the runtime did not request, such
   as an MQTT, Victron, LoRaWAN or Zigbee reading, now reads
   `Measured: not reported by device` rather than the time it arrived.
-- The first start on this release migrates the history tables in place,
-  keeping every row. Until it has run, `ori state history` and
+- The first start on this release adds a column to raw history, keeping
+  every row, and compacts into new tables from then on; the compacted tables
+  an earlier release wrote are kept as they are, so rolling back leaves that
+  release recording and compacting as before. Until the first start has run,
+  `ori state history` and
   `ori state action-log`, which open the store read-only and never migrate
   it, refuse a store an earlier release wrote with `state_migration_required`
   and change nothing.

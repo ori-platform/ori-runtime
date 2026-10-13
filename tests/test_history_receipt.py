@@ -274,7 +274,7 @@ async def test_compaction_retires_a_poisoned_row_by_receipt_and_never_halts(
     raw = store._conn.execute("SELECT value FROM sensor_history").fetchall()
     assert [r["value"] for r in raw] == [6.0]
     bucket = store._conn.execute(
-        "SELECT bucket_ms, max_received_at_ms, sample_count FROM sensor_history_5min"
+        "SELECT bucket_ms, max_received_at_ms, sample_count FROM sensor_history_basis_5min"
     ).fetchone()
     assert bucket["bucket_ms"] == (FAR_FUTURE // 300_000) * 300_000, (
         "buckets key on measured time"
@@ -307,14 +307,14 @@ async def test_compaction_merges_a_bucket_that_gains_samples_across_runs(
     monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW)
     await store.compact_history()
     first = store._conn.execute(
-        "SELECT avg_value, sample_count FROM sensor_history_5min"
+        "SELECT avg_value, sample_count FROM sensor_history_basis_5min"
     ).fetchone()
     assert (first["avg_value"], first["sample_count"]) == (10.0, 1)
 
     monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW + 4 * HOUR)
     await store.compact_history()
     merged = store._conn.execute(
-        "SELECT avg_value, sample_count, max_received_at_ms FROM sensor_history_5min"
+        "SELECT avg_value, sample_count, max_received_at_ms FROM sensor_history_basis_5min"
     ).fetchall()
     assert len(merged) == 1
     assert (merged[0]["avg_value"], merged[0]["sample_count"]) == (20.0, 2)
@@ -851,6 +851,9 @@ PRODUCER_TIME_TABLES = {
     "sensor_history_5min": "bucket_ms",
     "sensor_history_hourly": "bucket_ms",
     "sensor_history_daily": "bucket_ms",
+    "sensor_history_basis_5min": "bucket_ms",
+    "sensor_history_basis_hourly": "bucket_ms",
+    "sensor_history_basis_daily": "bucket_ms",
     "alert_outbox": "original_ts",
 }
 _COL = r"(?:timestamp|bucket_ms|original_ts|\{time_col\})"
@@ -961,13 +964,19 @@ CLASSIFIED_CLAUSES: dict[tuple[str, str], str] = {
         "presentation order of that window; the weekday and hour of each bucket are "
         "read from the measured time under its own name"
     ),
-    ("_get_timeseries_sync", "{time_col} BETWEEN ? AND ?"): (
+    ("_get_timeseries_sync", "timestamp BETWEEN ? AND ?"): (
         "a chart window is a filter against the caller's bounds on measured time, "
         "which is where a point belongs on a time axis"
     ),
-    ("_get_timeseries_sync", "ORDER BY {time_col} ASC"): (
+    ("_get_timeseries_sync", "ORDER BY timestamp ASC"): (
         "presentation order of a caller-bounded chart window under the measured "
         "column's own name"
+    ),
+    ("_get_timeseries_sync", "bucket_ms BETWEEN ? AND ?"): (
+        "the same caller-bounded chart window on a rollup tier"
+    ),
+    ("_get_timeseries_sync", "ORDER BY bucket_ms ASC"): (
+        "presentation order of that rollup window, one point per bucket"
     ),
 }
 

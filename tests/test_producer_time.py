@@ -401,7 +401,7 @@ def _store_corpus_row(conn: sqlite3.Connection, row: dict, index: int) -> None:
         )
     else:
         conn.execute(
-            "INSERT INTO sensor_history_5min (sensor_id, sensor_type, bucket_ms, "
+            "INSERT INTO sensor_history_basis_5min (sensor_id, sensor_type, bucket_ms, "
             "avg_value, unit, sample_count, max_received_at_ms, producer_time) "
             "VALUES ('s1', 'current', ?, ?, 'ampere', ?, ?, ?)",
             (
@@ -458,7 +458,7 @@ async def test_compaction_keeps_each_basis_in_its_own_bucket(store: StateStore) 
     store._conn.commit()
     await store.compact_history()
     rows = store._conn.execute(
-        "SELECT producer_time, avg_value, sample_count FROM sensor_history_5min "
+        "SELECT producer_time, avg_value, sample_count FROM sensor_history_basis_5min "
         "ORDER BY producer_time"
     ).fetchall()
     assert [tuple(row) for row in rows] == [
@@ -475,7 +475,7 @@ async def test_compaction_keeps_each_basis_in_its_own_bucket(store: StateStore) 
     store._conn.commit()
     await store.compact_history()
     rows = store._conn.execute(
-        "SELECT producer_time, avg_value, sample_count FROM sensor_history_5min "
+        "SELECT producer_time, avg_value, sample_count FROM sensor_history_basis_5min "
         "ORDER BY producer_time"
     ).fetchall()
     assert [tuple(row) for row in rows] == [
@@ -570,23 +570,20 @@ async def test_history_from_before_the_basis_is_kept_and_reads_unknown(
             assert store._conn is not None
             for tier in ("5min", "hourly", "daily"):
                 table = f"sensor_history_{tier}"
+                # The shape an earlier release compacts into is left as it was.
+                assert "producer_time" not in {
+                    row[1] for row in store._conn.execute(f"PRAGMA table_info({table})")
+                }
                 assert [
                     tuple(r)
                     for r in store._conn.execute(
-                        f"SELECT id, sample_count, producer_time FROM {table}"
+                        f"SELECT id, sample_count FROM {table}"
                     )
-                ] == [(7, 7, UNKNOWN)]
+                ] == [(7, 7)]
                 (seq,) = store._conn.execute(
                     "SELECT seq FROM sqlite_sequence WHERE name = ?", (table,)
                 ).fetchone()
-                assert seq == 40, "a spent id would be issued again"
-                assert (
-                    store._conn.execute(
-                        "SELECT COUNT(*) FROM sqlite_master WHERE name = ?",
-                        (f"_{table}_unbased",),
-                    ).fetchone()[0]
-                    == 0
-                )
+                assert seq == 40
         finally:
             await store.close()
         assert sorted(
@@ -842,7 +839,7 @@ async def test_compaction_keeps_bases_apart_in_every_tier(store: StateStore) -> 
             (value, hour + 1, received, basis),
         )
     store._conn.commit()
-    for table in ("sensor_history_5min", "sensor_history_hourly"):
+    for table in ("sensor_history_basis_5min", "sensor_history_basis_hourly"):
         store._conn.execute(
             f"INSERT INTO {table} (sensor_id, sensor_type, bucket_ms, avg_value, "
             "unit, sample_count, max_received_at_ms, producer_time) "
@@ -852,7 +849,7 @@ async def test_compaction_keeps_bases_apart_in_every_tier(store: StateStore) -> 
     store._conn.commit()
     await store.compact_history()
     rows = store._conn.execute(
-        "SELECT producer_time, avg_value, sample_count FROM sensor_history_daily "
+        "SELECT producer_time, avg_value, sample_count FROM sensor_history_basis_daily "
         "ORDER BY producer_time"
     ).fetchall()
     assert [tuple(row) for row in rows] == [
@@ -896,9 +893,12 @@ async def test_two_first_opens_of_an_older_store_both_succeed(tmp_path: Path) ->
 
         await asyncio.gather(open_once(), open_once())
         conn = sqlite3.connect(path)
+        assert "producer_time" in {
+            row[1] for row in conn.execute("PRAGMA table_info(sensor_history)")
+        }
         assert conn.execute(
-            "SELECT sample_count, producer_time FROM sensor_history_5min"
-        ).fetchall() == [(3, UNKNOWN)]
+            "SELECT sample_count FROM sensor_history_5min"
+        ).fetchall() == [(3,)]
         conn.close()
 
 
@@ -975,10 +975,151 @@ def test_a_table_another_opener_migrated_first_is_left_as_it_is(
 
     monkeypatch.setattr(store_module, "_table_columns", first_look_is_stale)
     StateStore._add_history_producer_time(conn)
-    assert stale == {
-        "sensor_history",
-        "sensor_history_5min",
-        "sensor_history_hourly",
-        "sensor_history_daily",
-    }
+    assert stale == {"sensor_history"}
     conn.close()
+
+
+async def test_a_reopen_agrees_with_every_reader_on_hostile_types(
+    tmp_path: Path,
+) -> None:
+    """Stored kind, both readers and the attestation summary read one row alike."""
+    path = tmp_path / "state.db"
+    store = StateStore(str(path))
+    await store.open()
+    assert store._conn is not None
+    conn = store._conn
+    conn.execute("PRAGMA ignore_check_constraints = ON")
+    hostile = [
+        # (record_kind, record_key, contributed_to, action_taken, executed)
+        ("contributor", "b-link", b"k-holder", "coalesced", 0),
+        ("contributor", b"k-blob", "k-holder", "coalesced", 0),
+        ("contributor", "e-text", "k-holder", "coalesced", "0"),
+        ("contributor", "e-real", "k-holder", "coalesced", 0.0),
+        ("contributor", "e-blob", "k-holder", "coalesced", b"\x00"),
+        ("contributor", "e-empty", "k-holder", "coalesced", ""),
+        ("contributor", "a-blob", "k-holder", b"coalesced", 0),
+        (b"contributor", "kind-blob", "k-holder", "coalesced", 0),
+        ("dispatch", "d-blob-link", b"x", "trip_relay", 1),
+        ("contributor", "ok", "k-holder", "coalesced", 0),
+        ("dispatch", "k-holder", None, "trip_relay", 1),
+    ]
+    for kind, key, link, taken, executed in hostile:
+        conn.execute(
+            "INSERT INTO action_log (action_name, tier, executed, approved, "
+            "action_taken, trigger_name, timestamp, device_id, record_kind, "
+            "record_key, contributed_to, attestation_status) VALUES "
+            "('trip_relay', 'D', ?, NULL, ?, 't', ?, 'dev-01', ?, ?, ?, 'pending')",
+            (executed, taken, now_ms(), kind, key, link),
+        )
+    conn.execute("PRAGMA ignore_check_constraints = OFF")
+    conn.commit()
+    await store.close()
+
+    store = StateStore(str(path))
+    await store.open()
+    try:
+        assert store._conn is not None
+        stored = [
+            (row["record_kind"], row["contributed_to"])
+            for row in store._conn.execute(
+                "SELECT record_kind, contributed_to FROM action_log ORDER BY id"
+            )
+        ]
+        local = await store.get_action_log(limit=100)
+        exported = await _export(store, "action_log")
+        assert len(stored) == len(local) == len(exported) == len(hostile)
+        for row in local + exported:
+            assert action_verdict(row) is None, row
+        assert sorted(stored, key=repr) == sorted(
+            ((row["record_kind"], row["contributed_to"]) for row in local), key=repr
+        ), stored
+        assert sorted(
+            (row["record_kind"], row["contributed_to"]) for row in local
+        ) == sorted((row["record_kind"], row["contributed_to"]) for row in exported)
+        # INTEGER affinity stores '0' and 0.0 as 0, so those rows are honest.
+        contributors = {
+            row["record_key"]
+            for row in store._conn.execute(
+                "SELECT record_key FROM action_log WHERE record_kind = 'contributor'"
+            )
+        }
+        assert contributors == {b"k-blob", "e-text", "e-real", "ok"}
+        summary = await store.get_attestation_summary()
+        assert summary["contributor_links_unresolved"] == 0
+        assert not {
+            row.get("record_key")
+            for row in await store.get_actions_needing_attestation()
+        } & {
+            "b-link",
+            "e-text",
+            "e-real",
+            "e-blob",
+            "a-blob",
+            "kind-blob",
+            "d-blob-link",
+        }
+    finally:
+        await store.close()
+
+
+# ─── a release rolled back to, on a store this release opened ─────────────────
+
+_V250 = json.loads(
+    (ROOT / "tests" / "fixtures" / "v2_5_0_history_statements.json").read_text()
+)
+
+
+async def test_the_last_release_still_records_and_compacts_after_this_one(
+    tmp_path: Path,
+) -> None:
+    """The installer restores the previous release on a failed health check."""
+    path = tmp_path / "state.db"
+    old = now_ms() - 2 * 365 * 86_400_000
+    day = (old // 86_400_000) * 86_400_000
+    store = StateStore(str(path))
+    await store.open()
+    assert store._conn is not None
+    for basis, value in ((REPORTED, 2.0), (NOT_REPORTED, 10.0)):
+        store._conn.execute(
+            "INSERT INTO sensor_history (sensor_id, sensor_type, value, unit, "
+            "timestamp, quality, metadata, received_at_ms, producer_time) "
+            "VALUES ('s1', 'current', ?, 'ampere', ?, 1.0, '{}', ?, ?)",
+            (value, day + 1, old, basis),
+        )
+    store._conn.commit()
+    await store.compact_history()  # this release: into the pyramid by basis
+    await store.close()
+
+    # The previous release, on the same file: it records and compacts.
+    conn = sqlite3.connect(path)
+    conn.execute(
+        _V250["insert_reading"],
+        ("s1", "current", 6.0, "ampere", day + 2, 1.0, "{}", old),
+    )
+    for statement, cutoff in zip(
+        _V250["compaction"],
+        (old + 1, old + 1, old + 1, old + 1, old + 1, old + 1),
+    ):
+        conn.execute(statement, (cutoff,))
+    conn.commit()
+    assert conn.execute("SELECT COUNT(*) FROM sensor_history").fetchone() == (0,)
+    conn.close()
+
+    # This release again: every sample is there, each under the basis it has.
+    store = StateStore(str(path))
+    await store.open()
+    try:
+        items = await _export(
+            store,
+            "sensor_history",
+            since_ms=day,
+            until_ms=day + 86_400_000,
+            params={"sensor_id": "s1", "bucket_ms": 86_400_000},
+        )
+    finally:
+        await store.close()
+    assert [(i["producer_time"], i["sample_count"], i["value"]) for i in items] == [
+        (REPORTED, 1, 2.0),
+        (NOT_REPORTED, 1, 10.0),
+        (UNKNOWN, 1, 6.0),
+    ]

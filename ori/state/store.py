@@ -17,7 +17,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Callable, Concatenate, Optional, ParamSpec, TypeVar
+from typing import Any, Callable, Concatenate, Mapping, Optional, ParamSpec, TypeVar
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ori.network.events import (
@@ -935,10 +935,7 @@ CREATE INDEX IF NOT EXISTS idx_sensor_history_sensor_id
     unit TEXT NOT NULL,
     sample_count INTEGER NOT NULL,
     max_received_at_ms INTEGER NOT NULL CHECK (max_received_at_ms > 0),  -- greatest receipt among the samples
-    -- A bucket aggregates one basis, so a bucket of mixed bases is one row each.
-    producer_time TEXT NOT NULL DEFAULT 'unknown'
-        CHECK (producer_time IN ('reported', 'not_reported', 'unknown')),
-    UNIQUE(sensor_id, bucket_ms, producer_time)
+    UNIQUE(sensor_id, bucket_ms)
 )""",
     """CREATE TABLE IF NOT EXISTS sensor_history_hourly (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -949,10 +946,7 @@ CREATE INDEX IF NOT EXISTS idx_sensor_history_sensor_id
     unit TEXT NOT NULL,
     sample_count INTEGER NOT NULL,
     max_received_at_ms INTEGER NOT NULL CHECK (max_received_at_ms > 0),  -- greatest receipt among the samples
-    -- A bucket aggregates one basis, so a bucket of mixed bases is one row each.
-    producer_time TEXT NOT NULL DEFAULT 'unknown'
-        CHECK (producer_time IN ('reported', 'not_reported', 'unknown')),
-    UNIQUE(sensor_id, bucket_ms, producer_time)
+    UNIQUE(sensor_id, bucket_ms)
 )""",
     """CREATE TABLE IF NOT EXISTS sensor_history_daily (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -963,30 +957,67 @@ CREATE INDEX IF NOT EXISTS idx_sensor_history_sensor_id
     unit TEXT NOT NULL,
     sample_count INTEGER NOT NULL,
     max_received_at_ms INTEGER NOT NULL CHECK (max_received_at_ms > 0),  -- greatest receipt among the samples
-    -- A bucket aggregates one basis, so a bucket of mixed bases is one row each.
-    producer_time TEXT NOT NULL DEFAULT 'unknown'
+    UNIQUE(sensor_id, bucket_ms)
+)""",
+    """-- The pyramid by basis. The tables above keep the shape every earlier
+-- release compacts into, so a release rolled back to keeps compacting; their
+-- rows carry no basis and read as unknown.
+CREATE TABLE IF NOT EXISTS sensor_history_basis_5min (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sensor_id TEXT NOT NULL,
+    sensor_type TEXT NOT NULL,
+    bucket_ms INTEGER NOT NULL,   -- bucket of the reading's timestamp
+    avg_value REAL NOT NULL,
+    unit TEXT NOT NULL,
+    sample_count INTEGER NOT NULL,
+    max_received_at_ms INTEGER NOT NULL CHECK (max_received_at_ms > 0),  -- greatest receipt among the samples
+    producer_time TEXT NOT NULL
+        CHECK (producer_time IN ('reported', 'not_reported', 'unknown')),
+    UNIQUE(sensor_id, bucket_ms, producer_time)
+)""",
+    """CREATE TABLE IF NOT EXISTS sensor_history_basis_hourly (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sensor_id TEXT NOT NULL,
+    sensor_type TEXT NOT NULL,
+    bucket_ms INTEGER NOT NULL,   -- bucket of the reading's timestamp
+    avg_value REAL NOT NULL,
+    unit TEXT NOT NULL,
+    sample_count INTEGER NOT NULL,
+    max_received_at_ms INTEGER NOT NULL CHECK (max_received_at_ms > 0),  -- greatest receipt among the samples
+    producer_time TEXT NOT NULL
+        CHECK (producer_time IN ('reported', 'not_reported', 'unknown')),
+    UNIQUE(sensor_id, bucket_ms, producer_time)
+)""",
+    """CREATE TABLE IF NOT EXISTS sensor_history_basis_daily (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sensor_id TEXT NOT NULL,
+    sensor_type TEXT NOT NULL,
+    bucket_ms INTEGER NOT NULL,   -- bucket of the reading's timestamp
+    avg_value REAL NOT NULL,
+    unit TEXT NOT NULL,
+    sample_count INTEGER NOT NULL,
+    max_received_at_ms INTEGER NOT NULL CHECK (max_received_at_ms > 0),  -- greatest receipt among the samples
+    producer_time TEXT NOT NULL
         CHECK (producer_time IN ('reported', 'not_reported', 'unknown')),
     UNIQUE(sensor_id, bucket_ms, producer_time)
 )""",
 )
 
 _HISTORY_DDL = ";\n".join(_HISTORY_DDL_STATEMENTS) + ";\n"
+_DDL = _CORE_DDL + "\n" + _HISTORY_DDL
 
-_COMPACTED_HISTORY_TABLES: tuple[str, ...] = (
-    "sensor_history_5min",
-    "sensor_history_hourly",
-    "sensor_history_daily",
+
+#: Compacted history and the basis its rows carry: none in the pyramid an
+#: earlier release compacts into, so those read as unknown.
+_COMPACTED_TIERS: tuple[tuple[str, str, str], ...] = (
+    ("5min", "sensor_history_5min", "'unknown'"),
+    ("hourly", "sensor_history_hourly", "'unknown'"),
+    ("daily", "sensor_history_daily", "'unknown'"),
+    ("5min", "sensor_history_basis_5min", "producer_time"),
+    ("hourly", "sensor_history_basis_hourly", "producer_time"),
+    ("daily", "sensor_history_basis_daily", "producer_time"),
 )
 
-
-def _history_table_ddl(table: str) -> str:
-    """The CREATE TABLE statement for one history table."""
-    prefix = f"CREATE TABLE IF NOT EXISTS {table} ("
-    (statement,) = (s for s in _HISTORY_DDL_STATEMENTS if s.startswith(prefix))
-    return statement
-
-
-_DDL = _CORE_DDL + "\n" + _HISTORY_DDL
 
 # How long raw readings stay in `sensor_history`, by receipt, before they are
 # compacted into five-minute buckets.
@@ -1003,6 +1034,9 @@ _HISTORY_RECEIPT_COLUMNS: dict[str, str] = {
     "sensor_history_5min": "max_received_at_ms",
     "sensor_history_hourly": "max_received_at_ms",
     "sensor_history_daily": "max_received_at_ms",
+    "sensor_history_basis_5min": "max_received_at_ms",
+    "sensor_history_basis_hourly": "max_received_at_ms",
+    "sensor_history_basis_daily": "max_received_at_ms",
 }
 
 _LEGACY_HISTORY_INDEXES: tuple[str, ...] = ("idx_sensor_history_sensor_id_ts",)
@@ -1249,27 +1283,16 @@ def _exported_producer_time(row: sqlite3.Row) -> str:
     return basis
 
 
-# The rows _action_record_members reads as another kind than they store, by
-# the kind they are read as. The legacy reclassification of a coalesced
-# dispatch runs before these and is settled under its own reason.
-_MISREAD_ACTION_RECORDS: tuple[tuple[str, str], ...] = (
-    (
-        RECORD_DISPATCH,
-        "action_taken != 'coalesced'"
-        " AND (record_kind != 'dispatch' OR contributed_to IS NOT NULL)",
-    ),
-    (
-        RECORD_CONTRIBUTOR_LEGACY,
-        "action_taken = 'coalesced'"
-        " AND NOT (record_kind = 'contributor' AND executed = 0"
-        " AND contributed_to IS NOT NULL AND contributed_to != ''"
-        " AND contributed_to != record_key)"
-        " AND (record_kind != 'contributor_legacy' OR contributed_to IS NOT NULL)",
-    ),
+# Every row _action_record_members can read as another kind or link than it
+# stores, once a coalesced row stored as a dispatch is reclassified (the
+# statement before the pass that uses this). Any other row stores `dispatch`
+# with no link and an action other than `coalesced`, and is read exactly so.
+_ACTION_RECORD_CANDIDATES = (
+    "record_kind IS NOT 'dispatch' OR contributed_to IS NOT NULL"
 )
 
 
-def _action_record_members(row: sqlite3.Row) -> dict[str, Any]:
+def _action_record_members(row: Mapping[str, Any] | sqlite3.Row) -> dict[str, Any]:
     """What a stored action row records, as gateway-api/v2's export row checks require.
 
     A table the columns were added to has no CHECK, and a rolled-back release
@@ -1289,7 +1312,8 @@ def _action_record_members(row: sqlite3.Row) -> dict[str, Any]:
         }
     if (
         row["record_kind"] == RECORD_CONTRIBUTOR
-        and not row["executed"]
+        and type(row["executed"]) is int
+        and row["executed"] == 0
         and isinstance(link, str)
         and link
         and link != record_key
@@ -2255,56 +2279,28 @@ class StateStore:
 
     @staticmethod
     def _add_history_producer_time(conn: sqlite3.Connection) -> None:
-        """producer_time on every history table, every row kept and read as unknown.
+        """producer_time on raw history, every row kept and read as unknown.
 
-        A compacted table is rebuilt because its bucket key widens to the basis.
-        Each table is checked and changed in one IMMEDIATE transaction, so a
-        concurrent opener finds it done rather than migrating it twice; ids and
-        spent ids are kept.
+        Checked again inside the IMMEDIATE transaction, so a concurrent opener
+        finds it added rather than adding it twice. A release that predates the
+        column inserts without it and its rows take the default, unknown.
         """
-        kept = (
-            "id, sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count, "
-            "max_received_at_ms"
-        )
-        for table in ("sensor_history",) + _COMPACTED_HISTORY_TABLES:
-            if "producer_time" in _table_columns(conn, table):
-                continue
-            conn.commit()
-            try:
-                conn.execute("BEGIN IMMEDIATE")
-                if "producer_time" in _table_columns(conn, table):
-                    conn.rollback()
-                    continue
-                if table == "sensor_history":
-                    conn.execute(
-                        "ALTER TABLE sensor_history ADD COLUMN producer_time TEXT "
-                        "NOT NULL DEFAULT 'unknown' CHECK "
-                        "(producer_time IN ('reported', 'not_reported', 'unknown'))"
-                    )
-                    conn.commit()
-                    continue
-                unbased = f"_{table}_unbased"
-                conn.execute(f"ALTER TABLE {table} RENAME TO {unbased}")
-                conn.execute(_history_table_ddl(table))
+        if "producer_time" in _table_columns(conn, "sensor_history"):
+            return
+        conn.commit()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            if "producer_time" not in _table_columns(conn, "sensor_history"):
                 conn.execute(
-                    f"INSERT INTO {table} ({kept}, producer_time) "
-                    f"SELECT {kept}, 'unknown' FROM {unbased}"
+                    "ALTER TABLE sensor_history ADD COLUMN producer_time TEXT "
+                    "NOT NULL DEFAULT 'unknown' CHECK "
+                    "(producer_time IN ('reported', 'not_reported', 'unknown'))"
                 )
-                spent = conn.execute(
-                    "SELECT seq FROM sqlite_sequence WHERE name = ?", (unbased,)
-                ).fetchone()
-                if spent is not None:
-                    conn.execute("DELETE FROM sqlite_sequence WHERE name = ?", (table,))
-                    conn.execute(
-                        "INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)",
-                        (table, int(spent[0])),
-                    )
-                conn.execute(f"DROP TABLE {unbased}")
-                conn.commit()
-            except BaseException:
-                if conn.in_transaction:
-                    conn.rollback()
-                raise
+            conn.commit()
+        except BaseException:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
 
     def _refuse_unreceipted_history_unless_allowed(self) -> None:
         """Raise before any write when the store needs the rebuild and this opener may not do it."""
@@ -2405,24 +2401,37 @@ class StateStore:
         # without the CHECKs can hold, is rewritten to what every reader reads
         # it as (_action_record_members), so attestation, the summary and the
         # exports agree. It is never attested once rewritten.
-        for kind, misread in _MISREAD_ACTION_RECORDS:
+        rows = conn.execute(
+            "SELECT id, record_kind, record_key, contributed_to, action_taken,"
+            " executed, attestation_status FROM action_log"
+            f" WHERE {_ACTION_RECORD_CANDIDATES}"
+        ).fetchall()
+        rewritten: list[tuple[str, int]] = []
+        for row in rows:
+            read = _action_record_members(row)
+            if (row["record_kind"], row["contributed_to"]) == (
+                read["record_kind"],
+                read["contributed_to"],
+            ):
+                continue
             conn.execute(
-                "UPDATE action_log SET attestation_status = 'refused',"
-                " attestation_reason = 'reclassified_record'"
-                f" WHERE ({misread}) AND attestation_status IN ('pending', 'failed')"
+                "UPDATE action_log SET record_kind = ?, contributed_to = NULL,"
+                " attestation_status = CASE WHEN attestation_status IN"
+                " ('pending', 'failed') THEN 'refused' ELSE attestation_status END,"
+                " attestation_reason = CASE WHEN attestation_status IN"
+                " ('pending', 'failed') THEN 'reclassified_record'"
+                " ELSE attestation_reason END"
+                " WHERE id = ?",
+                (read["record_kind"], int(row["id"])),
             )
-            rewritten = conn.execute(
-                "UPDATE action_log SET record_kind = ?, contributed_to = NULL"
-                f" WHERE {misread}",
-                (kind,),
-            ).rowcount
-            if rewritten:
-                logger.critical(
-                    "[action_log] %d rows' fields disagreed with their record kind "
-                    "and are recorded as %s, and never attested",
-                    rewritten,
-                    kind,
-                )
+            rewritten.append((read["record_kind"], int(row["id"])))
+        if rewritten:
+            logger.critical(
+                "[action_log] %d rows' fields disagreed with their record kind and "
+                "are recorded as every reader reads them, never attested: %s",
+                len(rewritten),
+                rewritten[:20],
+            )
         conn.execute(
             "UPDATE action_log SET attestation_status = 'refused',"
             " attestation_reason = 'legacy_contributor'"
@@ -2724,11 +2733,12 @@ class StateStore:
         # `timestamp` and its basis, so one bucket can gain samples across
         # compaction runs and the insert merges the weighted average instead of
         # ignoring them, and readings of two bases never share a bucket row.
-
-        # 1. raw → 5-minute buckets, received more than 48h ago
+        # Raw rows compact into the pyramid by basis. The pyramid without one
+        # is what an earlier release compacts into, and here it only ages.
+        # 1. raw → 5-minute buckets by basis, received more than 48h ago
         self._conn.execute(
             """
-            INSERT INTO sensor_history_5min
+            INSERT INTO sensor_history_basis_5min
             (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count,
              max_received_at_ms, producer_time)
             SELECT sensor_id, sensor_type,
@@ -2738,11 +2748,14 @@ class StateStore:
             WHERE received_at_ms < ?
             GROUP BY sensor_id, (timestamp / 300000), producer_time
             ON CONFLICT(sensor_id, bucket_ms, producer_time) DO UPDATE SET
-                avg_value = (sensor_history_5min.avg_value * sensor_history_5min.sample_count
+                avg_value = (sensor_history_basis_5min.avg_value
+                             * sensor_history_basis_5min.sample_count
                              + excluded.avg_value * excluded.sample_count)
-                            / (sensor_history_5min.sample_count + excluded.sample_count),
-                sample_count = sensor_history_5min.sample_count + excluded.sample_count,
-                max_received_at_ms = MAX(sensor_history_5min.max_received_at_ms,
+                            / (sensor_history_basis_5min.sample_count
+                               + excluded.sample_count),
+                sample_count = sensor_history_basis_5min.sample_count
+                               + excluded.sample_count,
+                max_received_at_ms = MAX(sensor_history_basis_5min.max_received_at_ms,
                                          excluded.max_received_at_ms)
             """,
             (cutoffs["raw"],),
@@ -2752,20 +2765,20 @@ class StateStore:
             (cutoffs["raw"],),
         )
 
-        # 2. 5-minute → hourly buckets, received more than 30d ago
+        # 2. 5-minute → hourly, received more than 30d ago, in both pyramids
         self._conn.execute(
             """
             INSERT INTO sensor_history_hourly
             (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count,
-             max_received_at_ms, producer_time)
+             max_received_at_ms)
             SELECT sensor_id, sensor_type,
                    (bucket_ms / 3600000) * 3600000 AS bucket_ms,
                    SUM(avg_value * sample_count) / SUM(sample_count), unit,
-                   SUM(sample_count), MAX(max_received_at_ms), producer_time
+                   SUM(sample_count), MAX(max_received_at_ms)
             FROM sensor_history_5min
             WHERE max_received_at_ms < ?
-            GROUP BY sensor_id, (bucket_ms / 3600000), producer_time
-            ON CONFLICT(sensor_id, bucket_ms, producer_time) DO UPDATE SET
+            GROUP BY sensor_id, (bucket_ms / 3600000)
+            ON CONFLICT(sensor_id, bucket_ms) DO UPDATE SET
                 avg_value = (sensor_history_hourly.avg_value * sensor_history_hourly.sample_count
                              + excluded.avg_value * excluded.sample_count)
                             / (sensor_history_hourly.sample_count + excluded.sample_count),
@@ -2779,21 +2792,47 @@ class StateStore:
             "DELETE FROM sensor_history_5min WHERE max_received_at_ms < ?",
             (cutoffs["5min"],),
         )
+        self._conn.execute(
+            """
+            INSERT INTO sensor_history_basis_hourly
+            (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count,
+             max_received_at_ms, producer_time)
+            SELECT sensor_id, sensor_type,
+                   (bucket_ms / 3600000) * 3600000 AS bucket_ms,
+                   SUM(avg_value * sample_count) / SUM(sample_count), unit,
+                   SUM(sample_count), MAX(max_received_at_ms), producer_time
+            FROM sensor_history_basis_5min
+            WHERE max_received_at_ms < ?
+            GROUP BY sensor_id, (bucket_ms / 3600000), producer_time
+            ON CONFLICT(sensor_id, bucket_ms, producer_time) DO UPDATE SET
+                avg_value = (sensor_history_basis_hourly.avg_value * sensor_history_basis_hourly.sample_count
+                             + excluded.avg_value * excluded.sample_count)
+                            / (sensor_history_basis_hourly.sample_count + excluded.sample_count),
+                sample_count = sensor_history_basis_hourly.sample_count + excluded.sample_count,
+                max_received_at_ms = MAX(sensor_history_basis_hourly.max_received_at_ms,
+                                         excluded.max_received_at_ms)
+            """,
+            (cutoffs["5min"],),
+        )
+        self._conn.execute(
+            "DELETE FROM sensor_history_basis_5min WHERE max_received_at_ms < ?",
+            (cutoffs["5min"],),
+        )
 
-        # 3. hourly → daily buckets, received more than 1 year ago
+        # 3. hourly → daily, received more than 1 year ago, in both pyramids
         self._conn.execute(
             """
             INSERT INTO sensor_history_daily
             (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count,
-             max_received_at_ms, producer_time)
+             max_received_at_ms)
             SELECT sensor_id, sensor_type,
                    (bucket_ms / 86400000) * 86400000 AS bucket_ms,
                    SUM(avg_value * sample_count) / SUM(sample_count), unit,
-                   SUM(sample_count), MAX(max_received_at_ms), producer_time
+                   SUM(sample_count), MAX(max_received_at_ms)
             FROM sensor_history_hourly
             WHERE max_received_at_ms < ?
-            GROUP BY sensor_id, (bucket_ms / 86400000), producer_time
-            ON CONFLICT(sensor_id, bucket_ms, producer_time) DO UPDATE SET
+            GROUP BY sensor_id, (bucket_ms / 86400000)
+            ON CONFLICT(sensor_id, bucket_ms) DO UPDATE SET
                 avg_value = (sensor_history_daily.avg_value * sensor_history_daily.sample_count
                              + excluded.avg_value * excluded.sample_count)
                             / (sensor_history_daily.sample_count + excluded.sample_count),
@@ -2805,6 +2844,32 @@ class StateStore:
         )
         self._conn.execute(
             "DELETE FROM sensor_history_hourly WHERE max_received_at_ms < ?",
+            (cutoffs["hourly"],),
+        )
+        self._conn.execute(
+            """
+            INSERT INTO sensor_history_basis_daily
+            (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count,
+             max_received_at_ms, producer_time)
+            SELECT sensor_id, sensor_type,
+                   (bucket_ms / 86400000) * 86400000 AS bucket_ms,
+                   SUM(avg_value * sample_count) / SUM(sample_count), unit,
+                   SUM(sample_count), MAX(max_received_at_ms), producer_time
+            FROM sensor_history_basis_hourly
+            WHERE max_received_at_ms < ?
+            GROUP BY sensor_id, (bucket_ms / 86400000), producer_time
+            ON CONFLICT(sensor_id, bucket_ms, producer_time) DO UPDATE SET
+                avg_value = (sensor_history_basis_daily.avg_value * sensor_history_basis_daily.sample_count
+                             + excluded.avg_value * excluded.sample_count)
+                            / (sensor_history_basis_daily.sample_count + excluded.sample_count),
+                sample_count = sensor_history_basis_daily.sample_count + excluded.sample_count,
+                max_received_at_ms = MAX(sensor_history_basis_daily.max_received_at_ms,
+                                         excluded.max_received_at_ms)
+            """,
+            (cutoffs["hourly"],),
+        )
+        self._conn.execute(
+            "DELETE FROM sensor_history_basis_hourly WHERE max_received_at_ms < ?",
             (cutoffs["hourly"],),
         )
 
@@ -2995,21 +3060,18 @@ class StateStore:
                 FROM sensor_history
                 WHERE sensor_id = ? AND received_at_ms BETWEEN ? AND ?
                   AND timestamp >= ? AND (? IS NULL OR id <= ?)
+            """
+            + "".join(
+                f"""
                 UNION ALL
                 SELECT avg_value AS val, sample_count AS cnt
-                FROM sensor_history_5min
+                FROM {table}
                 WHERE sensor_id = ? AND max_received_at_ms BETWEEN ? AND ?
                   AND bucket_ms >= ?
-                UNION ALL
-                SELECT avg_value AS val, sample_count AS cnt
-                FROM sensor_history_hourly
-                WHERE sensor_id = ? AND max_received_at_ms BETWEEN ? AND ?
-                  AND bucket_ms >= ?
-                UNION ALL
-                SELECT avg_value AS val, sample_count AS cnt
-                FROM sensor_history_daily
-                WHERE sensor_id = ? AND max_received_at_ms BETWEEN ? AND ?
-                  AND bucket_ms >= ?
+                """
+                for _tier, table, _basis in _COMPACTED_TIERS
+            )
+            + """
             )
             HAVING SUM(cnt) > 0
             """,
@@ -3025,7 +3087,7 @@ class StateStore:
                 frontier,
             )
             + (sensor_id, cutoff_ms, current_ms + RECEIPT_READ_TOLERANCE_MS, cutoff_ms)
-            * 3,
+            * len(_COMPACTED_TIERS),
         ).fetchone()
         return row["avg_val"] if row and row["avg_val"] is not None else None
 
@@ -3093,7 +3155,13 @@ class StateStore:
         rows = conn.execute(
             """
             SELECT bucket_ms, avg_value, sample_count, unit
-            FROM sensor_history_hourly
+            FROM (
+                SELECT bucket_ms, avg_value, sample_count, unit, sensor_id
+                FROM sensor_history_hourly
+                UNION ALL
+                SELECT bucket_ms, avg_value, sample_count, unit, sensor_id
+                FROM sensor_history_basis_hourly
+            )
             WHERE sensor_id = ?
               AND bucket_ms >= ?
               AND bucket_ms < ?
@@ -3236,20 +3304,36 @@ class StateStore:
 
         # Choose tier based on requested range
         if duration_ms <= 48 * 3600 * 1000:
-            table, time_col, val_col = "sensor_history", "timestamp", "value"
-        elif duration_ms <= 30 * 86400 * 1000:
-            table, time_col, val_col = "sensor_history_5min", "bucket_ms", "avg_value"
+            rows = conn.execute(
+                """
+                SELECT timestamp AS ts, value AS val
+                FROM sensor_history
+                WHERE sensor_id = ? AND timestamp BETWEEN ? AND ?
+                ORDER BY timestamp ASC
+                """,
+                (sensor_id, start_ms, end_ms),
+            ).fetchall()
+            return [(row["ts"], row["val"]) for row in rows]
+        if duration_ms <= 30 * 86400 * 1000:
+            tier = "5min"
         elif duration_ms <= 365 * 86400 * 1000:
-            table, time_col, val_col = "sensor_history_hourly", "bucket_ms", "avg_value"
+            tier = "hourly"
         else:
-            table, time_col, val_col = "sensor_history_daily", "bucket_ms", "avg_value"
-
+            tier = "daily"
+        # One point per bucket: its rows of every basis, in both pyramids.
+        sources = " UNION ALL ".join(
+            f"SELECT sensor_id, bucket_ms, avg_value, sample_count FROM {table}"
+            for name, table, _basis in _COMPACTED_TIERS
+            if name == tier
+        )
         rows = conn.execute(
             f"""
-            SELECT {time_col} AS ts, {val_col} AS val
-            FROM {table}
-            WHERE sensor_id = ? AND {time_col} BETWEEN ? AND ?
-            ORDER BY {time_col} ASC
+            SELECT bucket_ms AS ts,
+                   SUM(avg_value * sample_count) / SUM(sample_count) AS val
+            FROM ({sources})
+            WHERE sensor_id = ? AND bucket_ms BETWEEN ? AND ?
+            GROUP BY bucket_ms
+            ORDER BY bucket_ms ASC
             """,
             (sensor_id, start_ms, end_ms),
         ).fetchall()
@@ -3289,23 +3373,29 @@ class StateStore:
             return []
 
         capped_limit = max(1, min(int(limit), 10_000))
-        params: tuple[Any, ...] = (
-            str(sensor_id),
-            int(start_ms),
-            int(end_ms),
-            str(sensor_id),
-            int(start_ms),
-            int(end_ms),
-            str(sensor_id),
-            int(start_ms),
-            int(end_ms),
-            str(sensor_id),
-            int(start_ms),
-            int(end_ms),
-            capped_limit,
+        window = (str(sensor_id), int(start_ms), int(end_ms))
+        params: tuple[Any, ...] = window * (1 + len(_COMPACTED_TIERS)) + (capped_limit,)
+        compacted = "".join(
+            f"""
+                UNION ALL
+                SELECT
+                    sensor_id,
+                    sensor_type,
+                    bucket_ms AS timestamp,
+                    avg_value AS value,
+                    unit,
+                    NULL AS quality,
+                    sample_count,
+                    '{tier}' AS tier,
+                    max_received_at_ms AS received_at_ms,
+                    {basis} AS producer_time
+                FROM {table}
+                WHERE sensor_id = ? AND bucket_ms BETWEEN ? AND ?
+            """
+            for tier, table, basis in _COMPACTED_TIERS
         )
         rows = conn.execute(
-            """
+            f"""
             SELECT *
             FROM (
                 SELECT
@@ -3321,48 +3411,7 @@ class StateStore:
                     producer_time
                 FROM sensor_history
                 WHERE sensor_id = ? AND timestamp BETWEEN ? AND ?
-                UNION ALL
-                SELECT
-                    sensor_id,
-                    sensor_type,
-                    bucket_ms AS timestamp,
-                    avg_value AS value,
-                    unit,
-                    NULL AS quality,
-                    sample_count,
-                    '5min' AS tier,
-                    max_received_at_ms AS received_at_ms,
-                    producer_time
-                FROM sensor_history_5min
-                WHERE sensor_id = ? AND bucket_ms BETWEEN ? AND ?
-                UNION ALL
-                SELECT
-                    sensor_id,
-                    sensor_type,
-                    bucket_ms AS timestamp,
-                    avg_value AS value,
-                    unit,
-                    NULL AS quality,
-                    sample_count,
-                    'hourly' AS tier,
-                    max_received_at_ms AS received_at_ms,
-                    producer_time
-                FROM sensor_history_hourly
-                WHERE sensor_id = ? AND bucket_ms BETWEEN ? AND ?
-                UNION ALL
-                SELECT
-                    sensor_id,
-                    sensor_type,
-                    bucket_ms AS timestamp,
-                    avg_value AS value,
-                    unit,
-                    NULL AS quality,
-                    sample_count,
-                    'daily' AS tier,
-                    max_received_at_ms AS received_at_ms,
-                    producer_time
-                FROM sensor_history_daily
-                WHERE sensor_id = ? AND bucket_ms BETWEEN ? AND ?
+                {compacted}
             )
             ORDER BY timestamp ASC
             LIMIT ?

@@ -61,18 +61,18 @@ async def test_compaction_pyramid(store, monkeypatch):
     assert len(raw) == 2
 
     # Verify rows in 5min
-    five_min = store._conn.execute("SELECT * FROM sensor_history_5min").fetchall()
+    five_min = store._conn.execute("SELECT * FROM sensor_history_basis_5min").fetchall()
     assert len(five_min) == 1
     assert five_min[0]["avg_value"] == 15.0
     assert five_min[0]["sample_count"] == 2
 
     # Verify rows in hourly
-    hourly = store._conn.execute("SELECT * FROM sensor_history_hourly").fetchall()
+    hourly = store._conn.execute("SELECT * FROM sensor_history_basis_hourly").fetchall()
     assert len(hourly) == 1
     assert hourly[0]["avg_value"] == 100.0
 
     # Verify rows in daily
-    daily = store._conn.execute("SELECT * FROM sensor_history_daily").fetchall()
+    daily = store._conn.execute("SELECT * FROM sensor_history_basis_daily").fetchall()
     assert len(daily) == 1
     assert daily[0]["avg_value"] == 500.0
 
@@ -112,7 +112,7 @@ async def test_a_future_receipt_does_not_halt_compaction(store):
         "SELECT received_at_ms FROM sensor_history"
     ).fetchall()
     assert [row["received_at_ms"] for row in remaining] == [NOW_MS + 86_400_000]
-    assert _row_count(store, "sensor_history_5min") == 1
+    assert _row_count(store, "sensor_history_basis_5min") == 1
 
 
 @pytest.mark.asyncio
