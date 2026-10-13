@@ -200,17 +200,40 @@ class MqttRuntimeNodeHeartbeatPublisher:
         await asyncio.to_thread(client.publish, self.topic, body, qos=0, retain=False)
 
     async def _payload(self) -> dict[str, Any]:
-        snapshot = self._health_snapshot_provider()
-        if isinstance(snapshot, Awaitable):
-            snapshot = await snapshot
-        if not isinstance(snapshot, dict):
-            snapshot = {}
-
         current_ms = now_ms()
-        raw_status = str(snapshot.get("status", "healthy") or "healthy").strip()
-        status = raw_status if raw_status in {"healthy", "degraded"} else "healthy"
-        if snapshot.get("critical"):
-            status = "degraded"
+        try:
+            snapshot = self._health_snapshot_provider()
+            if isinstance(snapshot, Awaitable):
+                snapshot = await snapshot
+        except Exception as exc:
+            fault: str | None = f"unreadable ({type(exc).__name__})"
+        else:
+            fault = _snapshot_status_fault(snapshot)
+            if fault is None and isinstance(snapshot, dict):
+                try:
+                    return self._mapped(snapshot, current_ms)
+                except (TypeError, ValueError) as exc:
+                    fault = f"unmappable ({type(exc).__name__})"
+        # A verdict the runtime cannot read may be hiding a critical one, so
+        # it never publishes healthy, and nothing else is taken from it.
+        logger.warning(
+            "[runtime-heartbeat] health snapshot is malformed (%s); "
+            "publishing degraded",
+            fault,
+        )
+        return {
+            "device_id": self._device_id,
+            "status": "degraded",
+            "last_seen_ms": current_ms,
+            "gateway_seen_ms": 0,
+            "active_triggers": [],
+        }
+
+    def _mapped(self, snapshot: dict[str, Any], current_ms: int) -> dict[str, Any]:
+        # gateway-api/v2 holds `critical` back until a gateway claims its
+        # heartbeat rules, and until then a runtime emits only what v1
+        # accepts, so a local critical is published as degraded.
+        status = "degraded" if "status" in snapshot else "healthy"
 
         active_triggers = snapshot.get("active_triggers", [])
         if not isinstance(active_triggers, list):
@@ -268,6 +291,25 @@ class MqttRuntimeNodeHeartbeatPublisher:
                 "action_event_type": str(evidence.get("action_event_type") or ""),
             }
         return payload
+
+
+def _snapshot_status_fault(snapshot: Any) -> str | None:
+    """Why *snapshot*'s status cannot be mapped to a heartbeat, or None.
+
+    `status` is absent when healthy, and `critical` is always a boolean equal
+    to `status == "critical"`; anything else is malformed.
+    """
+    if not isinstance(snapshot, dict):
+        return "not an object"
+    status = snapshot.get("status")
+    if "status" in snapshot and status not in ("degraded", "critical"):
+        return f"status {status!r}"
+    critical = snapshot.get("critical")
+    if not isinstance(critical, bool):
+        return f"critical {critical!r}"
+    if critical != (status == "critical"):
+        return f"critical {critical!r} with status {status!r}"
+    return None
 
 
 def _default_client_factory(*, client_id: str) -> Any:

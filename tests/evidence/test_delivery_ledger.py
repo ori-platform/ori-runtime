@@ -222,7 +222,7 @@ def test_custody_does_not_make_a_row_delivered(rig):
     _, chain, ledger = rig
     row = ledger.seal(_append(chain, 1), sealed_at_ms=1)
     ledger._apply_verified_custody(
-        row["local_seq"], custody_at_ms=2, key_id="gw-secret-1"
+        row["local_seq"], custody_at_ms=2, key_id="gw-secret-1", recorded_at_ms=2
     )
 
     held = ledger.find(row["event_id"])
@@ -985,7 +985,7 @@ def test_resealing_the_same_row_is_still_idempotent(rig):
     "call",
     [
         lambda ledger: ledger._apply_verified_custody(
-            99, custody_at_ms=1, key_id="gw-1"
+            99, custody_at_ms=1, key_id="gw-1", recorded_at_ms=1
         ),
         lambda ledger: ledger._apply_verified_receipt(
             99, receipt_at_ms=1, key_id="auth-1"
@@ -1012,7 +1012,7 @@ def test_recorded_custody_cannot_be_withdrawn_or_rewritten(rig):
     _, chain, ledger = rig
     row = ledger.seal(_append(chain, 1), sealed_at_ms=1)
     ledger._apply_verified_custody(
-        row["local_seq"], custody_at_ms=2, key_id="gw-secret-1"
+        row["local_seq"], custody_at_ms=2, key_id="gw-secret-1", recorded_at_ms=2
     )
 
     connection = sqlite3.connect(ledger._db_path)
@@ -1288,7 +1288,9 @@ def test_complete_delivery_state_is_still_accepted(rig):
     """The constraint must not reject the transitions the ledger itself makes."""
     _, chain, ledger = rig
     row = ledger.seal(_append(chain, 1), sealed_at_ms=1)
-    ledger._apply_verified_custody(row["local_seq"], custody_at_ms=2, key_id="gw-1")
+    ledger._apply_verified_custody(
+        row["local_seq"], custody_at_ms=2, key_id="gw-1", recorded_at_ms=2
+    )
     ledger._apply_verified_receipt(row["local_seq"], receipt_at_ms=3, key_id="auth-1")
     stored = ledger.find(row["event_id"])
     assert stored["custody_state"] == CUSTODY_HELD
@@ -1413,3 +1415,75 @@ def test_the_cross_purpose_receipt_is_signed_by_the_epoch_key():
         "the case must fail under the receipt key, or purpose separation is "
         "not what refuses it"
     )
+
+
+# --------------------------------------------------------------------------
+# Awaiting a receipt
+# --------------------------------------------------------------------------
+
+
+def _held(ledger, chain, action_log_id: int, *, courier: int, recorded: int) -> int:
+    row = ledger.seal(_append(chain, action_log_id), sealed_at_ms=1)
+    ledger._apply_verified_custody(
+        row["local_seq"], custody_at_ms=courier, key_id="gw-1", recorded_at_ms=recorded
+    )
+    return int(row["local_seq"])
+
+
+def test_nothing_awaits_a_receipt_on_an_empty_ledger(rig):
+    _, chain, ledger = rig
+    assert ledger.awaiting_receipt(1_000) == (0, None)
+    ledger.seal(_append(chain, 1), sealed_at_ms=1)
+    assert ledger.awaiting_receipt(1_000) == (0, None), "sealed is not held"
+
+
+@pytest.mark.parametrize(
+    ("courier", "recorded", "now", "age"),
+    [
+        pytest.param(100, 200, 1_000, 900, id="courier-clock-behind-reads-older"),
+        pytest.param(5_000, 200, 1_000, 800, id="courier-clock-ahead-cannot-hide-it"),
+        pytest.param(5_000, 2_000, 1_000, 0, id="runtime-clock-stepped-back"),
+    ],
+)
+def test_the_age_is_the_greater_of_the_two_clocks(rig, courier, recorded, now, age):
+    _, chain, ledger = rig
+    _held(ledger, chain, 1, courier=courier, recorded=recorded)
+    assert ledger.awaiting_receipt(now) == (1, age)
+
+
+def test_the_oldest_envelope_sets_the_age(rig):
+    _, chain, ledger = rig
+    _held(ledger, chain, 1, courier=700, recorded=710)
+    _held(ledger, chain, 2, courier=300, recorded=900)
+    _held(ledger, chain, 3, courier=800, recorded=500)
+    assert ledger.awaiting_receipt(1_000) == (3, 700)
+
+
+def test_a_receipt_ends_the_wait(rig):
+    _, chain, ledger = rig
+    first = _held(ledger, chain, 1, courier=100, recorded=100)
+    _held(ledger, chain, 2, courier=400, recorded=400)
+    ledger._apply_verified_receipt(first, receipt_at_ms=500, key_id="auth-1")
+    assert ledger.awaiting_receipt(1_000) == (1, 600)
+
+
+def test_the_store_refuses_to_rewrite_the_recorded_custody_time(rig):
+    """Final in the database, not only in the caller."""
+    _, chain, ledger = rig
+    seq = _held(ledger, chain, 1, courier=100, recorded=200)
+    with pytest.raises(sqlite3.DatabaseError, match="cannot be withdrawn or rewritten"):
+        ledger._connection.execute(
+            "UPDATE evidence_delivery_ledger SET custody_recorded_at_ms = 900"
+            " WHERE local_seq = ?",
+            (seq,),
+        )
+    ledger._apply_verified_custody(
+        seq, custody_at_ms=100, key_id="gw-1", recorded_at_ms=900
+    )
+    assert ledger.awaiting_receipt(1_000) == (1, 900)
+
+
+def test_an_age_beyond_exact_json_integers_is_held_at_the_bound(rig):
+    _, chain, ledger = rig
+    _held(ledger, chain, 1, courier=-(2**62), recorded=200)
+    assert ledger.awaiting_receipt(1_000) == (1, 2**53 - 1)

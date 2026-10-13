@@ -404,6 +404,23 @@ class FirstPartyEvidenceAttestor:
         assert self._ledger is not None
         return self._ledger.awaiting_custody_count()
 
+    async def awaiting_receipt(self, at_ms: int) -> tuple[int, int | None] | None:
+        """Envelopes a courier holds and the authority has not receipted.
+
+        The count and the oldest one's age at *at_ms*; None when the ledger
+        cannot be read.
+        """
+        if self._ledger is None:
+            return None
+        try:
+            return await self._executor.run_async(self._ledger.awaiting_receipt, at_ms)
+        except Exception as exc:
+            logger.warning(
+                "[evidence] awaiting-receipt read failed (%s)",
+                safe_failure_reason(exc),
+            )
+            return None
+
     async def issue_checkpoint(self) -> dict[str, Any] | None:
         """Sign a checkpoint for the current high-water mark and retain it.
 

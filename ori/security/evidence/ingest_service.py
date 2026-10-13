@@ -177,6 +177,7 @@ class EvidenceIngestService:
             verified.local_seq,
             custody_at_ms=verified.custody_at_ms,
             key_id=verified.key_id,
+            recorded_at_ms=now_ms(),
         )
         return IngestOutcome(
             artifact="custody_acknowledgement",

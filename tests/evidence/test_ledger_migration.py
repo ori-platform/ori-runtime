@@ -417,3 +417,68 @@ async def test_a_carried_answer_keeps_its_place_against_a_delayed_acknowledgemen
         assert answer == "queued"
     finally:
         attestor.close()
+
+
+async def test_custody_a_previous_release_recorded_is_aged_by_the_courier(tmp_path):
+    """The previous release kept no runtime time for custody, so the age of
+    an envelope it left held is the courier's account alone."""
+    db = tmp_path / "evidence.db"
+    _previous_release_store(db)
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "INSERT INTO evidence_delivery_ledger (local_seq, event_id, chain_seq,"
+            " device_id, anchor_epoch_id, key_id, envelope_json, envelope_digest,"
+            " chain_row_digest, sealed_at_ms, custody_state, custody_at_ms,"
+            " custody_key_id) VALUES (1, 'evt-1', 1, ?, 'e', 'k', '{}', 'd1', 'c1',"
+            " 1, 'held', 4000, 'gw-1')",
+            (DEVICE,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    attestor = FirstPartyEvidenceAttestor(
+        db_path=str(db),
+        key_path=str(tmp_path / "evidence.key"),
+        device_secret=SECRET,
+        device_id=DEVICE,
+    )
+    assert await attestor.start() is True
+    try:
+        assert await attestor.awaiting_receipt(10_000) == (1, 6_000)
+    finally:
+        attestor.close()
+
+
+async def test_an_upgraded_ledger_holds_the_recorded_custody_time_final(tmp_path):
+    """The previous release's trigger did not know the column; the upgrade
+    replaces it, so the rewrite is refused there too."""
+    db = tmp_path / "evidence.db"
+    _previous_release_store(db)
+    attestor = FirstPartyEvidenceAttestor(
+        db_path=str(db),
+        key_path=str(tmp_path / "evidence.key"),
+        device_secret=SECRET,
+        device_id=DEVICE,
+    )
+    assert await attestor.start() is True
+    attestor.close()
+
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.execute(
+            "INSERT INTO evidence_delivery_ledger (local_seq, event_id, chain_seq,"
+            " device_id, anchor_epoch_id, key_id, envelope_json, envelope_digest,"
+            " chain_row_digest, sealed_at_ms, custody_state, custody_at_ms,"
+            " custody_key_id, custody_recorded_at_ms) VALUES (1, 'evt-1', 1, ?,"
+            " 'e', 'k', '{}', 'd1', 'c1', 1, 'held', 4000, 'gw-1', 4500)",
+            (DEVICE,),
+        )
+        conn.commit()
+        with pytest.raises(sqlite3.DatabaseError):
+            conn.execute(
+                "UPDATE evidence_delivery_ledger SET custody_recorded_at_ms = 9000"
+            )
+    finally:
+        conn.close()

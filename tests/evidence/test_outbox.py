@@ -192,7 +192,10 @@ def test_awaiting_custody_lists_only_unheld_envelopes_oldest_first(rig):
     first = ledger.seal(_append(chain, 1), sealed_at_ms=100)
     second = ledger.seal(_append(chain, 2), sealed_at_ms=200)
     ledger._apply_verified_custody(
-        int(first["local_seq"]), custody_at_ms=300, key_id="hkdf-sha256:" + "a" * 64
+        int(first["local_seq"]),
+        custody_at_ms=300,
+        key_id="hkdf-sha256:" + "a" * 64,
+        recorded_at_ms=300,
     )
     awaiting = ledger.awaiting_custody()
     assert [r["local_seq"] for r in awaiting] == [second["local_seq"]]

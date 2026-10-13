@@ -357,7 +357,10 @@ class TestHealthReadingSurface:
         # enters the receipt queue -- it is held, but nothing has accepted it.
         run(
             lambda: ledger._apply_verified_custody(
-                1, custody_at_ms=1787000000900, key_id="gw-secret-1"
+                1,
+                custody_at_ms=1787000000900,
+                key_id="gw-secret-1",
+                recorded_at_ms=1787000000900,
             )
         )
         assert run(ledger.awaiting_custody_count) == 0

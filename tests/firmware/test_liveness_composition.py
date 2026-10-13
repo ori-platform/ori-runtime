@@ -569,16 +569,20 @@ def test_a_configured_interval_above_the_contract_ceiling_fails_startup(
 class _StubScheduler:
     """Minimal stand-in exposing only what the health path reads."""
 
-    def __init__(self, *, degraded: bool) -> None:
+    def __init__(self, *, degraded: bool, critical: bool | None = None) -> None:
         self._degraded = degraded
+        self._critical = critical
 
     def health(self) -> dict[str, object]:
-        return {
+        health: dict[str, object] = {
             "running": not self._degraded,
             "degraded": self._degraded,
             "supervised_device_count": 3,
             "expiring_devices": ["ori-fw-secret-01"] if self._degraded else [],
         }
+        if self._critical is not None:
+            health["critical"] = self._critical
+        return health
 
 
 def _runtime_with_scheduler(scheduler):
@@ -630,14 +634,21 @@ async def test_degradation_reasons_empty_from_the_real_snapshot_without_a_schedu
 
 
 @pytest.mark.asyncio
-async def test_degradation_reasons_accompany_critical_and_degraded_status() -> None:
-    """The named reason and the status must agree: a receiver refuses
-    reasons carried alongside a healthy status."""
-    runtime = _runtime_with_scheduler(_StubScheduler(degraded=True))
+@pytest.mark.parametrize(
+    ("critical", "status"),
+    [(True, "critical"), (False, "degraded"), (None, "critical")],
+    ids=["critical-liveness", "degraded-liveness", "unstated-is-critical"],
+)
+async def test_degradation_reasons_accompany_the_liveness_severity(
+    critical: bool | None, status: str
+) -> None:
+    """The reason is named at either severity, and `critical` agrees with
+    `status`: a receiver refuses reasons carried alongside a healthy status."""
+    runtime = _runtime_with_scheduler(_StubScheduler(degraded=True, critical=critical))
     snapshot = await runtime._build_health_snapshot()
     assert snapshot["degradation_reasons"] == ["firmware_liveness_degraded"]
-    assert snapshot["critical"] is True
-    assert snapshot["status"] == "degraded"
+    assert snapshot["status"] == status
+    assert snapshot["critical"] is (status == "critical")
 
 
 @pytest.mark.asyncio

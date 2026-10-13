@@ -100,6 +100,16 @@ release is cut.
   signed the nonce computes one. The bound dates the device's poll, not the
   measured quantity, and is not a safety input. The three contract corpora
   are vendored and driven.
+- Health reports the evidence envelopes a courier holds that the authority
+  has not receipted, as `evidence.awaiting_receipt_count` and
+  `evidence.oldest_awaiting_receipt_age_ms`, so a receipt that was refused or
+  lost is visible without querying the ledger. The age is the greater of the
+  time since the courier says it took custody and the time since this runtime
+  recorded it, so a courier clock running ahead cannot make an envelope look
+  fresher than its arrival. The runtime's record is the first one and is
+  final: a redelivered acknowledgement does not move it. Custody recorded
+  before this release is aged by the courier's account alone. Both are `null` when the ledger cannot be read,
+  and neither affects `status`.
 
 ## Changed
 
@@ -131,6 +141,15 @@ release is cut.
   continuous operation or protection for it. A site's runtime runs on a
   Linux edge host. The phone guides no longer promise an upgrade path from a
   phone to an edge node.
+- The health snapshot always carries `critical`, `true` exactly when
+  `status` is `critical`. A firmware liveness loop that stopped, a tick older
+  than the expiry window, a loop running that long without one successful
+  tick, or an expired device is now `status: critical`; over-capacity and
+  failing ticks alone are `degraded` with `critical: false`, and a loop
+  stopped in an orderly shutdown holds none of them. `ori doctor` and the
+  installer's health gate fail on a critical snapshot, so both now fail on a
+  lost decision record, which they passed before, and no longer fail on
+  liveness over capacity or failing ticks alone.
 
 ## Fixed
 
@@ -249,6 +268,18 @@ release is cut.
   `sequence_replay`) instead of always `sequence_replay`.
 - `gateway.firmware_commands.publish_timeout_s` must be a finite number
   greater than zero, and an exhausted `cmd_seq` counter is a refusal.
+- A health condition evaluated later no longer overwrites a more severe one.
+  A lost decision record beside a commissioning problem or an active
+  unprotected safety zone reported `degraded`; `status` is now the most severe
+  condition that holds, whatever order they are evaluated in.
+- The node heartbeat no longer publishes `healthy` for a health snapshot it
+  cannot read. A snapshot whose `status` is not one the runtime produces, or
+  whose `critical` is not a boolean agreeing with it, publishes `degraded`
+  with no triggers, reasons or evidence taken from it. A snapshot provider
+  that raises, or a value the heartbeat cannot convert, does the same and no
+  longer stops the heartbeat for the life of the process. A local `critical`
+  publishes `degraded`, which a lost decision record previously published as
+  `healthy`, until a gateway claims the `gateway-api/v2` heartbeat rules.
 
 ## Security
 

@@ -71,7 +71,7 @@ def _publisher(
     client=None,
 ) -> MqttRuntimeNodeHeartbeatPublisher:
     async def _snapshot():
-        return snapshot or {"status": "healthy", "active_triggers": ["grid_sag"]}
+        return snapshot or {"critical": False, "active_triggers": ["grid_sag"]}
 
     return MqttRuntimeNodeHeartbeatPublisher(
         broker_url=broker_url,
@@ -132,7 +132,7 @@ async def test_runtime_node_heartbeat_marks_critical_snapshot_degraded(monkeypat
     client = _FakeClient()
     publisher = _publisher(
         client=client,
-        snapshot={"status": "healthy", "critical": True},
+        snapshot={"status": "critical", "critical": True},
     )
 
     await publisher._publish_once(client)
@@ -179,7 +179,7 @@ async def test_degradation_reasons_omitted_when_nothing_is_degraded(monkeypatch)
     publisher = _publisher(
         client=client,
         snapshot={
-            "status": "healthy",
+            "critical": False,
             "active_triggers": [],
             "degradation_reasons": [],
         },
@@ -208,6 +208,7 @@ async def test_degradation_reasons_omitted_when_empty_even_if_degraded(monkeypat
         client=client,
         snapshot={
             "status": "degraded",
+            "critical": False,
             "active_triggers": [],
             "degradation_reasons": [],
         },
@@ -228,6 +229,7 @@ async def test_degradation_reasons_emitted_on_a_degraded_heartbeat(monkeypatch):
         client=client,
         snapshot={
             "status": "degraded",
+            "critical": False,
             "active_triggers": [],
             "degradation_reasons": ["firmware_liveness_degraded"],
         },
@@ -261,6 +263,7 @@ async def test_degradation_reasons_are_unique_and_ordered(monkeypatch):
         client=client,
         snapshot={
             "status": "degraded",
+            "critical": False,
             "active_triggers": [],
             "degradation_reasons": ["zz_test_only", "aa_test_only", "zz_test_only"],
         },
@@ -285,6 +288,7 @@ async def test_unratified_tokens_are_never_emitted(monkeypatch):
         client=client,
         snapshot={
             "status": "degraded",
+            "critical": False,
             "active_triggers": [],
             "degradation_reasons": ["not_ratified_yet"],
         },
@@ -303,6 +307,7 @@ async def test_ratified_tokens_survive_alongside_unratified_ones(monkeypatch):
         client=client,
         snapshot={
             "status": "degraded",
+            "critical": False,
             "active_triggers": [],
             "degradation_reasons": ["not_ratified_yet", "firmware_liveness_degraded"],
         },
@@ -324,6 +329,7 @@ async def test_non_string_reasons_are_refused_not_coerced(monkeypatch):
             client=client,
             snapshot={
                 "status": "degraded",
+                "critical": False,
                 "active_triggers": [],
                 "degradation_reasons": [junk],
             },
@@ -342,6 +348,7 @@ async def test_over_the_contract_maximum_omits_the_field(monkeypatch):
         client=client,
         snapshot={
             "status": "degraded",
+            "critical": False,
             "active_triggers": [],
             "degradation_reasons": sorted(oversized),
         },
@@ -367,7 +374,7 @@ async def test_degradation_reasons_dropped_rather_than_sent_with_healthy_status(
     publisher = _publisher(
         client=client,
         snapshot={
-            "status": "healthy",
+            "critical": False,
             "active_triggers": [],
             "degradation_reasons": ["firmware_liveness_degraded"],
         },
@@ -396,6 +403,7 @@ async def test_degradation_reasons_are_inside_the_signed_payload(monkeypatch):
         authenticator=authenticator,
         snapshot={
             "status": "degraded",
+            "critical": False,
             "active_triggers": [],
             "degradation_reasons": ["firmware_liveness_degraded"],
         },
@@ -438,3 +446,121 @@ def test_degradation_reasons_helper_omits_and_names():
     assert _degradation_reasons(firmware_liveness_degraded=True) == [
         DEGRADATION_REASON_FIRMWARE_LIVENESS
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("snapshot", "status"),
+    [
+        ({"critical": False}, "healthy"),
+        ({"status": "degraded", "critical": False}, "degraded"),
+        # The gateway accepts healthy and degraded only.
+        ({"status": "critical", "critical": True}, "degraded"),
+    ],
+    ids=["healthy", "degraded", "critical"],
+)
+async def test_each_local_status_maps_to_its_heartbeat(monkeypatch, snapshot, status):
+    monkeypatch.setattr(node_heartbeat_module, "now_ms", lambda: 1_000_000)
+    client = _FakeClient()
+    await _publisher(client=client, snapshot=snapshot)._publish_once(client)
+    assert json.loads(client.published[0][1])["status"] == status
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "snapshot",
+    [
+        pytest.param(None, id="not-an-object"),
+        pytest.param([], id="a-list"),
+        pytest.param({}, id="no-critical"),
+        pytest.param({"status": "healthy", "critical": False}, id="healthy-spelled"),
+        pytest.param({"status": None, "critical": False}, id="null-status"),
+        pytest.param({"status": "ok", "critical": False}, id="unknown-status"),
+        pytest.param({"status": " degraded", "critical": False}, id="padded-status"),
+        pytest.param({"status": 1, "critical": False}, id="numeric-status"),
+        pytest.param({"critical": True}, id="critical-without-status"),
+        pytest.param({"status": "critical", "critical": False}, id="critical-false"),
+        pytest.param(
+            {"status": "degraded", "critical": True}, id="critical-on-degraded"
+        ),
+        pytest.param({"status": "degraded", "critical": 1}, id="critical-not-bool"),
+        pytest.param({"critical": "false"}, id="critical-text"),
+        # Equal to the booleans under ==, so only the type check refuses them.
+        pytest.param({"critical": 0}, id="critical-zero"),
+        pytest.param({"status": "critical", "critical": 1}, id="critical-one"),
+    ],
+)
+async def test_a_malformed_snapshot_never_publishes_healthy(
+    monkeypatch, caplog, snapshot
+):
+    """A verdict the runtime cannot read may be hiding a critical one, so
+    nothing else is taken from it either."""
+    monkeypatch.setattr(node_heartbeat_module, "now_ms", lambda: 1_000_000)
+    if isinstance(snapshot, dict):
+        snapshot = {
+            **snapshot,
+            "active_triggers": ["grid_sag"],
+            "degradation_reasons": ["firmware_liveness_degraded"],
+            "evidence": {"enabled": True, "available": True},
+        }
+
+    async def _provider():
+        return snapshot
+
+    client = _FakeClient()
+    publisher = MqttRuntimeNodeHeartbeatPublisher(
+        broker_url="mqtt://localhost",
+        device_id="dev-01",
+        health_snapshot_provider=_provider,
+        interval_seconds=30,
+        authenticator=None,
+        client_factory=lambda **_: client,
+    )
+    with caplog.at_level("WARNING"):
+        await publisher._publish_once(client)
+
+    assert json.loads(client.published[0][1]) == {
+        "active_triggers": [],
+        "device_id": "dev-01",
+        "gateway_seen_ms": 0,
+        "last_seen_ms": 1_000_000,
+        "status": "degraded",
+    }
+    assert "health snapshot is malformed" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", ["provider-raises", "unmappable-evidence"])
+async def test_a_snapshot_that_cannot_be_read_publishes_degraded(monkeypatch, fault):
+    """Neither a failing provider nor a value the mapping cannot convert stops
+    the heartbeat or publishes healthy."""
+    monkeypatch.setattr(node_heartbeat_module, "now_ms", lambda: 1_000_000)
+
+    async def _provider():
+        if fault == "provider-raises":
+            raise RuntimeError("store locked")
+        return {
+            "critical": False,
+            "evidence": {"enabled": True, "attestation_gap_count": "many"},
+        }
+
+    client = _FakeClient()
+    publisher = MqttRuntimeNodeHeartbeatPublisher(
+        broker_url="mqtt://localhost",
+        device_id="dev-01",
+        health_snapshot_provider=_provider,
+        interval_seconds=30,
+        authenticator=None,
+        client_factory=lambda **_: client,
+    )
+    await publisher._publish_once(client)
+    await publisher._publish_once(client)
+
+    assert len(client.published) == 2
+    assert json.loads(client.published[1][1]) == {
+        "active_triggers": [],
+        "device_id": "dev-01",
+        "gateway_seen_ms": 0,
+        "last_seen_ms": 1_000_000,
+        "status": "degraded",
+    }

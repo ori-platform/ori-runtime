@@ -81,7 +81,28 @@ FAILURE_REASONS = frozenset(
 # What a courier's acknowledgement can say about an envelope this device sealed.
 COURIER_ANSWERS = frozenset({"queued", "queue_full", "refused"})
 
-_DELIVERY_SCHEMA = """
+# The largest integer every JSON reader holds exactly; a courier's signed time
+# far in the past is still an age, never an unrepresentable one.
+_MAX_AGE_MS = 2**53 - 1
+
+# Recorded custody is final, this runtime's own record time included, so a
+# redelivered acknowledgement cannot make a held envelope look newer.
+_CUSTODY_FINAL_TRIGGER = """
+CREATE TRIGGER IF NOT EXISTS evidence_ledger_custody_is_final
+BEFORE UPDATE ON evidence_delivery_ledger
+WHEN OLD.custody_state = 'held'
+ AND (NEW.custody_state <> 'held'
+   OR NEW.custody_at_ms  IS NOT OLD.custody_at_ms
+   OR NEW.custody_key_id IS NOT OLD.custody_key_id
+   OR (OLD.custody_recorded_at_ms IS NOT NULL
+       AND NEW.custody_recorded_at_ms IS NOT OLD.custody_recorded_at_ms))
+BEGIN
+    SELECT RAISE(ABORT, 'recorded custody cannot be withdrawn or rewritten');
+END;
+"""
+
+_DELIVERY_SCHEMA = (
+    """
 CREATE TABLE IF NOT EXISTS evidence_delivery_ledger (
     local_seq         INTEGER PRIMARY KEY AUTOINCREMENT,
     event_id          TEXT    NOT NULL UNIQUE,
@@ -96,6 +117,7 @@ CREATE TABLE IF NOT EXISTS evidence_delivery_ledger (
     custody_state     TEXT    NOT NULL DEFAULT 'none',
     custody_at_ms     INTEGER,
     custody_key_id    TEXT,
+    custody_recorded_at_ms INTEGER,
     receipt_state     TEXT    NOT NULL DEFAULT 'none',
     receipt_at_ms     INTEGER,
     receipt_key_id    TEXT,
@@ -209,15 +231,9 @@ END;
 -- reverted to 'none', or whose issuing key could be rewritten afterwards,
 -- would let local state disagree with what the authority actually signed —
 -- and local state is what the runtime acts on.
-CREATE TRIGGER IF NOT EXISTS evidence_ledger_custody_is_final
-BEFORE UPDATE ON evidence_delivery_ledger
-WHEN OLD.custody_state = 'held'
- AND (NEW.custody_state <> 'held'
-   OR NEW.custody_at_ms  IS NOT OLD.custody_at_ms
-   OR NEW.custody_key_id IS NOT OLD.custody_key_id)
-BEGIN
-    SELECT RAISE(ABORT, 'recorded custody cannot be withdrawn or rewritten');
-END;
+"""
+    + _CUSTODY_FINAL_TRIGGER
+    + """
 
 CREATE TRIGGER IF NOT EXISTS evidence_ledger_receipt_is_final
 BEFORE UPDATE ON evidence_delivery_ledger
@@ -360,6 +376,7 @@ BEGIN
     SELECT RAISE(ABORT, 'a recorded artifact fault cannot be cleared');
 END;
 """
+)
 
 #: Every table the anchor registration and its dispositions keep, and nothing
 #: else. Kept apart so what counts as registration state is derivable.
@@ -805,6 +822,18 @@ class EvidenceDeliveryLedger:
                 "ALTER TABLE evidence_delivery_ledger"
                 " ADD COLUMN courier_answer_at_ms INTEGER"
             )
+        # Custody recorded by an earlier release has no runtime time; its age
+        # is then the courier's account alone.
+        if "custody_recorded_at_ms" not in columns:
+            self._connection.execute(
+                "ALTER TABLE evidence_delivery_ledger"
+                " ADD COLUMN custody_recorded_at_ms INTEGER"
+            )
+        # A ledger created before the column holds the trigger without it.
+        self._connection.execute(
+            "DROP TRIGGER IF EXISTS evidence_ledger_custody_is_final"
+        )
+        self._connection.execute(_CUSTODY_FINAL_TRIGGER)
         # On every open, not only the first: a release rolled back to records
         # the courier's answer in last_failure, and a roll-forward must carry
         # it over or the episode it opened is reopened by the next refusal.
@@ -2085,7 +2114,7 @@ class EvidenceDeliveryLedger:
         return row
 
     def _apply_verified_custody(
-        self, local_seq: int, *, custody_at_ms: int, key_id: str
+        self, local_seq: int, *, custody_at_ms: int, key_id: str, recorded_at_ms: int
     ) -> None:
         """Record custody that has already been authenticated.
 
@@ -2103,10 +2132,17 @@ class EvidenceDeliveryLedger:
         self._connection.execute(
             """
             UPDATE evidence_delivery_ledger
-               SET custody_state = ?, custody_at_ms = ?, custody_key_id = ?
+               SET custody_state = ?, custody_at_ms = ?, custody_key_id = ?,
+                   custody_recorded_at_ms = COALESCE(custody_recorded_at_ms, ?)
              WHERE local_seq = ?
             """,
-            (CUSTODY_HELD, int(custody_at_ms), str(key_id), int(local_seq)),
+            (
+                CUSTODY_HELD,
+                int(custody_at_ms),
+                str(key_id),
+                int(recorded_at_ms),
+                int(local_seq),
+            ),
         )
 
     def _apply_verified_receipt(
@@ -2434,6 +2470,26 @@ class EvidenceDeliveryLedger:
             "WHERE custody_state = 'held' AND receipt_state = 'none'"
         ).fetchone()
         return int(row["pending"])
+
+    def awaiting_receipt(self, now_ms: int) -> tuple[int, int | None]:
+        """How many envelopes await a receipt, and the oldest one's age.
+
+        The age is the greater of the time since the courier says it took
+        custody and the time since this runtime recorded it, so a courier's
+        clock running ahead cannot make an envelope look fresher than its
+        arrival. None when nothing awaits.
+        """
+        row = self._connection.execute(
+            "SELECT COUNT(*) AS n, MIN(custody_at_ms) AS courier,"
+            " MIN(custody_recorded_at_ms) AS recorded"
+            " FROM evidence_delivery_ledger"
+            " WHERE custody_state = 'held' AND receipt_state = 'none'"
+        ).fetchone()
+        count = int(row["n"])
+        if count == 0:
+            return 0, None
+        since = [int(at) for at in (row["courier"], row["recorded"]) if at is not None]
+        return count, min(_MAX_AGE_MS, max(0, int(now_ms) - min(since)))
 
     def undelivered(self, limit: int = 100) -> list[sqlite3.Row]:
         """Sealed but unreceipted, oldest first. Custody does not count."""
