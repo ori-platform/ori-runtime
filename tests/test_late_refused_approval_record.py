@@ -332,7 +332,7 @@ class TestALateRefusalUsesNoSafeDefault:
         finally:
             await h.store.close()
         assert outcome.action_taken == "refused_late_approval"
-        assert outcome.operator_response != "approval_error"
+        assert outcome.operator_response == f"YES-{PROPOSAL}"
         assert outcome.approved is True and outcome.executed is False
         assert outcome.safe_default_used is False
         assert h.ran == []
@@ -378,7 +378,7 @@ class TestALateRefusalUsesNoSafeDefault:
         finally:
             await h.store.close()
         assert outcome.approved is False
-        assert outcome.action_taken != "refused_late_approval"
+        assert outcome.action_taken == "log_to_dashboard"
         assert outcome.safe_default_used is True
         assert outcome.operator_response == (
             "LOCAL:TOKEN_REJECTED:v1_token_is_not_approval"

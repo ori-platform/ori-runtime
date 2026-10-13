@@ -1736,7 +1736,7 @@ class TestTheBoundaryFailsClosed:
         outcome = await dispatcher.dispatch(
             action="log_to_dashboard", tier="A", context=context, result=result
         )
-        assert outcome.action_taken != "refused_unresolved_resource"
+        assert outcome.action_taken == "log_to_dashboard"
 
 
 class TestScopesBelongToTheirEvent:

@@ -425,7 +425,7 @@ actions:
         )
 
         assert ran is False, "a relay fired without operator approval"
-        assert result.approved is not True
+        assert result.approved is None
         assert result.tier == ActionTier.HARD_PHYSICAL
 
     async def test_execute_immediately_refuses_below_the_floor(self):
@@ -1361,7 +1361,7 @@ class TestSafeDefaultsCannotActuate:
         )
 
         assert fired == [], f"a relay fired as a safe default: {fired}"
-        assert result.approved is not True
+        assert result.approved is False
 
 
 # ─── Authoritative sensor fields ──────────────────────────────────────────────

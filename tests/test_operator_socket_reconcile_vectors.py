@@ -448,10 +448,18 @@ class SocketTransport:
             if expect["audit_required"]:
                 caller = step["caller"]
                 principal = (caller["uid"], caller.get("login_uid"))
-                assert any(
-                    (a["principal_uid"], a["principal_login_uid"]) == principal
-                    for a in new
-                ), (new, step)
+
+                def mine(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+                    return [
+                        a
+                        for a in rows
+                        if (a["principal_uid"], a["principal_login_uid"]) == principal
+                    ]
+
+                # An identical repeat may be coalesced into the principal's
+                # existing attempt record (operator-socket/v1, Idempotency).
+                assert mine(new) == new, (new, step)
+                assert new or mine(attempts_before), (attempts_before, step)
             else:
                 assert new == [], (new, step)
         if "audit_attempts" in expect:

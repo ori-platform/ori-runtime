@@ -435,7 +435,7 @@ class TestMissingExecutorNeverReportsExecution:
             )
 
         assert result.executed is False
-        assert result.action_taken != action
+        assert result.action_taken == NO_EXECUTOR_ACTION_TAKEN
 
     async def test_approved_tier_c_without_executor_is_not_recorded_as_taken(self):
         """The case that sealed a false attestation: approval is not execution."""
@@ -469,7 +469,7 @@ class TestMissingExecutorNeverReportsExecution:
         assert absent_result.executed is False
         assert failing_result.executed is False
         assert absent_result.action_taken == NO_EXECUTOR_ACTION_TAKEN
-        assert failing_result.action_taken != NO_EXECUTOR_ACTION_TAKEN
+        assert failing_result.action_taken == ""
 
     async def test_a_registered_executor_still_reports_execution(self):
         """The mutation that would make the rest of this class vacuous."""
@@ -2321,8 +2321,8 @@ class TestOfflineTokenApproval:
 
     async def test_cancelling_the_dispatch_itself_is_not_a_listener_failure(self):
         # Shutdown cancelling a pending approval is not treated as a failed
-        # listener: no safe default runs because of it. What dispatch returns
-        # on cancellation is unchanged by this guard.
+        # listener: no safe default runs because of it, and dispatch still
+        # answers with a result that records no operator decision.
         d = ActionDispatcher(config={"operator_contact": "+2348000000000"})
         safe_default = AsyncMock()
         d.register_executor("terminate_process", AsyncMock())
@@ -2352,7 +2352,7 @@ class TestOfflineTokenApproval:
             outcome: ActionResult | None = None
             with contextlib.suppress(asyncio.CancelledError):
                 outcome = await task
-        assert outcome is None or outcome.approved is not True
+        assert outcome is not None and outcome.approved is None
         safe_default.assert_not_awaited()
 
     async def test_a_late_refusal_survives_an_indicator_fault(self):
@@ -2397,7 +2397,7 @@ class TestOfflineTokenApproval:
                 gate_token=object(),
             )
         assert result.action_taken == "refused_late_approval"
-        assert result.operator_response != "approval_error"
+        assert result.operator_response == "YES-P0000001"
         assert result.safe_default_used is False
         assert result.approved is True and result.executed is False
         action.assert_not_awaited()

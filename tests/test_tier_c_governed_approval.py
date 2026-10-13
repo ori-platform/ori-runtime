@@ -1488,7 +1488,7 @@ class TestAJoinedContributorReportsTheProposedAct:
             # The safe default ran and is the holder's record; nothing records
             # the proposed act as executed.
             assert "act:log_to_dashboard" in journal, journal
-            assert holder.approved is not True and holder.safe_default_used is True
+            assert holder.approved is False and holder.safe_default_used is True
             assert executed_proposed == [], rows
 
     async def test_an_uncertain_command_settles_on_the_proposed_act(self) -> None:

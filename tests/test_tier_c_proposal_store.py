@@ -91,6 +91,42 @@ async def test_a_reply_to_a_closed_proposal_says_which_state_closed_it(
     assert await _admit(store, proposal_id="nope") == "closed:none"
 
 
+@pytest.mark.parametrize("state", sorted(adm.DECISION_STATES - {adm.PROPOSED}) + [None])
+async def test_a_reply_to_a_proposal_no_longer_open_answers_from_its_state(
+    tmp_path: Any, state: str | None
+) -> None:
+    """Every recorded state decides one answer, and the reply changes nothing."""
+    path = str(tmp_path / "s.db")
+    store = StateStore(path)
+    await store.open()
+    try:
+        await store.create_tier_c_proposal(**PROPOSAL)
+        if state is not None:
+            with sqlite3.connect(path) as conn:
+                conn.execute(
+                    "UPDATE tier_c_proposals SET decision_state = ? "
+                    "WHERE proposal_id = ?",
+                    (state, PROPOSAL["proposal_id"]),
+                )
+        target = PROPOSAL["proposal_id"] if state is not None else "absent"
+        before = await store.get_tier_c_proposal(target)
+        assert (before is None) == (state is None), before
+        records = await store.get_tier_c_proposal_records(target)
+        intents = await store.get_tier_c_safe_default_intents()
+        if state is None:
+            expected = "closed:none"
+        elif state in adm.ADMITTED_STATES:
+            expected = "duplicate"
+        else:
+            expected = f"closed:{state}"
+        assert await _admit(store, target) == expected
+        assert await store.get_tier_c_proposal(target) == before
+        assert await store.get_tier_c_proposal_records(target) == records
+        assert await store.get_tier_c_safe_default_intents() == intents
+    finally:
+        await store.close()
+
+
 async def test_a_changed_binding_or_authority_closes_the_proposal(store: Any) -> None:
     await store.create_tier_c_proposal(**PROPOSAL)
     assert await _admit(store, binding_digest="sha256:" + "c" * 64) == "binding_changed"
