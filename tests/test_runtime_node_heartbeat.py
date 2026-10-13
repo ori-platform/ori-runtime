@@ -540,6 +540,8 @@ async def test_a_malformed_snapshot_never_publishes_healthy(
         "get-raises",
         "contains-raises",
         "unencodable-gap",
+        "negative-gap",
+        "gap-past-exact-integers",
     ],
 )
 async def test_a_snapshot_that_cannot_be_read_publishes_degraded(monkeypatch, fault):
@@ -556,6 +558,12 @@ async def test_a_snapshot_that_cannot_be_read_publishes_degraded(monkeypatch, fa
             return _RaisingGet(critical=False)
         if fault == "contains-raises":
             return _RaisingContains(critical=False)
+        if fault in ("negative-gap", "gap-past-exact-integers"):
+            gap = -1 if fault == "negative-gap" else 2**64
+            return {
+                "critical": False,
+                "evidence": {"enabled": True, "attestation_gap_count": gap},
+            }
         if fault == "unencodable-gap":
             # Past the int-to-str digit limit, so encoding fails, not mapping.
             return {
@@ -658,3 +666,25 @@ async def test_cancelling_the_publisher_ends_it(monkeypatch):
     serving.cancel()
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(serving, timeout=5.0)
+
+
+@pytest.mark.asyncio
+async def test_a_heartbeat_that_cannot_be_signed_is_not_claimed_as_published(
+    monkeypatch, caplog
+):
+    """When even the degraded heartbeat cannot be signed, nothing is sent and
+    the log says so rather than claiming a publication."""
+    monkeypatch.setattr(node_heartbeat_module, "now_ms", lambda: 1_000_000)
+
+    class _BrokenSigner:
+        def sign(self, payload, *, message_type):
+            raise RuntimeError("signing key unavailable")
+
+    client = _FakeClient()
+    publisher = _publisher(client=client, authenticator=_BrokenSigner())
+    with caplog.at_level("WARNING"):
+        await publisher._tick(client)
+
+    assert client.published == []
+    assert "publishing degraded" not in caplog.text
+    assert "no heartbeat was sent this tick" in caplog.text

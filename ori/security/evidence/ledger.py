@@ -784,16 +784,21 @@ class EvidenceDeliveryLedger:
         # bounded, so waiting is the right answer; failing turns ordinary
         # contention into a spurious evidence failure, and evidence that fails
         # because two things happened at once is worse than useless.
-        self._connection.execute("PRAGMA busy_timeout=5000")
-        self._connection.execute("PRAGMA journal_mode=WAL")
-        # Enforced for this connection. The triggers above are what make the
-        # constraint hold for every other one, since this pragma is off by
-        # default and cannot be relied on to travel with the file.
-        self._connection.execute("PRAGMA foreign_keys=ON")
-        self._connection.execute("PRAGMA synchronous=FULL")
-        self._connection.executescript(_SCHEMA)
-        self._add_outbox_withdrawal_column()
-        self._add_courier_answer_column()
+        try:
+            self._connection.execute("PRAGMA busy_timeout=5000")
+            self._connection.execute("PRAGMA journal_mode=WAL")
+            # Enforced for this connection. The triggers above are what make
+            # the constraint hold for every other one, since this pragma is off
+            # by default and cannot be relied on to travel with the file.
+            self._connection.execute("PRAGMA foreign_keys=ON")
+            self._connection.execute("PRAGMA synchronous=FULL")
+            self._connection.executescript(_SCHEMA)
+            self._add_outbox_withdrawal_column()
+            self._add_courier_answer_column()
+        except BaseException:
+            # A ledger that failed to open holds no connection, and no lock.
+            self._connection.close()
+            raise
         self._boot_id: int | None = None
 
     def _add_courier_answer_column(self) -> None:
@@ -830,16 +835,13 @@ class EvidenceDeliveryLedger:
                 " ADD COLUMN custody_recorded_at_ms INTEGER"
             )
         # A ledger created before the column holds the trigger without it. One
-        # transaction, so no write ever meets the table with no trigger at all.
+        # transaction, so no write ever meets the table with no trigger at all;
+        # a failure closes the connection, which rolls the swap back.
         self._connection.execute("BEGIN IMMEDIATE")
-        try:
-            self._connection.execute(
-                "DROP TRIGGER IF EXISTS evidence_ledger_custody_is_final"
-            )
-            self._connection.execute(_CUSTODY_FINAL_TRIGGER)
-        except BaseException:
-            self._connection.execute("ROLLBACK")
-            raise
+        self._connection.execute(
+            "DROP TRIGGER IF EXISTS evidence_ledger_custody_is_final"
+        )
+        self._connection.execute(_CUSTODY_FINAL_TRIGGER)
         self._connection.execute("COMMIT")
         # On every open, not only the first: a release rolled back to records
         # the courier's answer in last_failure, and a roll-forward must carry

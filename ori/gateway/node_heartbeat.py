@@ -193,7 +193,7 @@ class MqttRuntimeNodeHeartbeatPublisher:
         try:
             await self._publish_once(client)
         except Exception:
-            logger.exception("[runtime-heartbeat] heartbeat publish failed")
+            logger.exception("[runtime-heartbeat] no heartbeat was sent this tick")
 
     async def _publish_once(self, client: Any) -> None:
         payload = await self._payload()
@@ -202,12 +202,12 @@ class MqttRuntimeNodeHeartbeatPublisher:
         except Exception as exc:
             # A mapped heartbeat that cannot be signed or encoded is replaced,
             # not dropped: silence would read as offline rather than degraded.
+            body = self._encode(self._fallback(int(payload["last_seen_ms"])))
             logger.warning(
                 "[runtime-heartbeat] heartbeat could not be encoded (%s); "
                 "publishing degraded",
                 type(exc).__name__,
             )
-            body = self._encode(self._fallback(int(payload["last_seen_ms"])))
         await asyncio.to_thread(client.publish, self.topic, body, qos=0, retain=False)
 
     def _encode(self, payload: dict[str, Any]) -> bytes:
@@ -234,7 +234,7 @@ class MqttRuntimeNodeHeartbeatPublisher:
         # it never publishes healthy, and nothing else is taken from it.
         logger.warning(
             "[runtime-heartbeat] health snapshot is malformed (%s); "
-            "publishing degraded",
+            "mapping it to degraded",
             fault,
         )
         return self._fallback(current_ms)
@@ -300,8 +300,8 @@ class MqttRuntimeNodeHeartbeatPublisher:
         if isinstance(evidence, dict) and evidence.get("enabled"):
             payload["evidence"] = {
                 "chain_head_hash": str(evidence.get("chain_head_hash") or ""),
-                "attestation_gap_count": int(
-                    evidence.get("attestation_gap_count") or 0
+                "attestation_gap_count": _gap_count(
+                    evidence.get("attestation_gap_count")
                 ),
                 "available": bool(evidence.get("available")),
                 # Emission vocabulary ('' while signing is unavailable) so
@@ -310,6 +310,14 @@ class MqttRuntimeNodeHeartbeatPublisher:
                 "action_event_type": str(evidence.get("action_event_type") or ""),
             }
         return payload
+
+
+def _gap_count(value: Any) -> int:
+    """The gap count the contract admits: an integer from 0 to 2^53-1."""
+    count = int(value or 0)
+    if not 0 <= count <= 2**53 - 1:
+        raise ValueError(f"attestation_gap_count {count} is outside 0..2^53-1")
+    return count
 
 
 def _snapshot_status_fault(snapshot: Any) -> str | None:

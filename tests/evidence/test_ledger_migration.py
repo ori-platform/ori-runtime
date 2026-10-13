@@ -503,6 +503,13 @@ async def test_a_failed_trigger_upgrade_leaves_the_previous_trigger(
         device_id=DEVICE,
     )
     assert await attestor.start() is False
+    writer = sqlite3.connect(str(db), timeout=0)
+    try:
+        # The failed open holds no write lock: another writer gets in at once.
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("ROLLBACK")
+    finally:
+        writer.close()
     attestor.close()
 
     conn = sqlite3.connect(str(db))
