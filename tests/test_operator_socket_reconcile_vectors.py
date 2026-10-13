@@ -396,8 +396,12 @@ class SocketTransport:
             assert rc == 2, payload
             result = f"refused:{code}" if code in REFUSALS else code
         assert result == expect["result"], (result, payload, step)
-        if step.get("peer") == "unverified" or step.get("runtime") == "unreachable":
-            assert server is None or server.received == 0, "the runtime received it"
+        if step.get("runtime") == "unreachable":
+            assert server is None, "the runtime was reachable"
+        elif step.get("peer") == "unverified":
+            assert server is not None and server.received == 0, (
+                "the runtime received it"
+            )
         if "response" in expect:
             if expect["response"] == "reconciliation":
                 assert payload["ok"] and set(payload["result"]) >= {
@@ -446,8 +450,8 @@ class SocketTransport:
                 principal = (caller["uid"], caller.get("login_uid"))
                 assert any(
                     (a["principal_uid"], a["principal_login_uid"]) == principal
-                    for a in attempts
-                ), (attempts, step)
+                    for a in new
+                ), (new, step)
             else:
                 assert new == [], (new, step)
         if "audit_attempts" in expect:

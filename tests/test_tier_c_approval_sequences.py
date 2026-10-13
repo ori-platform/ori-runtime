@@ -788,15 +788,23 @@ async def _run(replay: Replay, sequence: dict[str, Any], caplog: Any) -> list[st
             )
             if not listening:
                 # No open proposal listens: a reply to a closed or absent one is
-                # dropped, and admission would refuse it anyway.
-                if state_before is not None:
-                    answer = await replay.store.admit_tier_c_approval(
-                        target,
-                        binding_digest=replay.binding,
-                        authority_json="",
-                        reservation_ceiling=64,
-                    )
-                    assert answer.startswith("closed:") or answer == "duplicate", answer
+                # dropped, and admission refuses it with the answer its recorded
+                # state implies, leaving that state as it was.
+                assert state_before != adm.PROPOSED, (target, state_before)
+                answer = await replay.store.admit_tier_c_approval(
+                    target,
+                    binding_digest=replay.binding,
+                    authority_json="",
+                    reservation_ceiling=64,
+                )
+                if state_before is None:
+                    expected = "closed:none"
+                elif state_before in adm.ADMITTED_STATES:
+                    expected = "duplicate"
+                else:
+                    expected = f"closed:{state_before}"
+                assert answer == expected, (target, state_before, answer)
+                assert await replay.state_of(target) == state_before, target
                 unrepresented += await _check(replay, step, main, caplog)
                 continue
             await replay.replies.setdefault(target, asyncio.Queue()).put(reply)
