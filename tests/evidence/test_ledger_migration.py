@@ -482,3 +482,36 @@ async def test_an_upgraded_ledger_holds_the_recorded_custody_time_final(tmp_path
             )
     finally:
         conn.close()
+
+
+async def test_a_failed_trigger_upgrade_leaves_the_previous_trigger(
+    tmp_path, monkeypatch
+):
+    """The swap is one transaction: a failure never leaves the table with no
+    custody trigger at all."""
+    import ori.security.evidence.ledger as ledger_module
+
+    db = tmp_path / "evidence.db"
+    _previous_release_store(db)
+    monkeypatch.setattr(
+        ledger_module, "_CUSTODY_FINAL_TRIGGER", "CREATE TRIGGER broken SYNTAX"
+    )
+    attestor = FirstPartyEvidenceAttestor(
+        db_path=str(db),
+        key_path=str(tmp_path / "evidence.key"),
+        device_secret=SECRET,
+        device_id=DEVICE,
+    )
+    assert await attestor.start() is False
+    attestor.close()
+
+    conn = sqlite3.connect(str(db))
+    try:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger'"
+            " AND name = 'evidence_ledger_custody_is_final'"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None, "the upgrade dropped the trigger and kept nothing"
+    assert "custody_recorded_at_ms" not in row[0]

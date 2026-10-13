@@ -197,14 +197,27 @@ class MqttRuntimeNodeHeartbeatPublisher:
 
     async def _publish_once(self, client: Any) -> None:
         payload = await self._payload()
+        try:
+            body = self._encode(payload)
+        except Exception as exc:
+            # A mapped heartbeat that cannot be signed or encoded is replaced,
+            # not dropped: silence would read as offline rather than degraded.
+            logger.warning(
+                "[runtime-heartbeat] heartbeat could not be encoded (%s); "
+                "publishing degraded",
+                type(exc).__name__,
+            )
+            body = self._encode(self._fallback(int(payload["last_seen_ms"])))
+        await asyncio.to_thread(client.publish, self.topic, body, qos=0, retain=False)
+
+    def _encode(self, payload: dict[str, Any]) -> bytes:
         if self._authenticator is not None:
             payload = self._authenticator.sign(
                 payload, message_type=RUNTIME_HEARTBEAT_MESSAGE_TYPE
             )
-        body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode(
+        return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode(
             "utf-8"
         )
-        await asyncio.to_thread(client.publish, self.topic, body, qos=0, retain=False)
 
     async def _payload(self) -> dict[str, Any]:
         current_ms = now_ms()
@@ -212,15 +225,11 @@ class MqttRuntimeNodeHeartbeatPublisher:
             snapshot = self._health_snapshot_provider()
             if isinstance(snapshot, Awaitable):
                 snapshot = await snapshot
-        except Exception as exc:
-            fault: str | None = f"unreadable ({type(exc).__name__})"
-        else:
             fault = _snapshot_status_fault(snapshot)
             if fault is None and isinstance(snapshot, dict):
-                try:
-                    return self._mapped(snapshot, current_ms)
-                except Exception as exc:
-                    fault = f"unmappable ({type(exc).__name__})"
+                return self._mapped(snapshot, current_ms)
+        except Exception as exc:
+            fault = f"unreadable ({type(exc).__name__})"
         # A verdict the runtime cannot read may be hiding a critical one, so
         # it never publishes healthy, and nothing else is taken from it.
         logger.warning(
@@ -228,6 +237,9 @@ class MqttRuntimeNodeHeartbeatPublisher:
             "publishing degraded",
             fault,
         )
+        return self._fallback(current_ms)
+
+    def _fallback(self, current_ms: int) -> dict[str, Any]:
         return {
             "device_id": self._device_id,
             "status": "degraded",

@@ -537,6 +537,9 @@ async def test_a_malformed_snapshot_never_publishes_healthy(
         "unmappable-evidence",
         "overflowing-evidence",
         "trigger-str-raises",
+        "get-raises",
+        "contains-raises",
+        "unencodable-gap",
     ],
 )
 async def test_a_snapshot_that_cannot_be_read_publishes_degraded(monkeypatch, fault):
@@ -549,6 +552,16 @@ async def test_a_snapshot_that_cannot_be_read_publishes_degraded(monkeypatch, fa
             raise RuntimeError("store locked")
         if fault == "trigger-str-raises":
             return {"critical": False, "active_triggers": [_Unprintable()]}
+        if fault == "get-raises":
+            return _RaisingGet(critical=False)
+        if fault == "contains-raises":
+            return _RaisingContains(critical=False)
+        if fault == "unencodable-gap":
+            # Past the int-to-str digit limit, so encoding fails, not mapping.
+            return {
+                "critical": False,
+                "evidence": {"enabled": True, "attestation_gap_count": 10**5000},
+            }
         gap = float("inf") if fault == "overflowing-evidence" else "many"
         return {
             "critical": False,
@@ -609,3 +622,39 @@ async def test_a_failing_publish_does_not_end_the_heartbeat(monkeypatch):
     await asyncio.wait_for(serving, timeout=5.0)
     assert len(client.published) >= 2, "the heartbeat stopped after one failure"
     assert calls >= 3
+
+
+class _RaisingGet(dict):
+    def get(self, *_args, **_kwargs):
+        raise KeyError("get")
+
+
+class _RaisingContains(dict):
+    def __contains__(self, _key) -> bool:
+        raise KeyError("contains")
+
+
+@pytest.mark.asyncio
+async def test_cancelling_the_publisher_ends_it(monkeypatch):
+    """A tick swallows failures, never a cancellation."""
+    entered = asyncio.Event()
+
+    async def _slow_provider():
+        entered.set()
+        await asyncio.sleep(60)
+        return {"critical": False}
+
+    client = _FakeClient()
+    publisher = MqttRuntimeNodeHeartbeatPublisher(
+        broker_url="mqtt://localhost",
+        device_id="dev-01",
+        health_snapshot_provider=_slow_provider,
+        interval_seconds=30,
+        authenticator=None,
+        client_factory=lambda **_: client,
+    )
+    serving = asyncio.create_task(publisher.serve_until(asyncio.Event()))
+    await asyncio.wait_for(entered.wait(), timeout=5.0)
+    serving.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(serving, timeout=5.0)
