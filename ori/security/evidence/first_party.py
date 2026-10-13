@@ -259,22 +259,33 @@ class FirstPartyEvidenceAttestor:
             device_id=self._device_id, pubkey_hex=key.public_key_hex
         )
         chain = EvidenceChain(self._db_path, key, self._device_id)
-        ledger = EvidenceDeliveryLedger(
-            self._db_path,
-            key,
-            self._device_id,
-            anchor_epoch_id=anchor.anchor_epoch_id,
-            key_id=anchor.key_id,
-        )
-        service = EvidenceIngestService(
-            ledger=ledger,
-            registry=self._authority_keys,
-            device_id=self._device_id,
-            device_pubkey_hex=key.public_key_hex,
-            custody_keys=self._custody_keys,
-            disposition_verifier=self._disposition_verifier,
-        )
-        ledger.record_current_anchor(posture=anchor.posture, recorded_at_ms=now_ms())
+        ledger: EvidenceDeliveryLedger | None = None
+        try:
+            ledger = EvidenceDeliveryLedger(
+                self._db_path,
+                key,
+                self._device_id,
+                anchor_epoch_id=anchor.anchor_epoch_id,
+                key_id=anchor.key_id,
+            )
+            service = EvidenceIngestService(
+                ledger=ledger,
+                registry=self._authority_keys,
+                device_id=self._device_id,
+                device_pubkey_hex=key.public_key_hex,
+                custody_keys=self._custody_keys,
+                disposition_verifier=self._disposition_verifier,
+            )
+            ledger.record_current_anchor(
+                posture=anchor.posture, recorded_at_ms=now_ms()
+            )
+        except BaseException:
+            # Nothing that failed to open is kept open: neither is reachable
+            # from close() until it is assigned below.
+            if ledger is not None:
+                ledger.close()
+            chain.close()
+            raise
         self._anchor = anchor
         self._device_key = key
         self._chain = chain

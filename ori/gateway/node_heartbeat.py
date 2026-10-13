@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -208,7 +209,14 @@ class MqttRuntimeNodeHeartbeatPublisher:
                 "publishing degraded",
                 type(exc).__name__,
             )
-        await asyncio.to_thread(client.publish, self.topic, body, qos=0, retain=False)
+        info = await asyncio.to_thread(
+            client.publish, self.topic, body, qos=0, retain=False
+        )
+        # paho answers a publish it could not queue, such as one on a
+        # disconnected client, with a nonzero rc rather than an exception.
+        rc = getattr(info, "rc", 0)
+        if rc != 0:
+            raise RuntimeError(f"the broker client refused the publish (rc={rc})")
 
     def _encode(self, payload: dict[str, Any]) -> bytes:
         if self._authenticator is not None:
@@ -299,7 +307,9 @@ class MqttRuntimeNodeHeartbeatPublisher:
         evidence = snapshot.get("evidence")
         if isinstance(evidence, dict) and evidence.get("enabled"):
             payload["evidence"] = {
-                "chain_head_hash": str(evidence.get("chain_head_hash") or ""),
+                "chain_head_hash": _wire_text(
+                    evidence.get("chain_head_hash"), _CHAIN_HEAD_HASH, "chain_head_hash"
+                ),
                 "attestation_gap_count": _gap_count(
                     evidence.get("attestation_gap_count")
                 ),
@@ -307,9 +317,26 @@ class MqttRuntimeNodeHeartbeatPublisher:
                 # Emission vocabulary ('' while signing is unavailable) so
                 # the site can confirm a mixed-fleet vocabulary rollout
                 # without waiting for the first Tier C/D action.
-                "action_event_type": str(evidence.get("action_event_type") or ""),
+                "action_event_type": _wire_text(
+                    evidence.get("action_event_type"),
+                    _ACTION_EVENT_TYPE,
+                    "action_event_type",
+                ),
             }
         return payload
+
+
+# The shapes gateway-api/v2 admits; a gateway refuses the whole heartbeat
+# otherwise, so a value outside them maps to the degraded heartbeat instead.
+_CHAIN_HEAD_HASH = re.compile(r"(?:[0-9a-f]{64})?")
+_ACTION_EVENT_TYPE = re.compile(r"[A-Z_]{0,64}")
+
+
+def _wire_text(value: Any, shape: re.Pattern[str], name: str) -> str:
+    text = str(value or "")
+    if shape.fullmatch(text) is None:
+        raise ValueError(f"{name} is outside the shape gateway-api/v2 admits")
+    return text
 
 
 def _gap_count(value: Any) -> int:

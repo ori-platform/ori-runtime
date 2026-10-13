@@ -522,3 +522,58 @@ async def test_a_failed_trigger_upgrade_leaves_the_previous_trigger(
         conn.close()
     assert row is not None, "the upgrade dropped the trigger and kept nothing"
     assert "custody_recorded_at_ms" not in row[0]
+
+
+@pytest.mark.parametrize("failure", ["chain_device_check", "anchor_record"])
+async def test_a_failed_evidence_open_leaves_no_connection_open(
+    tmp_path, monkeypatch, failure
+):
+    """Every connection a failed open made is closed before start() returns."""
+    import ori.security.evidence.chain as chain_module
+    import ori.security.evidence.ledger as ledger_module
+
+    opened: list[_TrackedConnection] = []
+    real_connect = sqlite3.connect
+
+    def _tracking_connect(*args, **kwargs):
+        # The connection lives on the evidence worker, so its use from here
+        # would fail on thread affinity alone; closing is recorded instead.
+        conn = real_connect(*args, factory=_TrackedConnection, **kwargs)
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(chain_module.sqlite3, "connect", _tracking_connect)
+    monkeypatch.setattr(ledger_module.sqlite3, "connect", _tracking_connect)
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("injected open failure")
+
+    if failure == "chain_device_check":
+        monkeypatch.setattr(chain_module.EvidenceChain, "_assert_single_device", _boom)
+    else:
+        monkeypatch.setattr(
+            ledger_module.EvidenceDeliveryLedger, "record_current_anchor", _boom
+        )
+
+    attestor = FirstPartyEvidenceAttestor(
+        db_path=str(tmp_path / "evidence.db"),
+        key_path=str(tmp_path / "evidence.key"),
+        device_secret=SECRET,
+        device_id=DEVICE,
+    )
+    try:
+        assert await attestor.start() is False
+        assert opened, "the failure was injected before any connection opened"
+        assert all(conn.closed for conn in opened), (
+            "a failed open left a connection open"
+        )
+    finally:
+        attestor.close()
+
+
+class _TrackedConnection(sqlite3.Connection):
+    closed = False
+
+    def close(self) -> None:
+        self.closed = True
+        super().close()

@@ -539,9 +539,13 @@ async def test_a_malformed_snapshot_never_publishes_healthy(
         "trigger-str-raises",
         "get-raises",
         "contains-raises",
-        "unencodable-gap",
+        "huge-gap",
         "negative-gap",
         "gap-past-exact-integers",
+        "uppercase-chain-head",
+        "short-chain-head",
+        "lowercase-event-type",
+        "long-event-type",
     ],
 )
 async def test_a_snapshot_that_cannot_be_read_publishes_degraded(monkeypatch, fault):
@@ -558,14 +562,25 @@ async def test_a_snapshot_that_cannot_be_read_publishes_degraded(monkeypatch, fa
             return _RaisingGet(critical=False)
         if fault == "contains-raises":
             return _RaisingContains(critical=False)
+        evidence_text = {
+            "uppercase-chain-head": {"chain_head_hash": "AB" * 32},
+            "short-chain-head": {"chain_head_hash": "abc"},
+            "lowercase-event-type": {"action_event_type": "safety_action"},
+            "long-event-type": {"action_event_type": "A" * 65},
+        }
+        if fault in evidence_text:
+            return {
+                "critical": False,
+                "evidence": {"enabled": True, **evidence_text[fault]},
+            }
         if fault in ("negative-gap", "gap-past-exact-integers"):
-            gap = -1 if fault == "negative-gap" else 2**64
+            gap = -1 if fault == "negative-gap" else 2**53
             return {
                 "critical": False,
                 "evidence": {"enabled": True, "attestation_gap_count": gap},
             }
-        if fault == "unencodable-gap":
-            # Past the int-to-str digit limit, so encoding fails, not mapping.
+        if fault == "huge-gap":
+            # Past the int-to-str digit limit as well as the contract's bound.
             return {
                 "critical": False,
                 "evidence": {"enabled": True, "attestation_gap_count": 10**5000},
@@ -688,3 +703,58 @@ async def test_a_heartbeat_that_cannot_be_signed_is_not_claimed_as_published(
     assert client.published == []
     assert "publishing degraded" not in caplog.text
     assert "no heartbeat was sent this tick" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_the_largest_exact_gap_count_is_published(monkeypatch):
+    monkeypatch.setattr(node_heartbeat_module, "now_ms", lambda: 1_000_000)
+    client = _FakeClient()
+    snapshot = {
+        "critical": False,
+        "evidence": {"enabled": True, "attestation_gap_count": 2**53 - 1},
+    }
+    await _publisher(client=client, snapshot=snapshot)._tick(client)
+    payload = json.loads(client.published[0][1])
+    assert payload["status"] == "healthy"
+    assert payload["evidence"]["attestation_gap_count"] == 2**53 - 1
+
+
+@pytest.mark.asyncio
+async def test_a_mapped_heartbeat_that_cannot_be_encoded_publishes_degraded(
+    monkeypatch, caplog
+):
+    """Encoding, not mapping, fails: the degraded heartbeat goes out instead."""
+    monkeypatch.setattr(node_heartbeat_module, "now_ms", lambda: 1_000_000)
+
+    class _EvidenceRefusingSigner:
+        def sign(self, payload, *, message_type):
+            if "evidence" in payload:
+                raise RuntimeError("cannot sign evidence")
+            return payload
+
+    client = _FakeClient()
+    snapshot = {"critical": False, "evidence": {"enabled": True}}
+    publisher = _publisher(
+        client=client, snapshot=snapshot, authenticator=_EvidenceRefusingSigner()
+    )
+    with caplog.at_level("WARNING"):
+        await publisher._tick(client)
+    assert json.loads(client.published[0][1])["status"] == "degraded"
+    assert "heartbeat could not be encoded" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_publish_the_client_refuses_is_reported_as_not_sent(
+    monkeypatch, caplog
+):
+    """paho answers a disconnected publish with rc=4 rather than raising."""
+
+    class _Disconnected(_FakeClient):
+        def publish(self, topic, payload, qos=0, retain=False):
+            return SimpleNamespace(rc=4)
+
+    client = _Disconnected()
+    with caplog.at_level("WARNING"):
+        await _publisher(client=client)._tick(client)
+    assert "no heartbeat was sent this tick" in caplog.text
+    assert "rc=4" in caplog.text
