@@ -283,9 +283,19 @@ class TestRegistryShape:
                 )
 
     def test_registry_only_raises_tiers(self):
-        for name in ACTION_REGISTRY:
+        # Spelled out here, not taken from the registry under test.
+        rank = {"A": 1, "B": 2, "C": 3, "D": 4}
+        for name, entry in ACTION_REGISTRY.items():
+            floor = entry.minimum_tier
             for tier in ("A", "B", "C", "D"):
-                assert enforce_minimum_tier(name, tier) in (tier, "B", "C", "D")
+                got = enforce_minimum_tier(name, tier)
+                assert rank[got] >= rank[tier], (name, tier, got)
+                assert got == max(tier, floor, key=rank.__getitem__), (
+                    name,
+                    tier,
+                    floor,
+                    got,
+                )
 
     def test_tier_d_declaration_is_never_lowered(self):
         """A skill may raise a relay action to Tier D; the floor must not undo it."""

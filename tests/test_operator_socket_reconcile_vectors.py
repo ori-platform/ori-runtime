@@ -448,7 +448,7 @@ class SocketTransport:
             if expect["audit_required"]:
                 caller = step["caller"]
                 principal = (caller["uid"], caller.get("login_uid"))
-                reconciled = str(step.get("proposal_id", main))
+                reconciled = str(step["proposal_id"])
 
                 def mine(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     return [
