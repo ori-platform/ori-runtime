@@ -198,3 +198,64 @@ class TestLoraWanAdapter:
             with pytest.raises(AdapterReadError, match="no MQTT data cached yet"):
                 await adapter.read("field-temp")
             await adapter.close()
+
+
+@pytest.mark.parametrize(
+    "member, payload",
+    [
+        ("received_at", {"received_at": 1717000000, "value": 3.0}),
+        ("time", {"time": 1717000000123, "value": 3.0}),
+        (
+            "uplink_message.received_at",
+            {"uplink_message": {"received_at": 1717000000123}, "value": 3.0},
+        ),
+        ("timestamp_ms", {"timestamp_ms": 1717000000123, "value": 3.0}),
+    ],
+)
+async def test_a_network_servers_time_is_carried_never_taken(
+    member: str, payload: dict
+) -> None:
+    """gateway-api/v2: an intermediary's time is never sent in `timestamp`."""
+    from ori.utils.time_utils import now_ms
+
+    adapter = LoraWanAdapter()
+    with (
+        patch("ori.hal.mqtt_base._AIOMQTT_AVAILABLE", True),
+        patch("ori.hal.mqtt_base._aiomqtt", SimpleNamespace(Client=_FakeClient)),
+    ):
+        cfg = _config(extra={"value_path": "value"})
+        await adapter.connect(cfg)
+        before = now_ms()
+        assert isinstance(adapter._client, _FakeClient)
+        await adapter._client.emit(cfg["topic"], json.dumps(payload).encode())
+        await asyncio.sleep(0)
+        after = now_ms()
+        reading = await adapter.read("field-temp")
+        await adapter.close()
+    assert reading.producer_time == "not_reported"
+    assert before <= reading.timestamp <= after
+    assert reading.metadata["payload_time"]["member"] == member
+    assert reading.metadata["payload_time"]["ms"] in (1717000000000, 1717000000123)
+
+
+async def test_an_uplink_with_no_time_is_timed_by_arrival() -> None:
+    from ori.utils.time_utils import now_ms
+
+    adapter = LoraWanAdapter()
+    with (
+        patch("ori.hal.mqtt_base._AIOMQTT_AVAILABLE", True),
+        patch("ori.hal.mqtt_base._aiomqtt", SimpleNamespace(Client=_FakeClient)),
+    ):
+        cfg = _config(extra={"value_path": "value"})
+        await adapter.connect(cfg)
+        before = now_ms()
+        assert isinstance(adapter._client, _FakeClient)
+        await adapter._client.emit(
+            cfg["topic"], json.dumps({"value": 3.0, "received_at": True}).encode()
+        )
+        await asyncio.sleep(0)
+        reading = await adapter.read("field-temp")
+        await adapter.close()
+    assert reading.producer_time == "not_reported"
+    assert reading.timestamp >= before
+    assert "payload_time" not in reading.metadata

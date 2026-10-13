@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ori.network.events import OriEvent, ReasoningResult, history_as_of
+from ori.network.producer_time import read_producer_time
 from ori.reasoning.capability_posture import (
     CapabilityPosture,
 )
@@ -1913,6 +1914,9 @@ class IntelligenceElevator:
                     "timestamp": getattr(reading, "timestamp", None),
                     "quality": getattr(reading, "quality", None),
                     "received_at_ms": getattr(reading, "received_at_ms", None),
+                    "producer_time": read_producer_time(
+                        getattr(reading, "producer_time", None)
+                    ),
                 }
             )
         event.context["history_window"] = history_window

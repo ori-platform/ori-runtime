@@ -1508,6 +1508,9 @@ class TestApprovalMessageFormat:
         # 2024-01-01 is a Monday
         monday_2330_utc = datetime.datetime(2024, 1, 1, 23, 30, tzinfo=utc)
         ts_ms = int(monday_2330_utc.timestamp() * 1000)
+        reading = SensorReading(
+            "s", "current", 1.0, "ampere", ts_ms, 1.0, producer_time="reported"
+        )
 
         msg_utc = d._format_approval_message(
             device_id="d",
@@ -1516,6 +1519,7 @@ class TestApprovalMessageFormat:
             action="a",
             timeout_seconds=300,
             device_timezone="UTC",
+            reading=reading,
         )
         msg_wat = d._format_approval_message(
             device_id="d",
@@ -1524,6 +1528,7 @@ class TestApprovalMessageFormat:
             action="a",
             timeout_seconds=300,
             device_timezone="Africa/Lagos",
+            reading=reading,
         )
         assert "Monday" in msg_utc
         assert "Tuesday" in msg_wat

@@ -386,7 +386,7 @@ MUTATIONS = {
         "v1",
     ),
     "claim added where the files are original": (
-        "gateway_api/MANIFEST.json",
+        "sensor_configuration/MANIFEST.json",
         "contract_version",
         "v2",
     ),

@@ -1,0 +1,2155 @@
+{
+  "vector_set": "gateway-api/v2 export rows",
+  "contract": "gateway-api/v2.md",
+  "sections": [
+    "Producer Time",
+    "sensor_history",
+    "action_log"
+  ],
+  "conventions": {
+    "readings.where": "sensor_history row, history_point of a Tier 3 request, or reasoning_reading: the Tier 3 request's own reading",
+    "expected.read_as": "the record_kind a consumer reads the row as; null for a row that fails a check",
+    "paging.between_pages": "entry i changes the store after page i+1 is returned and before the next is requested; stored is the order the runtime stored the rows",
+    "tokens.gateway.answers": "the runtime's answers to one traversal's requests in order: rows with whether a next page follows and, where given, the next_page_token issued, or an error envelope's error",
+    "buckets.expected": "every member of a bucketed row except sensor_id, sensor_type and unit, which the input rows here do not carry"
+  },
+  "readings": [
+    {
+      "name": "firmware reading: reached the runtime, then stored 3 ms later",
+      "where": "sensor_history",
+      "row": {
+        "sensor_id": "panel-feed-ch0",
+        "sensor_type": "current",
+        "unit": "ampere",
+        "quality": 1.0,
+        "sample_count": 1,
+        "tier": "raw",
+        "value": 8.21,
+        "timestamp": 1717000000480,
+        "received_at_ms": 1717000000483,
+        "producer_time": "not_reported"
+      },
+      "expected": {
+        "verdict": null,
+        "time_basis": "not_reported"
+      }
+    },
+    {
+      "name": "polled reading, measured and received apart",
+      "where": "sensor_history",
+      "row": {
+        "sensor_id": "panel-feed-ch0",
+        "sensor_type": "current",
+        "unit": "ampere",
+        "quality": 1.0,
+        "sample_count": 1,
+        "tier": "raw",
+        "value": 8.21,
+        "timestamp": 1717000000000,
+        "received_at_ms": 1717000000480,
+        "producer_time": "reported"
+      },
+      "expected": {
+        "verdict": null,
+        "time_basis": "reported"
+      }
+    },
+    {
+      "name": "polled reading whose measurement equals its receipt",
+      "where": "sensor_history",
+      "row": {
+        "sensor_id": "panel-feed-ch0",
+        "sensor_type": "current",
+        "unit": "ampere",
+        "quality": 1.0,
+        "sample_count": 1,
+        "tier": "raw",
+        "value": 8.21,
+        "timestamp": 1717000000000,
+        "received_at_ms": 1717000000000,
+        "producer_time": "reported"
+      },
+      "expected": {
+        "verdict": null,
+        "time_basis": "reported"
+      }
+    },
+    {
+      "name": "compacted row from before the basis was recorded",
+      "where": "sensor_history",
+      "row": {
+        "sensor_id": "panel-feed-ch0",
+        "sensor_type": "current",
+        "unit": "ampere",
+        "quality": 1.0,
+        "sample_count": 12,
+        "tier": "hourly",
+        "value": 8.21,
+        "timestamp": 1717000000000,
+        "received_at_ms": 1717003599900,
+        "producer_time": "unknown"
+      },
+      "expected": {
+        "verdict": null,
+        "time_basis": "unknown"
+      }
+    },
+    {
+      "name": "compacted not_reported row with no receipt is not held to the raw receipt rule",
+      "where": "sensor_history",
+      "row": {
+        "sensor_id": "panel-feed-ch0",
+        "sensor_type": "current",
+        "unit": "ampere",
+        "quality": 1.0,
+        "sample_count": 3,
+        "tier": "5min",
+        "value": 8.21,
+        "timestamp": 1717000000000,
+        "producer_time": "not_reported"
+      },
+      "expected": {
+        "verdict": null,
+        "time_basis": "not_reported"
+      }
+    },
+    {
+      "name": "bucketed not_reported row with no receipt is not held to the raw receipt rule",
+      "where": "sensor_history",
+      "row": {
+        "sensor_id": "panel-feed-ch0",
+        "sensor_type": "current",
+        "unit": "ampere",
+        "quality": 1.0,
+        "sample_count": 1,
+        "tier": "bucketed",
+        "value": 8.21,
+        "bucket_ms": 3600000,
+        "start_ms": 1717000000000,
+        "end_ms": 1717003600000,
+        "timestamp": 1717000000000,
+        "producer_time": "not_reported"
+      },
+      "expected": {
+        "verdict": null,
+        "time_basis": "not_reported"
+      }
+    },
+    {
+      "name": "row from a runtime that predates producer_time",
+      "where": "sensor_history",
+      "row": {
+        "sensor_id": "panel-feed-ch0",
+        "sensor_type": "current",
+        "unit": "ampere",
+        "quality": 1.0,
+        "sample_count": 1,
+        "tier": "raw",
+        "value": 8.21,
+        "timestamp": 1717000000000,
+        "received_at_ms": 1717000000480
+      },
+      "expected": {
+        "verdict": null,
+        "time_basis": "unknown"
+      }
+    },
+    {
+      "name": "row from a runtime that predates the receipt",
+      "where": "sensor_history",
+      "row": {
+        "sensor_id": "panel-feed-ch0",
+        "sensor_type": "current",
+        "unit": "ampere",
+        "quality": 1.0,
+        "sample_count": 1,
+        "tier": "raw",
+        "value": 8.21,
+        "timestamp": 1717000000000
+      },
+      "expected": {
+        "verdict": null,
+        "time_basis": "unknown"
+      }
+    },
+    {
+      "name": "stored before the basis: a LoRaWAN network server's received_at kept as stored",
+      "where": "sensor_history",
+      "row": {
+        "sensor_id": "panel-feed-ch0",
+        "sensor_type": "current",
+        "unit": "ampere",
+        "quality": 1.0,
+        "sample_count": 1,
+        "tier": "raw",
+        "value": 8.21,
+        "timestamp": 1716999998000,
+        "received_at_ms": 1717000000015,
+        "producer_time": "unknown"
+      },
+      "expected": {
+        "verdict": null,
+        "time_basis": "unknown"
+      }
+    },
+    {
+      "name": "stored before the basis: a Zigbee coordinator's last_seen kept as stored",
+      "where": "sensor_history",
+      "row": {
+        "sensor_id": "panel-feed-ch0",
+        "sensor_type": "current",
+        "unit": "ampere",
+        "quality": 1.0,
+        "sample_count": 1,
+        "tier": "raw",
+        "value": 8.21,
+        "timestamp": 1716999910000,
+        "received_at_ms": 1717000000004,
+        "producer_time": "unknown"
+      },
+      "expected": {
+        "verdict": null,
+        "time_basis": "unknown"
+      }
+    },
+    {
+      "name": "history point, not_reported",
+      "where": "history_point",
+      "row": {
+        "value": 8.21,
+        "timestamp": 1717000000480,
+        "received_at_ms": 1717000000480,
+        "producer_time": "not_reported"
+      },
+      "expected": {
+        "verdict": null,
+        "time_basis": "not_reported"
+      }
+    },
+    {
+      "name": "history point, reported",
+      "where": "history_point",
+      "row": {
+        "value": 8.21,
+        "timestamp": 1717000000000,
+        "received_at_ms": 1717000000009,
+        "producer_time": "reported"
+      },
+      "expected": {
+        "verdict": null,
+        "time_basis": "reported"
+      }
+    },
+    {
+      "name": "reasoning reading with no receipt member, not_reported",
+      "where": "reasoning_reading",
+      "row": {
+        "value": 8.21,
+        "unit": "ampere",
+        "timestamp": 1717000000480,
+        "producer_time": "not_reported"
+      },
+      "expected": {
+        "verdict": null,
+        "time_basis": "not_reported"
+      }
+    },
+    {
+      "name": "producer_time outside the closed set",
+      "where": "sensor_history",
+      "row": {
+        "sensor_id": "panel-feed-ch0",
+        "sensor_type": "current",
+        "unit": "ampere",
+        "quality": 1.0,
+        "sample_count": 1,
+        "tier": "raw",
+        "value": 8.21,
+        "timestamp": 1717000000000,
+        "received_at_ms": 1717000000000,
+        "producer_time": "received"
+      },
+      "expected": {
+        "verdict": "producer_time_invalid",
+        "time_basis": "unknown"
+      }
+    },
+    {
+      "name": "producer_time of another JSON type",
+      "where": "sensor_history",
+      "row": {
+        "sensor_id": "panel-feed-ch0",
+        "sensor_type": "current",
+        "unit": "ampere",
+        "quality": 1.0,
+        "sample_count": 1,
+        "tier": "raw",
+        "value": 8.21,
+        "timestamp": 1717000000000,
+        "received_at_ms": 1717000000000,
+        "producer_time": null
+      },
+      "expected": {
+        "verdict": "producer_time_invalid",
+        "time_basis": "unknown"
+      }
+    },
+    {
+      "name": "producer_time differs only in case",
+      "where": "sensor_history",
+      "row": {
+        "sensor_id": "panel-feed-ch0",
+        "sensor_type": "current",
+        "unit": "ampere",
+        "quality": 1.0,
+        "sample_count": 1,
+        "tier": "raw",
+        "value": 8.21,
+        "timestamp": 1717000000000,
+        "received_at_ms": 1717000000000,
+        "producer_time": "Reported"
+      },
+      "expected": {
+        "verdict": "producer_time_invalid",
+        "time_basis": "unknown"
+      }
+    },
+    {
+      "name": "cached subscription value stored again long after it arrived",
+      "where": "sensor_history",
+      "row": {
+        "sensor_id": "panel-feed-ch0",
+        "sensor_type": "current",
+        "unit": "ampere",
+        "quality": 1.0,
+        "sample_count": 1,
+        "tier": "raw",
+        "value": 8.21,
+        "timestamp": 1717000000000,
+        "received_at_ms": 1717000600000,
+        "producer_time": "not_reported"
+      },
+      "expected": {
+        "verdict": null,
+        "time_basis": "not_reported"
+      }
+    },
+    {
+      "name": "not_reported raw row with no receipt",
+      "where": "sensor_history",
+      "row": {
+        "sensor_id": "panel-feed-ch0",
+        "sensor_type": "current",
+        "unit": "ampere",
+        "quality": 1.0,
+        "sample_count": 1,
+        "tier": "raw",
+        "value": 8.21,
+        "timestamp": 1717000000000,
+        "producer_time": "not_reported"
+      },
+      "expected": {
+        "verdict": "receipt_missing",
+        "time_basis": "unknown"
+      }
+    },
+    {
+      "name": "not_reported raw row with a null receipt",
+      "where": "sensor_history",
+      "row": {
+        "sensor_id": "panel-feed-ch0",
+        "sensor_type": "current",
+        "unit": "ampere",
+        "quality": 1.0,
+        "sample_count": 1,
+        "tier": "raw",
+        "value": 8.21,
+        "timestamp": 1717000000000,
+        "received_at_ms": null,
+        "producer_time": "not_reported"
+      },
+      "expected": {
+        "verdict": "receipt_missing",
+        "time_basis": "unknown"
+      }
+    },
+    {
+      "name": "not_reported history point with no receipt",
+      "where": "history_point",
+      "row": {
+        "value": 1.0,
+        "timestamp": 1717000000000,
+        "producer_time": "not_reported"
+      },
+      "expected": {
+        "verdict": "receipt_missing",
+        "time_basis": "unknown"
+      }
+    },
+    {
+      "name": "not_reported raw row whose receipt is zero",
+      "where": "sensor_history",
+      "row": {
+        "sensor_id": "panel-feed-ch0",
+        "sensor_type": "current",
+        "unit": "ampere",
+        "quality": 1.0,
+        "sample_count": 1,
+        "tier": "raw",
+        "value": 8.21,
+        "timestamp": 0,
+        "received_at_ms": 0,
+        "producer_time": "not_reported"
+      },
+      "expected": {
+        "verdict": "receipt_missing",
+        "time_basis": "unknown"
+      }
+    },
+    {
+      "name": "not_reported raw row whose receipt is fractional",
+      "where": "sensor_history",
+      "row": {
+        "sensor_id": "panel-feed-ch0",
+        "sensor_type": "current",
+        "unit": "ampere",
+        "quality": 1.0,
+        "sample_count": 1,
+        "tier": "raw",
+        "value": 8.21,
+        "timestamp": 1717000000000,
+        "received_at_ms": 1717000000000.5,
+        "producer_time": "not_reported"
+      },
+      "expected": {
+        "verdict": "receipt_missing",
+        "time_basis": "unknown"
+      }
+    },
+    {
+      "name": "not_reported raw row whose receipt is integral but written with a fraction",
+      "where": "sensor_history",
+      "row": {
+        "sensor_id": "panel-feed-ch0",
+        "sensor_type": "current",
+        "unit": "ampere",
+        "quality": 1.0,
+        "sample_count": 1,
+        "tier": "raw",
+        "value": 8.21,
+        "timestamp": 1717000000000,
+        "received_at_ms": 1717000000003.0,
+        "producer_time": "not_reported"
+      },
+      "expected": {
+        "verdict": "receipt_missing",
+        "time_basis": "unknown"
+      }
+    },
+    {
+      "name": "not_reported raw row whose receipt is one past the integer bound",
+      "where": "sensor_history",
+      "row": {
+        "sensor_id": "panel-feed-ch0",
+        "sensor_type": "current",
+        "unit": "ampere",
+        "quality": 1.0,
+        "sample_count": 1,
+        "tier": "raw",
+        "value": 8.21,
+        "timestamp": 1717000000000,
+        "received_at_ms": 9007199254740992,
+        "producer_time": "not_reported"
+      },
+      "expected": {
+        "verdict": "receipt_missing",
+        "time_basis": "unknown"
+      }
+    },
+    {
+      "name": "not_reported raw row whose receipt is the lower bound",
+      "where": "sensor_history",
+      "row": {
+        "sensor_id": "panel-feed-ch0",
+        "sensor_type": "current",
+        "unit": "ampere",
+        "quality": 1.0,
+        "sample_count": 1,
+        "tier": "raw",
+        "value": 8.21,
+        "timestamp": 1717000000000,
+        "received_at_ms": 1,
+        "producer_time": "not_reported"
+      },
+      "expected": {
+        "verdict": null,
+        "time_basis": "not_reported"
+      }
+    },
+    {
+      "name": "not_reported raw row whose receipt is the integer bound",
+      "where": "sensor_history",
+      "row": {
+        "sensor_id": "panel-feed-ch0",
+        "sensor_type": "current",
+        "unit": "ampere",
+        "quality": 1.0,
+        "sample_count": 1,
+        "tier": "raw",
+        "value": 8.21,
+        "timestamp": 1717000000000,
+        "received_at_ms": 9007199254740991,
+        "producer_time": "not_reported"
+      },
+      "expected": {
+        "verdict": null,
+        "time_basis": "not_reported"
+      }
+    }
+  ],
+  "action_log": [
+    {
+      "name": "dispatch",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": true,
+        "action_taken": "trip_relay",
+        "record_kind": "dispatch",
+        "record_key": "00000000000000000000000000000001",
+        "contributed_to": null
+      },
+      "expected": {
+        "verdict": null,
+        "read_as": "dispatch",
+        "is_act": true
+      }
+    },
+    {
+      "name": "dispatch that did not execute",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": false,
+        "action_taken": "trip_relay",
+        "record_kind": "dispatch",
+        "record_key": "00000000000000000000000000000002",
+        "contributed_to": null
+      },
+      "expected": {
+        "verdict": null,
+        "read_as": "dispatch",
+        "is_act": true
+      }
+    },
+    {
+      "name": "dispatch written before keys",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": true,
+        "action_taken": "trip_relay",
+        "record_kind": "dispatch",
+        "record_key": null,
+        "contributed_to": null
+      },
+      "expected": {
+        "verdict": null,
+        "read_as": "dispatch",
+        "is_act": true
+      }
+    },
+    {
+      "name": "contributor",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": false,
+        "action_taken": "coalesced",
+        "record_kind": "contributor",
+        "record_key": "00000000000000000000000000000003",
+        "contributed_to": "00000000000000000000000000000001"
+      },
+      "expected": {
+        "verdict": null,
+        "read_as": "contributor",
+        "is_act": false
+      }
+    },
+    {
+      "name": "contributor written before keys still names its holder",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": false,
+        "action_taken": "coalesced",
+        "record_kind": "contributor",
+        "record_key": null,
+        "contributed_to": "00000000000000000000000000000001"
+      },
+      "expected": {
+        "verdict": null,
+        "read_as": "contributor",
+        "is_act": false
+      }
+    },
+    {
+      "name": "legacy contributor that the earlier release marked executed",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": true,
+        "action_taken": "coalesced",
+        "record_kind": "contributor_legacy",
+        "record_key": null,
+        "contributed_to": null
+      },
+      "expected": {
+        "verdict": null,
+        "read_as": "contributor_legacy",
+        "is_act": false
+      }
+    },
+    {
+      "name": "legacy contributor, not executed",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": false,
+        "action_taken": "coalesced",
+        "record_kind": "contributor_legacy",
+        "record_key": null,
+        "contributed_to": null
+      },
+      "expected": {
+        "verdict": null,
+        "read_as": "contributor_legacy",
+        "is_act": false
+      }
+    },
+    {
+      "name": "older runtime: an act",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": true,
+        "action_taken": "trip_relay"
+      },
+      "expected": {
+        "verdict": null,
+        "read_as": "dispatch",
+        "is_act": true
+      }
+    },
+    {
+      "name": "older runtime: a coalesced row executed is legacy",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": true,
+        "action_taken": "coalesced"
+      },
+      "expected": {
+        "verdict": null,
+        "read_as": "contributor_legacy",
+        "is_act": false
+      }
+    },
+    {
+      "name": "older runtime: a coalesced row",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": false,
+        "action_taken": "coalesced"
+      },
+      "expected": {
+        "verdict": null,
+        "read_as": "contributor_legacy",
+        "is_act": false
+      }
+    },
+    {
+      "name": "record_kind outside the closed set",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": true,
+        "action_taken": "trip_relay",
+        "record_kind": "act",
+        "record_key": "00000000000000000000000000000004",
+        "contributed_to": null
+      },
+      "expected": {
+        "verdict": "record_kind_invalid",
+        "read_as": null,
+        "is_act": false
+      }
+    },
+    {
+      "name": "record_kind of another JSON type",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": true,
+        "action_taken": "trip_relay",
+        "record_kind": null,
+        "record_key": "00000000000000000000000000000004",
+        "contributed_to": null
+      },
+      "expected": {
+        "verdict": "record_kind_invalid",
+        "read_as": null,
+        "is_act": false
+      }
+    },
+    {
+      "name": "record_key empty string",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": true,
+        "action_taken": "trip_relay",
+        "record_kind": "dispatch",
+        "record_key": "",
+        "contributed_to": null
+      },
+      "expected": {
+        "verdict": "record_key_invalid",
+        "read_as": null,
+        "is_act": false
+      }
+    },
+    {
+      "name": "record_key of another JSON type",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": true,
+        "action_taken": "trip_relay",
+        "record_kind": "dispatch",
+        "record_key": 7,
+        "contributed_to": null
+      },
+      "expected": {
+        "verdict": "record_key_invalid",
+        "read_as": null,
+        "is_act": false
+      }
+    },
+    {
+      "name": "record_key absent beside record_kind",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": true,
+        "action_taken": "trip_relay",
+        "record_kind": "dispatch",
+        "contributed_to": null
+      },
+      "expected": {
+        "verdict": "record_key_invalid",
+        "read_as": null,
+        "is_act": false
+      }
+    },
+    {
+      "name": "contributor with no holder",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": false,
+        "action_taken": "coalesced",
+        "record_kind": "contributor",
+        "record_key": "00000000000000000000000000000005",
+        "contributed_to": null
+      },
+      "expected": {
+        "verdict": "contributed_to_invalid",
+        "read_as": null,
+        "is_act": false
+      }
+    },
+    {
+      "name": "contributor with an empty holder",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": false,
+        "action_taken": "coalesced",
+        "record_kind": "contributor",
+        "record_key": "00000000000000000000000000000005",
+        "contributed_to": ""
+      },
+      "expected": {
+        "verdict": "contributed_to_invalid",
+        "read_as": null,
+        "is_act": false
+      }
+    },
+    {
+      "name": "contributor naming itself",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": false,
+        "action_taken": "coalesced",
+        "record_kind": "contributor",
+        "record_key": "00000000000000000000000000000005",
+        "contributed_to": "00000000000000000000000000000005"
+      },
+      "expected": {
+        "verdict": "contributed_to_invalid",
+        "read_as": null,
+        "is_act": false
+      }
+    },
+    {
+      "name": "contributor with contributed_to absent",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": false,
+        "action_taken": "coalesced",
+        "record_kind": "contributor",
+        "record_key": "00000000000000000000000000000005"
+      },
+      "expected": {
+        "verdict": "contributed_to_invalid",
+        "read_as": null,
+        "is_act": false
+      }
+    },
+    {
+      "name": "dispatch naming a holder",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": true,
+        "action_taken": "trip_relay",
+        "record_kind": "dispatch",
+        "record_key": "00000000000000000000000000000006",
+        "contributed_to": "00000000000000000000000000000001"
+      },
+      "expected": {
+        "verdict": "contributed_to_invalid",
+        "read_as": null,
+        "is_act": false
+      }
+    },
+    {
+      "name": "legacy contributor naming a holder",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": false,
+        "action_taken": "coalesced",
+        "record_kind": "contributor_legacy",
+        "record_key": null,
+        "contributed_to": "00000000000000000000000000000001"
+      },
+      "expected": {
+        "verdict": "contributed_to_invalid",
+        "read_as": null,
+        "is_act": false
+      }
+    },
+    {
+      "name": "dispatch recorded as coalesced",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": true,
+        "action_taken": "coalesced",
+        "record_kind": "dispatch",
+        "record_key": "00000000000000000000000000000007",
+        "contributed_to": null
+      },
+      "expected": {
+        "verdict": "action_taken_mismatch",
+        "read_as": null,
+        "is_act": false
+      }
+    },
+    {
+      "name": "contributor that acted",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": false,
+        "action_taken": "trip_relay",
+        "record_kind": "contributor",
+        "record_key": "00000000000000000000000000000008",
+        "contributed_to": "00000000000000000000000000000001"
+      },
+      "expected": {
+        "verdict": "action_taken_mismatch",
+        "read_as": null,
+        "is_act": false
+      }
+    },
+    {
+      "name": "legacy contributor that acted",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": true,
+        "action_taken": "trip_relay",
+        "record_kind": "contributor_legacy",
+        "record_key": null,
+        "contributed_to": null
+      },
+      "expected": {
+        "verdict": "action_taken_mismatch",
+        "read_as": null,
+        "is_act": false
+      }
+    },
+    {
+      "name": "contributor marked executed",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": true,
+        "action_taken": "coalesced",
+        "record_kind": "contributor",
+        "record_key": "00000000000000000000000000000009",
+        "contributed_to": "00000000000000000000000000000001"
+      },
+      "expected": {
+        "verdict": "contributor_executed",
+        "read_as": null,
+        "is_act": false
+      }
+    },
+    {
+      "name": "contributor with executed absent",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "action_taken": "coalesced",
+        "record_kind": "contributor",
+        "record_key": "00000000000000000000000000000009",
+        "contributed_to": "00000000000000000000000000000001"
+      },
+      "expected": {
+        "verdict": "contributor_executed",
+        "read_as": null,
+        "is_act": false
+      }
+    },
+    {
+      "name": "bad kind and bad key: step 3 first",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": true,
+        "action_taken": "trip_relay",
+        "record_kind": "act",
+        "record_key": "",
+        "contributed_to": null
+      },
+      "expected": {
+        "verdict": "record_kind_invalid",
+        "read_as": null,
+        "is_act": false
+      }
+    },
+    {
+      "name": "contributor that acted and is marked executed: step 6 first",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": true,
+        "action_taken": "trip_relay",
+        "record_kind": "contributor",
+        "record_key": "0000000000000000000000000000000c",
+        "contributed_to": "00000000000000000000000000000001"
+      },
+      "expected": {
+        "verdict": "action_taken_mismatch",
+        "read_as": null,
+        "is_act": false
+      }
+    },
+    {
+      "name": "bad key and bad holder: step 4 first",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": false,
+        "action_taken": "coalesced",
+        "record_kind": "contributor",
+        "record_key": "",
+        "contributed_to": null
+      },
+      "expected": {
+        "verdict": "record_key_invalid",
+        "read_as": null,
+        "is_act": false
+      }
+    },
+    {
+      "name": "bad holder and executed: step 5 first",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": true,
+        "action_taken": "coalesced",
+        "record_kind": "contributor",
+        "record_key": "0000000000000000000000000000000a",
+        "contributed_to": null
+      },
+      "expected": {
+        "verdict": "contributed_to_invalid",
+        "read_as": null,
+        "is_act": false
+      }
+    },
+    {
+      "name": "coalesced dispatch that also names a holder: step 5 first",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "D",
+        "timestamp": 1717000000950,
+        "executed": false,
+        "action_taken": "coalesced",
+        "record_kind": "dispatch",
+        "record_key": "0000000000000000000000000000000b",
+        "contributed_to": "00000000000000000000000000000001"
+      },
+      "expected": {
+        "verdict": "contributed_to_invalid",
+        "read_as": null,
+        "is_act": false
+      }
+    }
+  ],
+  "buckets": [
+    {
+      "name": "one bucket, three bases",
+      "bucket_ms": 3600000,
+      "rows": [
+        {
+          "timestamp": 1716998400010,
+          "received_at_ms": 1716998400020,
+          "value": 4.0,
+          "producer_time": "reported",
+          "sample_count": 1
+        },
+        {
+          "timestamp": 1716998400030,
+          "received_at_ms": 1716998400030,
+          "value": 6.0,
+          "producer_time": "not_reported",
+          "sample_count": 1
+        },
+        {
+          "timestamp": 1716998400040,
+          "received_at_ms": 1716998400050,
+          "value": 5.0,
+          "producer_time": "reported",
+          "sample_count": 3
+        },
+        {
+          "timestamp": 1716998400000,
+          "received_at_ms": 1717001999000,
+          "value": 2.0,
+          "producer_time": "unknown",
+          "sample_count": 12
+        },
+        {
+          "timestamp": 1716998400070,
+          "received_at_ms": 1716998400070,
+          "value": 9.0,
+          "producer_time": "not_reported",
+          "sample_count": 1
+        }
+      ],
+      "expected": [
+        {
+          "start_ms": 1716998400000,
+          "end_ms": 1717002000000,
+          "timestamp": 1716998400000,
+          "bucket_ms": 3600000,
+          "tier": "bucketed",
+          "quality": null,
+          "producer_time": "reported",
+          "sample_count": 4,
+          "avg_value": 4.75,
+          "value": 4.75,
+          "min_value": 4.0,
+          "max_value": 5.0,
+          "received_at_ms": 1716998400050
+        },
+        {
+          "start_ms": 1716998400000,
+          "end_ms": 1717002000000,
+          "timestamp": 1716998400000,
+          "bucket_ms": 3600000,
+          "tier": "bucketed",
+          "quality": null,
+          "producer_time": "not_reported",
+          "sample_count": 2,
+          "avg_value": 7.5,
+          "value": 7.5,
+          "min_value": 6.0,
+          "max_value": 9.0,
+          "received_at_ms": 1716998400070
+        },
+        {
+          "start_ms": 1716998400000,
+          "end_ms": 1717002000000,
+          "timestamp": 1716998400000,
+          "bucket_ms": 3600000,
+          "tier": "bucketed",
+          "quality": null,
+          "producer_time": "unknown",
+          "sample_count": 12,
+          "avg_value": 2.0,
+          "value": 2.0,
+          "min_value": 2.0,
+          "max_value": 2.0,
+          "received_at_ms": 1717001999000
+        }
+      ]
+    },
+    {
+      "name": "raw rows at a boundary: not_reported by when it reached the runtime, reported by its measurement",
+      "bucket_ms": 3600000,
+      "rows": [
+        {
+          "timestamp": 1717001999999,
+          "received_at_ms": 1717001999999,
+          "value": 1.0,
+          "producer_time": "reported",
+          "sample_count": 1
+        },
+        {
+          "timestamp": 1717002000000,
+          "received_at_ms": 1717002000000,
+          "value": 2.0,
+          "producer_time": "not_reported",
+          "sample_count": 1
+        },
+        {
+          "timestamp": 1717001999995,
+          "received_at_ms": 1717002000007,
+          "value": 3.0,
+          "producer_time": "reported",
+          "sample_count": 1
+        }
+      ],
+      "expected": [
+        {
+          "start_ms": 1716998400000,
+          "end_ms": 1717002000000,
+          "timestamp": 1716998400000,
+          "bucket_ms": 3600000,
+          "tier": "bucketed",
+          "quality": null,
+          "producer_time": "reported",
+          "sample_count": 2,
+          "avg_value": 2.0,
+          "value": 2.0,
+          "min_value": 1.0,
+          "max_value": 3.0,
+          "received_at_ms": 1717002000007
+        },
+        {
+          "start_ms": 1717002000000,
+          "end_ms": 1717005600000,
+          "timestamp": 1717002000000,
+          "bucket_ms": 3600000,
+          "tier": "bucketed",
+          "quality": null,
+          "producer_time": "not_reported",
+          "sample_count": 1,
+          "avg_value": 2.0,
+          "value": 2.0,
+          "min_value": 2.0,
+          "max_value": 2.0,
+          "received_at_ms": 1717002000000
+        }
+      ]
+    },
+    {
+      "name": "bases interleave across buckets",
+      "bucket_ms": 3600000,
+      "rows": [
+        {
+          "timestamp": 1717005600005,
+          "received_at_ms": 1717005600005,
+          "value": 7.0,
+          "producer_time": "not_reported",
+          "sample_count": 1
+        },
+        {
+          "timestamp": 1716998400001,
+          "received_at_ms": 1716998400002,
+          "value": 1.5,
+          "producer_time": "reported",
+          "sample_count": 1
+        },
+        {
+          "timestamp": 1717005600009,
+          "received_at_ms": 1717005600020,
+          "value": 8.5,
+          "producer_time": "reported",
+          "sample_count": 1
+        },
+        {
+          "timestamp": 1716998400003,
+          "received_at_ms": 1716998400003,
+          "value": 2.5,
+          "producer_time": "not_reported",
+          "sample_count": 1
+        }
+      ],
+      "expected": [
+        {
+          "start_ms": 1716998400000,
+          "end_ms": 1717002000000,
+          "timestamp": 1716998400000,
+          "bucket_ms": 3600000,
+          "tier": "bucketed",
+          "quality": null,
+          "producer_time": "reported",
+          "sample_count": 1,
+          "avg_value": 1.5,
+          "value": 1.5,
+          "min_value": 1.5,
+          "max_value": 1.5,
+          "received_at_ms": 1716998400002
+        },
+        {
+          "start_ms": 1716998400000,
+          "end_ms": 1717002000000,
+          "timestamp": 1716998400000,
+          "bucket_ms": 3600000,
+          "tier": "bucketed",
+          "quality": null,
+          "producer_time": "not_reported",
+          "sample_count": 1,
+          "avg_value": 2.5,
+          "value": 2.5,
+          "min_value": 2.5,
+          "max_value": 2.5,
+          "received_at_ms": 1716998400003
+        },
+        {
+          "start_ms": 1717005600000,
+          "end_ms": 1717009200000,
+          "timestamp": 1717005600000,
+          "bucket_ms": 3600000,
+          "tier": "bucketed",
+          "quality": null,
+          "producer_time": "reported",
+          "sample_count": 1,
+          "avg_value": 8.5,
+          "value": 8.5,
+          "min_value": 8.5,
+          "max_value": 8.5,
+          "received_at_ms": 1717005600020
+        },
+        {
+          "start_ms": 1717005600000,
+          "end_ms": 1717009200000,
+          "timestamp": 1717005600000,
+          "bucket_ms": 3600000,
+          "tier": "bucketed",
+          "quality": null,
+          "producer_time": "not_reported",
+          "sample_count": 1,
+          "avg_value": 7.0,
+          "value": 7.0,
+          "min_value": 7.0,
+          "max_value": 7.0,
+          "received_at_ms": 1717005600005
+        }
+      ]
+    },
+    {
+      "name": "a compacted not_reported row is bucketed by its own bucket start, not its receipt",
+      "bucket_ms": 3600000,
+      "rows": [
+        {
+          "timestamp": 1717001700000,
+          "received_at_ms": 1717002299000,
+          "value": 5.0,
+          "producer_time": "not_reported",
+          "sample_count": 3
+        },
+        {
+          "timestamp": 1717002000010,
+          "received_at_ms": 1717002000010,
+          "value": 6.0,
+          "producer_time": "not_reported",
+          "sample_count": 1
+        }
+      ],
+      "expected": [
+        {
+          "start_ms": 1716998400000,
+          "end_ms": 1717002000000,
+          "timestamp": 1716998400000,
+          "bucket_ms": 3600000,
+          "tier": "bucketed",
+          "quality": null,
+          "producer_time": "not_reported",
+          "sample_count": 3,
+          "avg_value": 5.0,
+          "value": 5.0,
+          "min_value": 5.0,
+          "max_value": 5.0,
+          "received_at_ms": 1717002299000
+        },
+        {
+          "start_ms": 1717002000000,
+          "end_ms": 1717005600000,
+          "timestamp": 1717002000000,
+          "bucket_ms": 3600000,
+          "tier": "bucketed",
+          "quality": null,
+          "producer_time": "not_reported",
+          "sample_count": 1,
+          "avg_value": 6.0,
+          "value": 6.0,
+          "min_value": 6.0,
+          "max_value": 6.0,
+          "received_at_ms": 1717002000010
+        }
+      ]
+    },
+    {
+      "name": "weights by sample_count within one basis",
+      "bucket_ms": 300000,
+      "rows": [
+        {
+          "timestamp": 1716998400000,
+          "received_at_ms": 1716998400001,
+          "value": 10.0,
+          "producer_time": "reported",
+          "sample_count": 1
+        },
+        {
+          "timestamp": 1716998401000,
+          "received_at_ms": 1716998401001,
+          "value": 20.0,
+          "producer_time": "reported",
+          "sample_count": 3
+        }
+      ],
+      "expected": [
+        {
+          "start_ms": 1716998400000,
+          "end_ms": 1716998700000,
+          "timestamp": 1716998400000,
+          "bucket_ms": 300000,
+          "tier": "bucketed",
+          "quality": null,
+          "producer_time": "reported",
+          "sample_count": 4,
+          "avg_value": 17.5,
+          "value": 17.5,
+          "min_value": 10.0,
+          "max_value": 20.0,
+          "received_at_ms": 1716998401001
+        }
+      ]
+    }
+  ],
+  "paging": [
+    {
+      "name": "ties broken by stored order, latest first",
+      "stored": [
+        {
+          "id": "a",
+          "timestamp": 1717000000005,
+          "stored": 1
+        },
+        {
+          "id": "b",
+          "timestamp": 1717000000005,
+          "stored": 2
+        },
+        {
+          "id": "c",
+          "timestamp": 1717000000005,
+          "stored": 3
+        },
+        {
+          "id": "d",
+          "timestamp": 1717000000004,
+          "stored": 4
+        },
+        {
+          "id": "e",
+          "timestamp": 1717000000009,
+          "stored": 5
+        },
+        {
+          "id": "f",
+          "timestamp": 1717000000001,
+          "stored": 6
+        },
+        {
+          "id": "g",
+          "timestamp": 1717000000004,
+          "stored": 7
+        }
+      ],
+      "page_size": 2,
+      "between_pages": [],
+      "expected_pages": [
+        [
+          "e",
+          "c"
+        ],
+        [
+          "b",
+          "a"
+        ],
+        [
+          "g",
+          "d"
+        ],
+        [
+          "f"
+        ]
+      ]
+    },
+    {
+      "name": "a row stored after the first page does not shift the traversal",
+      "stored": [
+        {
+          "id": "a",
+          "timestamp": 1717000000005,
+          "stored": 1
+        },
+        {
+          "id": "b",
+          "timestamp": 1717000000005,
+          "stored": 2
+        },
+        {
+          "id": "c",
+          "timestamp": 1717000000005,
+          "stored": 3
+        },
+        {
+          "id": "d",
+          "timestamp": 1717000000004,
+          "stored": 4
+        },
+        {
+          "id": "e",
+          "timestamp": 1717000000009,
+          "stored": 5
+        },
+        {
+          "id": "f",
+          "timestamp": 1717000000001,
+          "stored": 6
+        },
+        {
+          "id": "g",
+          "timestamp": 1717000000004,
+          "stored": 7
+        }
+      ],
+      "page_size": 2,
+      "between_pages": [
+        {
+          "store": [
+            {
+              "id": "h",
+              "timestamp": 1717000000010,
+              "stored": 8
+            }
+          ]
+        }
+      ],
+      "expected_pages": [
+        [
+          "e",
+          "c"
+        ],
+        [
+          "b",
+          "a"
+        ],
+        [
+          "g",
+          "d"
+        ],
+        [
+          "f"
+        ]
+      ]
+    },
+    {
+      "name": "a row already returned is removed and nothing is skipped",
+      "stored": [
+        {
+          "id": "a",
+          "timestamp": 1717000000005,
+          "stored": 1
+        },
+        {
+          "id": "b",
+          "timestamp": 1717000000005,
+          "stored": 2
+        },
+        {
+          "id": "c",
+          "timestamp": 1717000000005,
+          "stored": 3
+        },
+        {
+          "id": "d",
+          "timestamp": 1717000000004,
+          "stored": 4
+        },
+        {
+          "id": "e",
+          "timestamp": 1717000000009,
+          "stored": 5
+        },
+        {
+          "id": "f",
+          "timestamp": 1717000000001,
+          "stored": 6
+        },
+        {
+          "id": "g",
+          "timestamp": 1717000000004,
+          "stored": 7
+        }
+      ],
+      "page_size": 2,
+      "between_pages": [
+        {
+          "remove": [
+            "e"
+          ]
+        }
+      ],
+      "expected_pages": [
+        [
+          "e",
+          "c"
+        ],
+        [
+          "b",
+          "a"
+        ],
+        [
+          "g",
+          "d"
+        ],
+        [
+          "f"
+        ]
+      ]
+    },
+    {
+      "name": "a removed row not yet returned is not returned",
+      "stored": [
+        {
+          "id": "a",
+          "timestamp": 1717000000005,
+          "stored": 1
+        },
+        {
+          "id": "b",
+          "timestamp": 1717000000005,
+          "stored": 2
+        },
+        {
+          "id": "c",
+          "timestamp": 1717000000005,
+          "stored": 3
+        },
+        {
+          "id": "d",
+          "timestamp": 1717000000004,
+          "stored": 4
+        },
+        {
+          "id": "e",
+          "timestamp": 1717000000009,
+          "stored": 5
+        },
+        {
+          "id": "f",
+          "timestamp": 1717000000001,
+          "stored": 6
+        },
+        {
+          "id": "g",
+          "timestamp": 1717000000004,
+          "stored": 7
+        }
+      ],
+      "page_size": 3,
+      "between_pages": [
+        {
+          "remove": [
+            "g"
+          ]
+        }
+      ],
+      "expected_pages": [
+        [
+          "e",
+          "c",
+          "b"
+        ],
+        [
+          "a",
+          "d",
+          "f"
+        ]
+      ]
+    },
+    {
+      "name": "a row stored behind the cursor during the traversal is returned",
+      "stored": [
+        {
+          "id": "a",
+          "timestamp": 1717000000005,
+          "stored": 1
+        },
+        {
+          "id": "b",
+          "timestamp": 1717000000005,
+          "stored": 2
+        },
+        {
+          "id": "c",
+          "timestamp": 1717000000005,
+          "stored": 3
+        },
+        {
+          "id": "d",
+          "timestamp": 1717000000004,
+          "stored": 4
+        },
+        {
+          "id": "e",
+          "timestamp": 1717000000009,
+          "stored": 5
+        },
+        {
+          "id": "f",
+          "timestamp": 1717000000001,
+          "stored": 6
+        },
+        {
+          "id": "g",
+          "timestamp": 1717000000004,
+          "stored": 7
+        }
+      ],
+      "page_size": 3,
+      "between_pages": [
+        {
+          "store": [
+            {
+              "id": "i",
+              "timestamp": 1717000000002,
+              "stored": 9
+            }
+          ]
+        }
+      ],
+      "expected_pages": [
+        [
+          "e",
+          "c",
+          "b"
+        ],
+        [
+          "a",
+          "g",
+          "d"
+        ],
+        [
+          "i",
+          "f"
+        ]
+      ]
+    },
+    {
+      "name": "the last row returned is removed before the next page",
+      "stored": [
+        {
+          "id": "a",
+          "timestamp": 1717000000005,
+          "stored": 1
+        },
+        {
+          "id": "b",
+          "timestamp": 1717000000005,
+          "stored": 2
+        },
+        {
+          "id": "c",
+          "timestamp": 1717000000005,
+          "stored": 3
+        },
+        {
+          "id": "d",
+          "timestamp": 1717000000004,
+          "stored": 4
+        },
+        {
+          "id": "e",
+          "timestamp": 1717000000009,
+          "stored": 5
+        },
+        {
+          "id": "f",
+          "timestamp": 1717000000001,
+          "stored": 6
+        },
+        {
+          "id": "g",
+          "timestamp": 1717000000004,
+          "stored": 7
+        }
+      ],
+      "page_size": 2,
+      "between_pages": [
+        {
+          "remove": [
+            "c"
+          ]
+        }
+      ],
+      "expected_pages": [
+        [
+          "e",
+          "c"
+        ],
+        [
+          "b",
+          "a"
+        ],
+        [
+          "g",
+          "d"
+        ],
+        [
+          "f"
+        ]
+      ]
+    },
+    {
+      "name": "one row per page",
+      "stored": [
+        {
+          "id": "a",
+          "timestamp": 1717000000005,
+          "stored": 1
+        },
+        {
+          "id": "b",
+          "timestamp": 1717000000005,
+          "stored": 2
+        },
+        {
+          "id": "c",
+          "timestamp": 1717000000005,
+          "stored": 3
+        }
+      ],
+      "page_size": 1,
+      "between_pages": [],
+      "expected_pages": [
+        [
+          "c"
+        ],
+        [
+          "b"
+        ],
+        [
+          "a"
+        ]
+      ]
+    }
+  ],
+  "resolution": [
+    {
+      "name": "contributors resolved across a complete traversal: holder on the same page, on a later page, missing, not a dispatch, or carried by two rows",
+      "pages": [
+        [
+          {
+            "action_name": "trip_relay",
+            "tier": "D",
+            "timestamp": 1717000000950,
+            "executed": false,
+            "action_taken": "coalesced",
+            "record_kind": "contributor",
+            "record_key": "00000000000000000000000000000004",
+            "contributed_to": "00000000000000000000000000000005"
+          },
+          {
+            "action_name": "trip_relay",
+            "tier": "D",
+            "timestamp": 1717000000950,
+            "executed": true,
+            "action_taken": "trip_relay",
+            "record_kind": "dispatch",
+            "record_key": "00000000000000000000000000000001",
+            "contributed_to": null
+          },
+          {
+            "action_name": "trip_relay",
+            "tier": "D",
+            "timestamp": 1717000000950,
+            "executed": false,
+            "action_taken": "coalesced",
+            "record_kind": "contributor",
+            "record_key": "00000000000000000000000000000002",
+            "contributed_to": "00000000000000000000000000000001"
+          }
+        ],
+        [
+          {
+            "action_name": "trip_relay",
+            "tier": "D",
+            "timestamp": 1717000000950,
+            "executed": false,
+            "action_taken": "coalesced",
+            "record_kind": "contributor",
+            "record_key": "00000000000000000000000000000003",
+            "contributed_to": "00000000000000000000000000000063"
+          },
+          {
+            "action_name": "trip_relay",
+            "tier": "D",
+            "timestamp": 1717000000950,
+            "executed": false,
+            "action_taken": "coalesced",
+            "record_kind": "contributor_legacy",
+            "record_key": null,
+            "contributed_to": null
+          }
+        ],
+        [
+          {
+            "action_name": "trip_relay",
+            "tier": "D",
+            "timestamp": 1717000000950,
+            "executed": true,
+            "action_taken": "trip_relay",
+            "record_kind": "dispatch",
+            "record_key": "00000000000000000000000000000005",
+            "contributed_to": null
+          },
+          {
+            "action_name": "trip_relay",
+            "tier": "D",
+            "timestamp": 1717000000950,
+            "executed": false,
+            "action_taken": "coalesced",
+            "record_kind": "contributor",
+            "record_key": "00000000000000000000000000000006",
+            "contributed_to": "00000000000000000000000000000002"
+          },
+          {
+            "action_name": "trip_relay",
+            "tier": "D",
+            "timestamp": 1717000000950,
+            "executed": true,
+            "action_taken": "trip_relay",
+            "record_kind": "dispatch",
+            "record_key": "00000000000000000000000000000007",
+            "contributed_to": null
+          }
+        ],
+        [
+          {
+            "action_name": "trip_relay",
+            "tier": "D",
+            "timestamp": 1717000000950,
+            "executed": false,
+            "action_taken": "coalesced",
+            "record_kind": "contributor",
+            "record_key": "00000000000000000000000000000008",
+            "contributed_to": "00000000000000000000000000000007"
+          },
+          {
+            "action_name": "trip_relay",
+            "tier": "D",
+            "timestamp": 1717000000950,
+            "executed": true,
+            "action_taken": "trip_relay",
+            "record_kind": "dispatch",
+            "record_key": "00000000000000000000000000000007",
+            "contributed_to": null
+          }
+        ]
+      ],
+      "expected": [
+        {
+          "record_key": "00000000000000000000000000000004",
+          "holder": "00000000000000000000000000000005"
+        },
+        {
+          "record_key": "00000000000000000000000000000002",
+          "holder": "00000000000000000000000000000001"
+        },
+        {
+          "record_key": "00000000000000000000000000000003",
+          "holder": null
+        },
+        {
+          "record_key": "00000000000000000000000000000006",
+          "holder": null
+        },
+        {
+          "record_key": "00000000000000000000000000000008",
+          "holder": null
+        }
+      ]
+    }
+  ],
+  "tokens": {
+    "runtime": [
+      {
+        "name": "a token this runtime issued, with its own filters",
+        "issued_by_this_runtime": true,
+        "same_filters": true,
+        "expected": {
+          "refused": false,
+          "error": null
+        }
+      },
+      {
+        "name": "an offset from a runtime that paged by count",
+        "issued_by_this_runtime": false,
+        "same_filters": true,
+        "expected": {
+          "refused": true,
+          "error": "page_token_invalid"
+        }
+      },
+      {
+        "name": "a token this runtime issued, sent with another window",
+        "issued_by_this_runtime": true,
+        "same_filters": false,
+        "expected": {
+          "refused": true,
+          "error": "page_token_invalid"
+        }
+      },
+      {
+        "name": "a token another runtime issued, with other params",
+        "issued_by_this_runtime": false,
+        "same_filters": false,
+        "expected": {
+          "refused": true,
+          "error": "page_token_invalid"
+        }
+      }
+    ],
+    "gateway": [
+      {
+        "name": "refused once mid-traversal: one restart, earlier rows discarded",
+        "answers": [
+          {
+            "rows": [
+              "a",
+              "b"
+            ],
+            "next": true
+          },
+          {
+            "error": "page_token_invalid"
+          },
+          {
+            "rows": [
+              "a",
+              "b"
+            ],
+            "next": true
+          },
+          {
+            "rows": [
+              "c"
+            ],
+            "next": false
+          }
+        ],
+        "expected": {
+          "outcome": "complete",
+          "restarts": 1,
+          "rows": [
+            "a",
+            "b",
+            "c"
+          ]
+        }
+      },
+      {
+        "name": "refused twice in one traversal: the export fails",
+        "answers": [
+          {
+            "rows": [
+              "a"
+            ],
+            "next": true
+          },
+          {
+            "error": "page_token_invalid"
+          },
+          {
+            "rows": [
+              "a"
+            ],
+            "next": true
+          },
+          {
+            "error": "page_token_invalid"
+          }
+        ],
+        "expected": {
+          "outcome": "failed",
+          "restarts": 1,
+          "rows": []
+        }
+      },
+      {
+        "name": "any other error fails the export without a restart",
+        "answers": [
+          {
+            "rows": [
+              "a"
+            ],
+            "next": true
+          },
+          {
+            "error": "until_ms must be >= since_ms"
+          }
+        ],
+        "expected": {
+          "outcome": "failed",
+          "restarts": 0,
+          "rows": []
+        }
+      },
+      {
+        "name": "a restarted traversal is issued a token it saw before the restart",
+        "answers": [
+          {
+            "rows": [
+              "a"
+            ],
+            "next": true,
+            "token": "p1"
+          },
+          {
+            "error": "page_token_invalid"
+          },
+          {
+            "rows": [
+              "a"
+            ],
+            "next": true,
+            "token": "p1"
+          },
+          {
+            "rows": [
+              "b"
+            ],
+            "next": false
+          }
+        ],
+        "expected": {
+          "outcome": "complete",
+          "restarts": 1,
+          "rows": [
+            "a",
+            "b"
+          ]
+        }
+      },
+      {
+        "name": "a token repeated within one traversal fails the export",
+        "answers": [
+          {
+            "rows": [
+              "a"
+            ],
+            "next": true,
+            "token": "p1"
+          },
+          {
+            "rows": [
+              "b"
+            ],
+            "next": true,
+            "token": "p1"
+          }
+        ],
+        "expected": {
+          "outcome": "failed",
+          "restarts": 0,
+          "rows": []
+        }
+      },
+      {
+        "name": "an error that merely mentions the token is not the refusal",
+        "answers": [
+          {
+            "rows": [
+              "a"
+            ],
+            "next": true
+          },
+          {
+            "error": "page_token_invalid: offset"
+          }
+        ],
+        "expected": {
+          "outcome": "failed",
+          "restarts": 0,
+          "rows": []
+        }
+      }
+    ]
+  }
+}

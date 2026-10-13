@@ -51,7 +51,7 @@ SETS=(
   # travels, and versions independently of the evidence contracts. Vendored
   # here so the same drift check covers it, and pinned separately because it
   # has no reason to move when the evidence vectors do.
-  "gateway-api/vectors:tests/vectors/gateway_api"
+  "gateway-api/vectors:tests/vectors/gateway_api:v2"
   # Commissioned safety binding: a separate contract again, and the only
   # vendored set whose vectors describe physical commissioning rather than
   # evidence carriage. It pins independently because it has no reason to move

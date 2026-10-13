@@ -188,3 +188,32 @@ class TestZigbeeAdapter:
             with pytest.raises(AdapterReadError, match="no MQTT data cached yet"):
                 await adapter.read("living-room-temp")
             await adapter.close()
+
+
+async def test_a_coordinators_last_seen_is_carried_never_taken() -> None:
+    """gateway-api/v2: an intermediary's time is never sent in `timestamp`."""
+    from ori.utils.time_utils import now_ms
+
+    adapter = ZigbeeAdapter()
+    with (
+        patch("ori.hal.mqtt_base._AIOMQTT_AVAILABLE", True),
+        patch("ori.hal.mqtt_base._aiomqtt", SimpleNamespace(Client=_FakeClient)),
+    ):
+        cfg = _config(sensor_type="temperature")
+        await adapter.connect(cfg)
+        before = now_ms()
+        assert isinstance(adapter._client, _FakeClient)
+        await adapter._client.emit(
+            cfg["topic"],
+            json.dumps({"temperature": 21.5, "last_seen": 1710001111}).encode(),
+        )
+        await asyncio.sleep(0)
+        after = now_ms()
+        reading = await adapter.read("living-room-temp")
+        await adapter.close()
+    assert reading.producer_time == "not_reported"
+    assert before <= reading.timestamp <= after
+    assert reading.metadata["payload_time"] == {
+        "member": "last_seen",
+        "ms": 1710001111000,
+    }

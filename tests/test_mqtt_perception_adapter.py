@@ -144,7 +144,11 @@ class TestMqttPerceptionAdapter:
             assert reading.sensor_type == "ppe_hardhat_violation_score"
             assert reading.value == pytest.approx(0.88)
             assert reading.quality == pytest.approx(0.92)
-            assert reading.timestamp == 1710000000123
+            assert reading.producer_time == "not_reported"
+            assert reading.metadata["payload_time"] == {
+                "member": "timestamp_ms",
+                "ms": 1710000000123,
+            }
             assert reading.metadata["source"] == "mqtt_perception"
             assert reading.metadata["schema"] == "ori.perception.v1"
             assert reading.metadata["zone_id"] == "line-3"
@@ -202,3 +206,70 @@ class TestMqttPerceptionAdapter:
                 await adapter.read("ppe-hardhat-cam-01")
 
             await adapter.close()
+
+
+@pytest.mark.parametrize(
+    "extra, payload_time",
+    [
+        (
+            {"timestamp_ms": 1710000000123},
+            {"member": "timestamp_ms", "ms": 1710000000123},
+        ),
+        ({"timestamp_ms": 0}, {"member": "timestamp_ms", "ms": 0}),
+        ({}, None),
+        ({"metadata": {"producer_time": "reported"}}, None),
+        ({"metadata": {"payload_time": {"member": "x", "ms": 5}}}, None),
+    ],
+)
+async def test_a_perception_reading_is_timed_by_its_arrival(
+    extra: dict, payload_time: dict | None
+) -> None:
+    """No written protocol declares the payload's time a measurement."""
+    from ori.utils.time_utils import now_ms
+
+    adapter = MqttPerceptionAdapter()
+    with (
+        patch("ori.hal.mqtt_base._AIOMQTT_AVAILABLE", True),
+        patch("ori.hal.mqtt_base._aiomqtt", SimpleNamespace(Client=_FakeClient)),
+    ):
+        cfg = _config()
+        await adapter.connect(cfg)
+        payload = {
+            "schema": "ori.perception.v1",
+            "sensor_type": "ppe_hardhat_violation_score",
+            "value": 0.5,
+            "confidence": 0.9,
+            **extra,
+        }
+        before = now_ms()
+        assert isinstance(adapter._client, _FakeClient)
+        await adapter._client.emit(cfg["topic"], json.dumps(payload).encode())
+        await asyncio.sleep(0)
+        reading = await adapter.read("ppe-hardhat-cam-01")
+        await adapter.close()
+    assert reading.producer_time == "not_reported"
+    assert reading.timestamp >= before
+    assert reading.metadata.get("payload_time") == payload_time
+
+
+async def test_a_boolean_perception_time_is_refused() -> None:
+    adapter = MqttPerceptionAdapter()
+    with (
+        patch("ori.hal.mqtt_base._AIOMQTT_AVAILABLE", True),
+        patch("ori.hal.mqtt_base._aiomqtt", SimpleNamespace(Client=_FakeClient)),
+    ):
+        cfg = _config()
+        await adapter.connect(cfg)
+        payload = {
+            "schema": "ori.perception.v1",
+            "sensor_type": "ppe_hardhat_violation_score",
+            "value": 0.5,
+            "confidence": 0.9,
+            "timestamp_ms": True,
+        }
+        assert isinstance(adapter._client, _FakeClient)
+        await adapter._client.emit(cfg["topic"], json.dumps(payload).encode())
+        await asyncio.sleep(0)
+        with pytest.raises(AdapterReadError):
+            await adapter.read("ppe-hardhat-cam-01")
+        await adapter.close()

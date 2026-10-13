@@ -6,6 +6,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from ori.network.producer_time import PRODUCER_TIMES, UNKNOWN
 from ori.utils.time_utils import now_ms
 
 
@@ -19,6 +20,12 @@ class SensorReading:
     quality: float  # 0.0 to 1.0
     metadata: dict[str, Any] = field(default_factory=dict)
     raw: Optional[bytes] = None
+    # What `timestamp` is, under gateway-api/v2 Producer Time; decided at ingest.
+    producer_time: str = field(default=UNKNOWN, kw_only=True)
+
+    def __post_init__(self) -> None:
+        if self.producer_time not in PRODUCER_TIMES:
+            raise ValueError(f"unknown producer_time {self.producer_time!r}")
 
 
 @dataclass

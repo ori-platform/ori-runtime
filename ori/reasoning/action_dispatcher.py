@@ -47,6 +47,7 @@ from ori.network.events import (
     ReasoningResult,
     event_received_at_ms,
 )
+from ori.network.producer_time import NOT_REPORTED, UNKNOWN, read_producer_time
 from ori.policy.device_policy import DevicePolicy
 from ori.reasoning.action_registry import (
     ACTION_REGISTRY,
@@ -4493,6 +4494,12 @@ class ActionDispatcher:
                 return "unavailable"
             if stated is not None:
                 return stated
+        # gateway-api/v2 Producer Time: only a reported time is a measurement.
+        basis = read_producer_time(getattr(reading, "producer_time", None))
+        if basis == NOT_REPORTED:
+            return "not reported by device"
+        if basis == UNKNOWN:
+            return "not stated"
         return self._format_local_time(timestamp_ms, device_timezone)
 
     @staticmethod

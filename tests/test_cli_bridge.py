@@ -124,6 +124,7 @@ async def _seed_state_store(path: Path, action: str = "trip_relay") -> None:
                     timestamp=1_800_000_000_000,
                     quality=0.95,
                     metadata={"source": "test"},
+                    producer_time="reported",
                 ),
                 device_id="dev-01",
             )
@@ -379,6 +380,7 @@ def test_cli_bridge_state_history_reads_bounded_sensor_history(
             "timestamp": 1_800_000_000_000,
             "quality": 0.95,
             "metadata": {"source": "test"},
+            "producer_time": "reported",
         }
     ]
 

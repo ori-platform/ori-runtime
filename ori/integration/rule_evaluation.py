@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, cast
 
+from ori.hal.producer_paths import CALLER_TIME, producer_time_for
 from ori.network.events import OriEvent, SensorReading
 from ori.reasoning.rule_engine import RuleEngine, RuleResult
 from ori.skills.hooks_api import HookContext
@@ -263,6 +264,7 @@ def _merged_skill_config(
 
 def _event_from_request(request: RuleEvaluationRequest) -> OriEvent:
     reading = SensorReading(
+        producer_time=producer_time_for("rule_evaluation", CALLER_TIME),
         sensor_id=request.sensor_id,
         sensor_type=request.sensor_type,
         value=request.value,

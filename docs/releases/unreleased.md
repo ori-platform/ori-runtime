@@ -55,6 +55,21 @@ release is cut.
   every interval. The reference firmware still holds inbound messages in one
   four-deep queue shared with commands, dropping what arrives when it is full.
   Any value other than `true` or `false` is refused at config load.
+- A LoRaWAN, Zigbee or MQTT perception reading's `timestamp` is now when the
+  value reached the runtime. Before, it was a time copied from the payload,
+  such as a network server's `received_at`, a coordinator's `last_seen` or a
+  perception payload's `timestamp_ms`, none of which a protocol the runtime
+  reads declares to be when the value was measured; that time is now in
+  `metadata.payload_time`. History stored before this release keeps its
+  stored times and reads as of unknown basis.
+- A Tier C approval message for a reading the runtime did not request, such
+  as an MQTT, Victron, LoRaWAN or Zigbee reading, now reads
+  `Measured: not reported by device` rather than the time it arrived.
+- The first start on this release migrates the history tables in place,
+  keeping every row. Until it has run, `ori state history` and
+  `ori state action-log`, which open the store read-only and never migrate
+  it, refuse a store an earlier release wrote with `state_migration_required`
+  and change nothing.
 
 ## Added
 
@@ -112,6 +127,18 @@ release is cut.
   and neither affects `status`.
 
 ## Changed
+
+- Every sensor reading records what its `timestamp` is, as `gateway-api/v2`
+  Producer Time defines it: `reported` for a read the runtime requested,
+  `not_reported` for a value pushed to it, timed by its arrival, and `unknown`
+  for history stored before this release. The `sensor_history` export and
+  the Tier 3 reasoning request carry it as `producer_time`, and a bucket
+  holding readings of more than one basis is exported as one row for each.
+  A gateway that ignores the member keeps working, and may receive more rows
+  for such a bucket than before.
+- `ori state action-log` and the gateway `action_log` export carry
+  `record_kind`, `record_key` and `contributed_to`, so a reader can tell a
+  request that joined another's act from an act, and find the act it joined.
 
 - The Android payload accepts `--progress`, which prints one line per poll on
   stderr naming the poll, how many sensors it read and failed, and whether it

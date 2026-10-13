@@ -11,6 +11,7 @@ from ori.hal.base import (
     BaseAdapter,
     HardwareCircuitBreaker,
 )
+from ori.hal.producer_paths import READ_CLOCK, producer_time_for
 from ori.network.events import SensorReading
 from ori.utils.time_utils import now_ms
 
@@ -165,6 +166,7 @@ class GrowattAdapter(BaseAdapter):
         raw_value = self._decode_registers(raw_regs, signed=signed)
         value = float(raw_value) * scale
         return SensorReading(
+            producer_time=producer_time_for("growatt", READ_CLOCK),
             sensor_id=sensor_id,
             sensor_type=self._sensor_type,
             value=round(value, 4),

@@ -13,6 +13,7 @@ from ori.hal.mqtt_base import (
     MqttCachedAdapter,
     load_json_payload,
 )
+from ori.hal.producer_paths import ARRIVAL_CLOCK, producer_time_for
 from ori.network.events import SensorReading
 from ori.utils.time_utils import now_ms
 
@@ -152,6 +153,7 @@ class MqttAdapter(MqttCachedAdapter):
                 timestamp_ms = int(ts)
 
         return SensorReading(
+            producer_time=producer_time_for("mqtt", ARRIVAL_CLOCK),
             sensor_id=sensor_id,
             sensor_type=self._sensor_type,
             value=float(value),

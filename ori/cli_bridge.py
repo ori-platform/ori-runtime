@@ -1750,6 +1750,7 @@ def _sensor_reading_to_dict(reading: StoredReading) -> dict[str, Any]:
         "quality": reading.quality,
         "metadata": reading.metadata,
         "received_at_ms": int(reading.received_at_ms),
+        "producer_time": reading.producer_time,
     }
 
 

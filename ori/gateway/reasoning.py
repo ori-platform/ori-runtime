@@ -14,6 +14,7 @@ from typing import Any, Callable
 
 from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_url
 from ori.network.events import OriEvent, ReasoningResult, history_as_of
+from ori.network.producer_time import NOT_REPORTED, UNKNOWN, read_producer_time
 from ori.security.gateway_messages import (
     GatewayMessageAuthenticator,
     GatewayMessageAuthError,
@@ -35,6 +36,8 @@ REASONING_RESPONSE_TOPIC_TEMPLATE = "ori/{device_id}/reasoning/response"
 DEFAULT_GATEWAY_REASONING_TIMEOUT_MS = 10_000
 MAX_CONTEXT_HISTORY_POINTS = 10
 _VALID_ACTION_TIERS = {"A", "B", "C", "D"}
+# The greatest receipt gateway-api/v2 admits: an integer a JSON double holds exactly.
+_MAX_SAFE_INTEGER = 2**53 - 1
 
 
 class GatewayReasoningError(RuntimeError):
@@ -155,10 +158,14 @@ class MqttGatewayReasoner:
         context = {
             "value": float(getattr(reading, "value", 0.0) or 0.0),
             "unit": str(getattr(reading, "unit", "") or ""),
-            "timestamp": int(
-                getattr(reading, "timestamp", None)
-                or getattr(event, "timestamp", None)
-                or now_ms()
+            # A reading's own time, as stored, under its own basis; a substitute
+            # is sent only when there is no reading, whose basis is then unknown.
+            "timestamp": int(reading.timestamp)
+            if reading is not None
+            else int(getattr(event, "timestamp", None) or now_ms()),
+            # With no reading, `timestamp` is not a reading's time.
+            "producer_time": read_producer_time(
+                getattr(reading, "producer_time", None)
             ),
             "history": await _history_points(event, state_store),
         }
@@ -301,17 +308,44 @@ async def _history_points(
             event.reading.sensor_id,
         )
         return []
-    points = []
-    for row in rows[:MAX_CONTEXT_HISTORY_POINTS]:
-        point: dict[str, Any] = {
-            "value": float(getattr(row, "value", 0.0) or 0.0),
-            "timestamp": int(getattr(row, "timestamp", 0) or 0),
-        }
-        received = getattr(row, "received_at_ms", None)
-        if received is not None:
-            point["received_at_ms"] = int(received)
-        points.append(point)
-    return points
+    return [
+        _history_point(
+            getattr(row, "value", 0.0),
+            getattr(row, "timestamp", 0),
+            getattr(row, "received_at_ms", None),
+            getattr(row, "producer_time", None),
+        )
+        for row in rows[:MAX_CONTEXT_HISTORY_POINTS]
+    ]
+
+
+def _history_point(
+    value: Any, timestamp: Any, received: Any, producer_time: Any
+) -> dict[str, Any]:
+    """One history point, its basis read as unknown when it is not one of the three.
+
+    A not_reported point carries its receipt, under gateway-api/v2's export row
+    checks; one without a valid receipt states no basis instead.
+    """
+    point: dict[str, Any] = {
+        "value": float(value or 0.0),
+        "timestamp": int(timestamp or 0),
+    }
+    if _valid_receipt(received):
+        point["received_at_ms"] = int(received)
+    basis = read_producer_time(producer_time)
+    if basis == NOT_REPORTED and "received_at_ms" not in point:
+        basis = UNKNOWN
+    point["producer_time"] = basis
+    return point
+
+
+def _valid_receipt(value: Any) -> bool:
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and 1 <= value <= _MAX_SAFE_INTEGER
+    )
 
 
 def _history_points_from_context(event: OriEvent | None) -> list[dict[str, Any]]:
@@ -325,18 +359,17 @@ def _history_points_from_context(event: OriEvent | None) -> list[dict[str, Any]]
         if not isinstance(row, dict):
             continue
         try:
-            point: dict[str, Any] = {
-                "value": float(row.get("value", 0.0) or 0.0),
-                "timestamp": int(
+            points.append(
+                _history_point(
+                    row.get("value", 0.0),
                     row.get("timestamp")
                     or row.get("timestamp_ms")
                     or row.get("reading_timestamp")
-                    or 0
-                ),
-            }
-            if row.get("received_at_ms") is not None:
-                point["received_at_ms"] = int(row["received_at_ms"])
-            points.append(point)
+                    or 0,
+                    row.get("received_at_ms"),
+                    row.get("producer_time"),
+                )
+            )
         except (TypeError, ValueError):
             continue
     return points

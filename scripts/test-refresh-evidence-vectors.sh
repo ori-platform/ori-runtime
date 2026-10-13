@@ -537,8 +537,8 @@ fi
 # A vector directory can hold more than one version of its contract. The
 # exchange set claims v2: for each stem it takes the newest tokened file at or
 # below v2, the untokened file only when no tokened one is at or below v2, and
-# nothing tokened above it. The gateway-api set claims no version and takes
-# untokened files only.
+# nothing tokened above it. The sensor-configuration set claims no version
+# and takes untokened files only.
 
 box="$(new_fixture claimed-version)"
 ex="${box}/specs/evidence-exchange/vectors"
@@ -546,7 +546,7 @@ printf '{"stem":"a","v":1}\n' > "${ex}/a.json"
 printf '{"stem":"a","v":2}\n' > "${ex}/a-v2.json"
 printf '{"stem":"b","v":3}\n' > "${ex}/b-v3.json"
 printf '{"stem":"c","v":1}\n' > "${ex}/c-v1.json"
-printf '{"stem":"d","v":2}\n' > "${box}/specs/gateway-api/vectors/d-v2.json"
+printf '{"stem":"d","v":2}\n' > "${box}/specs/sensor-configuration/vectors/d-v2.json"
 git -C "${box}/specs" add -A >/dev/null
 git -C "${box}/specs" commit -qm "vectors: open later versions"
 vendor "${box}"
@@ -568,7 +568,7 @@ if [ ! -f "${vendored}/b-v3.json" ]; then
 else
   bad "a file from a later version than the claim is not vendored" "b-v3.json present"
 fi
-if [ ! -f "${box}/consumer/tests/vectors/gateway_api/d-v2.json" ]; then
+if [ ! -f "${box}/consumer/tests/vectors/sensor_configuration/d-v2.json" ]; then
   ok "a set claiming no version vendors untokened files only"
 else
   bad "a set claiming no version vendors untokened files only" "d-v2.json present"
@@ -581,7 +581,7 @@ else
       "$(cat "${vendored}/MANIFEST.json")"
 fi
 if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if "contract_version" not in d else 1)' \
-     "${box}/consumer/tests/vectors/gateway_api/MANIFEST.json"; then
+     "${box}/consumer/tests/vectors/sensor_configuration/MANIFEST.json"; then
   ok "a set claiming no version records none"
 else
   bad "a set claiming no version records none" "contract_version present"

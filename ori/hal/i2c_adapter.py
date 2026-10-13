@@ -24,6 +24,7 @@ from ori.hal.base import (
     HardwareCircuitBreaker,
     MeasurementRefusedError,
 )
+from ori.hal.producer_paths import READ_CLOCK, producer_time_for
 from ori.network.events import SensorReading
 from ori.utils.time_utils import now_ms
 
@@ -1280,6 +1281,7 @@ class I2CAdapter(BaseAdapter):
         # .humidity (%).  Temperature is the primary value; the other two travel
         # in metadata so callers that need all three can access them.
         return SensorReading(
+            producer_time=producer_time_for("i2c", READ_CLOCK),
             sensor_id=sensor_id,
             sensor_type="bme280",
             value=round(data.temperature, 2),
@@ -1366,6 +1368,7 @@ class I2CAdapter(BaseAdapter):
         sensitivity = self._calibration["sensitivity_v_per_amp"]
         current_amps = measured.rms_volts / sensitivity
         return SensorReading(
+            producer_time=producer_time_for("i2c", READ_CLOCK),
             sensor_id=sensor_id,
             sensor_type="ads1115_current",
             value=round(current_amps, 4),
@@ -1397,6 +1400,7 @@ class I2CAdapter(BaseAdapter):
         self._reaffirm_ads1115_channel()
         voltage = self._sample_ads1115_volts()
         return SensorReading(
+            producer_time=producer_time_for("i2c", READ_CLOCK),
             sensor_id=sensor_id,
             sensor_type="ads1115_voltage",
             value=round(voltage, 4),
@@ -1415,6 +1419,7 @@ class I2CAdapter(BaseAdapter):
                 "wait at least 5 s after start_periodic_measurement()"
             )
         return SensorReading(
+            producer_time=producer_time_for("i2c", READ_CLOCK),
             sensor_id=sensor_id,
             sensor_type="scd40",
             value=float(self._scd4x.CO2),

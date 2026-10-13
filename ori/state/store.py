@@ -27,6 +27,7 @@ from ori.network.events import (
     SensorReading,
     StoredReading,
 )
+from ori.network.producer_time import read_producer_time
 from ori.state.deferred_writer import DeferredWriter
 from ori.utils.time_utils import now_ms
 
@@ -908,13 +909,15 @@ _HISTORY_DDL_STATEMENTS: tuple[str, ...] = (
     sensor_type TEXT    NOT NULL,
     value       REAL    NOT NULL,
     unit        TEXT    NOT NULL,
-    -- The producer's clock, kept raw, never a ranking key. A firmware device
-    -- reports no measurement time, so for its readings this is the runtime's
-    -- receipt time.
+    -- Kept raw, never a ranking key; producer_time says what it is. A
+    -- firmware device reports no measurement time, so for its readings this
+    -- is the value's arrival, marked not_reported.
     timestamp   INTEGER NOT NULL,
     quality     REAL    NOT NULL,
     metadata    TEXT    NOT NULL DEFAULT '{}',
-    received_at_ms INTEGER NOT NULL CHECK (received_at_ms > 0)  -- the store's clock at insert
+    received_at_ms INTEGER NOT NULL CHECK (received_at_ms > 0),  -- the store's clock at insert
+    producer_time TEXT NOT NULL DEFAULT 'unknown'
+        CHECK (producer_time IN ('reported', 'not_reported', 'unknown'))
 )""",
     """-- Arrival order is `id` and arrival time is `received_at_ms`. Both are the
 -- store's own observation, which is why "latest" and "within the last N
@@ -932,7 +935,10 @@ CREATE INDEX IF NOT EXISTS idx_sensor_history_sensor_id
     unit TEXT NOT NULL,
     sample_count INTEGER NOT NULL,
     max_received_at_ms INTEGER NOT NULL CHECK (max_received_at_ms > 0),  -- greatest receipt among the samples
-    UNIQUE(sensor_id, bucket_ms)
+    -- A bucket aggregates one basis, so a bucket of mixed bases is one row each.
+    producer_time TEXT NOT NULL DEFAULT 'unknown'
+        CHECK (producer_time IN ('reported', 'not_reported', 'unknown')),
+    UNIQUE(sensor_id, bucket_ms, producer_time)
 )""",
     """CREATE TABLE IF NOT EXISTS sensor_history_hourly (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -943,7 +949,10 @@ CREATE INDEX IF NOT EXISTS idx_sensor_history_sensor_id
     unit TEXT NOT NULL,
     sample_count INTEGER NOT NULL,
     max_received_at_ms INTEGER NOT NULL CHECK (max_received_at_ms > 0),  -- greatest receipt among the samples
-    UNIQUE(sensor_id, bucket_ms)
+    -- A bucket aggregates one basis, so a bucket of mixed bases is one row each.
+    producer_time TEXT NOT NULL DEFAULT 'unknown'
+        CHECK (producer_time IN ('reported', 'not_reported', 'unknown')),
+    UNIQUE(sensor_id, bucket_ms, producer_time)
 )""",
     """CREATE TABLE IF NOT EXISTS sensor_history_daily (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -954,11 +963,29 @@ CREATE INDEX IF NOT EXISTS idx_sensor_history_sensor_id
     unit TEXT NOT NULL,
     sample_count INTEGER NOT NULL,
     max_received_at_ms INTEGER NOT NULL CHECK (max_received_at_ms > 0),  -- greatest receipt among the samples
-    UNIQUE(sensor_id, bucket_ms)
+    -- A bucket aggregates one basis, so a bucket of mixed bases is one row each.
+    producer_time TEXT NOT NULL DEFAULT 'unknown'
+        CHECK (producer_time IN ('reported', 'not_reported', 'unknown')),
+    UNIQUE(sensor_id, bucket_ms, producer_time)
 )""",
 )
 
 _HISTORY_DDL = ";\n".join(_HISTORY_DDL_STATEMENTS) + ";\n"
+
+_COMPACTED_HISTORY_TABLES: tuple[str, ...] = (
+    "sensor_history_5min",
+    "sensor_history_hourly",
+    "sensor_history_daily",
+)
+
+
+def _history_table_ddl(table: str) -> str:
+    """The CREATE TABLE statement for one history table."""
+    prefix = f"CREATE TABLE IF NOT EXISTS {table} ("
+    (statement,) = (s for s in _HISTORY_DDL_STATEMENTS if s.startswith(prefix))
+    return statement
+
+
 _DDL = _CORE_DDL + "\n" + _HISTORY_DDL
 
 # How long raw readings stay in `sensor_history`, by receipt, before they are
@@ -1132,6 +1159,7 @@ def _stored_reading(row: sqlite3.Row) -> StoredReading:
         quality=row["quality"],
         metadata=json.loads(row["metadata"]),
         received_at_ms=int(row["received_at_ms"]),
+        producer_time=read_producer_time(row["producer_time"]),
     )
 
 
@@ -1202,6 +1230,80 @@ RECORD_CONTRIBUTOR_LEGACY = "contributor_legacy"
 RECORD_KINDS = frozenset(
     {RECORD_DISPATCH, RECORD_CONTRIBUTOR, RECORD_CONTRIBUTOR_LEGACY}
 )
+
+
+# The greatest receipt gateway-api/v2 admits: an integer a JSON double holds exactly.
+_MAX_EXPORTED_RECEIPT = 2**53 - 1
+
+
+def _exported_producer_time(row: sqlite3.Row) -> str:
+    """A history row's basis, unknown for a raw not_reported row without a usable receipt."""
+    basis = read_producer_time(row["producer_time"])
+    receipt = row["received_at_ms"]
+    if (
+        basis == "not_reported"
+        and row["tier"] == "raw"
+        and not (isinstance(receipt, int) and 1 <= receipt <= _MAX_EXPORTED_RECEIPT)
+    ):
+        return "unknown"
+    return basis
+
+
+# The rows _action_record_members reads as another kind than they store, by
+# the kind they are read as. The legacy reclassification of a coalesced
+# dispatch runs before these and is settled under its own reason.
+_MISREAD_ACTION_RECORDS: tuple[tuple[str, str], ...] = (
+    (
+        RECORD_DISPATCH,
+        "action_taken != 'coalesced'"
+        " AND (record_kind != 'dispatch' OR contributed_to IS NOT NULL)",
+    ),
+    (
+        RECORD_CONTRIBUTOR_LEGACY,
+        "action_taken = 'coalesced'"
+        " AND NOT (record_kind = 'contributor' AND executed = 0"
+        " AND contributed_to IS NOT NULL AND contributed_to != ''"
+        " AND contributed_to != record_key)"
+        " AND (record_kind != 'contributor_legacy' OR contributed_to IS NOT NULL)",
+    ),
+)
+
+
+def _action_record_members(row: sqlite3.Row) -> dict[str, Any]:
+    """What a stored action row records, as gateway-api/v2's export row checks require.
+
+    A table the columns were added to has no CHECK, and a rolled-back release
+    writes joined rows as dispatches until the next open reclassifies them, so
+    the kind is read again here by the runtime's own test: a joined row is a
+    contributor only with a valid link and no execution, otherwise a legacy
+    contributor with none, and every other row is a dispatch.
+    """
+    key = row["record_key"]
+    record_key = key if isinstance(key, str) and key else None
+    link = row["contributed_to"]
+    if row["action_taken"] != "coalesced":
+        return {
+            "record_kind": RECORD_DISPATCH,
+            "record_key": record_key,
+            "contributed_to": None,
+        }
+    if (
+        row["record_kind"] == RECORD_CONTRIBUTOR
+        and not row["executed"]
+        and isinstance(link, str)
+        and link
+        and link != record_key
+    ):
+        return {
+            "record_kind": RECORD_CONTRIBUTOR,
+            "record_key": record_key,
+            "contributed_to": link,
+        }
+    return {
+        "record_kind": RECORD_CONTRIBUTOR_LEGACY,
+        "record_key": record_key,
+        "contributed_to": None,
+    }
 
 
 def _check_action_record_shape(
@@ -1526,6 +1628,7 @@ class StateStore:
         # first and a fresh store gets its tables from the DDL after.
         self._rebuild_history_schema_if_unreceipted(conn)
         conn.executescript(_HISTORY_DDL)
+        self._add_history_producer_time(conn)
         self._migrate_alert_outbox_receipt(conn)
         self._key_firmware_fault_events_by_epoch(conn)
         # Add columns that may be missing from databases created before this
@@ -2150,6 +2253,59 @@ class StateStore:
                 conn.rollback()
             raise
 
+    @staticmethod
+    def _add_history_producer_time(conn: sqlite3.Connection) -> None:
+        """producer_time on every history table, every row kept and read as unknown.
+
+        A compacted table is rebuilt because its bucket key widens to the basis.
+        Each table is checked and changed in one IMMEDIATE transaction, so a
+        concurrent opener finds it done rather than migrating it twice; ids and
+        spent ids are kept.
+        """
+        kept = (
+            "id, sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count, "
+            "max_received_at_ms"
+        )
+        for table in ("sensor_history",) + _COMPACTED_HISTORY_TABLES:
+            if "producer_time" in _table_columns(conn, table):
+                continue
+            conn.commit()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                if "producer_time" in _table_columns(conn, table):
+                    conn.rollback()
+                    continue
+                if table == "sensor_history":
+                    conn.execute(
+                        "ALTER TABLE sensor_history ADD COLUMN producer_time TEXT "
+                        "NOT NULL DEFAULT 'unknown' CHECK "
+                        "(producer_time IN ('reported', 'not_reported', 'unknown'))"
+                    )
+                    conn.commit()
+                    continue
+                unbased = f"_{table}_unbased"
+                conn.execute(f"ALTER TABLE {table} RENAME TO {unbased}")
+                conn.execute(_history_table_ddl(table))
+                conn.execute(
+                    f"INSERT INTO {table} ({kept}, producer_time) "
+                    f"SELECT {kept}, 'unknown' FROM {unbased}"
+                )
+                spent = conn.execute(
+                    "SELECT seq FROM sqlite_sequence WHERE name = ?", (unbased,)
+                ).fetchone()
+                if spent is not None:
+                    conn.execute("DELETE FROM sqlite_sequence WHERE name = ?", (table,))
+                    conn.execute(
+                        "INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)",
+                        (table, int(spent[0])),
+                    )
+                conn.execute(f"DROP TABLE {unbased}")
+                conn.commit()
+            except BaseException:
+                if conn.in_transaction:
+                    conn.rollback()
+                raise
+
     def _refuse_unreceipted_history_unless_allowed(self) -> None:
         """Raise before any write when the store needs the rebuild and this opener may not do it."""
         if self._allow_history_rebuild or self._db_path == ":memory:":
@@ -2245,6 +2401,28 @@ class StateStore:
             "UPDATE action_log SET record_kind = 'contributor_legacy'"
             " WHERE action_taken = 'coalesced' AND record_kind = 'dispatch'"
         )
+        # Any other row whose fields disagree with its kind, which only a table
+        # without the CHECKs can hold, is rewritten to what every reader reads
+        # it as (_action_record_members), so attestation, the summary and the
+        # exports agree. It is never attested once rewritten.
+        for kind, misread in _MISREAD_ACTION_RECORDS:
+            conn.execute(
+                "UPDATE action_log SET attestation_status = 'refused',"
+                " attestation_reason = 'reclassified_record'"
+                f" WHERE ({misread}) AND attestation_status IN ('pending', 'failed')"
+            )
+            rewritten = conn.execute(
+                "UPDATE action_log SET record_kind = ?, contributed_to = NULL"
+                f" WHERE {misread}",
+                (kind,),
+            ).rowcount
+            if rewritten:
+                logger.critical(
+                    "[action_log] %d rows' fields disagreed with their record kind "
+                    "and are recorded as %s, and never attested",
+                    rewritten,
+                    kind,
+                )
         conn.execute(
             "UPDATE action_log SET attestation_status = 'refused',"
             " attestation_reason = 'legacy_contributor'"
@@ -2542,23 +2720,24 @@ class StateStore:
         self._report_future_receipts(future, now_ms, max_backward_skew_ms)
 
         # Retention is decided on receipt: a row leaves a tier once the store
-        # received it before the cutoff. Buckets are keyed on the producer's
-        # measured time, so one bucket can gain samples across compaction runs
-        # and the insert merges the weighted average instead of ignoring them.
+        # received it before the cutoff. Buckets are keyed on the reading's
+        # `timestamp` and its basis, so one bucket can gain samples across
+        # compaction runs and the insert merges the weighted average instead of
+        # ignoring them, and readings of two bases never share a bucket row.
 
         # 1. raw → 5-minute buckets, received more than 48h ago
         self._conn.execute(
             """
             INSERT INTO sensor_history_5min
             (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count,
-             max_received_at_ms)
+             max_received_at_ms, producer_time)
             SELECT sensor_id, sensor_type,
                    (timestamp / 300000) * 300000 AS bucket_ms,
-                   AVG(value), unit, COUNT(*), MAX(received_at_ms)
+                   AVG(value), unit, COUNT(*), MAX(received_at_ms), producer_time
             FROM sensor_history
             WHERE received_at_ms < ?
-            GROUP BY sensor_id, (timestamp / 300000)
-            ON CONFLICT(sensor_id, bucket_ms) DO UPDATE SET
+            GROUP BY sensor_id, (timestamp / 300000), producer_time
+            ON CONFLICT(sensor_id, bucket_ms, producer_time) DO UPDATE SET
                 avg_value = (sensor_history_5min.avg_value * sensor_history_5min.sample_count
                              + excluded.avg_value * excluded.sample_count)
                             / (sensor_history_5min.sample_count + excluded.sample_count),
@@ -2578,15 +2757,15 @@ class StateStore:
             """
             INSERT INTO sensor_history_hourly
             (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count,
-             max_received_at_ms)
+             max_received_at_ms, producer_time)
             SELECT sensor_id, sensor_type,
                    (bucket_ms / 3600000) * 3600000 AS bucket_ms,
                    SUM(avg_value * sample_count) / SUM(sample_count), unit,
-                   SUM(sample_count), MAX(max_received_at_ms)
+                   SUM(sample_count), MAX(max_received_at_ms), producer_time
             FROM sensor_history_5min
             WHERE max_received_at_ms < ?
-            GROUP BY sensor_id, (bucket_ms / 3600000)
-            ON CONFLICT(sensor_id, bucket_ms) DO UPDATE SET
+            GROUP BY sensor_id, (bucket_ms / 3600000), producer_time
+            ON CONFLICT(sensor_id, bucket_ms, producer_time) DO UPDATE SET
                 avg_value = (sensor_history_hourly.avg_value * sensor_history_hourly.sample_count
                              + excluded.avg_value * excluded.sample_count)
                             / (sensor_history_hourly.sample_count + excluded.sample_count),
@@ -2606,15 +2785,15 @@ class StateStore:
             """
             INSERT INTO sensor_history_daily
             (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count,
-             max_received_at_ms)
+             max_received_at_ms, producer_time)
             SELECT sensor_id, sensor_type,
                    (bucket_ms / 86400000) * 86400000 AS bucket_ms,
                    SUM(avg_value * sample_count) / SUM(sample_count), unit,
-                   SUM(sample_count), MAX(max_received_at_ms)
+                   SUM(sample_count), MAX(max_received_at_ms), producer_time
             FROM sensor_history_hourly
             WHERE max_received_at_ms < ?
-            GROUP BY sensor_id, (bucket_ms / 86400000)
-            ON CONFLICT(sensor_id, bucket_ms) DO UPDATE SET
+            GROUP BY sensor_id, (bucket_ms / 86400000), producer_time
+            ON CONFLICT(sensor_id, bucket_ms, producer_time) DO UPDATE SET
                 avg_value = (sensor_history_daily.avg_value * sensor_history_daily.sample_count
                              + excluded.avg_value * excluded.sample_count)
                             / (sensor_history_daily.sample_count + excluded.sample_count),
@@ -2693,8 +2872,8 @@ class StateStore:
             """
             INSERT INTO sensor_history
                 (sensor_id, sensor_type, value, unit, timestamp, quality, metadata,
-                 received_at_ms)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 received_at_ms, producer_time)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 r.sensor_id,
@@ -2705,6 +2884,7 @@ class StateStore:
                 r.quality,
                 json.dumps(r.metadata),
                 now_ms(),  # the store's own clock; a reading never brings its receipt
+                r.producer_time,
             ),
         )
         self._conn.commit()
@@ -2733,7 +2913,7 @@ class StateStore:
         rows = conn.execute(
             """
             SELECT sensor_id, sensor_type, value, unit, timestamp, quality, metadata,
-                   received_at_ms
+                   received_at_ms, producer_time
             FROM sensor_history
             WHERE sensor_id = ? AND (? IS NULL OR id <= ?)
             ORDER BY id DESC
@@ -3014,7 +3194,8 @@ class StateStore:
         rows = conn.execute(
             """
             SELECT h.sensor_id, h.sensor_type, h.value, h.unit,
-                   h.timestamp, h.quality, h.metadata, h.received_at_ms
+                   h.timestamp, h.quality, h.metadata, h.received_at_ms,
+                   h.producer_time
             FROM sensor_history AS h
             INNER JOIN (
                 SELECT sensor_id, MAX(id) AS latest_id
@@ -3136,7 +3317,8 @@ class StateStore:
                     quality,
                     1 AS sample_count,
                     'raw' AS tier,
-                    received_at_ms
+                    received_at_ms,
+                    producer_time
                 FROM sensor_history
                 WHERE sensor_id = ? AND timestamp BETWEEN ? AND ?
                 UNION ALL
@@ -3149,7 +3331,8 @@ class StateStore:
                     NULL AS quality,
                     sample_count,
                     '5min' AS tier,
-                    max_received_at_ms AS received_at_ms
+                    max_received_at_ms AS received_at_ms,
+                    producer_time
                 FROM sensor_history_5min
                 WHERE sensor_id = ? AND bucket_ms BETWEEN ? AND ?
                 UNION ALL
@@ -3162,7 +3345,8 @@ class StateStore:
                     NULL AS quality,
                     sample_count,
                     'hourly' AS tier,
-                    max_received_at_ms AS received_at_ms
+                    max_received_at_ms AS received_at_ms,
+                    producer_time
                 FROM sensor_history_hourly
                 WHERE sensor_id = ? AND bucket_ms BETWEEN ? AND ?
                 UNION ALL
@@ -3175,7 +3359,8 @@ class StateStore:
                     NULL AS quality,
                     sample_count,
                     'daily' AS tier,
-                    max_received_at_ms AS received_at_ms
+                    max_received_at_ms AS received_at_ms,
+                    producer_time
                 FROM sensor_history_daily
                 WHERE sensor_id = ? AND bucket_ms BETWEEN ? AND ?
             )
@@ -3195,6 +3380,7 @@ class StateStore:
                 "sample_count": row["sample_count"],
                 "tier": row["tier"],
                 "received_at_ms": row["received_at_ms"],
+                "producer_time": _exported_producer_time(row),
             }
             for row in rows
         ]
@@ -3502,7 +3688,8 @@ class StateStore:
                    sensor_id, sensor_type, input_attestation_grade, input_posture,
                    input_firmware_device_id, input_firmware_boot_id, input_firmware_seq,
                    correlation_id,
-                   trigger_name, timestamp, attestation_status, attestation_seq
+                   trigger_name, timestamp, attestation_status, attestation_seq,
+                   record_kind, record_key, contributed_to
             FROM action_log
             ORDER BY timestamp DESC
             LIMIT ?
@@ -3537,6 +3724,7 @@ class StateStore:
                     "timestamp": row["timestamp"],
                     "attestation_status": row["attestation_status"],
                     "attestation_seq": row["attestation_seq"],
+                    **_action_record_members(row),
                 }
             )
         return result
@@ -3592,7 +3780,8 @@ class StateStore:
                    sensor_id, sensor_type, input_attestation_grade, input_posture,
                    input_firmware_device_id, input_firmware_boot_id, input_firmware_seq,
                    correlation_id,
-                   trigger_name, timestamp, attestation_status, attestation_seq
+                   trigger_name, timestamp, attestation_status, attestation_seq,
+                   record_kind, record_key, contributed_to
             FROM action_log
             """
             + where_sql
@@ -3610,6 +3799,7 @@ class StateStore:
                 bool(item["approved"]) if item["approved"] is not None else None
             )
             item["safe_default_used"] = bool(item["safe_default_used"])
+            item.update(_action_record_members(row))
             result.append(item)
         return result
 

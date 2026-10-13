@@ -179,3 +179,21 @@ class TestHttpAdapter:
             with pytest.raises(AdapterConnectionError, match="httpx"):
                 await adapter.connect(_config())
             assert adapter.is_connected is False
+
+
+@pytest.mark.parametrize("sensor_id", ["outdoor-temperature", "another-id"])
+async def test_a_cached_poll_keeps_the_basis_of_the_request(sensor_id: str) -> None:
+    """gateway-api/v2: a value obtained by the runtime's own request stays reported."""
+    adapter = HttpAdapter()
+    responses = [_FakeResponse({"main": {"temp": 300.5}})]
+    with (
+        patch("ori.hal.http_adapter._HTTPX_AVAILABLE", True),
+        patch("ori.hal.http_adapter._httpx", _fake_httpx_module(responses)),
+        patch.object(HttpAdapter, "_poll_loop", new=_neverending_poll_loop),
+    ):
+        await adapter.connect(_config())
+        await adapter._poll_once()
+        reading = await adapter.read(sensor_id)
+        await adapter.close()
+    assert reading.sensor_id == sensor_id
+    assert reading.producer_time == "reported"

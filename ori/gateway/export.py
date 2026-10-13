@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_url
+from ori.network.producer_time import PRODUCER_TIMES, read_producer_time
 from ori.security.gateway_messages import (
     GatewayMessageAuthenticator,
     GatewayMessageAuthError,
@@ -604,14 +605,16 @@ def _bucket_sensor_rows(
     if bucket_ms <= 0:
         return list(rows)
 
-    buckets: dict[int, dict[str, Any]] = {}
+    # A row aggregates one basis: a bucket of mixed bases is one row each.
+    buckets: dict[tuple[int, str], dict[str, Any]] = {}
     for row in rows:
         timestamp = int(row.get("timestamp") or 0)
         value = float(row.get("value") or 0.0)
         sample_count = max(1, int(row.get("sample_count") or 1))
         bucket_start = (timestamp // bucket_ms) * bucket_ms
+        basis = read_producer_time(row.get("producer_time"))
         bucket = buckets.setdefault(
-            bucket_start,
+            (bucket_start, basis),
             {
                 "sensor_id": row.get("sensor_id", ""),
                 "sensor_type": row.get("sensor_type", ""),
@@ -628,6 +631,7 @@ def _bucket_sensor_rows(
                 "bucket_ms": bucket_ms,
                 "tier": "bucketed",
                 "received_at_ms": None,
+                "producer_time": basis,
                 "_weighted_total": 0.0,
             },
         )
@@ -640,8 +644,8 @@ def _bucket_sensor_rows(
         )
 
     result = []
-    for bucket_start in sorted(buckets):
-        bucket = buckets[bucket_start]
+    for key in sorted(buckets, key=lambda k: (k[0], PRODUCER_TIMES.index(k[1]))):
+        bucket = buckets[key]
         count = max(1, int(bucket["sample_count"]))
         avg = float(bucket.pop("_weighted_total")) / count
         bucket["value"] = avg

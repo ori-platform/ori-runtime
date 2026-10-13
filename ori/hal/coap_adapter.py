@@ -20,6 +20,7 @@ from ori.hal.base import (
     cache_arrival,
     refuse_stale_cache,
 )
+from ori.hal.producer_paths import READ_CLOCK, producer_time_for
 from ori.network.events import SensorReading
 from ori.utils.path_utils import shown
 from ori.utils.time_utils import now_ms
@@ -187,6 +188,7 @@ class CoapAdapter(BaseAdapter):
             quality=reading.quality,
             metadata=dict(reading.metadata),
             raw=reading.raw,
+            producer_time=reading.producer_time,
         )
 
     async def close(self) -> None:
@@ -282,6 +284,7 @@ class CoapAdapter(BaseAdapter):
                 ) from exc
             self._cached_arrival = cache_arrival()
             self._cached_reading = SensorReading(
+                producer_time=producer_time_for("coap", READ_CLOCK),
                 sensor_id=self._sensor_id or self._sensor_type,
                 sensor_type=self._sensor_type,
                 value=value,

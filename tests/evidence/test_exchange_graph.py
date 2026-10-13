@@ -511,6 +511,14 @@ VECTOR_CONSUMERS = {
         "evidence/test_outbound_route.py"
         "::test_the_published_acknowledgement_retires_the_published_checkpoint",
     ),
+    # Its paging and token cases describe position-token paging, which the
+    # runtime does not implement yet; the readings, action-log and bucket cases
+    # are driven through the runtime.
+    ("gateway_api", "export-rows-v2"): (
+        "test_producer_time.py::test_the_reading_checks_reach_every_corpus_verdict",
+        "test_producer_time.py::test_the_action_checks_reach_every_corpus_verdict",
+        "test_producer_time.py::test_the_bucketed_export_reaches_every_corpus_bucket",
+    ),
     ("gateway_api", "inbound-evidence"): (
         "evidence/test_inbound_route.py::test_the_runtime_verifies_the_published_inbound_fixture",
         "evidence/test_inbound_route.py"

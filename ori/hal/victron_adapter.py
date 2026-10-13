@@ -8,6 +8,7 @@ from ori.hal.base import (
     AdapterReadError,
 )
 from ori.hal.mqtt_base import MQTT_CONNECTION_SCHEMA, MqttCachedAdapter
+from ori.hal.producer_paths import ARRIVAL_CLOCK, producer_time_for
 from ori.network.events import SensorReading
 
 _DEFAULT_PORT = 1883
@@ -95,6 +96,7 @@ class VictronAdapter(MqttCachedAdapter):
         value, timestamp_ms, raw_payload = cached
 
         return SensorReading(
+            producer_time=producer_time_for("victron", ARRIVAL_CLOCK),
             sensor_id=sensor_id,
             sensor_type=self._sensor_type,
             value=value,

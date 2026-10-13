@@ -9,8 +9,8 @@ from ori.hal.mqtt_base import (
     MqttCachedAdapter,
     load_json_payload,
 )
+from ori.hal.producer_paths import ARRIVAL_CLOCK, producer_time_for
 from ori.network.events import SensorReading
-from ori.utils.time_utils import now_ms
 
 _DEFAULT_PORT = 1883
 _CONTRACT_VERSION = "ori.perception.v1"
@@ -91,13 +91,16 @@ class MqttPerceptionAdapter(MqttCachedAdapter):
         value, timestamp_ms, raw_payload = cached
         payload = raw_payload if isinstance(raw_payload, dict) else {}
         confidence = _clamp_quality(float(payload.get("confidence", 0.0)))
+        # No written protocol declares the payload's `timestamp_ms` a
+        # measurement time, so it is carried beside the reading and the reading
+        # is timed by its arrival.
         payload_ts = payload.get("timestamp_ms")
-        if isinstance(payload_ts, (int, float)):
-            timestamp_ms = int(payload_ts)
         meta = payload.get("metadata", {})
-        metadata = meta if isinstance(meta, dict) else {}
+        metadata = dict(meta) if isinstance(meta, dict) else {}
+        metadata.pop("payload_time", None)  # the runtime's member, never the payload's
 
         return SensorReading(
+            producer_time=producer_time_for("mqtt_perception", ARRIVAL_CLOCK),
             sensor_id=sensor_id,
             sensor_type=self._sensor_type,
             value=float(value),
@@ -111,6 +114,12 @@ class MqttPerceptionAdapter(MqttCachedAdapter):
                 "topic": self._topic,
                 "broker_host": self._broker_host,
                 "port": self._port,
+                **(
+                    {"payload_time": {"member": "timestamp_ms", "ms": int(payload_ts)}}
+                    if isinstance(payload_ts, (int, float))
+                    and not isinstance(payload_ts, bool)
+                    else {}
+                ),
             },
         )
 
@@ -156,9 +165,10 @@ class MqttPerceptionAdapter(MqttCachedAdapter):
             )
         parsed["confidence"] = float(confidence)
 
-        if "timestamp_ms" not in parsed:
-            parsed["timestamp_ms"] = now_ms()
-        elif not isinstance(parsed.get("timestamp_ms"), (int, float)):
+        if "timestamp_ms" in parsed and (
+            not isinstance(parsed["timestamp_ms"], (int, float))
+            or isinstance(parsed["timestamp_ms"], bool)
+        ):
             raise AdapterReadError(
                 "Perception payload field 'timestamp_ms' must be numeric"
             )

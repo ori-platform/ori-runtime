@@ -148,9 +148,10 @@ async def test_mqtt_gateway_reasoner_publishes_contract_payload():
             "value": 14.2,
             "unit": "ampere",
             "timestamp": 123_456,
+            "producer_time": "unknown",
             "history": [
-                {"value": 8.1, "timestamp": 123_456},
-                {"value": 9.2, "timestamp": 123_456},
+                {"value": 8.1, "timestamp": 123_456, "producer_time": "unknown"},
+                {"value": 9.2, "timestamp": 123_456, "producer_time": "unknown"},
             ],
         },
         "action_tier_hint": "C",

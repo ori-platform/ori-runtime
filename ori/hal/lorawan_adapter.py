@@ -9,8 +9,8 @@ from ori.hal.mqtt_base import (
     MqttCachedAdapter,
     load_json_payload,
 )
+from ori.hal.producer_paths import ARRIVAL_CLOCK, producer_time_for
 from ori.network.events import SensorReading
-from ori.utils.time_utils import now_ms
 
 _DEFAULT_PORT = 1883
 
@@ -147,7 +147,10 @@ class LoraWanAdapter(MqttCachedAdapter):
             raw_quality = self._extract_with_variants(parsed, self._quality_path)
             quality = _clamp_quality(float(_coerce_value(raw_quality)))
 
-        payload_ts_ms = now_ms()
+        # A time in the payload is an intermediary's or unstated, never the
+        # measurement's, so it is carried beside the reading and the reading is
+        # timed by its arrival.
+        payload_time: dict[str, Any] | None = None
         for path in (
             "timestamp_ms",
             "received_at",
@@ -159,9 +162,12 @@ class LoraWanAdapter(MqttCachedAdapter):
                 ts_value = self._extract_with_variants(parsed, path)
             except AdapterReadError:
                 continue
-            if isinstance(ts_value, (int, float)):
+            if isinstance(ts_value, (int, float)) and not isinstance(ts_value, bool):
                 ts_int = int(ts_value)
-                payload_ts_ms = ts_int * 1000 if ts_int < 10_000_000_000 else ts_int
+                payload_time = {
+                    "member": path,
+                    "ms": ts_int * 1000 if ts_int < 10_000_000_000 else ts_int,
+                }
                 break
 
         self._cache_value(
@@ -170,7 +176,7 @@ class LoraWanAdapter(MqttCachedAdapter):
             {
                 "payload": parsed,
                 "quality": quality,
-                "timestamp_ms": payload_ts_ms,
+                "payload_time": payload_time,
             },
         )
 
@@ -187,31 +193,34 @@ class LoraWanAdapter(MqttCachedAdapter):
             self._require_listener()
         cached = self._cached_value(self._topic)
         self._require_fresh(self._topic)
-        value, timestamp_ms, raw_payload = cached
+        value, arrived_ms, raw_payload = cached
         quality = 1.0
         payload = raw_payload
+        payload_time = None
         if isinstance(raw_payload, dict):
             payload = raw_payload.get("payload", raw_payload)
             quality = _clamp_quality(float(raw_payload.get("quality", 1.0)))
-            ts = raw_payload.get("timestamp_ms")
-            if isinstance(ts, (int, float)):
-                timestamp_ms = int(ts)
+            payload_time = raw_payload.get("payload_time")
 
+        metadata: dict[str, Any] = {
+            "source": "lorawan",
+            "topic": self._topic,
+            "value_path": self._value_path,
+            "broker_host": self._broker_host,
+            "port": self._port,
+            "raw_payload": payload,
+        }
+        if payload_time is not None:
+            metadata["payload_time"] = payload_time
         return SensorReading(
+            producer_time=producer_time_for("lorawan", ARRIVAL_CLOCK),
             sensor_id=sensor_id,
             sensor_type=self._sensor_type,
             value=float(value),
             unit=self._unit,
-            timestamp=timestamp_ms,
+            timestamp=arrived_ms,
             quality=quality,
-            metadata={
-                "source": "lorawan",
-                "topic": self._topic,
-                "value_path": self._value_path,
-                "broker_host": self._broker_host,
-                "port": self._port,
-                "raw_payload": payload,
-            },
+            metadata=metadata,
         )
 
     @staticmethod

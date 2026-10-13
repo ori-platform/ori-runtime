@@ -567,6 +567,9 @@ def test_the_approval_body_names_both_clocks() -> None:
         device_timezone="UTC",
         proposal_id="AB12CD34",
         received_at_ms=NOW,
+        reading=SensorReading(
+            "s", "current", 1.0, "ampere", NOW + 6 * HOUR, 1.0, producer_time="reported"
+        ),
     )
     measured = ActionDispatcher._format_local_time(NOW + 6 * HOUR, "UTC")
     detected = ActionDispatcher._format_local_time(NOW, "UTC")

@@ -38,6 +38,7 @@ import logging
 import time
 from typing import Any, Callable, TypeVar
 
+from ori.hal.producer_paths import ARRIVAL_CLOCK, producer_time_for
 from ori.network.events import SensorReading
 from ori.security.firmware.controller_profiles import (
     ControllerAlarmTracker,
@@ -562,6 +563,7 @@ class FirmwareTelemetryGate:
                 metadata["controller_profile_status"] = status
             readings.append(
                 SensorReading(
+                    producer_time=producer_time_for("firmware", ARRIVAL_CLOCK),
                     sensor_id=f"{verification.device_id}:{reading['channel']}",
                     sensor_type=reading["sensor_type"],
                     value=reading["value"],

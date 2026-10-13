@@ -15,6 +15,7 @@ from ori.hal.base import (
     BaseAdapter,
     HardwareCircuitBreaker,
 )
+from ori.hal.producer_paths import READ_CLOCK, producer_time_for
 from ori.network.events import SensorReading
 from ori.utils.time_utils import now_ms
 
@@ -176,6 +177,7 @@ class PsutilAdapter(BaseAdapter):
     def _cpu_percent(self, sensor_id: str) -> SensorReading:
         value = psutil.cpu_percent(interval=0.1)
         return SensorReading(
+            producer_time=producer_time_for("psutil", READ_CLOCK),
             sensor_id=sensor_id,
             sensor_type="cpu_percent",
             value=float(value),
@@ -187,6 +189,7 @@ class PsutilAdapter(BaseAdapter):
     def _memory_percent(self, sensor_id: str) -> SensorReading:
         value = psutil.virtual_memory().percent
         return SensorReading(
+            producer_time=producer_time_for("psutil", READ_CLOCK),
             sensor_id=sensor_id,
             sensor_type="memory_percent",
             value=float(value),
@@ -198,6 +201,7 @@ class PsutilAdapter(BaseAdapter):
     def _memory_used_mb(self, sensor_id: str) -> SensorReading:
         value = psutil.virtual_memory().used / 1_048_576
         return SensorReading(
+            producer_time=producer_time_for("psutil", READ_CLOCK),
             sensor_id=sensor_id,
             sensor_type="memory_used_mb",
             value=round(value, 2),
@@ -210,6 +214,7 @@ class PsutilAdapter(BaseAdapter):
         battery = psutil.sensors_battery()
         if battery is None:
             return SensorReading(
+                producer_time=producer_time_for("psutil", READ_CLOCK),
                 sensor_id=sensor_id,
                 sensor_type="battery_percent",
                 value=0.0,
@@ -219,6 +224,7 @@ class PsutilAdapter(BaseAdapter):
                 metadata={"unavailable": True, "reason": "no battery detected"},
             )
         return SensorReading(
+            producer_time=producer_time_for("psutil", READ_CLOCK),
             sensor_id=sensor_id,
             sensor_type="battery_percent",
             value=float(battery.percent),
@@ -231,6 +237,7 @@ class PsutilAdapter(BaseAdapter):
         battery = psutil.sensors_battery()
         if battery is None:
             return SensorReading(
+                producer_time=producer_time_for("psutil", READ_CLOCK),
                 sensor_id=sensor_id,
                 sensor_type="battery_time_remaining",
                 value=0.0,
@@ -243,6 +250,7 @@ class PsutilAdapter(BaseAdapter):
         # POWER_TIME_UNLIMITED (-2) or POWER_TIME_UNKNOWN (-1) or charging
         if battery.power_plugged or secsleft < 0:
             return SensorReading(
+                producer_time=producer_time_for("psutil", READ_CLOCK),
                 sensor_id=sensor_id,
                 sensor_type="battery_time_remaining",
                 value=-1.0,
@@ -252,6 +260,7 @@ class PsutilAdapter(BaseAdapter):
                 metadata={"power_plugged": battery.power_plugged},
             )
         return SensorReading(
+            producer_time=producer_time_for("psutil", READ_CLOCK),
             sensor_id=sensor_id,
             sensor_type="battery_time_remaining",
             value=round(secsleft / 60.0, 2),
@@ -274,6 +283,7 @@ class PsutilAdapter(BaseAdapter):
                     readings = temps[key]
                     avg = sum(r.current for r in readings) / len(readings)
                     return SensorReading(
+                        producer_time=producer_time_for("psutil", READ_CLOCK),
                         sensor_id=sensor_id,
                         sensor_type="cpu_temp",
                         value=round(avg, 2),
@@ -288,6 +298,7 @@ class PsutilAdapter(BaseAdapter):
             temp = await self._read_osx_cpu_temp()
             if temp is not None:
                 return SensorReading(
+                    producer_time=producer_time_for("psutil", READ_CLOCK),
                     sensor_id=sensor_id,
                     sensor_type="cpu_temp",
                     value=temp,
@@ -302,6 +313,7 @@ class PsutilAdapter(BaseAdapter):
 
         # (iii) Not available
         return SensorReading(
+            producer_time=producer_time_for("psutil", READ_CLOCK),
             sensor_id=sensor_id,
             sensor_type="cpu_temp",
             value=0.0,
@@ -335,6 +347,7 @@ class PsutilAdapter(BaseAdapter):
     def _disk_percent(self, sensor_id: str) -> SensorReading:
         value = psutil.disk_usage("/").percent
         return SensorReading(
+            producer_time=producer_time_for("psutil", READ_CLOCK),
             sensor_id=sensor_id,
             sensor_type="disk_percent",
             value=float(value),
@@ -347,6 +360,7 @@ class PsutilAdapter(BaseAdapter):
         counters = psutil.disk_io_counters()
         if counters is None:
             return SensorReading(
+                producer_time=producer_time_for("psutil", READ_CLOCK),
                 sensor_id=sensor_id,
                 sensor_type=f"disk_{metric}",
                 value=0.0,
@@ -372,6 +386,7 @@ class PsutilAdapter(BaseAdapter):
             unit = "count"
             sensor_type = "disk_read_count"
         return SensorReading(
+            producer_time=producer_time_for("psutil", READ_CLOCK),
             sensor_id=sensor_id,
             sensor_type=sensor_type,
             value=round(value, 2),
@@ -392,6 +407,7 @@ class PsutilAdapter(BaseAdapter):
             value = counters.bytes_recv / 1_048_576
             sensor_type = "net_bytes_recv_mb"
         return SensorReading(
+            producer_time=producer_time_for("psutil", READ_CLOCK),
             sensor_id=sensor_id,
             sensor_type=sensor_type,
             value=round(value, 2),
@@ -404,6 +420,7 @@ class PsutilAdapter(BaseAdapter):
         self, sensor_id: str, sensor_type: str, exc: Exception
     ) -> SensorReading:
         return SensorReading(
+            producer_time=producer_time_for("psutil", READ_CLOCK),
             sensor_id=sensor_id,
             sensor_type=sensor_type,
             value=0.0,
@@ -456,6 +473,7 @@ class PsutilAdapter(BaseAdapter):
                 pids.append(pid)
 
         return SensorReading(
+            producer_time=producer_time_for("psutil", READ_CLOCK),
             sensor_id=sensor_id,
             sensor_type=sensor_type,
             value=float(len(filtered)),
@@ -493,6 +511,7 @@ class PsutilAdapter(BaseAdapter):
 
         usernames = [s["name"] for s in sessions if s["name"]]
         return SensorReading(
+            producer_time=producer_time_for("psutil", READ_CLOCK),
             sensor_id=sensor_id,
             sensor_type=sensor_type,
             value=float(len(sessions)),
@@ -512,6 +531,7 @@ class PsutilAdapter(BaseAdapter):
     async def _battery_drain_rate_async(self, sensor_id: str) -> SensorReading:
         """Compute % drain per hour using StateStore history."""
         _zero = SensorReading(
+            producer_time=producer_time_for("psutil", READ_CLOCK),
             sensor_id=sensor_id,
             sensor_type="battery_drain_rate",
             value=0.0,
@@ -548,6 +568,7 @@ class PsutilAdapter(BaseAdapter):
 
         if elapsed_hours < 0.5:
             return SensorReading(
+                producer_time=producer_time_for("psutil", READ_CLOCK),
                 sensor_id=sensor_id,
                 sensor_type="battery_drain_rate",
                 value=0.0,
@@ -561,6 +582,7 @@ class PsutilAdapter(BaseAdapter):
 
         if drain_rate <= 0:
             return SensorReading(
+                producer_time=producer_time_for("psutil", READ_CLOCK),
                 sensor_id=sensor_id,
                 sensor_type="battery_drain_rate",
                 value=0.0,
@@ -573,6 +595,7 @@ class PsutilAdapter(BaseAdapter):
         sleep_suspected = elapsed_hours > 0.33 and len(history) < 2
 
         return SensorReading(
+            producer_time=producer_time_for("psutil", READ_CLOCK),
             sensor_id=sensor_id,
             sensor_type="battery_drain_rate",
             value=round(drain_rate, 3),
@@ -595,6 +618,7 @@ class PsutilAdapter(BaseAdapter):
             processes, quality = await self._systemd_inhibit_async()
 
         return SensorReading(
+            producer_time=producer_time_for("psutil", READ_CLOCK),
             sensor_id=sensor_id,
             sensor_type="sleep_blocking_process",
             value=float(len(processes)),

@@ -228,6 +228,7 @@ def test_a_reading_that_reports_its_own_time_keeps_it_under_the_firmware_stateme
         timestamp=measured_ms,
         quality=1.0,
         metadata={"source": "psutil"},
+        producer_time="reported",
     )
     body = dispatcher._format_approval_message(
         device_id="dev",
