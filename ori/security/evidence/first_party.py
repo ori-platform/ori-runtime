@@ -282,9 +282,11 @@ class FirstPartyEvidenceAttestor:
         except BaseException:
             # Nothing that failed to open is kept open: neither is reachable
             # from close() until it is assigned below.
-            if ledger is not None:
-                ledger.close()
-            chain.close()
+            try:
+                if ledger is not None:
+                    ledger.close()
+            finally:
+                chain.close()
             raise
         self._anchor = anchor
         self._device_key = key

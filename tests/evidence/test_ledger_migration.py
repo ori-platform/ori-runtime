@@ -524,7 +524,9 @@ async def test_a_failed_trigger_upgrade_leaves_the_previous_trigger(
     assert "custody_recorded_at_ms" not in row[0]
 
 
-@pytest.mark.parametrize("failure", ["chain_device_check", "anchor_record"])
+@pytest.mark.parametrize(
+    "failure", ["chain_device_check", "anchor_record", "anchor_record_and_ledger_close"]
+)
 async def test_a_failed_evidence_open_leaves_no_connection_open(
     tmp_path, monkeypatch, failure
 ):
@@ -553,6 +555,16 @@ async def test_a_failed_evidence_open_leaves_no_connection_open(
     else:
         monkeypatch.setattr(
             ledger_module.EvidenceDeliveryLedger, "record_current_anchor", _boom
+        )
+    if failure == "anchor_record_and_ledger_close":
+        real_close = ledger_module.EvidenceDeliveryLedger.close
+
+        def _close_then_raise(self):
+            real_close(self)
+            raise OSError("close failed")
+
+        monkeypatch.setattr(
+            ledger_module.EvidenceDeliveryLedger, "close", _close_then_raise
         )
 
     attestor = FirstPartyEvidenceAttestor(

@@ -720,6 +720,20 @@ async def test_the_largest_exact_gap_count_is_published(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_the_longest_admitted_event_type_is_published(monkeypatch):
+    monkeypatch.setattr(node_heartbeat_module, "now_ms", lambda: 1_000_000)
+    client = _FakeClient()
+    snapshot = {
+        "critical": False,
+        "evidence": {"enabled": True, "action_event_type": "A" * 64},
+    }
+    await _publisher(client=client, snapshot=snapshot)._tick(client)
+    payload = json.loads(client.published[0][1])
+    assert payload["status"] == "healthy"
+    assert payload["evidence"]["action_event_type"] == "A" * 64
+
+
+@pytest.mark.asyncio
 async def test_a_mapped_heartbeat_that_cannot_be_encoded_publishes_degraded(
     monkeypatch, caplog
 ):
