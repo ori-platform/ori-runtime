@@ -17,6 +17,7 @@ from ori.security.gateway_messages import (
     GatewayMessageAuthConfig,
     GatewayMessageAuthenticator,
 )
+from tests.waiting import settle, wait_until
 
 
 class _FakeClient:
@@ -637,12 +638,12 @@ async def test_a_failing_publish_does_not_end_the_heartbeat(monkeypatch):
     publisher._interval_seconds = 0.01
     shutdown = asyncio.Event()
     serving = asyncio.create_task(publisher.serve_until(shutdown))
-    for _ in range(200):
-        if len(client.published) >= 2 or serving.done():
-            break
-        await asyncio.sleep(0.005)
+    await wait_until(
+        lambda: len(client.published) >= 2 or serving.done(),
+        what="two heartbeats published after a failed one, or the publisher ending",
+    )
     shutdown.set()
-    await asyncio.wait_for(serving, timeout=5.0)
+    await settle([serving], what="the publisher stopping on shutdown")
     assert len(client.published) >= 2, "the heartbeat stopped after one failure"
     assert calls >= 3
 
