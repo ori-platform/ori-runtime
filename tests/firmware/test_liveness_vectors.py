@@ -38,7 +38,7 @@ VECTOR_PATH = (
     Path(__file__).parent.parent / "fixtures" / "firmware_liveness_vectors.json"
 )
 
-# The digest of ori-specs/firmware-commands/liveness-vectors-v1.json. That
+# The digest of ori-specs/firmware-commands/liveness-at-v-1-vectors-v2.json. That
 # file is the authority and the fixture here is a byte-for-byte mirror of
 # it; expectations are never generated from runtime behaviour.
 #
@@ -49,7 +49,7 @@ VECTOR_PATH = (
 # the artifact in the contract repo is also what lets a reviewer ratify
 # the cases rather than a hexadecimal number.
 SPEC_DECLARED_SHA256 = (
-    "199c9a3363e4fd05073ee43ce67a8cff278945f0fc2a5fc644df02e7ee70c44d"
+    "a12c31346e9d27f9ba7e37f660e37ffd339ab2f3e245563521dfb0d967fb74ed"
 )
 
 VECTORS = json.loads(VECTOR_PATH.read_text())
@@ -145,7 +145,7 @@ def test_corpus_matches_the_spec_declared_digest() -> None:
 
 
 def test_corpus_targets_this_contract() -> None:
-    assert VECTORS["contract"].startswith("ori-specs/firmware-commands/v1.md")
+    assert VECTORS["contract"].startswith("ori-specs/firmware-commands/v2.md")
     assert VECTORS["version"] == 1
     # The transport rules travel with the corpus: a retained liveness
     # message is the broker asserting, for a runtime that may since have

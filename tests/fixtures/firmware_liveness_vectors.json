@@ -1,5 +1,5 @@
 {
-  "contract": "ori-specs/firmware-commands/v1.md#runtime-liveness",
+  "contract": "ori-specs/firmware-commands/v2.md#runtime-liveness",
   "version": 1,
   "comment": "Cross-language golden vectors for runtime liveness. The runtime signer (Python) must produce these exact bytes; the device verifier (C) must accept every case in 'cases' and refuse every case in 'reject_cases' and 'transport_reject_cases', with the declared reason, evaluated against the declared verifier_context. Signed with the TEST-ONLY runtime command seed below - never use it in production. Liveness reuses the runtime command key deliberately: the device pins one runtime key and there is no second trust root.",
   "acceptance_order": [

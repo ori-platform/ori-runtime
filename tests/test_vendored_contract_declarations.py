@@ -39,7 +39,7 @@ CITING_MEMBERS = ("contract", "vector_set", "canonicalisation", "canonical_form"
 _TOKEN = re.compile(r"^(?P<stem>.+)-v(?P<version>[1-9][0-9]*)\.json$")
 _OWN = re.compile(
     r"^(?:ori-specs[/ ])?(?P<name>[a-z][a-z0-9-]*)/v(?P<version>[1-9][0-9]*)"
-    r"(?:\.md)?(?:\s|$)"
+    r"(?:\.md)?(?:#[A-Za-z0-9._-]+)?(?:\s|$)"
 )
 _CITED = re.compile(r"(?P<name>[a-z][a-z0-9-]*)/v(?P<version>[1-9][0-9]*)\b")
 _CLAIM = re.compile(r"^v(?P<version>[1-9][0-9]*)$")

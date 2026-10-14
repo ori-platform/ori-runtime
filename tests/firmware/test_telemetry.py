@@ -835,7 +835,7 @@ class TestFailClosed:
     def test_closed_vocabularies_match_the_contract_exactly(self) -> None:
         from ori.security.firmware.telemetry import CLOSED_FAULT_DETAILS
 
-        # The whole mapping, transcribed from firmware-telemetry/v1.md rather
+        # The whole mapping, transcribed from firmware-telemetry/v2.md's Fault Codes section rather
         # than derived from the implementation. Asserting only the keys would
         # let an invented token be added to an existing set unnoticed, which is
         # the over-acceptance this enforcement exists to stop.

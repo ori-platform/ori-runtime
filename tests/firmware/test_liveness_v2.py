@@ -36,7 +36,7 @@ VECTOR_PATH = (
 )
 # The digest firmware-commands/v2 Golden vectors pins for this corpus.
 SPEC_DECLARED_SHA256 = (
-    "26296ed9e2a9e5b2fafff4dd1be3cf0deccef674c148818e9f1205ff805da13d"
+    "21a76aa7367acad1c0910625a01ee89303c031541228dc2c38356cdf4bc39632"
 )
 VECTORS = json.loads(VECTOR_PATH.read_text())
 SEED = bytes.fromhex(VECTORS["runtime_test_seed_hex"])

@@ -1,7 +1,7 @@
 {
   "contract": "ori-specs/firmware-commands/v2.md",
   "version": 2,
-  "comment": "Golden vectors for runtime liveness at v 2, under firmware-commands/v2 Runtime Liveness at v 2. A device must accept every case in 'cases', leaving the held nonce its 'expected_held_nonce' gives, and refuse every case in 'reject_cases', 'precedence_cases' and 'transport_reject_cases' with the declared reason, leaving the held nonce unchanged. Each case is evaluated against its own verifier_context. Signed with the TEST-ONLY runtime and rogue seeds of the v1 liveness corpus; never use them in production. Nonces are fixed fixture values; a runtime draws its own from a cryptographically secure source. Each rollout sequence is a run of deliveries to one device that accepts the listed versions, starting from its verifier_context; each delivery gives its reason, null when accepted, and the device state after it.",
+  "comment": "Golden vectors for runtime liveness at v 2, under firmware-commands/v2 Runtime Liveness at v 2. A device must accept every case in 'cases', leaving the held nonce its 'expected_held_nonce' gives, and refuse every case in 'reject_cases', 'precedence_cases' and 'transport_reject_cases' with the declared reason, leaving the held nonce unchanged. Each case is evaluated against its own verifier_context. Signed with the TEST-ONLY runtime and rogue seeds of the v 1 liveness corpus; never use them in production. Nonces are fixed fixture values; a runtime draws its own from a cryptographically secure source. Each rollout sequence is a run of deliveries to one device that accepts the listed versions, starting from its verifier_context; each delivery gives its reason, null when accepted, and the device state after it.",
   "acceptance_order": [
     "retained",
     "parses",
@@ -78,7 +78,7 @@
     },
     {
       "name": "liveness_v1_clears_held_nonce",
-      "note": "an accepted v 1 message clears the held nonce; v1's grammar is unchanged",
+      "note": "an accepted v 1 message clears the held nonce; the grammar at v 1 is unchanged",
       "verifier_context": {
         "device_id": "ori-fw-7c9f2b3a",
         "boot_id": 41,
@@ -123,7 +123,7 @@
     },
     {
       "name": "liveness_v2_after_sequence_gap",
-      "note": "a gap in runtime_seq is accepted, as in v1",
+      "note": "a gap in runtime_seq is accepted, as at v 1",
       "verifier_context": {
         "device_id": "ori-fw-7c9f2b3a",
         "boot_id": 41,
@@ -266,7 +266,7 @@
       "name": "reject_v1_with_nonce",
       "reason": "malformed",
       "signature_valid": true,
-      "note": "v 1 has v1's grammar exactly; nonce is an extra field there",
+      "note": "v 1 has the grammar of Runtime Liveness exactly; nonce is an extra field there",
       "verifier_context": {
         "device_id": "ori-fw-7c9f2b3a",
         "boot_id": 41,
