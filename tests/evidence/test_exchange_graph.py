@@ -672,6 +672,16 @@ VECTOR_EXEMPTIONS = {
             "covers the bytes the authority must match."
         ),
     },
+    ("gateway_api", "payload-members-v2"): {
+        "owner": "the runtime",
+        "status": "proof_pending",
+        "tracking": "ori-runtime#866",
+        "reason": (
+            "The runtime does not yet implement the payload-members rule this "
+            "corpus pins. Vendored so the drift check covers the bytes it "
+            "must match."
+        ),
+    },
     ("gateway_evidence_carriage", "return-path"): {
         "owner": "the site gateway",
         "status": "proof_pending",
