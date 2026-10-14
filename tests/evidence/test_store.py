@@ -207,11 +207,14 @@ def test_the_original_error_survives_a_rollback_on_a_discarded_connection(
     with store.transaction() as connection:
         connection.execute("CREATE TABLE t (x INTEGER)")
 
-    with pytest.raises(LookupError, match="the original"):
+    def write_then_fail() -> None:
         with store.transaction() as connection:
             connection.execute("INSERT INTO t VALUES (1)")
             store._discard()
             raise LookupError("the original")
+
+    with pytest.raises(LookupError, match="the original"):
+        write_then_fail()
 
     assert store.connection.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 0
     store.close()
