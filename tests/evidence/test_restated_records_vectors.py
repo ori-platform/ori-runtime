@@ -137,6 +137,22 @@ class CorpusDispositionVerifier:
         )
 
 
+REFERENCE = "sha256:" + "a" * 64
+
+
+def _registration_bytes(registration: dict[str, Any]) -> str:
+    """The sealed registration an obligation carries; the corpus fixes no bytes."""
+    return canonical_json(
+        {
+            "v": 1,
+            "device_id": DEVICE,
+            "pubkey_hex": registration["pubkey_hex"],
+            "anchor_epoch_id": registration["anchor_epoch_id"],
+            "commissioning_digest": REFERENCE,
+        }
+    ).decode()
+
+
 class FaultingConnection:
     """The ledger's connection, failing one statement of one attempt."""
 
@@ -262,9 +278,10 @@ class Receiver:
                     DEVICE,
                     reg["anchor_epoch_id"],
                     reg["pubkey_hex"],
-                    "sha256:" + "a" * 64,
-                    "{}",
-                    f"sha256:{n:064x}",
+                    REFERENCE,
+                    _registration_bytes(reg),
+                    "sha256:"
+                    + hashlib.sha256(_registration_bytes(reg).encode()).hexdigest(),
                     1787000000000,
                     state["state"],
                     state["closed_at_ms"],
@@ -879,6 +896,95 @@ DAMAGED_RECORDS = [
         "disposition_first_application",
         "UPDATE evidence_outbox SET artifact_json = ?",
         (json.dumps({"device_id": DEVICE, "anchor_epoch_id": ""}),),
+    ),
+    # A state inside its vocabulary that its own fields contradict.
+    (
+        "custody_different_time_active_generation",
+        "UPDATE evidence_delivery_ledger SET custody_state = 'none'"
+        " WHERE local_seq = 1",
+        (),
+    ),
+    (
+        "receipt_union_over_held_prefix",
+        "UPDATE evidence_delivery_ledger SET receipt_state = 'none'"
+        " WHERE local_seq = 1",
+        (),
+    ),
+    (
+        "custody_first_acceptance",
+        "UPDATE evidence_delivery_ledger SET receipt_state = 'accepted'"
+        " WHERE local_seq = 1",
+        (),
+    ),
+    # A confirmation record lost from under its epoch.
+    (
+        "confirmation_different_actor",
+        "UPDATE evidence_registration_confirmation SET anchor_epoch_id = ?",
+        ("sha256:" + "f" * 64,),
+    ),
+    # Obligations held to their state, closing and sealed bytes.
+    (
+        "confirmation_for_another_epoch",
+        "UPDATE evidence_registration_obligation SET state = 'broken'",
+        (),
+    ),
+    (
+        "confirmation_for_another_epoch",
+        "UPDATE evidence_registration_obligation SET closed_reason = 'garbage'",
+        (),
+    ),
+    (
+        "confirmation_for_another_epoch",
+        "UPDATE evidence_registration_obligation SET state = 'confirmed'",
+        (),
+    ),
+    (
+        "confirmation_for_another_epoch",
+        "UPDATE evidence_registration_obligation SET closed_at_ms = 1",
+        (),
+    ),
+    (
+        "confirmation_identical",
+        "UPDATE evidence_registration_obligation"
+        " SET artifact_json = artifact_json || ' '",
+        (),
+    ),
+    (
+        "confirmation_identical",
+        "UPDATE evidence_registration_obligation SET anchor_epoch_id = ?",
+        ("sha256:" + "f" * 64,),
+    ),
+    (
+        "confirmation_identical",
+        "UPDATE evidence_registration_obligation SET device_id = 'another-device'",
+        (),
+    ),
+    (
+        "confirmation_identical",
+        "UPDATE evidence_registration_obligation SET pubkey_hex = ?",
+        ("0" * 64,),
+    ),
+    # A gap in a gapless sequence.
+    (
+        "custody_first_acceptance",
+        "UPDATE evidence_delivery_ledger SET local_seq = -1 WHERE local_seq = 1",
+        (),
+    ),
+    (
+        "custody_first_acceptance",
+        "UPDATE evidence_delivery_ledger SET local_seq = ? WHERE local_seq = 1",
+        (TOO_LARGE,),
+    ),
+    # Sealed artifacts and stops held to themselves.
+    (
+        "disposition_first_application",
+        "UPDATE evidence_outbox SET artifact_type = 'bogus'",
+        (),
+    ),
+    (
+        "disposition_no_new_effect_is_superseded",
+        "UPDATE evidence_offer_stop SET scope = 'identity'",
+        (),
     ),
 ]
 

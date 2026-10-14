@@ -41,6 +41,9 @@ from ori.security.evidence.ledger import (
 DEVICE = "energy-monitor-ikeja-01"
 EPOCH = "epoch-0002"
 KEY_ID = "anchor-key-2"
+# Of the shapes a release holds: a derived custody generation and authority key.
+CUSTODY_KEY = "hkdf-sha256:" + "0" * 32
+RECEIPT_KEY = "sha256:" + "1" * 64
 
 
 @pytest.fixture
@@ -985,10 +988,10 @@ def test_resealing_the_same_row_is_still_idempotent(rig):
     "call",
     [
         lambda ledger: ledger._apply_verified_custody(
-            99, custody_at_ms=1, key_id="gw-1", recorded_at_ms=1
+            99, custody_at_ms=1, key_id=CUSTODY_KEY, recorded_at_ms=1
         ),
         lambda ledger: ledger._apply_verified_receipt(
-            99, receipt_at_ms=1, key_id="auth-1"
+            99, receipt_at_ms=1, key_id=RECEIPT_KEY
         ),
         lambda ledger: ledger.record_attempt(99, at_ms=1, failure="timeout"),
         lambda ledger: ledger.record_delivery_failure(
@@ -1289,9 +1292,11 @@ def test_complete_delivery_state_is_still_accepted(rig):
     _, chain, ledger = rig
     row = ledger.seal(_append(chain, 1), sealed_at_ms=1)
     ledger._apply_verified_custody(
-        row["local_seq"], custody_at_ms=2, key_id="gw-1", recorded_at_ms=2
+        row["local_seq"], custody_at_ms=2, key_id=CUSTODY_KEY, recorded_at_ms=2
     )
-    ledger._apply_verified_receipt(row["local_seq"], receipt_at_ms=3, key_id="auth-1")
+    ledger._apply_verified_receipt(
+        row["local_seq"], receipt_at_ms=3, key_id=RECEIPT_KEY
+    )
     stored = ledger.find(row["event_id"])
     assert stored["custody_state"] == CUSTODY_HELD
     assert stored["receipt_state"] == RECEIPT_ACCEPTED
@@ -1427,7 +1432,7 @@ def _held(ledger, chain, action_log_id: int, *, courier: int, recorded: int) -> 
     ledger._apply_verified_custody(
         row["local_seq"],
         custody_at_ms=courier,
-        key_id="hkdf-sha256:" + "0" * 32,
+        key_id=CUSTODY_KEY,
         recorded_at_ms=recorded,
     )
     return int(row["local_seq"])
@@ -1466,7 +1471,7 @@ def test_a_receipt_ends_the_wait(rig):
     _, chain, ledger = rig
     first = _held(ledger, chain, 1, courier=100, recorded=100)
     _held(ledger, chain, 2, courier=400, recorded=400)
-    ledger._apply_verified_receipt(first, receipt_at_ms=500, key_id="auth-1")
+    ledger._apply_verified_receipt(first, receipt_at_ms=500, key_id=RECEIPT_KEY)
     assert ledger.awaiting_receipt(1_000) == (1, 600)
 
 
@@ -1481,7 +1486,7 @@ def test_the_store_refuses_to_rewrite_the_recorded_custody_time(rig):
             (seq,),
         )
     ledger._apply_verified_custody(
-        seq, custody_at_ms=100, key_id="gw-1", recorded_at_ms=900
+        seq, custody_at_ms=100, key_id=CUSTODY_KEY, recorded_at_ms=900
     )
     assert ledger.awaiting_receipt(1_000) == (1, 900)
 

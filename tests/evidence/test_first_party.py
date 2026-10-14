@@ -359,7 +359,7 @@ class TestHealthReadingSurface:
             lambda: ledger._apply_verified_custody(
                 1,
                 custody_at_ms=1787000000900,
-                key_id="gw-secret-1",
+                key_id="hkdf-sha256:" + "0" * 32,
                 recorded_at_ms=1787000000900,
             )
         )
@@ -371,7 +371,7 @@ class TestHealthReadingSurface:
         # The authority accepts it. Only now is the envelope out of both queues.
         run(
             lambda: ledger._apply_verified_receipt(
-                1, receipt_at_ms=1787000001000, key_id="auth-receipt-1"
+                1, receipt_at_ms=1787000001000, key_id="sha256:" + "1" * 64
             )
         )
         assert run(ledger.awaiting_custody_count) == 0

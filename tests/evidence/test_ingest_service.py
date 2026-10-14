@@ -1176,8 +1176,16 @@ def test_a_retained_refusal_outside_the_vocabulary_reads_as_a_store_fault(rig):
         service.rejections
 
 
-@pytest.mark.parametrize("column", ["chain_row_digest", "envelope_digest"])
-def test_a_well_formed_but_wrong_sealed_digest_is_a_store_fault(rig, column):
+@pytest.mark.parametrize(
+    "column, value",
+    [
+        ("chain_row_digest", "sha256:" + "0" * 64),
+        ("envelope_digest", "sha256:" + "0" * 64),
+        ("device_id", "another-device"),
+        ("anchor_epoch_id", "sha256:" + "9" * 64),
+    ],
+)
+def test_a_well_formed_but_wrong_sealed_column_is_a_store_fault(rig, column, value):
     """Held to the envelope bytes the device signed, not trusted on its spelling."""
     _, chain, ledger, service = rig
     for n in (1, 2):
@@ -1186,7 +1194,7 @@ def test_a_well_formed_but_wrong_sealed_digest_is_a_store_fault(rig, column):
     ledger._connection.execute("DROP TRIGGER evidence_ledger_no_sealed_update")
     ledger._connection.execute(
         f"UPDATE evidence_delivery_ledger SET {column} = ? WHERE local_seq = 2",
-        ("sha256:" + "0" * 64,),
+        (value,),
     )
 
     outcome = service.accept_receipt(artifact)
