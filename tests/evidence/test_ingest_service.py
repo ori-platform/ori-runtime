@@ -1174,3 +1174,64 @@ def test_a_retained_refusal_outside_the_vocabulary_reads_as_a_store_fault(rig):
     )
     with pytest.raises(EvidenceStoreFaultError):
         service.rejections
+
+
+@pytest.mark.parametrize("column", ["chain_row_digest", "envelope_digest"])
+def test_a_well_formed_but_wrong_sealed_digest_is_a_store_fault(rig, column):
+    """Held to the envelope bytes the device signed, not trusted on its spelling."""
+    _, chain, ledger, service = rig
+    for n in (1, 2):
+        _seal(chain, ledger, n)
+    artifact = _receipt(ledger, 1, 2)
+    ledger._connection.execute("DROP TRIGGER evidence_ledger_no_sealed_update")
+    ledger._connection.execute(
+        f"UPDATE evidence_delivery_ledger SET {column} = ? WHERE local_seq = 2",
+        ("sha256:" + "0" * 64,),
+    )
+
+    outcome = service.accept_receipt(artifact)
+
+    assert (outcome.state, outcome.reason) == ("undecided", None)
+    assert service.application_storage_fault is True
+    assert [r["local_seq"] for r in ledger.undelivered()] == [1, 2]
+
+
+def test_a_damaged_obligation_state_leaves_a_registration_disposition_undecided(rig):
+    """Read as "not open" it would refuse the disposition superseded, retiring it."""
+    from ori.security.evidence.disposition import (
+        DispositionScope,
+        DispositionValue,
+        VerifiedDisposition,
+    )
+
+    key, _, ledger, service = rig
+    _register(ledger, key)
+    obligation = ledger.open_registration_obligation(EPOCH)
+    digest = str(obligation["artifact_digest"])
+    ledger._connection.execute(
+        "DROP TRIGGER evidence_registration_obligation_closed_is_final"
+    )
+    ledger._connection.execute("PRAGMA ignore_check_constraints=ON")
+    ledger._connection.execute(
+        "UPDATE evidence_registration_obligation SET state = 'broken'"
+    )
+    ledger._connection.execute("PRAGMA ignore_check_constraints=OFF")
+
+    class _Verifier:
+        def verify_disposition(self, artifact: object) -> VerifiedDisposition:
+            return VerifiedDisposition(
+                digest="sha256:" + "d" * 64,
+                triggering_digest=digest,
+                device_id=DEVICE,
+                anchor_epoch_id=EPOCH,
+                scope=DispositionScope.ARTIFACT,
+                value=DispositionValue.ARTIFACT_TERMINAL,
+                decided_at_ms=1787000003000,
+                key_id="sha256:" + "e" * 64,
+            )
+
+    service._disposition_verifier = _Verifier()
+    outcome = service.accept_disposition({})
+
+    assert (outcome.state, outcome.reason) == ("undecided", None)
+    assert ledger.last_disposition() is None

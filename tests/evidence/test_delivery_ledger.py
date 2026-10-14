@@ -1425,7 +1425,10 @@ def test_the_cross_purpose_receipt_is_signed_by_the_epoch_key():
 def _held(ledger, chain, action_log_id: int, *, courier: int, recorded: int) -> int:
     row = ledger.seal(_append(chain, action_log_id), sealed_at_ms=1)
     ledger._apply_verified_custody(
-        row["local_seq"], custody_at_ms=courier, key_id="gw-1", recorded_at_ms=recorded
+        row["local_seq"],
+        custody_at_ms=courier,
+        key_id="hkdf-sha256:" + "0" * 32,
+        recorded_at_ms=recorded,
     )
     return int(row["local_seq"])
 

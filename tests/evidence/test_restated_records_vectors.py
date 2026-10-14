@@ -84,6 +84,7 @@ ROUTED = {
     "delivery_receipt": ARTIFACT_RECEIPT,
     "epoch_confirmation": ARTIFACT_EPOCH,
 }
+ENVELOPE_LABEL = "ori-specs evidence-exchange/v3 restated records envelope {}"
 FAULT = "disk I/O error"
 ROLLBACK_FAULT = "disk I/O error during rollback"
 
@@ -236,7 +237,9 @@ class Receiver:
                     DEVICE,
                     env["anchor_epoch_id"],
                     "corpus-sealing-key",
-                    "{}",
+                    # The bytes the corpus's envelope digest is taken over
+                    # (its sealed_note), so the stored digest holds to them.
+                    ENVELOPE_LABEL.format(env["local_seq"]),
                     env["envelope_digest"],
                     env["chain_row_digest"],
                     1787000000000 + n,
@@ -774,3 +777,130 @@ def test_a_nested_application_is_refused_and_the_outer_rolls_back_whole(
         ).fetchone()[0]
     )
     assert attempts == 0
+
+
+def _corrupt(held: Receiver, sql: str, params: tuple[Any, ...] = ()) -> None:
+    """Damage one stored value past the schema's own guards, then restore them."""
+
+    def damage() -> None:
+        db = held.connection._real
+        triggers = db.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'trigger'"
+        ).fetchall()
+        for row in triggers:
+            db.execute(f'DROP TRIGGER "{row[0]}"')
+        db.execute("PRAGMA ignore_check_constraints=ON")
+        db.execute(sql, params)
+        db.execute("PRAGMA ignore_check_constraints=OFF")
+        for row in triggers:
+            db.execute(row[1])
+
+    held.executor.run(damage)
+
+
+TOO_LARGE = 2**53
+BAD_KEY = "not-a-key"
+
+DAMAGED_RECORDS = [
+    (
+        "custody_identical_repeat",
+        "UPDATE evidence_delivery_ledger SET custody_at_ms = ? WHERE local_seq = 1",
+        (TOO_LARGE,),
+    ),
+    (
+        "custody_identical_repeat",
+        "UPDATE evidence_delivery_ledger SET custody_key_id = ? WHERE local_seq = 1",
+        (BAD_KEY,),
+    ),
+    (
+        "custody_identical_repeat",
+        "UPDATE evidence_delivery_ledger SET custody_recorded_at_ms = ?"
+        " WHERE local_seq = 1",
+        (TOO_LARGE,),
+    ),
+    (
+        "custody_identical_repeat",
+        "UPDATE evidence_delivery_ledger SET custody_state = 'broken'"
+        " WHERE local_seq = 1",
+        (),
+    ),
+    (
+        "custody_first_acceptance",
+        "UPDATE evidence_delivery_ledger SET envelope_digest = ? WHERE local_seq = 1",
+        ("sha256:" + "0" * 64,),
+    ),
+    (
+        "receipt_union_over_held_prefix",
+        "UPDATE evidence_delivery_ledger SET receipt_state = 'broken'"
+        " WHERE local_seq = 1",
+        (),
+    ),
+    (
+        "receipt_union_over_held_prefix",
+        "UPDATE evidence_delivery_ledger SET receipt_at_ms = ? WHERE local_seq = 1",
+        (TOO_LARGE,),
+    ),
+    (
+        "receipt_union_over_held_prefix",
+        "UPDATE evidence_delivery_ledger SET receipt_key_id = ? WHERE local_seq = 1",
+        (BAD_KEY,),
+    ),
+    (
+        "receipt_identical_repeat",
+        "UPDATE evidence_delivery_ledger SET envelope_digest = ? WHERE local_seq = 2",
+        ("sha256:" + "0" * 64,),
+    ),
+    (
+        "confirmation_identical",
+        "UPDATE evidence_registration_confirmation SET confirmed_at_ms = ?",
+        (TOO_LARGE,),
+    ),
+    (
+        "confirmation_identical",
+        "UPDATE evidence_registration_confirmation SET key_id = ?",
+        (BAD_KEY,),
+    ),
+    (
+        "confirmation_identical",
+        "UPDATE evidence_registration_confirmation SET applied_at_ms = ?",
+        (TOO_LARGE,),
+    ),
+    (
+        "confirmation_identical",
+        "UPDATE evidence_registration_confirmation SET device_id = 'another-device'",
+        (),
+    ),
+    (
+        "confirmation_identical",
+        "UPDATE evidence_registration_confirmation SET pubkey_hex = 'bad-key'",
+        (),
+    ),
+    (
+        "disposition_first_application",
+        "UPDATE evidence_outbox SET artifact_json = ?",
+        (json.dumps({"device_id": DEVICE, "anchor_epoch_id": ""}),),
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    "name, sql, params",
+    DAMAGED_RECORDS,
+    ids=[f"{name}-{i}" for i, (name, _, _) in enumerate(DAMAGED_RECORDS)],
+)
+def test_a_damaged_held_record_is_a_store_fault_never_a_decision(
+    receiver, name, sql, params
+) -> None:
+    """Neither a retiring refusal blaming the artifact, nor a rewrite of the
+    first record: the store failed, so the artifact is left undecided."""
+    case = next(c for c in CASES if c["name"] == name)
+    held = receiver(case["held_before"])
+    _corrupt(held, sql, params)
+    damaged = held.executor.run(Receiver._read, held.connection._real)
+
+    outcome, acknowledgement = held.deliver(dict(case, store_fault=None))
+
+    assert (outcome.state, outcome.reason) == (UNDECIDED, None), outcome
+    assert acknowledgement is None
+    assert held.service.application_storage_fault is True
+    assert held.executor.run(Receiver._read, held.connection._real) == damaged

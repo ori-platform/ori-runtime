@@ -38,6 +38,7 @@ from ori.security.evidence.authority_keys import (
     PURPOSE_RECEIPT,
     STATUS_ACTIVE,
     AuthorityKey,
+    derive_key_id,
 )
 from ori.security.evidence.canonical import canonical_json
 from ori.security.evidence.first_party import FirstPartyEvidenceAttestor
@@ -58,14 +59,17 @@ REFERENCE = "sha256:" + "ab" * 32
 OTHER_REFERENCE = "sha256:" + "cd" * 32
 EPOCH_SEED = bytes(range(32, 64))
 RECEIPT_SEED = bytes(range(64, 96))
-EPOCH_KEY_ID = "authority-epoch-1"
-RECEIPT_KEY_ID = "authority-receipt-1"
 
 
 def _pub(seed: bytes) -> str:
     return (
         Ed25519PrivateKey.from_private_bytes(seed).public_key().public_bytes_raw().hex()
     )
+
+
+# Derived as the registry loader derives them, the only shape a release holds.
+EPOCH_KEY_ID = derive_key_id(bytes.fromhex(_pub(EPOCH_SEED)))
+RECEIPT_KEY_ID = derive_key_id(bytes.fromhex(_pub(RECEIPT_SEED)))
 
 
 def _registry() -> dict[tuple[str, str], AuthorityKey]:
