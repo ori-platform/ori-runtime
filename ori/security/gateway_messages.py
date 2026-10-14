@@ -225,6 +225,11 @@ class GatewayMessageAuthenticator:
             ttl_ms=config.replay_ttl_ms
         )
 
+    @property
+    def max_skew_ms(self) -> int:
+        """How far a signing time may sit from the receiver's clock."""
+        return self._max_skew_ms
+
     def sign(
         self,
         payload: Mapping[str, Any],

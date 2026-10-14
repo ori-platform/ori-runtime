@@ -1251,3 +1251,81 @@ async def test_a_courier_time_past_the_integer_zone_is_not_stored(
     assert routed.reason == "queue_full"
     stored = rig.envelope(int(sealed["local_seq"]))["courier_answer_at_ms"]
     assert stored is not None and abs(stored) <= 2**53 - 1
+
+
+RECEIVED_AT = 1787000004000
+
+
+@pytest.mark.parametrize("acknowledged_at_ms", [RECEIVED_AT + 10**9, 1, RECEIVED_AT])
+async def test_an_unauthenticated_courier_time_is_never_the_ordering_time(
+    rig, acknowledged_at_ms
+):
+    """Anything on the site network can send it, so receipt orders the answer."""
+    sealed = rig.seal(1)
+    payload = _ack(
+        ARTIFACT_DELIVERY_ENVELOPE,
+        sealed["envelope_digest"],
+        outcome="refused",
+        reason="queue_full",
+        secret=None,
+    )
+    payload["acknowledged_at_ms"] = acknowledged_at_ms
+
+    await _router(rig, authenticated=False).handle_ack(json.dumps(payload).encode())
+
+    stored = rig.envelope(int(sealed["local_seq"]))["courier_answer_at_ms"]
+    assert stored == RECEIVED_AT
+
+
+async def test_an_authenticated_signing_time_inside_the_skew_orders_the_answer(rig):
+    sealed = rig.seal(1)
+    signed_at = RECEIVED_AT + 1_000
+    await _router(rig).handle_ack(
+        _ack(
+            ARTIFACT_DELIVERY_ENVELOPE,
+            sealed["envelope_digest"],
+            outcome="refused",
+            reason="queue_full",
+            signed_at_ms=signed_at,
+        )
+    )
+
+    stored = rig.envelope(int(sealed["local_seq"]))["courier_answer_at_ms"]
+    assert stored == signed_at
+
+
+@pytest.mark.parametrize(
+    "signed_at, expected",
+    [
+        (RECEIVED_AT + 300_000, RECEIVED_AT + 300_000),
+        (RECEIVED_AT + 300_001, RECEIVED_AT),
+        (2**53, RECEIVED_AT),
+        (True, RECEIVED_AT),
+        (None, RECEIVED_AT),
+    ],
+)
+def test_a_signing_time_past_the_skew_or_the_zone_is_replaced_by_receipt(
+    rig, signed_at, expected
+):
+    """Checked by the router itself, not only by the envelope verifier before it."""
+    router = _router(rig)
+    assert router._message_auth is not None
+    assert router._message_auth.max_skew_ms == 300_000
+    assert router._answered_at(signed_at, RECEIVED_AT) == expected
+
+
+async def test_an_auth_block_on_an_unauthenticated_route_orders_nothing(rig):
+    """With gateway auth off nothing was verified, whatever the message claims."""
+    sealed = rig.seal(1)
+    payload = _ack(
+        ARTIFACT_DELIVERY_ENVELOPE,
+        sealed["envelope_digest"],
+        outcome="refused",
+        reason="queue_full",
+    )
+    payload["auth"]["signed_at_ms"] = RECEIVED_AT + 1_000
+
+    await _router(rig, authenticated=False).handle_ack(json.dumps(payload).encode())
+
+    stored = rig.envelope(int(sealed["local_seq"]))["courier_answer_at_ms"]
+    assert stored == RECEIVED_AT

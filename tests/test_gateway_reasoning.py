@@ -356,3 +356,43 @@ def test_mqtt_gateway_reasoner_fails_lazily_when_paho_missing(monkeypatch):
             device_id="site-a",
             client_factory=lambda **_: _FakeClient(),
         )
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("tokens_used", float("nan")),
+        ("tokens_used", float("inf")),
+        ("latency_ms", float("-inf")),
+        ("tokens_used", "many"),
+        ("latency_ms", [1]),
+        ("confidence", float("nan")),
+        ("confidence", float("inf")),
+        ("confidence", "sure"),
+    ],
+)
+async def test_a_response_field_with_no_value_is_the_gateways_error(field, value):
+    """Refused at parse as GatewayReasoningError, never left to a caller's fallback."""
+    response = {
+        "text": "Gateway response.",
+        "model": "gateway",
+        "tokens_used": 10,
+        "latency_ms": 50,
+        "confidence": 0.5,
+        "action_tier": "A",
+        "proposed_action": None,
+    }
+    response[field] = value
+    fake = _FakeClient(
+        response_builder=lambda req: {"request_id": req["request_id"], **response}
+    )
+    reasoner = MqttGatewayReasoner(
+        broker_url="mqtt://broker.local",
+        device_id="site-a",
+        timeout_ms=1000,
+        client_factory=lambda **_: fake,
+        request_id_factory=lambda: "req-bad-field",
+    )
+
+    with pytest.raises(GatewayReasoningError, match="malformed|not finite"):
+        await reasoner.reason("Prompt", event=_event(), rule_result=_rule("A"))

@@ -193,8 +193,7 @@ class EvidenceOutboundAckRouter:
             return AckRouted(ROUTED_REFUSED, "payload is not an object")
 
         # The courier's own time for this answer, which orders it against the
-        # answers before it: the authenticated signing time where envelopes
-        # are authenticated, otherwise the acknowledgement's own field.
+        # answers before it: the authenticated signing time, and only that.
         auth_block = decoded.get("auth")
         signed_at = (
             auth_block.get("signed_at_ms") if isinstance(auth_block, dict) else None
@@ -234,17 +233,7 @@ class EvidenceOutboundAckRouter:
             return AckRouted(ROUTED_REFUSED, f"unknown outcome {outcome!r}")
 
         at_ms = self._now()
-        if self._message_auth is None:
-            signed_at = decoded.get("acknowledged_at_ms")
-        # Outside the integer zone a time is no JSON integer, and the store
-        # refuses one past 64 bits; the receive time stands in.
-        answered_at_ms = (
-            int(signed_at)
-            if isinstance(signed_at, int)
-            and not isinstance(signed_at, bool)
-            and abs(signed_at) <= _JSON_INTEGER_MAX
-            else at_ms
-        )
+        answered_at_ms = self._answered_at(signed_at, at_ms)
         if artifact_type == ARTIFACT_DELIVERY_ENVELOPE:
             return await self._apply_to_envelope(
                 digest, outcome, reason, at_ms, answered_at_ms
@@ -252,6 +241,25 @@ class EvidenceOutboundAckRouter:
         return await self._apply_to_artifact(
             artifact_type, digest, outcome, reason, at_ms
         )
+
+    def _answered_at(self, signed_at: Any, at_ms: int) -> int:
+        """The courier's time for an answer, or the receive time in its place.
+
+        Only an authenticated signing time is the courier's account, and only
+        inside the integer zone and no further ahead of receipt than the
+        envelope's own clock skew allows. Unauthenticated, anything on the
+        site network could pin the ordering time ahead, so receipt stands in.
+        """
+        if self._message_auth is None:
+            return at_ms
+        if (
+            isinstance(signed_at, int)
+            and not isinstance(signed_at, bool)
+            and abs(signed_at) <= _JSON_INTEGER_MAX
+            and signed_at <= at_ms + self._message_auth.max_skew_ms
+        ):
+            return int(signed_at)
+        return at_ms
 
     async def _apply_to_envelope(
         self, digest: str, outcome: str, reason: str, at_ms: int, answered_at_ms: int

@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -384,19 +385,28 @@ def _reasoning_result_from_response(payload: dict[str, Any]) -> ReasoningResult:
     action_tier = str(payload.get("action_tier", "") or "")
     if action_tier not in _VALID_ACTION_TIERS:
         raise GatewayReasoningError("gateway response action_tier is invalid")
-    proposed_action = payload.get("proposed_action")
-    if proposed_action is not None:
-        proposed_action = str(proposed_action)
-    return ReasoningResult(
-        text=str(payload.get("text", "") or ""),
-        tier="gateway",
-        model=str(payload.get("model", "") or "gateway"),
-        tokens_used=int(payload.get("tokens_used", 0) or 0),
-        latency_ms=int(payload.get("latency_ms", 0) or 0),
-        confidence=float(payload.get("confidence", 0.0) or 0.0),
-        action_tier=action_tier,
-        proposed_action=proposed_action,
-    )
+    # A response field that will not convert, or converts to NaN or an
+    # infinity, is the gateway's error, refused here rather than left to a
+    # caller's fallback.
+    try:
+        proposed_action = payload.get("proposed_action")
+        if proposed_action is not None:
+            proposed_action = str(proposed_action)
+        result = ReasoningResult(
+            text=str(payload.get("text", "") or ""),
+            tier="gateway",
+            model=str(payload.get("model", "") or "gateway"),
+            tokens_used=int(payload.get("tokens_used", 0) or 0),
+            latency_ms=int(payload.get("latency_ms", 0) or 0),
+            confidence=float(payload.get("confidence", 0.0) or 0.0),
+            action_tier=action_tier,
+            proposed_action=proposed_action,
+        )
+    except (TypeError, ValueError, OverflowError, RecursionError) as exc:
+        raise GatewayReasoningError("gateway response field is malformed") from exc
+    if not math.isfinite(result.confidence):
+        raise GatewayReasoningError("gateway response confidence is not finite")
+    return result
 
 
 def _default_client_factory(*, client_id: str) -> Any:
