@@ -84,6 +84,7 @@ ROUTED = {
     "epoch_confirmation": ARTIFACT_EPOCH,
 }
 FAULT = "disk I/O error"
+ROLLBACK_FAULT = "disk I/O error during rollback"
 
 
 def _secret(generation: str) -> str:
@@ -146,18 +147,20 @@ class FaultingConnection:
     def arm(self, point: str | None) -> None:
         self.point, self.fired, self._writes = point, False, 0
 
-    def _fail_rollback(self, statement: str) -> bool:
-        """Fail the commit, and stay armed for the rollback that follows it."""
-        if statement == "COMMIT":
-            self._commit_failed = True
-            raise sqlite3.OperationalError(FAULT)
-        return self.__dict__.get("_commit_failed", False)
-
     def __getattr__(self, name: str) -> Any:
         return getattr(self._real, name)
 
     def execute(self, sql: str, params: Any = ()) -> sqlite3.Cursor:
         statement = " ".join(sql.split()).upper()
+        if self.point == "commit_and_rollback":
+            # The commit fails, and so does the rollback that follows it.
+            if statement == "COMMIT" and not self.fired:
+                self.fired = True
+                raise sqlite3.OperationalError(FAULT)
+            if statement == "ROLLBACK" and self.fired:
+                self.point = None
+                raise sqlite3.OperationalError(ROLLBACK_FAULT)
+            return self._real.execute(sql, params)
         if self.point is not None and not self.fired:
             if statement.startswith(("UPDATE", "INSERT")):
                 self._writes += 1
@@ -165,11 +168,6 @@ class FaultingConnection:
                 (self.point == "at_read" and statement.startswith("SELECT"))
                 or (self.point == "after_first_write" and self._writes == 2)
                 or (self.point == "at_commit" and statement == "COMMIT")
-                or (
-                    self.point == "commit_and_rollback"
-                    and statement in ("COMMIT", "ROLLBACK")
-                    and self._fail_rollback(statement)
-                )
                 or (
                     self.point == "at_refusal_record"
                     and statement.startswith("INSERT INTO EVIDENCE_INGEST_REFUSALS")
@@ -650,8 +648,8 @@ def test_a_failed_rollback_does_not_strand_later_applications(receiver) -> None:
     assert held.connection.fired
     assert first.outcome.state == UNDECIDED and first.acknowledgement is None
     assert held.service.application_storage_fault is True
-    assert held.executor.run(held.ledger._connection.execute, "SELECT 1") is not None
     assert not held.ledger._connection.in_transaction
+    assert held.executor.run(_pragmas, held.ledger._connection) == LEDGER_PRAGMAS
 
     again = _route(held, case, fault=None)
     assert again.outcome.state == ACCEPTED
@@ -672,7 +670,7 @@ def test_a_ledger_that_cannot_reopen_at_once_reopens_before_the_next_write(
 ) -> None:
     case = next(c for c in CASES if c["name"] == "receipt_store_fault_at_commit")
     held = receiver(case["held_before"])
-    reopen = held.ledger._reopen
+    reopen = held.ledger._store._reopen
     attempts: list[int] = []
 
     def flaky() -> None:
@@ -681,7 +679,7 @@ def test_a_ledger_that_cannot_reopen_at_once_reopens_before_the_next_write(
             raise sqlite3.OperationalError("unable to open database file")
         reopen()
 
-    monkeypatch.setattr(held.ledger, "_reopen", flaky)
+    monkeypatch.setattr(held.ledger._store, "_reopen", flaky)
 
     first = _route(held, case, fault="commit_and_rollback")
     assert first.outcome.state == UNDECIDED
@@ -689,3 +687,48 @@ def test_a_ledger_that_cannot_reopen_at_once_reopens_before_the_next_write(
     again = _route(held, case, fault=None)
     assert again.outcome.state == ACCEPTED
     assert len(attempts) == 2
+
+
+LEDGER_PRAGMAS = {
+    "busy_timeout": 5000,
+    "journal_mode": "wal",
+    "foreign_keys": 1,
+    "synchronous": 2,
+}
+
+
+def _pragmas(connection: sqlite3.Connection) -> dict[str, Any]:
+    return {
+        name: connection.execute(f"PRAGMA {name}").fetchone()[0]
+        for name in LEDGER_PRAGMAS
+    }
+
+
+def test_an_outbound_transaction_whose_rollback_fails_heals_for_inbound(
+    receiver,
+) -> None:
+    """The boot counter's COMMIT and ROLLBACK both fail: the commit's error is
+    the one raised, and the next inbound artifact still applies."""
+    case = next(c for c in CASES if c["name"] == "receipt_store_fault_at_commit")
+    held = receiver(case["held_before"])
+    held.connection.arm("commit_and_rollback")
+
+    with pytest.raises(sqlite3.OperationalError) as raised:
+        held.executor.run(held.ledger._allocate_boot_id)
+    assert str(raised.value) == FAULT
+    assert held.connection.fired
+
+    applied = _route(held, case, fault=None)
+    assert applied.outcome.state == ACCEPTED
+    assert held.executor.run(_pragmas, held.ledger._connection) == LEDGER_PRAGMAS
+
+
+def test_a_transaction_left_open_anywhere_is_healed_by_the_next_one(receiver) -> None:
+    case = next(c for c in CASES if c["name"] == "receipt_store_fault_at_commit")
+    held = receiver(case["held_before"])
+    held.executor.run(held.connection._real.execute, "BEGIN IMMEDIATE")
+    assert held.executor.run(lambda: held.ledger._connection.in_transaction)
+
+    applied = _route(held, case, fault=None)
+
+    assert applied.outcome.state == ACCEPTED

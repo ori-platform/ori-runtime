@@ -45,8 +45,8 @@ from ori.security.evidence.chain import ENVELOPE_FIELDS, SCHEMA_VERSION
 from ori.security.evidence.device_key import EvidenceDeviceKey
 from ori.security.evidence.disposition import DispositionValue, VerifiedDisposition
 from ori.security.evidence.ingest import REJECT_REASONS
-from ori.security.evidence.policy import safe_failure_reason
 from ori.security.evidence.registration import reoffer_due
+from ori.security.evidence.store import EvidenceConnection, EvidenceStoreFaultError
 
 ENVELOPE_VERSION = 1
 ENVELOPE_DOMAIN = b"ori.evidence_delivery_envelope.v1\x00"
@@ -714,10 +714,6 @@ class UnsealedRegistrationError(DeliveryLedgerError):
     """A confirmation names no registration this device sealed."""
 
 
-class EvidenceStoreFaultError(RuntimeError):
-    """The store could not give a record a decision needs; nothing was decided."""
-
-
 def is_store_fault(exc: BaseException) -> bool:
     """Whether *exc* is an operational failure of the store, per evidence-exchange/v3.
 
@@ -744,17 +740,6 @@ def _stored_int(value: object, what: str) -> int:
     if type(value) is not int:
         raise EvidenceStoreFaultError(f"the stored {what} is not an integer")
     return value
-
-
-def _configure(connection: sqlite3.Connection) -> None:
-    """The pragmas every ledger connection runs under, in this order."""
-    connection.execute("PRAGMA busy_timeout=5000")
-    connection.execute("PRAGMA journal_mode=WAL")
-    # Enforced for this connection. The triggers are what make the constraint
-    # hold for every other one, since this pragma is off by default and cannot
-    # be relied on to travel with the file.
-    connection.execute("PRAGMA foreign_keys=ON")
-    connection.execute("PRAGMA synchronous=FULL")
 
 
 def _retained_refusal(row: sqlite3.Row) -> sqlite3.Row:
@@ -849,27 +834,18 @@ class EvidenceDeliveryLedger:
         self._key_id = str(key_id)
         self._db_path = str(db_path)
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._reopen_owed = False
-        self._connection = sqlite3.connect(self._db_path, isolation_level=None)
-        self._connection.row_factory = sqlite3.Row
-        # Set before any other pragma. Switching to WAL takes a brief exclusive
-        # lock of its own, so a busy timeout applied afterwards is applied too
-        # late to protect the statement that most needs it — several processes
-        # opening the same database at once is exactly when that happens.
-        #
-        # SQLite's default is zero: a concurrent writer gets "database is
-        # locked" immediately rather than waiting. Every write here is short and
-        # bounded, so waiting is the right answer; failing turns ordinary
-        # contention into a spurious evidence failure, and evidence that fails
-        # because two things happened at once is worse than useless.
+        # SQLite's default busy timeout is zero: a concurrent writer gets
+        # "database is locked" at once rather than waiting. Every write here is
+        # short and bounded, so the store waits, and evidence does not fail
+        # because two things happened at once.
+        self._store = EvidenceConnection(self._db_path)
         try:
-            _configure(self._connection)
             self._connection.executescript(_SCHEMA)
             self._add_outbox_withdrawal_column()
             self._add_courier_answer_column()
         except BaseException:
             # A ledger that failed to open holds no connection, and no lock.
-            self._connection.close()
+            self._store.close()
             raise
         self._boot_id: int | None = None
 
@@ -909,12 +885,11 @@ class EvidenceDeliveryLedger:
         # A ledger created before the column holds the trigger without it. One
         # transaction, so no write ever meets the table with no trigger at all;
         # a failure closes the connection, which rolls the swap back.
-        self._connection.execute("BEGIN IMMEDIATE")
-        self._connection.execute(
-            "DROP TRIGGER IF EXISTS evidence_ledger_custody_is_final"
-        )
-        self._connection.execute(_CUSTODY_FINAL_TRIGGER)
-        self._connection.execute("COMMIT")
+        with self._store.transaction() as connection:
+            connection.execute(
+                "DROP TRIGGER IF EXISTS evidence_ledger_custody_is_final"
+            )
+            connection.execute(_CUSTODY_FINAL_TRIGGER)
         # On every open, not only the first: a release rolled back to records
         # the courier's answer in last_failure, and a roll-forward must carry
         # it over or the episode it opened is reopened by the next refusal.
@@ -1012,27 +987,22 @@ class EvidenceDeliveryLedger:
         within one run are one boot, and re-allocating per checkpoint would
         make an ordinary interval look like a restart.
         """
-        self._connection.execute("BEGIN IMMEDIATE")
-        try:
-            row = self._connection.execute(
+        with self._store.transaction() as connection:
+            row = connection.execute(
                 "SELECT boot_id FROM evidence_boot_counter WHERE id = 1"
             ).fetchone()
             if row is None:
                 boot_id = 1
-                self._connection.execute(
+                connection.execute(
                     "INSERT INTO evidence_boot_counter (id, boot_id) VALUES (1, ?)",
                     (boot_id,),
                 )
             else:
                 boot_id = int(row["boot_id"]) + 1
-                self._connection.execute(
+                connection.execute(
                     "UPDATE evidence_boot_counter SET boot_id = ? WHERE id = 1",
                     (boot_id,),
                 )
-            self._connection.execute("COMMIT")
-        except BaseException:
-            self._connection.execute("ROLLBACK")
-            raise
         return boot_id
 
     def checkpoint(self, *, issued_at_ms: int) -> dict[str, Any]:
@@ -1401,13 +1371,11 @@ class EvidenceDeliveryLedger:
         digest = "sha256:" + hashlib.sha256(wire).hexdigest()
         epoch = str(registration["anchor_epoch_id"])
         reference = str(registration["commissioning_digest"])
-        self._connection.execute("BEGIN IMMEDIATE")
-        try:
+        with self._store.transaction():
             current = self.open_registration_obligation(epoch)
             if current is not None and str(current["commissioning_reference"]) == (
                 reference
             ):
-                self._connection.execute("ROLLBACK")
                 return current
             if current is not None:
                 self._connection.execute(
@@ -1461,10 +1429,6 @@ class EvidenceDeliveryLedger:
                     int(sealed_at_ms),
                 ),
             )
-            self._connection.execute("COMMIT")
-        except BaseException:
-            self._connection.execute("ROLLBACK")
-            raise
         sealed = self.open_registration_obligation(epoch)
         if sealed is None:  # pragma: no cover - the insert committed
             raise DeliveryLedgerError("the sealed registration could not be read back")
@@ -1801,7 +1765,16 @@ class EvidenceDeliveryLedger:
         return count, None if last is None else _retained_refusal(last)
 
     def close(self) -> None:
-        self._live.close()
+        self._store.close()
+
+    @property
+    def _connection(self) -> sqlite3.Connection:
+        """The store's live connection, reopened when a failure discarded it."""
+        return self._store.connection
+
+    @_connection.setter
+    def _connection(self, connection: sqlite3.Connection) -> None:
+        self._store.connection = connection
 
     @contextmanager
     def _application(self) -> Iterator[None]:
@@ -1810,73 +1783,8 @@ class EvidenceDeliveryLedger:
         Anything raised inside it, or by its commit, rolls every write back,
         so an artifact is applied whole or not at all.
         """
-        self._connection.execute("BEGIN IMMEDIATE")
-        try:
+        with self._store.transaction():
             yield
-            self._connection.execute("COMMIT")
-        except BaseException:
-            self._roll_back()
-            raise
-
-    def _roll_back(self) -> None:
-        if not self._connection.in_transaction:
-            return
-        try:
-            self._connection.execute("ROLLBACK")
-        except Exception as exc:
-            logger.error("[evidence] rollback failed (%s)", safe_failure_reason(exc))
-            # A connection left inside a transaction refuses every later
-            # BEGIN. Closing it discards the transaction, and SQLite rolls
-            # back what reached the file when it is next opened.
-            self._discard_connection()
-
-    def _discard_connection(self) -> None:
-        self._reopen_owed = True
-        try:
-            self._live.close()
-        except Exception as exc:
-            logger.error(
-                "[evidence] a failed connection did not close (%s)",
-                safe_failure_reason(exc),
-            )
-        try:
-            self._reopen()
-        except Exception as exc:
-            logger.error(
-                "[evidence] the ledger could not be reopened (%s); the next "
-                "use retries",
-                safe_failure_reason(exc),
-            )
-
-    @property
-    def _connection(self) -> sqlite3.Connection:
-        """The live connection, reopened first when a failed rollback discarded it.
-
-        Every read and write goes through here, so none reaches the discarded
-        one; a reopen that fails is a store fault, retried on the next use.
-        """
-        if self._reopen_owed:
-            self._reopen()
-        return self._live
-
-    @_connection.setter
-    def _connection(self, connection: sqlite3.Connection) -> None:
-        self._live = connection
-
-    def _reopen(self) -> None:
-        """A fresh connection to the same file, or a store fault."""
-        try:
-            connection = sqlite3.connect(self._db_path, isolation_level=None)
-        except sqlite3.Error as exc:
-            raise EvidenceStoreFaultError("the ledger could not be reopened") from exc
-        try:
-            connection.row_factory = sqlite3.Row
-            _configure(connection)
-        except BaseException:
-            connection.close()
-            raise
-        self._connection = connection
-        self._reopen_owed = False
 
     # -- sealing ---------------------------------------------------------
 
@@ -1913,44 +1821,39 @@ class EvidenceDeliveryLedger:
         if existing is not None:
             return self._reconcile_reseal(existing, carried)
 
-        try:
-            self._connection.execute("BEGIN IMMEDIATE")
-        except sqlite3.Error as exc:
-            raise DeliveryLedgerError("could not begin a seal") from exc
-        try:
-            existing = self.find(event_id)
-            if existing is not None:
-                self._connection.execute("ROLLBACK")
-                return self._reconcile_reseal(existing, carried)
-
-            local_seq = self._next_local_seq()
-            envelope = self._build_envelope(row, local_seq, sealed_at_ms)
-            wire = canonical_json(envelope)
-            self._connection.execute(
-                """
-                INSERT INTO evidence_delivery_ledger (
-                    local_seq, event_id, chain_seq, device_id, anchor_epoch_id,
-                    key_id, envelope_json, envelope_digest, chain_row_digest,
-                    sealed_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    local_seq,
-                    event_id,
-                    int(row["seq"]),
-                    self._device_id,
-                    self._anchor_epoch_id,
-                    self._key_id,
-                    wire.decode("utf-8"),
-                    "sha256:" + hashlib.sha256(wire).hexdigest(),
-                    envelope["chain_row_digest"],
-                    int(sealed_at_ms),
-                ),
-            )
-            self._connection.execute("COMMIT")
-        except BaseException:
-            self._connection.execute("ROLLBACK")
-            raise
+        with self._store.transaction(
+            on_begin_failure=lambda: DeliveryLedgerError("could not begin a seal")
+        ):
+            # Re-checked inside the transaction: another writer may have sealed
+            # this event between the lookup above and the lock.
+            raced = self.find(event_id)
+            if raced is None:
+                local_seq = self._next_local_seq()
+                envelope = self._build_envelope(row, local_seq, sealed_at_ms)
+                wire = canonical_json(envelope)
+                self._connection.execute(
+                    """
+                    INSERT INTO evidence_delivery_ledger (
+                        local_seq, event_id, chain_seq, device_id, anchor_epoch_id,
+                        key_id, envelope_json, envelope_digest, chain_row_digest,
+                        sealed_at_ms
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        local_seq,
+                        event_id,
+                        int(row["seq"]),
+                        self._device_id,
+                        self._anchor_epoch_id,
+                        self._key_id,
+                        wire.decode("utf-8"),
+                        "sha256:" + hashlib.sha256(wire).hexdigest(),
+                        envelope["chain_row_digest"],
+                        int(sealed_at_ms),
+                    ),
+                )
+        if raced is not None:
+            return self._reconcile_reseal(raced, carried)
         sealed = self.find(event_id)
         if sealed is None:  # pragma: no cover - the insert committed
             raise DeliveryLedgerError("the sealed envelope could not be read back")
@@ -2461,8 +2364,7 @@ class EvidenceDeliveryLedger:
         """
         if answer not in COURIER_ANSWERS:
             raise DeliveryLedgerError(f"{answer!r} is not a courier answer")
-        self._connection.execute("BEGIN IMMEDIATE")
-        try:
+        with self._store.transaction():
             self._require_sealed(local_seq)
             row = self._connection.execute(
                 "SELECT courier_answer, courier_answer_at_ms"
@@ -2480,7 +2382,6 @@ class EvidenceDeliveryLedger:
             if stored_at is not None and int(answered_at_ms) <= int(stored_at):
                 # Older than, or the same as, the answer already standing: a
                 # delayed acknowledgement does not move the answer back.
-                self._connection.execute("COMMIT")
                 return False
             opens = answer == "refused" and stored != "refused"
             if opens:
@@ -2509,10 +2410,6 @@ class EvidenceDeliveryLedger:
                     """,
                     (answer, int(answered_at_ms), int(at_ms), int(local_seq)),
                 )
-            self._connection.execute("COMMIT")
-        except BaseException:
-            self._connection.execute("ROLLBACK")
-            raise
         return opens
 
     def record_delivery_failure(

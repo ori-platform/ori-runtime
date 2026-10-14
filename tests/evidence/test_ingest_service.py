@@ -1059,8 +1059,22 @@ def _disposition_service(service, triggering: str):
 
 @pytest.mark.parametrize(
     "stored",
-    ["{not json", "[]", json.dumps({"anchor_epoch_id": EPOCH}), '{"device_id": 7}'],
-    ids=["not-json", "not-an-object", "no-device", "device-not-text"],
+    [
+        "{not json",
+        "[]",
+        json.dumps({"anchor_epoch_id": EPOCH}),
+        json.dumps({"device_id": 7, "anchor_epoch_id": EPOCH}),
+        json.dumps({"device_id": DEVICE}),
+        json.dumps({"device_id": DEVICE, "anchor_epoch_id": 7}),
+    ],
+    ids=[
+        "not-json",
+        "not-an-object",
+        "no-device",
+        "device-not-text",
+        "no-epoch",
+        "epoch-not-text",
+    ],
 )
 def test_an_unreadable_sealed_artifact_leaves_a_disposition_undecided(rig, stored):
     """A sealed copy that cannot be read is not an artifact never sealed, nor
@@ -1080,17 +1094,40 @@ def test_an_unreadable_sealed_artifact_leaves_a_disposition_undecided(rig, store
     assert ledger.last_disposition() is None
 
 
-def test_an_envelope_whose_device_is_not_text_leaves_a_disposition_undecided(rig):
-    """Read as text it would be "None" or a byte string, another device."""
+@pytest.mark.parametrize("column", ["device_id", "anchor_epoch_id"])
+def test_an_envelope_whose_binding_is_not_text_leaves_a_disposition_undecided(
+    rig, column
+):
+    """Read as text it would be "None" or a byte string: another device or epoch."""
     _, chain, ledger, service = rig
     _seal(chain, ledger, 1)
     envelope_digest = str(ledger.find_by_local_seq(1)["envelope_digest"])
     ledger._connection.execute("DROP TRIGGER evidence_ledger_no_sealed_update")
     ledger._connection.execute(
-        "UPDATE evidence_delivery_ledger SET device_id = x'00' WHERE local_seq = 1"
+        f"UPDATE evidence_delivery_ledger SET {column} = x'00' WHERE local_seq = 1"
     )
 
     outcome = _disposition_service(service, envelope_digest).accept_disposition({})
+
+    assert outcome.state == "undecided" and outcome.reason is None
+    assert ledger.last_disposition() is None
+
+
+def test_a_sealed_artifact_whose_type_is_not_text_leaves_a_disposition_undecided(
+    rig,
+):
+    _, _, ledger, service = rig
+    triggering = "sha256:" + "c" * 64
+    ledger._connection.execute("PRAGMA ignore_check_constraints=ON")
+    ledger._connection.execute(
+        "INSERT INTO evidence_outbox"
+        " (artifact_type, artifact_json, artifact_digest, created_at_ms)"
+        " VALUES (x'00', ?, ?, 1)",
+        (json.dumps({"device_id": DEVICE, "anchor_epoch_id": EPOCH}), triggering),
+    )
+    ledger._connection.execute("PRAGMA ignore_check_constraints=OFF")
+
+    outcome = _disposition_service(service, triggering).accept_disposition({})
 
     assert outcome.state == "undecided" and outcome.reason is None
     assert ledger.last_disposition() is None

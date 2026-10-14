@@ -30,6 +30,7 @@ from typing import Any
 
 from ori.security.evidence.canonical import canonical_json
 from ori.security.evidence.device_key import EvidenceDeviceKey
+from ori.security.evidence.store import EvidenceConnection
 
 SCHEMA_VERSION = "ori.evidence.v2"
 GENESIS_PREIMAGE = b"ori.evidence.genesis.v2"
@@ -161,31 +162,17 @@ class EvidenceChain:
         self._key = device_key
         self._device_id = str(device_id)
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
-        self._connection = sqlite3.connect(self._db_path, isolation_level=None)
-        self._connection.row_factory = sqlite3.Row
-        # Set before any other pragma. Switching to WAL takes a brief exclusive
-        # lock of its own, so a busy timeout applied afterwards is applied too
-        # late to protect the statement that most needs it — several processes
-        # opening the same database at once is exactly when that happens.
-        #
-        # SQLite's default is zero: a concurrent writer gets "database is
-        # locked" immediately rather than waiting. Every write here is short and
-        # bounded, so waiting is the right answer; failing turns ordinary
-        # contention into a spurious evidence failure, and evidence that fails
-        # because two things happened at once is worse than useless.
+        # SQLite's default busy timeout is zero, so a concurrent writer would
+        # fail at once rather than wait; durability is FULL, because a row
+        # acknowledged as signed and then lost to a power cut is worse than a
+        # slower append. Both are set by the store.
+        self._store = EvidenceConnection(self._db_path)
         try:
-            self._connection.execute("PRAGMA busy_timeout=5000")
-            self._connection.execute("PRAGMA journal_mode=WAL")
-            # Durability matters more than throughput here: a row acknowledged
-            # as signed and then lost to a power cut is worse than a slower
-            # append, because the action it attests already happened.
-            self._connection.execute("PRAGMA synchronous=FULL")
-            self._connection.execute("PRAGMA foreign_keys=ON")
             self._connection.executescript(_SCHEMA)
             self._assert_single_device()
         except BaseException:
             # A chain that failed to open holds no connection.
-            self._connection.close()
+            self._store.close()
             raise
 
     def _assert_single_device(self) -> None:
@@ -217,7 +204,12 @@ class EvidenceChain:
         return self._key.public_key_hex
 
     def close(self) -> None:
-        self._connection.close()
+        self._store.close()
+
+    @property
+    def _connection(self) -> sqlite3.Connection:
+        """The store's live connection, reopened when a failure discarded it."""
+        return self._store.connection
 
     def head(self) -> tuple[int, str]:
         """The current (seq, event_hash). Genesis when the chain is empty."""
@@ -227,6 +219,56 @@ class EvidenceChain:
         if row is None:
             return 0, GENESIS_PREV_EVENT_HASH
         return int(row["seq"]), str(row["event_hash"])
+
+    def _append_in_transaction(
+        self,
+        event_id: str,
+        event_type: str,
+        device_id: str,
+        payload: Any,
+        payload_bytes: bytes,
+        emitted_at_ms: int,
+        created_at_ms: int,
+    ) -> None:
+        """The append itself, inside the transaction `append` holds."""
+        previous_seq, previous_hash = self.head()
+        sequence_num = previous_seq + 1
+        envelope = {
+            "device_id": device_id,
+            "emitted_at_ms": int(emitted_at_ms),
+            "event_id": event_id,
+            "event_type": event_type,
+            "payload": payload,
+            "prev_event_hash": previous_hash,
+            "schema_version": SCHEMA_VERSION,
+            "sequence_num": sequence_num,
+        }
+        signed_bytes = canonical_json(envelope)
+        event_hash = hashlib.sha256(signed_bytes).hexdigest()
+        signature = "ed25519:" + _b64(self._key.sign(signed_bytes))
+
+        self._connection.execute(
+            """
+            INSERT INTO evidence_chain (
+                seq, event_id, event_type, device_id, emitted_at_ms,
+                payload_json, canonical_json, event_hash, prev_event_hash,
+                signature, exported, exported_at_ms, created_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)
+            """,
+            (
+                sequence_num,
+                event_id,
+                event_type,
+                device_id,
+                int(emitted_at_ms),
+                payload_bytes.decode("utf-8"),
+                signed_bytes.decode("utf-8"),
+                event_hash,
+                previous_hash,
+                signature,
+                int(created_at_ms),
+            ),
+        )
 
     def find_by_event_id(self, event_id: str) -> sqlite3.Row | None:
         row: sqlite3.Row | None = self._connection.execute(
@@ -301,60 +343,27 @@ class EvidenceChain:
         if existing is not None:
             return self._reconcile_replay(existing, intent)
 
-        try:
-            self._connection.execute("BEGIN IMMEDIATE")
-        except sqlite3.Error as exc:
-            raise EvidenceChainError("could not begin an evidence append") from exc
-        try:
+        with self._store.transaction(
+            on_begin_failure=lambda: EvidenceChainError(
+                "could not begin an evidence append"
+            )
+        ):
             # Re-check inside the transaction: another writer may have appended
             # this same event between the lookup above and the lock.
-            existing = self.find_by_event_id(event_id)
-            if existing is not None:
-                self._connection.execute("ROLLBACK")
-                return self._reconcile_replay(existing, intent)
-
-            previous_seq, previous_hash = self.head()
-            sequence_num = previous_seq + 1
-            envelope = {
-                "device_id": device_id,
-                "emitted_at_ms": int(emitted_at_ms),
-                "event_id": event_id,
-                "event_type": event_type,
-                "payload": payload,
-                "prev_event_hash": previous_hash,
-                "schema_version": SCHEMA_VERSION,
-                "sequence_num": sequence_num,
-            }
-            signed_bytes = canonical_json(envelope)
-            event_hash = hashlib.sha256(signed_bytes).hexdigest()
-            signature = "ed25519:" + _b64(self._key.sign(signed_bytes))
-
-            self._connection.execute(
-                """
-                INSERT INTO evidence_chain (
-                    seq, event_id, event_type, device_id, emitted_at_ms,
-                    payload_json, canonical_json, event_hash, prev_event_hash,
-                    signature, exported, exported_at_ms, created_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)
-                """,
-                (
-                    sequence_num,
+            raced = self.find_by_event_id(event_id)
+            if raced is None:
+                self._append_in_transaction(
                     event_id,
                     event_type,
                     device_id,
-                    int(emitted_at_ms),
-                    payload_bytes.decode("utf-8"),
-                    signed_bytes.decode("utf-8"),
-                    event_hash,
-                    previous_hash,
-                    signature,
-                    int(created_at_ms),
-                ),
-            )
-            self._connection.execute("COMMIT")
-        except BaseException:
-            self._connection.execute("ROLLBACK")
-            raise
+                    payload,
+                    payload_bytes,
+                    emitted_at_ms,
+                    created_at_ms,
+                )
+        if raced is not None:
+            return self._reconcile_replay(raced, intent)
+
         row = self.find_by_event_id(event_id)
         if row is None:  # pragma: no cover - the insert committed
             raise EvidenceChainError("the appended row could not be read back")

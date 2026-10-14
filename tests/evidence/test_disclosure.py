@@ -301,7 +301,8 @@ REVIEWED_OPERATOR_MESSAGES = frozenset(
         "[evidence] rollback failed (%s)",
         # Reviewed: a sanitised category and this device's own behaviour.
         "[evidence] a failed connection did not close (%s)",
-        "[evidence] the ledger could not be reopened (%s); the next use retries",
+        "[evidence] the store could not be reopened (%s); the next use retries",
+        "[evidence] a transaction was left open; reopening",
     }
 )
 
