@@ -382,6 +382,7 @@ def test_mqtt_gateway_reasoner_fails_lazily_when_paho_missing(monkeypatch):
         ("text", {"a": 1}),
         ("model", 7),
         ("proposed_action", 3),
+        ("error", {"a": 1}),
     ],
 )
 async def test_a_response_field_with_no_value_is_the_gateways_error(field, value):
@@ -411,7 +412,9 @@ async def test_a_response_field_with_no_value_is_the_gateways_error(field, value
         request_id_factory=lambda: "req-bad-field",
     )
 
-    with pytest.raises(GatewayReasoningError, match="malformed|not finite|invalid"):
+    with pytest.raises(
+        GatewayReasoningError, match="malformed|not finite|invalid|not text"
+    ):
         await reasoner.reason("Prompt", event=_event(), rule_result=_rule("A"))
 
 

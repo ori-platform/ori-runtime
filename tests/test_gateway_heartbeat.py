@@ -160,8 +160,8 @@ async def test_degraded_status_still_updates_posture():
 
 
 async def test_unknown_status_still_updates_posture(monkeypatch):
-    monkeypatch.setattr(heartbeat_module, "now_ms", lambda: 7_000)
     """Forward-compatibility: unknown status values must not suppress posture update."""
+    monkeypatch.setattr(heartbeat_module, "now_ms", lambda: 7_000)
     tracker = _fakeposturetracker()
     sub = _subscriber(tracker)
     sub._loop = asyncio.get_running_loop()
