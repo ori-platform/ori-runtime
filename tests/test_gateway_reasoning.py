@@ -383,6 +383,13 @@ def test_mqtt_gateway_reasoner_fails_lazily_when_paho_missing(monkeypatch):
         ("model", 7),
         ("proposed_action", 3),
         ("error", {"a": 1}),
+        *[
+            (field, value)
+            for field in ("error", "model")
+            for value in (False, 0, 0.0, [], {}, None)
+        ],
+        ("confidence", 10**400),
+        ("confidence", -(10**400)),
     ],
 )
 async def test_a_response_field_with_no_value_is_the_gateways_error(field, value):
@@ -444,3 +451,48 @@ async def test_an_unauthenticated_response_naming_another_device_is_refused(devi
 
     with pytest.raises(GatewayReasoningError, match="another device"):
         await reasoner.reason("Prompt", event=_event(), rule_result=_rule("A"))
+
+
+@pytest.mark.parametrize(
+    "change, model",
+    [
+        ({"error": ""}, "gateway-model"),
+        ({"model": ""}, "gateway"),
+        ({"model": None, "drop": "model"}, "gateway"),
+        ({"confidence": 10**300}, "gateway-model"),
+    ],
+)
+async def test_a_conforming_response_field_is_accepted(change, model):
+    """An empty error, and an empty or omitted model, are within the contract."""
+    response = {
+        "text": "Gateway response.",
+        "model": "gateway-model",
+        "tokens_used": 10,
+        "latency_ms": 50,
+        "confidence": 0.5,
+        "action_tier": "A",
+        "proposed_action": None,
+    }
+    change = dict(change)
+    dropped = change.pop("drop", None)
+    response.update(change)
+    if dropped is not None:
+        del response[dropped]
+    fake = _FakeClient(
+        response_builder=lambda req: {
+            "request_id": req["request_id"],
+            "device_id": req["device_id"],
+            **response,
+        }
+    )
+    reasoner = MqttGatewayReasoner(
+        broker_url="mqtt://broker.local",
+        device_id="site-a",
+        timeout_ms=1000,
+        client_factory=lambda **_: fake,
+        request_id_factory=lambda: "req-good-field",
+    )
+
+    result = await reasoner.reason("Prompt", event=_event(), rule_result=_rule("A"))
+
+    assert result.model == model

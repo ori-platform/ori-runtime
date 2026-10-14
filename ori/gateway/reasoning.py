@@ -392,16 +392,17 @@ def _history_points_from_context(event: OriEvent | None) -> list[dict[str, Any]]
 def _reasoning_result_from_response(payload: dict[str, Any]) -> ReasoningResult:
     """The response held to the contract's JSON types; anything else is the
     gateway's error, refused here rather than left to a caller's fallback."""
-    error = payload.get("error")
-    if error:
+    if "error" in payload:
+        error = payload["error"]
         if not isinstance(error, str):
             raise GatewayReasoningError("gateway response error is not text")
-        raise GatewayReasoningError(f"gateway provider error: {error}")
+        if error:
+            raise GatewayReasoningError(f"gateway provider error: {error}")
     action_tier = payload.get("action_tier")
     if not isinstance(action_tier, str) or action_tier not in _VALID_ACTION_TIERS:
         raise GatewayReasoningError("gateway response action_tier is invalid")
     text = payload.get("text", "")
-    model = payload.get("model", "") or "gateway"
+    model = payload.get("model", "")
     proposed_action = payload.get("proposed_action")
     tokens_used = payload.get("tokens_used", 0)
     latency_ms = payload.get("latency_ms", 0)
@@ -414,19 +415,23 @@ def _reasoning_result_from_response(payload: dict[str, Any]) -> ReasoningResult:
         and _count(latency_ms)
     ):
         raise GatewayReasoningError("gateway response field is malformed")
-    if (
-        isinstance(confidence, bool)
-        or not isinstance(confidence, (int, float))
-        or not math.isfinite(confidence)
-    ):
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)):
+        raise GatewayReasoningError("gateway response confidence is not finite")
+    try:
+        confidence = float(confidence)
+    except OverflowError:
+        raise GatewayReasoningError(
+            "gateway response confidence is not finite"
+        ) from None
+    if not math.isfinite(confidence):
         raise GatewayReasoningError("gateway response confidence is not finite")
     return ReasoningResult(
         text=text,
         tier="gateway",
-        model=model,
+        model=model or "gateway",
         tokens_used=tokens_used,
         latency_ms=latency_ms,
-        confidence=float(confidence),
+        confidence=confidence,
         action_tier=action_tier,
         proposed_action=proposed_action,
     )
