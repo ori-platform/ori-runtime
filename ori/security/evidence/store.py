@@ -28,6 +28,14 @@ class EvidenceStoreFaultError(RuntimeError):
     """The store could not give what a decision needs; nothing was decided."""
 
 
+class NestedEvidenceTransactionError(RuntimeError):
+    """A transaction was opened inside a live one: a defect in the caller.
+
+    SQLite has no nested BEGIN, and healing the outer one as a leak would
+    split it, so the inner one is refused and the outer one is left alone.
+    """
+
+
 def configure(connection: sqlite3.Connection) -> None:
     """The pragmas every evidence connection runs under, busy timeout first.
 
@@ -44,17 +52,28 @@ def configure(connection: sqlite3.Connection) -> None:
     connection.execute("PRAGMA synchronous=FULL")
 
 
+def _in_transaction(connection: sqlite3.Connection) -> bool:
+    """Whether *connection* holds an open transaction; a closed one holds none."""
+    try:
+        return bool(connection.in_transaction)
+    except sqlite3.ProgrammingError:
+        return False
+
+
 def _uri(path: str) -> str:
     """A read-write URI for an existing file; `?`, `#` and `%` are quoted."""
-    return "file:" + urllib.parse.quote(os.path.abspath(path), safe="/") + "?mode=rw"
+    return "file:" + urllib.parse.quote(path, safe="/") + "?mode=rw"
 
 
 class EvidenceConnection:
     """A store connection that heals a transaction it could not roll back."""
 
     def __init__(self, path: str) -> None:
-        self._path = str(path)
+        # Resolved once: a reopen after the working directory changed must
+        # open this file, not one with the same name somewhere else.
+        self._path = os.path.abspath(str(path))
         self._reopen_owed = False
+        self._depth = 0
         # The first open may create the file: the owner then writes its schema.
         connection = sqlite3.connect(self._path, isolation_level=None)
         try:
@@ -86,38 +105,52 @@ class EvidenceConnection:
         """`BEGIN IMMEDIATE` ... `COMMIT`, rolled back whole on any exception.
 
         The exception that ended the transaction is the one raised, also when
-        the rollback after it fails. A connection found already inside a
-        transaction is discarded first, so a leak from anywhere heals here.
-        *on_begin_failure* names the error a store error at BEGIN is raised as.
+        the rollback after it fails. A connection found inside a transaction
+        while no transaction of this store is live is a leak, and is discarded
+        first so it heals here; one opened inside a live transaction is
+        refused. *on_begin_failure* names the error a store error at BEGIN is
+        raised as.
         """
-        connection = self.connection
-        if connection.in_transaction:
-            logger.error("[evidence] a transaction was left open; reopening")
-            self._discard()
+        if self._depth:
+            raise NestedEvidenceTransactionError(
+                "an evidence transaction cannot be opened inside another"
+            )
+        self._depth += 1
+        try:
             connection = self.connection
-        try:
-            connection.execute("BEGIN IMMEDIATE")
-        except BaseException as exc:
+            # No frame of this store is live here, the nesting check above
+            # having refused one, so an open transaction is a leak.
             if connection.in_transaction:
+                logger.error("[evidence] a transaction was left open; reopening")
                 self._discard()
-            if on_begin_failure is not None and isinstance(exc, sqlite3.Error):
-                raise on_begin_failure() from exc
-            raise
-        try:
-            yield connection
-            connection.execute("COMMIT")
-        except BaseException:
-            self._roll_back(connection)
-            raise
+                connection = self.connection
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+            except BaseException as exc:
+                if _in_transaction(connection):
+                    self._discard()
+                if on_begin_failure is not None and isinstance(exc, sqlite3.Error):
+                    raise on_begin_failure() from exc
+                raise
+            try:
+                yield connection
+                connection.execute("COMMIT")
+            except BaseException:
+                self._roll_back(connection)
+                raise
+        finally:
+            self._depth -= 1
 
     def _roll_back(self, connection: sqlite3.Connection) -> None:
-        if not connection.in_transaction:
+        """Roll back, never raising: the caller re-raises the original error."""
+        if connection is not self._live or not _in_transaction(connection):
+            # Already discarded, or already rolled back by SQLite.
             return
         try:
             connection.execute("ROLLBACK")
         except Exception as exc:
             logger.error("[evidence] rollback failed (%s)", safe_failure_reason(exc))
-        if connection.in_transaction:
+        if _in_transaction(connection):
             # Closing discards the transaction; SQLite rolls back what reached
             # the file when it is next opened.
             self._discard()

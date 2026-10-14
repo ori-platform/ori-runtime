@@ -13,12 +13,14 @@ from __future__ import annotations
 import ast
 import pathlib
 import sqlite3
+from typing import Any
 
 import pytest
 
 from ori.security.evidence.store import (
     EvidenceConnection,
     EvidenceStoreFaultError,
+    NestedEvidenceTransactionError,
 )
 
 PACKAGE = pathlib.Path(__file__).resolve().parents[2] / "ori" / "security" / "evidence"
@@ -26,9 +28,33 @@ HELPER = PACKAGE / "store.py"
 _CONTROL = ("BEGIN", "COMMIT", "ROLLBACK", "END", "SAVEPOINT", "RELEASE")
 
 
+#: The schema scripts at open, the only places `executescript` may run:
+#: it commits whatever is open first, so anywhere else it splits a transaction.
+SCHEMA_SCRIPTS = {("chain.py", "__init__"), ("ledger.py", "__init__")}
+_CONNECTION_NAMES = ("connection", "_connection", "conn", "_live", "db")
+
+
+def _named(node: ast.expr) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return ""
+
+
 def _raw_transactions(path: pathlib.Path) -> list[str]:
+    """Every literal way to run a transaction outside the helper, by line."""
     found = []
-    for node in ast.walk(ast.parse(path.read_text())):
+    tree = ast.parse(path.read_text())
+    owner: dict[ast.AST, str] = {}
+    for function in ast.walk(tree):
+        if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for inner in ast.walk(function):
+                owner.setdefault(inner, function.name)
+    where = (
+        str(path.relative_to(PACKAGE)) if path.is_relative_to(PACKAGE) else path.name
+    )
+    for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             words = node.value.split()
             # Uppercase as SQL is written here, or any case as a whole short
@@ -37,29 +63,69 @@ def _raw_transactions(path: pathlib.Path) -> list[str]:
                 words[0] in _CONTROL
                 or (words[0].upper() in _CONTROL and len(words) <= 3)
             ):
-                found.append(f"{path.name}:{node.lineno} {node.value!r}")
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr in ("commit", "rollback")
+                found.append(f"{where}:{node.lineno} {node.value!r}")
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr in ("commit", "rollback"):
+                found.append(f"{where}:{node.lineno} .{node.func.attr}()")
+            if (
+                node.func.attr == "executescript"
+                and (
+                    path.name,
+                    owner.get(node, ""),
+                )
+                not in SCHEMA_SCRIPTS
+            ):
+                found.append(f"{where}:{node.lineno} .executescript()")
+        if isinstance(node, ast.Call) and any(
+            keyword.arg == "isolation_level" for keyword in node.keywords
         ):
-            found.append(f"{path.name}:{node.lineno} .{node.func.attr}()")
+            found.append(f"{where}:{node.lineno} isolation_level=")
+        if isinstance(node, (ast.Assign, ast.AugAssign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(_named(target) == "isolation_level" for target in targets):
+                found.append(f"{where}:{node.lineno} isolation_level assignment")
+        if isinstance(node, (ast.With, ast.AsyncWith)):
+            for item in node.items:
+                if _named(item.context_expr).endswith(_CONNECTION_NAMES):
+                    found.append(
+                        f"{where}:{node.lineno} with {_named(item.context_expr)}:"
+                    )
     return found
 
 
 def test_no_evidence_module_opens_a_transaction_outside_the_helper() -> None:
     offenders = [
         hit
-        for path in sorted(PACKAGE.glob("*.py"))
+        for path in sorted(PACKAGE.rglob("*.py"))
         if path != HELPER
         for hit in _raw_transactions(path)
     ]
     assert not offenders, (
-        "a transaction is opened, committed or rolled back outside "
-        "EvidenceConnection.transaction(), where a failed rollback is never "
-        f"healed: {offenders}. This guard reads literals only; a statement "
-        "built at runtime is not seen."
+        "a transaction is opened, committed, rolled back, split by "
+        "executescript, run as `with <connection>:` or given an isolation "
+        "level outside EvidenceConnection.transaction(), where a failed "
+        f"rollback is never healed: {offenders}. This guard reads literals and "
+        "syntax only; a statement built at runtime, or a connection under "
+        "another name, is not seen."
     )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'c.execute("BEGIN IMMEDIATE")',
+        'c.execute("rollback")',
+        "c.commit()",
+        "def f():\n    c.executescript(s)",
+        "with self._connection:\n    pass",
+        "c.isolation_level = 'DEFERRED'",
+        "sqlite3.connect(p, isolation_level=None)",
+    ],
+)
+def test_the_guard_refuses_each_raw_shape(tmp_path, source) -> None:
+    probe = tmp_path / "probe.py"
+    probe.write_text(source + "\n")
+    assert _raw_transactions(probe), source
 
 
 def test_the_guard_sees_the_helper_it_exempts() -> None:
@@ -112,3 +178,87 @@ def test_a_reopen_never_creates_the_file_it_lost(store_path) -> None:
 
     assert not store_path.exists()
     assert sorted(p.name for p in store_path.parent.iterdir()) == ["moved.db"]
+
+
+def test_a_nested_transaction_is_refused_and_the_outer_keeps_its_own(
+    store_path,
+) -> None:
+    """Refused, not healed as a leak: the outer commits exactly its writes."""
+    store = EvidenceConnection(str(store_path))
+    with store.transaction() as connection:
+        connection.execute("CREATE TABLE t (x INTEGER)")
+    with store.transaction() as connection:
+        connection.execute("INSERT INTO t VALUES (1)")
+        with pytest.raises(NestedEvidenceTransactionError):
+            with store.transaction():
+                pass  # pragma: no cover - refused on entry
+        connection.execute("INSERT INTO t VALUES (2)")
+        assert connection is store.connection, "the outer was discarded"
+
+    rows = [r[0] for r in store.connection.execute("SELECT x FROM t ORDER BY x")]
+    assert rows == [1, 2]
+    store.close()
+
+
+def test_the_original_error_survives_a_rollback_on_a_discarded_connection(
+    store_path,
+) -> None:
+    store = EvidenceConnection(str(store_path))
+    with store.transaction() as connection:
+        connection.execute("CREATE TABLE t (x INTEGER)")
+
+    with pytest.raises(LookupError, match="the original"):
+        with store.transaction() as connection:
+            connection.execute("INSERT INTO t VALUES (1)")
+            store._discard()
+            raise LookupError("the original")
+
+    assert store.connection.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 0
+    store.close()
+
+
+class _RefusingBegin:
+    """A connection whose BEGIN fails as a busy store would."""
+
+    def __init__(self, real: sqlite3.Connection) -> None:
+        self._real = real
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._real, name)
+
+    def execute(self, sql: str, parameters: Any = ()) -> sqlite3.Cursor:
+        if sql.startswith("BEGIN"):
+            raise sqlite3.OperationalError("database is locked")
+        return self._real.execute(sql, parameters)
+
+
+def test_a_store_error_at_begin_is_raised_as_the_callers_error(store_path) -> None:
+    store = EvidenceConnection(str(store_path))
+    store.connection = _RefusingBegin(store.connection)  # type: ignore[assignment]
+
+    with pytest.raises(ValueError, match="could not begin") as raised:
+        with store.transaction(on_begin_failure=lambda: ValueError("could not begin")):
+            pass  # pragma: no cover - BEGIN failed
+
+    assert isinstance(raised.value.__cause__, sqlite3.OperationalError)
+    store.close()
+
+
+def test_a_reopen_opens_the_file_it_was_given_wherever_the_process_now_is(
+    tmp_path, monkeypatch
+) -> None:
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    monkeypatch.chdir(first)
+    store = EvidenceConnection("evidence.db")
+    with store.transaction() as connection:
+        connection.execute("CREATE TABLE t (x INTEGER)")
+        connection.execute("INSERT INTO t VALUES (7)")
+    sqlite3.connect(second / "evidence.db").close()
+
+    monkeypatch.chdir(second)
+    store._discard()
+
+    assert store.connection.execute("SELECT x FROM t").fetchone()[0] == 7
+    store.close()

@@ -65,6 +65,7 @@ from ori.security.evidence.ingest_service import (
     IngestOutcome,
 )
 from ori.security.evidence.ledger import EvidenceDeliveryLedger
+from ori.security.evidence.store import NestedEvidenceTransactionError
 
 CORPUS = json.loads(
     (
@@ -724,11 +725,52 @@ def test_an_outbound_transaction_whose_rollback_fails_heals_for_inbound(
 
 
 def test_a_transaction_left_open_anywhere_is_healed_by_the_next_one(receiver) -> None:
+    """A leak is a transaction open while no transaction frame is live; one
+    opened inside a live frame is nesting, refused rather than healed (see
+    tests/evidence/test_store.py)."""
     case = next(c for c in CASES if c["name"] == "receipt_store_fault_at_commit")
     held = receiver(case["held_before"])
     held.executor.run(held.connection._real.execute, "BEGIN IMMEDIATE")
     assert held.executor.run(lambda: held.ledger._connection.in_transaction)
+    assert held.ledger._store._depth == 0
 
     applied = _route(held, case, fault=None)
 
     assert applied.outcome.state == ACCEPTED
+    receipted = {
+        r["local_seq"]
+        for r in held.executor.run(
+            lambda: Receiver._read(held.ledger._connection)["receipts"]
+        )
+    }
+    assert set(range(case["artifact"]["from_seq"], case["artifact"]["to_seq"] + 1)) <= (
+        receipted
+    )
+
+
+def test_a_nested_application_is_refused_and_the_outer_rolls_back_whole(
+    receiver,
+) -> None:
+    """Not healed as a leak: the outer's own write is rolled back with it."""
+    case = next(c for c in CASES if c["name"] == "receipt_store_fault_at_commit")
+    held = receiver(case["held_before"])
+    before = held.held()
+
+    def nested() -> None:
+        with held.ledger._application():
+            held.ledger._connection.execute(
+                "UPDATE evidence_delivery_ledger SET attempts = attempts + 1"
+            )
+            with held.ledger._application():
+                pass  # pragma: no cover - refused on entry
+
+    with pytest.raises(NestedEvidenceTransactionError):
+        held.executor.run(nested)
+
+    assert held.held() == before
+    attempts = held.executor.run(
+        lambda: held.ledger._connection.execute(
+            "SELECT SUM(attempts) FROM evidence_delivery_ledger"
+        ).fetchone()[0]
+    )
+    assert attempts == 0
