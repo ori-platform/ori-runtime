@@ -213,8 +213,12 @@ def test_the_original_error_survives_a_rollback_on_a_discarded_connection(
             store._discard()
             raise LookupError("the original")
 
-    with pytest.raises(LookupError, match="the original"):
+    raised: LookupError | None = None
+    try:
         write_then_fail()
+    except LookupError as error:
+        raised = error
+    assert raised is not None and str(raised) == "the original"
 
     assert store.connection.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 0
     store.close()
