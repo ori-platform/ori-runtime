@@ -48,7 +48,6 @@ from ori.security.evidence.ledger import (
     INGEST_REFUSAL_RETENTION,
     DispositionRefusedError,
     EvidenceDeliveryLedger,
-    EvidenceStoreFaultError,
     RestatementConflictError,
     UnsealedRegistrationError,
     is_store_fault,
@@ -145,25 +144,18 @@ class EvidenceIngestService:
     def rejections(self) -> tuple[IngestOutcome, ...]:
         """Refused artifacts the ledger retains, oldest first, across restarts.
 
-        A retained reason outside the vocabulary is one no release wrote, so
-        it is read as the store failing.
+        The ledger reads a retained reason outside the vocabulary as a store
+        fault, on this path and on the health summary alike.
         """
-        outcomes = []
-        for row in self._ledger.ingest_refusals():
-            try:
-                outcomes.append(
-                    IngestOutcome(
-                        artifact=str(row["artifact_type"]),
-                        state=REJECTED,
-                        reason=str(row["reason"]),
-                        detail=str(row["detail"]),
-                    )
-                )
-            except ValueError as exc:
-                raise EvidenceStoreFaultError(
-                    "a retained refusal names no receiver rejection reason"
-                ) from exc
-        return tuple(outcomes)
+        return tuple(
+            IngestOutcome(
+                artifact=str(row["artifact_type"]),
+                state=REJECTED,
+                reason=str(row["reason"]),
+                detail=str(row["detail"]),
+            )
+            for row in self._ledger.ingest_refusals()
+        )
 
     def _refuse(
         self, subject: object, artifact: str, exc: IngestRejectedError

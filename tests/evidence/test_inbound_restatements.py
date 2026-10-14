@@ -28,6 +28,7 @@ from ori.security.evidence.custody_keys import (
     CustodyKeyRegistry,
     derive_custody_key_id,
 )
+from ori.security.evidence.executor import EvidenceExecutorSaturatedError
 from ori.security.evidence.first_party import FirstPartyEvidenceAttestor
 from ori.security.evidence.ingest import (
     REJECT_REASONS,
@@ -250,6 +251,8 @@ def test_an_unreadable_sealed_envelope_digest_is_a_store_fault(sealed):
 
 
 def test_an_artifact_with_no_canonical_form_is_refused_without_escaping(sealed):
+    """The contract does not yet define how such an artifact is named in an
+    acknowledgement, so sending none is this release's provisional answer."""
     attestor, router, _base = sealed
     payload = json.dumps(
         _envelope(ARTIFACT_RECEIPT, {"v": 1, "from_seq": 1, "to_seq": 1e-9})
@@ -313,11 +316,22 @@ class _AckingClient(_FakeClient):
         return 0
 
 
-def test_an_undecided_artifact_is_released_at_the_broker_and_never_acknowledged():
-    """The courier keeps it and redelivers it in a fresh envelope."""
-    undecided = IngestOutcome(artifact=ARTIFACT_CUSTODY, state=UNDECIDED)
+class _RaisingIngest(_RecordingIngest):
+    """Answers the subscriber's awaited call by raising *error*."""
+
+    def __init__(self, error: BaseException) -> None:
+        super().__init__()
+        self._error = error
+
+    async def accept_async(self, artifact_type: str, artifact: object) -> IngestOutcome:
+        self.calls.append((artifact_type, artifact))
+        raise self._error
+
+
+def _deliver_on_the_wire(ingest: _RecordingIngest) -> tuple[_AckingClient, Any]:
+    """One message through the MQTT subscriber, until its route has finished."""
     client = _AckingClient()
-    subscriber = _subscriber(client, ingest=_RecordingIngest(undecided))
+    subscriber = _subscriber(client, ingest=ingest)
 
     async def scenario() -> None:
         shutdown = asyncio.Event()
@@ -328,12 +342,40 @@ def test_an_undecided_artifact_is_released_at_the_broker_and_never_acknowledged(
         )
         assert client.on_message is not None
         await asyncio.to_thread(client.on_message, client, None, message)
-        await wait_until(lambda: client.acked, what="the message to be released")
+        await wait_until(
+            lambda: ingest.calls and subscriber._in_flight == 0,
+            what="the message to finish routing",
+        )
         shutdown.set()
         await asyncio.wait_for(task, timeout=2)
 
     asyncio.run(scenario())
+    return client, subscriber
+
+
+def test_an_undecided_artifact_is_released_at_the_broker_and_never_acknowledged():
+    """The courier keeps it and redelivers it in a fresh envelope."""
+    undecided = IngestOutcome(artifact=ARTIFACT_CUSTODY, state=UNDECIDED)
+    client, _ = _deliver_on_the_wire(_RecordingIngest(undecided))
     assert client.acked == [7]
+    assert client.published == []
+
+
+def test_a_failure_inside_ingest_is_released_rather_than_held_for_a_replay():
+    """Held, the broker would bring back the identical envelope, which replay
+    protection refuses with no acknowledgement; released, the courier sends a
+    fresh one."""
+    client, _ = _deliver_on_the_wire(_RaisingIngest(RuntimeError("a defect")))
+    assert client.acked == [7]
+    assert client.published == []
+
+
+def test_a_saturated_evidence_worker_leaves_the_message_with_the_broker():
+    """Nothing was attempted, so the broker keeps it for the reconnect."""
+    client, subscriber = _deliver_on_the_wire(
+        _RaisingIngest(EvidenceExecutorSaturatedError("the worker is full"))
+    )
+    assert client.acked == []
     assert client.published == []
 
 

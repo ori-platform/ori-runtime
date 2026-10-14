@@ -44,6 +44,7 @@ from ori.security.evidence.canonical import canonical_json
 from ori.security.evidence.chain import ENVELOPE_FIELDS, SCHEMA_VERSION
 from ori.security.evidence.device_key import EvidenceDeviceKey
 from ori.security.evidence.disposition import DispositionValue, VerifiedDisposition
+from ori.security.evidence.ingest import REJECT_REASONS
 from ori.security.evidence.policy import safe_failure_reason
 from ori.security.evidence.registration import reoffer_due
 
@@ -745,6 +746,28 @@ def _stored_int(value: object, what: str) -> int:
     return value
 
 
+def _configure(connection: sqlite3.Connection) -> None:
+    """The pragmas every ledger connection runs under, in this order."""
+    connection.execute("PRAGMA busy_timeout=5000")
+    connection.execute("PRAGMA journal_mode=WAL")
+    # Enforced for this connection. The triggers are what make the constraint
+    # hold for every other one, since this pragma is off by default and cannot
+    # be relied on to travel with the file.
+    connection.execute("PRAGMA foreign_keys=ON")
+    connection.execute("PRAGMA synchronous=FULL")
+
+
+def _retained_refusal(row: sqlite3.Row) -> sqlite3.Row:
+    """A retained refusal row, or a store fault when its reason is outside the
+    receiver rejection vocabulary: no release writes one, so every reader of
+    the refusal ledger goes through here."""
+    if _stored_text(row["reason"], "refusal reason") not in REJECT_REASONS:
+        raise EvidenceStoreFaultError(
+            "a retained refusal names no receiver rejection reason"
+        )
+    return row
+
+
 def _stored_text(value: object, what: str) -> str:
     """Text the store holds, or a store fault when it holds anything else."""
     if type(value) is not str:
@@ -826,6 +849,7 @@ class EvidenceDeliveryLedger:
         self._key_id = str(key_id)
         self._db_path = str(db_path)
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
+        self._reopen_owed = False
         self._connection = sqlite3.connect(self._db_path, isolation_level=None)
         self._connection.row_factory = sqlite3.Row
         # Set before any other pragma. Switching to WAL takes a brief exclusive
@@ -839,13 +863,7 @@ class EvidenceDeliveryLedger:
         # contention into a spurious evidence failure, and evidence that fails
         # because two things happened at once is worse than useless.
         try:
-            self._connection.execute("PRAGMA busy_timeout=5000")
-            self._connection.execute("PRAGMA journal_mode=WAL")
-            # Enforced for this connection. The triggers above are what make
-            # the constraint hold for every other one, since this pragma is off
-            # by default and cannot be relied on to travel with the file.
-            self._connection.execute("PRAGMA foreign_keys=ON")
-            self._connection.execute("PRAGMA synchronous=FULL")
+            _configure(self._connection)
             self._connection.executescript(_SCHEMA)
             self._add_outbox_withdrawal_column()
             self._add_courier_answer_column()
@@ -1696,10 +1714,12 @@ class EvidenceDeliveryLedger:
                 raise EvidenceStoreFaultError(
                     "a sealed artifact's stored bytes are not an object"
                 )
+            # Every artifact this device seals names its device and epoch, so
+            # one that does not is damaged, never another identity's.
             return (
-                str(row["artifact_type"]),
-                str(artifact.get("anchor_epoch_id") or ""),
-                str(artifact.get("device_id") or ""),
+                _stored_text(row["artifact_type"], "artifact type"),
+                _stored_text(artifact.get("anchor_epoch_id"), "artifact epoch"),
+                _stored_text(artifact.get("device_id"), "artifact device"),
             )
         envelope = self._connection.execute(
             "SELECT anchor_epoch_id, device_id FROM evidence_delivery_ledger"
@@ -1709,8 +1729,8 @@ class EvidenceDeliveryLedger:
         if envelope is not None:
             return (
                 "delivery_envelope",
-                str(envelope["anchor_epoch_id"]),
-                str(envelope["device_id"]),
+                _stored_text(envelope["anchor_epoch_id"], "envelope epoch"),
+                _stored_text(envelope["device_id"], "envelope device"),
             )
         return None
 
@@ -1759,13 +1779,14 @@ class EvidenceDeliveryLedger:
     def ingest_refusals(
         self, limit: int = INGEST_REFUSAL_RETENTION
     ) -> list[sqlite3.Row]:
-        """Retained refusals, oldest first."""
-        return list(
-            self._connection.execute(
+        """Retained refusals, oldest first, each holding a vocabulary reason."""
+        return [
+            _retained_refusal(row)
+            for row in self._connection.execute(
                 "SELECT * FROM evidence_ingest_refusals ORDER BY id LIMIT ?",
                 (int(limit),),
             )
-        )
+        ]
 
     def ingest_refusal_summary(self) -> tuple[int, sqlite3.Row | None]:
         """How many refusals are retained, and the most recent one."""
@@ -1777,10 +1798,10 @@ class EvidenceDeliveryLedger:
         last: sqlite3.Row | None = self._connection.execute(
             "SELECT * FROM evidence_ingest_refusals ORDER BY id DESC LIMIT 1"
         ).fetchone()
-        return count, last
+        return count, None if last is None else _retained_refusal(last)
 
     def close(self) -> None:
-        self._connection.close()
+        self._live.close()
 
     @contextmanager
     def _application(self) -> Iterator[None]:
@@ -1803,9 +1824,59 @@ class EvidenceDeliveryLedger:
         try:
             self._connection.execute("ROLLBACK")
         except Exception as exc:
-            # SQLite rolls an interrupted transaction back when the file is
-            # next opened; nothing here can do more than report it.
             logger.error("[evidence] rollback failed (%s)", safe_failure_reason(exc))
+            # A connection left inside a transaction refuses every later
+            # BEGIN. Closing it discards the transaction, and SQLite rolls
+            # back what reached the file when it is next opened.
+            self._discard_connection()
+
+    def _discard_connection(self) -> None:
+        self._reopen_owed = True
+        try:
+            self._live.close()
+        except Exception as exc:
+            logger.error(
+                "[evidence] a failed connection did not close (%s)",
+                safe_failure_reason(exc),
+            )
+        try:
+            self._reopen()
+        except Exception as exc:
+            logger.error(
+                "[evidence] the ledger could not be reopened (%s); the next "
+                "use retries",
+                safe_failure_reason(exc),
+            )
+
+    @property
+    def _connection(self) -> sqlite3.Connection:
+        """The live connection, reopened first when a failed rollback discarded it.
+
+        Every read and write goes through here, so none reaches the discarded
+        one; a reopen that fails is a store fault, retried on the next use.
+        """
+        if self._reopen_owed:
+            self._reopen()
+        return self._live
+
+    @_connection.setter
+    def _connection(self, connection: sqlite3.Connection) -> None:
+        self._live = connection
+
+    def _reopen(self) -> None:
+        """A fresh connection to the same file, or a store fault."""
+        try:
+            connection = sqlite3.connect(self._db_path, isolation_level=None)
+        except sqlite3.Error as exc:
+            raise EvidenceStoreFaultError("the ledger could not be reopened") from exc
+        try:
+            connection.row_factory = sqlite3.Row
+            _configure(connection)
+        except BaseException:
+            connection.close()
+            raise
+        self._connection = connection
+        self._reopen_owed = False
 
     # -- sealing ---------------------------------------------------------
 

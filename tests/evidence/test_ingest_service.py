@@ -1033,21 +1033,11 @@ def test_an_unreadable_sealed_registration_key_is_a_store_fault(rig):
     assert service.rejections == ()
 
 
-def test_an_unreadable_sealed_artifact_leaves_a_disposition_undecided(rig):
-    """A sealed copy that cannot be read is not an artifact never sealed."""
+def _disposition_service(service, triggering: str):
     from ori.security.evidence.disposition import (
         DispositionScope,
         DispositionValue,
         VerifiedDisposition,
-    )
-
-    _, _, ledger, service = rig
-    triggering = "sha256:" + "c" * 64
-    ledger._connection.execute(
-        "INSERT INTO evidence_outbox"
-        " (artifact_type, artifact_json, artifact_digest, created_at_ms)"
-        " VALUES ('checkpoint', '{not json', ?, 1)",
-        (triggering,),
     )
 
     class _Verifier:
@@ -1064,10 +1054,75 @@ def test_an_unreadable_sealed_artifact_leaves_a_disposition_undecided(rig):
             )
 
     service._disposition_verifier = _Verifier()
-    outcome = service.accept_disposition({"opaque": True})
+    return service
+
+
+@pytest.mark.parametrize(
+    "stored",
+    ["{not json", "[]", json.dumps({"anchor_epoch_id": EPOCH}), '{"device_id": 7}'],
+    ids=["not-json", "not-an-object", "no-device", "device-not-text"],
+)
+def test_an_unreadable_sealed_artifact_leaves_a_disposition_undecided(rig, stored):
+    """A sealed copy that cannot be read is not an artifact never sealed, nor
+    another identity's: either answer would retire a valid disposition."""
+    _, _, ledger, service = rig
+    triggering = "sha256:" + "c" * 64
+    ledger._connection.execute(
+        "INSERT INTO evidence_outbox"
+        " (artifact_type, artifact_json, artifact_digest, created_at_ms)"
+        " VALUES ('checkpoint', ?, ?, 1)",
+        (stored, triggering),
+    )
+
+    outcome = _disposition_service(service, triggering).accept_disposition({"o": 1})
 
     assert outcome.state == "undecided" and outcome.reason is None
     assert ledger.last_disposition() is None
+
+
+def test_an_envelope_whose_device_is_not_text_leaves_a_disposition_undecided(rig):
+    """Read as text it would be "None" or a byte string, another device."""
+    _, chain, ledger, service = rig
+    _seal(chain, ledger, 1)
+    envelope_digest = str(ledger.find_by_local_seq(1)["envelope_digest"])
+    ledger._connection.execute("DROP TRIGGER evidence_ledger_no_sealed_update")
+    ledger._connection.execute(
+        "UPDATE evidence_delivery_ledger SET device_id = x'00' WHERE local_seq = 1"
+    )
+
+    outcome = _disposition_service(service, envelope_digest).accept_disposition({})
+
+    assert outcome.state == "undecided" and outcome.reason is None
+    assert ledger.last_disposition() is None
+
+
+def test_the_health_summary_reads_a_reason_outside_the_vocabulary_as_a_fault(tmp_path):
+    """Both refusal readers apply one rule: health never publishes such a reason."""
+    import asyncio
+
+    from ori.security.evidence.first_party import FirstPartyEvidenceAttestor
+
+    attestor = FirstPartyEvidenceAttestor(
+        db_path=str(tmp_path / "evidence.db"),
+        key_path=str(tmp_path / "evidence.key"),
+        device_secret="install-secret",
+        device_id=DEVICE,
+    )
+    try:
+        assert asyncio.run(attestor.start())
+        ledger = attestor._ledger
+        assert ledger is not None
+        attestor._executor.run(
+            lambda: ledger.record_ingest_refusal(
+                artifact_type="delivery_receipt",
+                reason="not_a_reason",
+                detail="",
+                observed_at_ms=1,
+            )
+        )
+        assert asyncio.run(attestor.ingest_refusal_summary()) is None
+    finally:
+        attestor.close()
 
 
 def test_a_retained_refusal_outside_the_vocabulary_reads_as_a_store_fault(rig):

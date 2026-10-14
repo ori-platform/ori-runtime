@@ -19,6 +19,7 @@ insert (`at_refusal_record`).
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -145,6 +146,13 @@ class FaultingConnection:
     def arm(self, point: str | None) -> None:
         self.point, self.fired, self._writes = point, False, 0
 
+    def _fail_rollback(self, statement: str) -> bool:
+        """Fail the commit, and stay armed for the rollback that follows it."""
+        if statement == "COMMIT":
+            self._commit_failed = True
+            raise sqlite3.OperationalError(FAULT)
+        return self.__dict__.get("_commit_failed", False)
+
     def __getattr__(self, name: str) -> Any:
         return getattr(self._real, name)
 
@@ -157,6 +165,11 @@ class FaultingConnection:
                 (self.point == "at_read" and statement.startswith("SELECT"))
                 or (self.point == "after_first_write" and self._writes == 2)
                 or (self.point == "at_commit" and statement == "COMMIT")
+                or (
+                    self.point == "commit_and_rollback"
+                    and statement in ("COMMIT", "ROLLBACK")
+                    and self._fail_rollback(statement)
+                )
                 or (
                     self.point == "at_refusal_record"
                     and statement.startswith("INSERT INTO EVIDENCE_INGEST_REFUSALS")
@@ -593,3 +606,86 @@ def test_a_repeat_is_its_wire_bytes_whatever_order_its_members_arrive_in(
 
     assert outcome.state == ACCEPTED
     assert held.held() == case["held_after"]
+
+
+def _route(held: Receiver, case: dict[str, Any], *, fault: str | None) -> Any:
+    """The case's artifact through `route`, the path the MQTT subscriber awaits."""
+    held.connection.arm(fault)
+    payload = json.dumps(
+        {
+            "device_id": DEVICE,
+            "artifact_type": ROUTED[case["artifact_type"]],
+            "artifact": case["artifact"],
+        }
+    ).encode()
+    with patch(
+        "ori.security.evidence.ingest_service.now_ms", lambda: case["receiver_now_ms"]
+    ):
+        return asyncio.run(held.router.route(payload))
+
+
+def test_a_refusal_whose_record_failed_is_recorded_on_redelivery(receiver) -> None:
+    """The failed write is not remembered as written, so the next one is tried."""
+    case = next(
+        c for c in CASES if c["name"] == "custody_conflict_refusal_record_unwritable"
+    )
+    held = receiver(case["held_before"])
+
+    first = _route(held, case, fault="at_refusal_record")
+    assert held.connection.fired
+    assert first.outcome.reason == case["reject_reason"]
+    assert held.refusals() == 0
+
+    again = _route(held, case, fault=None)
+    assert again.outcome.reason == case["reject_reason"]
+    assert held.refusals() == 1
+
+
+def test_a_failed_rollback_does_not_strand_later_applications(receiver) -> None:
+    """COMMIT and then ROLLBACK fail; the next artifact still applies."""
+    case = next(c for c in CASES if c["name"] == "receipt_store_fault_at_commit")
+    held = receiver(case["held_before"])
+
+    first = _route(held, case, fault="commit_and_rollback")
+    assert held.connection.fired
+    assert first.outcome.state == UNDECIDED and first.acknowledgement is None
+    assert held.service.application_storage_fault is True
+    assert held.executor.run(held.ledger._connection.execute, "SELECT 1") is not None
+    assert not held.ledger._connection.in_transaction
+
+    again = _route(held, case, fault=None)
+    assert again.outcome.state == ACCEPTED
+    assert held.service.application_storage_fault is False
+    receipted = {
+        r["local_seq"]
+        for r in held.executor.run(
+            lambda: Receiver._read(held.ledger._connection)["receipts"]
+        )
+    }
+    assert set(range(case["artifact"]["from_seq"], case["artifact"]["to_seq"] + 1)) <= (
+        receipted
+    )
+
+
+def test_a_ledger_that_cannot_reopen_at_once_reopens_before_the_next_write(
+    receiver, monkeypatch
+) -> None:
+    case = next(c for c in CASES if c["name"] == "receipt_store_fault_at_commit")
+    held = receiver(case["held_before"])
+    reopen = held.ledger._reopen
+    attempts: list[int] = []
+
+    def flaky() -> None:
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise sqlite3.OperationalError("unable to open database file")
+        reopen()
+
+    monkeypatch.setattr(held.ledger, "_reopen", flaky)
+
+    first = _route(held, case, fault="commit_and_rollback")
+    assert first.outcome.state == UNDECIDED
+
+    again = _route(held, case, fault=None)
+    assert again.outcome.state == ACCEPTED
+    assert len(attempts) == 2

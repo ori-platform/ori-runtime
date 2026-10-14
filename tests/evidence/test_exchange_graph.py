@@ -611,6 +611,9 @@ VECTOR_CONSUMERS = {
         "evidence/test_inbound_restatements.py"
         "::test_each_answer_the_runtime_gives_is_the_one_the_courier_reads",
     ),
+    # Only `conditions["evidence_application_storage_fault"]` is consumed: the
+    # snapshot is runtime-health/v3 in shape and carries that one v4 signal.
+    # The rest of the corpus is v4's, unexercised until the runtime adopts it.
     ("runtime_health", "health-vectors-v4"): (
         "test_health_status_fold.py"
         "::test_the_storage_fault_folds_at_runtime_health_v4s_severity",
