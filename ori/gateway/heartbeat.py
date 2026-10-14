@@ -197,7 +197,8 @@ class MqttGatewayHeartbeatSubscriber:
         raw_ts = payload.get("timestamp_ms")
         try:
             timestamp_ms = int(raw_ts) if raw_ts is not None else now_ms()
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError: Infinity parses as a JSON number and int() refuses it.
             timestamp_ms = now_ms()
 
         status = str(payload.get("status", "") or "")

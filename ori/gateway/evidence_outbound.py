@@ -63,6 +63,8 @@ except ImportError:  # pragma: no cover — paho is always installed in producti
 
 logger = logging.getLogger(__name__)
 
+_JSON_INTEGER_MAX = 2**53 - 1
+
 EVIDENCE_OUTBOUND_TOPIC_TEMPLATE = "ori/{device_id}/evidence/outbound"
 EVIDENCE_OUTBOUND_ACK_TOPIC_TEMPLATE = "ori/{device_id}/evidence/outbound/ack"
 EVIDENCE_OUTBOUND_ACK_MESSAGE_TYPE = "evidence_outbound_ack"
@@ -226,9 +228,13 @@ class EvidenceOutboundAckRouter:
         at_ms = self._now()
         if self._message_auth is None:
             signed_at = decoded.get("acknowledged_at_ms")
+        # Outside the integer zone a time is no JSON integer, and the store
+        # refuses one past 64 bits; the receive time stands in.
         answered_at_ms = (
             int(signed_at)
-            if isinstance(signed_at, int) and not isinstance(signed_at, bool)
+            if isinstance(signed_at, int)
+            and not isinstance(signed_at, bool)
+            and abs(signed_at) <= _JSON_INTEGER_MAX
             else at_ms
         )
         if artifact_type == ARTIFACT_DELIVERY_ENVELOPE:

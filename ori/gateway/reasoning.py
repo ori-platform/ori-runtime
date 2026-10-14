@@ -219,7 +219,9 @@ class MqttGatewayReasoner:
             if not isinstance(payload, dict):
                 logger.warning("[gateway-reasoning] ignoring non-object response")
                 return
-            if str(payload.get("request_id", "")) != request.request_id:
+            # Compared as it arrived: str() of a value nested past the
+            # recursion limit raises on this paho thread.
+            if payload.get("request_id") != request.request_id:
                 return
             if self._message_auth is not None:
                 try:

@@ -1226,3 +1226,28 @@ async def test_a_malformed_time_cannot_reorder_a_delayed_older_answer(rig):
     await router.handle_ack(_with_signed_at(older, "1787000003100"))
     assert rig.envelope(local_seq)["courier_answer"] == "queued"
     assert rig.failures() == []
+
+
+@pytest.mark.parametrize("acknowledged_at_ms", [2**63, -(2**63), 2**53])
+async def test_a_courier_time_past_the_integer_zone_is_not_stored(
+    rig, acknowledged_at_ms
+):
+    """Unauthenticated, the courier names its own time; past 64 bits the store
+    raises from a route that never raises, so the receive time stands in."""
+    sealed = rig.seal(1)
+    payload = _ack(
+        ARTIFACT_DELIVERY_ENVELOPE,
+        sealed["envelope_digest"],
+        outcome="refused",
+        reason="queue_full",
+        secret=None,
+    )
+    payload["acknowledged_at_ms"] = acknowledged_at_ms
+
+    routed = await _router(rig, authenticated=False).handle_ack(
+        json.dumps(payload).encode()
+    )
+
+    assert routed.reason == "queue_full"
+    stored = rig.envelope(int(sealed["local_seq"]))["courier_answer_at_ms"]
+    assert stored is not None and abs(stored) <= 2**53 - 1

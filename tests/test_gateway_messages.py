@@ -577,8 +577,10 @@ def _hostile(shape: str) -> dict:
     elif shape == "non_finite":
         payload["body"]["value"] = float("nan")
     elif shape == "deep":
+        # Deep enough that encoding it raises RecursionError on every
+        # supported interpreter; a parser may admit it on a later one.
         nested: object = 0
-        for _ in range(5000):
+        for _ in range(200_000):
             nested = [nested]
         payload["body"]["value"] = nested
     elif shape == "signature_shape":

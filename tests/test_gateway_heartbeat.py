@@ -482,3 +482,20 @@ def test_paho_unavailable_raises():
                 posture_tracker=_fakeposturetracker(),
                 device_id="dev-01",
             )
+
+
+@pytest.mark.parametrize("raw", [b"Infinity", b"-Infinity", b"1e400"])
+async def test_a_timestamp_int_cannot_hold_falls_back_to_now(monkeypatch, raw):
+    """int() raises OverflowError for these; raised on paho's thread it would
+    stop the heartbeat route silently."""
+    monkeypatch.setattr(heartbeat_module, "now_ms", lambda: 99_000)
+    tracker = _fakeposturetracker()
+    sub = _subscriber(tracker)
+    sub._loop = asyncio.get_running_loop()
+
+    sub._on_message(
+        None, None, _message(b'{"status": "healthy", "timestamp_ms": ' + raw + b"}")
+    )
+    await asyncio.sleep(0)
+
+    assert tracker.recorded[0] == 99_000
