@@ -431,8 +431,9 @@ def test_each_answer_the_runtime_gives_is_the_one_the_courier_reads(case):
         outcome = IngestOutcome(artifact=ARTIFACT_CUSTODY, state=ACCEPTED)
     elif ack["reason"] not in RETIREMENT["vocabulary"]:
         # A reason outside the vocabulary is one this runtime cannot send.
-        with pytest.raises(ValueError):
-            raise IngestRejectedError(ack["reason"], "outside the vocabulary")
+        pytest.raises(
+            ValueError, IngestRejectedError, ack["reason"], "outside the vocabulary"
+        )
         return
     else:
         outcome = IngestOutcome(
