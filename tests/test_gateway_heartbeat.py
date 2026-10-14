@@ -133,7 +133,9 @@ class _FakeClient:
 # test must await asyncio.sleep(0) once to let the scheduled callback execute.
 
 
-async def test_valid_heartbeat_calls_record_gateway_heartbeat():
+async def test_valid_heartbeat_calls_record_gateway_heartbeat(monkeypatch):
+    """Recorded at the receive time; the gateway's own clock decides nothing."""
+    monkeypatch.setattr(heartbeat_module, "now_ms", lambda: 123_000)
     tracker = _fakeposturetracker()
     sub = _subscriber(tracker)
     sub._loop = asyncio.get_running_loop()
@@ -142,7 +144,7 @@ async def test_valid_heartbeat_calls_record_gateway_heartbeat():
     await asyncio.sleep(0)
 
     assert len(tracker.recorded) == 1
-    assert tracker.recorded[0] == 9_876_543
+    assert tracker.recorded[0] == 123_000
 
 
 async def test_degraded_status_still_updates_posture():
@@ -157,7 +159,8 @@ async def test_degraded_status_still_updates_posture():
     assert len(tracker.recorded) == 1
 
 
-async def test_unknown_status_still_updates_posture():
+async def test_unknown_status_still_updates_posture(monkeypatch):
+    monkeypatch.setattr(heartbeat_module, "now_ms", lambda: 7_000)
     """Forward-compatibility: unknown status values must not suppress posture update."""
     tracker = _fakeposturetracker()
     sub = _subscriber(tracker)
@@ -170,7 +173,7 @@ async def test_unknown_status_still_updates_posture():
     await asyncio.sleep(0)
 
     assert len(tracker.recorded) == 1
-    assert tracker.recorded[0] == 5
+    assert tracker.recorded[0] == 7_000
 
 
 async def test_missing_timestamp_ms_falls_back_to_now(monkeypatch):
@@ -439,7 +442,8 @@ async def test_serve_until_tls_applies_context():
     assert tls_contexts[0] is not None
 
 
-async def test_serve_until_heartbeat_updates_posture_tracker():
+async def test_serve_until_heartbeat_updates_posture_tracker(monkeypatch):
+    monkeypatch.setattr(heartbeat_module, "now_ms", lambda: 3_100_000)
     """End-to-end: MQTT heartbeat → posture tracker updated directly."""
     from ori.reasoning.capability_posture import CapabilityPostureTracker
 
@@ -468,7 +472,7 @@ async def test_serve_until_heartbeat_updates_posture_tracker():
 
     await asyncio.gather(sub.serve_until(shutdown), _stop())
 
-    assert tracker._last_gateway_heartbeat_ms == 3_000_000
+    assert tracker._last_gateway_heartbeat_ms == 3_100_000
 
 
 # ── paho unavailable guard ────────────────────────────────────────────────────
@@ -499,3 +503,43 @@ async def test_a_timestamp_int_cannot_hold_falls_back_to_now(monkeypatch, raw):
     await asyncio.sleep(0)
 
     assert tracker.recorded[0] == 99_000
+
+
+async def test_a_heartbeat_from_the_far_future_does_not_hold_the_gateway_reachable(
+    monkeypatch,
+):
+    """A gateway clock ahead by any amount must not outlive the gateway."""
+    from ori.reasoning import capability_posture
+
+    clock = [1_000_000]
+    monkeypatch.setattr(heartbeat_module, "now_ms", lambda: clock[0])
+    monkeypatch.setattr(capability_posture, "now_ms", lambda: clock[0])
+    tracker = capability_posture.CapabilityPostureTracker()
+    sub = _subscriber(tracker)
+    sub._loop = asyncio.get_running_loop()
+
+    sub._on_message(None, None, _message(_heartbeat_payload(timestamp_ms=2**62)))
+    await asyncio.sleep(0)
+
+    assert tracker._last_gateway_heartbeat_ms == 1_000_000
+    clock[0] += 60 * 60 * 1000
+    assert tracker._is_gateway_reachable(clock[0]) is False
+
+
+async def test_a_status_nested_past_the_recursion_limit_is_not_read(monkeypatch):
+    """An interpreter that parses it would raise from str() on paho's thread."""
+    nested: object = "x"
+    for _ in range(200_000):
+        nested = [nested]
+    monkeypatch.setattr(
+        heartbeat_module.json, "loads", lambda _payload: {"status": nested}
+    )
+    monkeypatch.setattr(heartbeat_module, "now_ms", lambda: 5_000)
+    tracker = _fakeposturetracker()
+    sub = _subscriber(tracker)
+    sub._loop = asyncio.get_running_loop()
+
+    sub._on_message(None, None, _message(b"{}"))
+    await asyncio.sleep(0)
+
+    assert tracker.recorded == [5_000]

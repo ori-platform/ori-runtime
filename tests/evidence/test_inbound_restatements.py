@@ -23,6 +23,7 @@ from ori.gateway.evidence_inbound import (
     ARTIFACT_RECEIPT,
     REFUSE_ENVELOPE_UNAUTHENTICATED,
     REFUSE_UNADMISSIBLE,
+    REFUSE_UNKNOWN_ARTIFACT_TYPE,
     EvidenceInboundRouter,
     InboundRefusal,
     Routed,
@@ -605,3 +606,21 @@ def test_a_decision_whose_acknowledgement_cannot_be_signed_stands_unanswered(
     assert isinstance(routed.outcome, IngestOutcome) and routed.outcome.accepted
     assert routed.acknowledgement is None
     assert _row(attestor)["custody_state"] == "held"
+
+
+def _deep(depth: int = 200_000) -> object:
+    nested: object = "x"
+    for _ in range(depth):
+        nested = [nested]
+    return nested
+
+
+def test_a_member_nested_past_the_recursion_limit_is_refused_inbound(sealed):
+    """str() of it raises; a member is read only as text."""
+    attestor, router, _base = sealed
+    routed = router.handle_payload(
+        {"device_id": DEVICE, "artifact_type": _deep(), "artifact": {}}
+    )
+    assert isinstance(routed.outcome, InboundRefusal)
+    assert routed.outcome.reason == REFUSE_UNKNOWN_ARTIFACT_TYPE
+    assert routed.acknowledgement is None

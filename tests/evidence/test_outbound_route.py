@@ -1329,3 +1329,22 @@ async def test_an_auth_block_on_an_unauthenticated_route_orders_nothing(rig):
 
     stored = rig.envelope(int(sealed["local_seq"]))["courier_answer_at_ms"]
     assert stored == RECEIVED_AT
+
+
+@pytest.mark.parametrize(
+    "member", ["artifact_type", "artifact_digest", "outcome", "reason"]
+)
+async def test_a_member_nested_past_the_recursion_limit_is_refused_outbound(
+    rig, member
+):
+    """str() of it raises from a route that never raises; members are text only."""
+    sealed = rig.seal(1)
+    payload = _ack(ARTIFACT_DELIVERY_ENVELOPE, sealed["envelope_digest"], secret=None)
+    nested: object = "x"
+    for _ in range(200_000):
+        nested = [nested]
+    payload[member] = nested
+
+    routed = await _router(rig, authenticated=False).handle_ack(payload)
+
+    assert routed.outcome == "refused"

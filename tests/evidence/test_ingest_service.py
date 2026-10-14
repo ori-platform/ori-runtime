@@ -1296,3 +1296,39 @@ def test_a_damaged_registration_leaves_its_disposition_undecided(rig, damage, va
 
     assert (outcome.state, outcome.reason) == ("undecided", None)
     assert ledger.last_disposition() is None
+
+
+def test_a_registration_copy_without_its_obligation_is_a_store_fault(rig):
+    """Every registration copy is sealed with its obligation; one alone is damage."""
+    from ori.security.evidence.disposition import (
+        DispositionScope,
+        DispositionValue,
+        VerifiedDisposition,
+    )
+
+    _, _, ledger, service = rig
+    triggering = "sha256:" + "c" * 64
+    ledger._connection.execute(
+        "INSERT INTO evidence_outbox"
+        " (artifact_type, artifact_json, artifact_digest, created_at_ms)"
+        " VALUES ('anchor_registration', ?, ?, 1)",
+        (json.dumps({"device_id": DEVICE, "anchor_epoch_id": EPOCH}), triggering),
+    )
+
+    class _Verifier:
+        def verify_disposition(self, artifact: object) -> VerifiedDisposition:
+            return VerifiedDisposition(
+                digest="sha256:" + "d" * 64,
+                triggering_digest=triggering,
+                device_id=DEVICE,
+                anchor_epoch_id=EPOCH,
+                scope=DispositionScope.ARTIFACT,
+                value=DispositionValue.ARTIFACT_TERMINAL,
+                decided_at_ms=1787000003000,
+                key_id="sha256:" + "e" * 64,
+            )
+
+    service._disposition_verifier = _Verifier()
+    outcome = service.accept_disposition({})
+
+    assert (outcome.state, outcome.reason) == ("undecided", None)

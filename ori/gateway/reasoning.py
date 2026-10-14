@@ -224,6 +224,17 @@ class MqttGatewayReasoner:
             # recursion limit raises on this paho thread.
             if payload.get("request_id") != request.request_id:
                 return
+            if self._message_auth is None and payload.get("device_id") != (
+                self._device_id
+            ):
+                # Authenticated, verification binds the device; unauthenticated,
+                # the body must still name the device its topic does.
+                loop.call_soon_threadsafe(
+                    _set_future_exception,
+                    response,
+                    GatewayReasoningError("gateway response names another device"),
+                )
+                return
             if self._message_auth is not None:
                 try:
                     payload = self._message_auth.verify(
@@ -379,34 +390,51 @@ def _history_points_from_context(event: OriEvent | None) -> list[dict[str, Any]]
 
 
 def _reasoning_result_from_response(payload: dict[str, Any]) -> ReasoningResult:
+    """The response held to the contract's JSON types; anything else is the
+    gateway's error, refused here rather than left to a caller's fallback."""
     error = payload.get("error")
     if error:
+        if not isinstance(error, str):
+            raise GatewayReasoningError("gateway response error is not text")
         raise GatewayReasoningError(f"gateway provider error: {error}")
-    action_tier = str(payload.get("action_tier", "") or "")
-    if action_tier not in _VALID_ACTION_TIERS:
+    action_tier = payload.get("action_tier")
+    if not isinstance(action_tier, str) or action_tier not in _VALID_ACTION_TIERS:
         raise GatewayReasoningError("gateway response action_tier is invalid")
-    # A response field that will not convert, or converts to NaN or an
-    # infinity, is the gateway's error, refused here rather than left to a
-    # caller's fallback.
-    try:
-        proposed_action = payload.get("proposed_action")
-        if proposed_action is not None:
-            proposed_action = str(proposed_action)
-        result = ReasoningResult(
-            text=str(payload.get("text", "") or ""),
-            tier="gateway",
-            model=str(payload.get("model", "") or "gateway"),
-            tokens_used=int(payload.get("tokens_used", 0) or 0),
-            latency_ms=int(payload.get("latency_ms", 0) or 0),
-            confidence=float(payload.get("confidence", 0.0) or 0.0),
-            action_tier=action_tier,
-            proposed_action=proposed_action,
-        )
-    except (TypeError, ValueError, OverflowError, RecursionError) as exc:
-        raise GatewayReasoningError("gateway response field is malformed") from exc
-    if not math.isfinite(result.confidence):
+    text = payload.get("text", "")
+    model = payload.get("model", "") or "gateway"
+    proposed_action = payload.get("proposed_action")
+    tokens_used = payload.get("tokens_used", 0)
+    latency_ms = payload.get("latency_ms", 0)
+    confidence = payload.get("confidence", 0.0)
+    if not (
+        isinstance(text, str)
+        and isinstance(model, str)
+        and (proposed_action is None or isinstance(proposed_action, str))
+        and _count(tokens_used)
+        and _count(latency_ms)
+    ):
+        raise GatewayReasoningError("gateway response field is malformed")
+    if (
+        isinstance(confidence, bool)
+        or not isinstance(confidence, (int, float))
+        or not math.isfinite(confidence)
+    ):
         raise GatewayReasoningError("gateway response confidence is not finite")
-    return result
+    return ReasoningResult(
+        text=text,
+        tier="gateway",
+        model=model,
+        tokens_used=tokens_used,
+        latency_ms=latency_ms,
+        confidence=float(confidence),
+        action_tier=action_tier,
+        proposed_action=proposed_action,
+    )
+
+
+def _count(value: object) -> bool:
+    """A non-negative JSON integer inside the integer zone."""
+    return type(value) is int and 0 <= value <= 2**53 - 1
 
 
 def _default_client_factory(*, client_id: str) -> Any:

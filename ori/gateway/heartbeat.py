@@ -192,8 +192,10 @@ class MqttGatewayHeartbeatSubscriber:
                 logger.warning("[gateway-heartbeat] rejected heartbeat: %s", exc)
                 return
 
-        # Extract timestamp; fall back to local clock so posture is never
-        # blocked by a malformed field.
+        # Freshness is the receive time: a gateway's own clock, ahead by any
+        # amount, would otherwise hold it reachable after it stopped. Its
+        # timestamp is logged and decides nothing.
+        received_at_ms = now_ms()
         raw_ts = payload.get("timestamp_ms")
         try:
             timestamp_ms = int(raw_ts) if raw_ts is not None else now_ms()
@@ -218,7 +220,7 @@ class MqttGatewayHeartbeatSubscriber:
         # call_soon_threadsafe is required: _on_message fires on paho's network
         # thread; record_gateway_heartbeat must run on the asyncio event loop.
         loop.call_soon_threadsafe(
-            self._posture_tracker.record_gateway_heartbeat, timestamp_ms
+            self._posture_tracker.record_gateway_heartbeat, received_at_ms
         )
 
 
