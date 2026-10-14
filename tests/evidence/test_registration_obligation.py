@@ -834,6 +834,37 @@ async def test_an_active_epoch_recorded_without_a_registration_is_not_confirmed(
     )
 
 
+async def test_a_projection_an_earlier_release_wrote_does_not_block_confirmation(
+    device,
+):
+    """A store upgraded from a release that projected confirmations with
+    nothing sealed: the registration sealed now is still confirmable."""
+    attestor = device.attestor
+    conn = sqlite3.connect(str(device.root / "evidence.db"))
+    try:
+        conn.execute(
+            "INSERT INTO evidence_device_epochs VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                DEVICE,
+                attestor.anchor.anchor_epoch_id,
+                attestor.public_key_hex,
+                "someone",
+                1,
+                EPOCH_KEY_ID,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    await attestor.reconcile_registration(REFERENCE)
+
+    outcome = attestor.ingest.accept_epoch_confirmation(_confirmation(attestor))
+
+    assert outcome.accepted, outcome
+    assert device.obligations()[-1]["state"] == "confirmed"
+    assert attestor.application_storage_fault is False
+
+
 async def test_a_confirmation_for_the_current_epoch_with_nothing_sealed_is_refused(
     device,
 ):

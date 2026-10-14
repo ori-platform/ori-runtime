@@ -1438,6 +1438,8 @@ class EvidenceDeliveryLedger:
                 )
             if row["closed_at_ms"] is not None:
                 _stored_time(row["closed_at_ms"], "obligation closing time")
+            if row["suspended_at_ms"] is not None:
+                _stored_time(row["suspended_at_ms"], "obligation suspension time")
             if (state == OBLIGATION_CLOSED) != (row["closed_reason"] is not None):
                 raise EvidenceStoreFaultError(
                     "an obligation's reason disagrees with it"
@@ -1824,6 +1826,22 @@ class EvidenceDeliveryLedger:
             if not isinstance(artifact, dict):
                 raise EvidenceStoreFaultError(
                     "a sealed artifact's stored bytes are not an object"
+                )
+            # A registration's courier copy always has its obligation beside
+            # it, and a checkpoint never does: a type that disagrees is damage.
+            artifact_type = _stored_state(
+                row["artifact_type"], OUTBOX_ARTIFACT_TYPES, "artifact type"
+            )
+            obligation = self._connection.execute(
+                "SELECT 1 FROM evidence_registration_obligation"
+                " WHERE artifact_digest = ?",
+                (str(digest),),
+            ).fetchone()
+            if (artifact_type == OUTBOX_ANCHOR_REGISTRATION) != (
+                obligation is not None
+            ):
+                raise EvidenceStoreFaultError(
+                    "a sealed artifact's type disagrees with its obligation"
                 )
             # Every artifact this device seals names its device and epoch, so
             # one that does not is damaged, never another identity's.
@@ -2295,9 +2313,11 @@ class EvidenceDeliveryLedger:
                         "the confirmation disagrees with the one recorded for its epoch"
                     )
                 return 0
-            # No record of a confirmation, yet the obligation it closes is
-            # confirmed or the projection names the epoch: the record was
-            # damaged, and a fresh one would overwrite what it held.
+            # No record of a confirmation, yet the obligation it closes reads
+            # confirmed: only the record's own insert confirms an obligation,
+            # so the record was damaged and a fresh one would overwrite it.
+            # The projection is not consulted: releases before the obligation
+            # wrote it with no record, and that state is legitimate.
             confirmed = self._connection.execute(
                 """
                 SELECT 1 FROM evidence_registration_obligation
@@ -2305,11 +2325,7 @@ class EvidenceDeliveryLedger:
                 """,
                 (str(anchor_epoch_id), pubkey, OBLIGATION_CONFIRMED),
             ).fetchone()
-            projected = self._connection.execute(
-                "SELECT 1 FROM evidence_device_epochs WHERE anchor_epoch_id = ?",
-                (str(anchor_epoch_id),),
-            ).fetchone()
-            if confirmed is not None or projected is not None:
+            if confirmed is not None:
                 raise EvidenceStoreFaultError(
                     "an epoch is confirmed with no confirmation record"
                 )

@@ -1243,3 +1243,56 @@ def test_a_damaged_obligation_state_leaves_a_registration_disposition_undecided(
 
     assert (outcome.state, outcome.reason) == ("undecided", None)
     assert ledger.last_disposition() is None
+
+
+@pytest.mark.parametrize(
+    "damage, value",
+    [
+        (
+            "UPDATE evidence_outbox SET artifact_type = 'checkpoint'"
+            " WHERE artifact_type = 'anchor_registration'",
+            "artifact_terminal",
+        ),
+        (
+            "UPDATE evidence_registration_obligation SET suspended_at_ms = 'garbage'",
+            "retained_pending",
+        ),
+    ],
+    ids=["registration-read-as-checkpoint", "unreadable-suspension"],
+)
+def test_a_damaged_registration_leaves_its_disposition_undecided(rig, damage, value):
+    """Applied, it would close nothing or suspend nothing while answering applied."""
+    from ori.security.evidence.disposition import (
+        DispositionScope,
+        DispositionValue,
+        VerifiedDisposition,
+    )
+
+    key, _, ledger, service = rig
+    _register(ledger, key)
+    digest = str(ledger.open_registration_obligation(EPOCH)["artifact_digest"])
+    for trigger in (
+        "evidence_outbox_no_artifact_update",
+        "evidence_registration_obligation_suspension_is_final",
+    ):
+        ledger._connection.execute(f"DROP TRIGGER {trigger}")
+    ledger._connection.execute(damage)
+
+    class _Verifier:
+        def verify_disposition(self, artifact: object) -> VerifiedDisposition:
+            return VerifiedDisposition(
+                digest="sha256:" + "d" * 64,
+                triggering_digest=digest,
+                device_id=DEVICE,
+                anchor_epoch_id=EPOCH,
+                scope=DispositionScope.ARTIFACT,
+                value=DispositionValue(value),
+                decided_at_ms=1787000003000,
+                key_id="sha256:" + "e" * 64,
+            )
+
+    service._disposition_verifier = _Verifier()
+    outcome = service.accept_disposition({})
+
+    assert (outcome.state, outcome.reason) == ("undecided", None)
+    assert ledger.last_disposition() is None

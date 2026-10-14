@@ -232,7 +232,8 @@ class EvidenceInboundRouter:
             except GatewayMessageAuthError as exc:
                 return InboundRefusal(REFUSE_ENVELOPE_UNAUTHENTICATED, str(exc))
 
-        artifact_type = str(decoded.get("artifact_type", "") or "")
+        raw_type = decoded.get("artifact_type")
+        artifact_type = raw_type if isinstance(raw_type, str) else ""
         if artifact_type not in ARTIFACT_TYPES:
             return InboundRefusal(
                 REFUSE_UNKNOWN_ARTIFACT_TYPE,

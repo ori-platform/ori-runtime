@@ -964,6 +964,33 @@ DAMAGED_RECORDS = [
         "UPDATE evidence_registration_obligation SET pubkey_hex = ?",
         ("0" * 64,),
     ),
+    # The kept check alone: an earlier epoch whose obligation reads
+    # confirmed, with no record and no projection naming it.
+    (
+        "confirmation_earlier_epoch_agreeing_restatement",
+        "DELETE FROM evidence_registration_confirmation WHERE anchor_epoch_id = ?",
+        ("sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",),
+    ),
+    (
+        "confirmation_for_another_epoch",
+        "UPDATE evidence_registration_obligation SET state = 'broken', closed_at_ms = 1",
+        (),
+    ),
+    (
+        "confirmation_identical",
+        "UPDATE evidence_registration_obligation SET commissioning_reference = ?",
+        ("sha256:" + "b" * 64,),
+    ),
+    (
+        "disposition_first_application",
+        "UPDATE evidence_registration_obligation SET pubkey_hex = ?",
+        ("0" * 64,),
+    ),
+    (
+        "receipt_identical_repeat",
+        "UPDATE evidence_delivery_ledger SET local_seq = 99 WHERE local_seq = 4",
+        (),
+    ),
     # A gap in a gapless sequence.
     (
         "custody_first_acceptance",

@@ -65,6 +65,12 @@ logger = logging.getLogger(__name__)
 
 _JSON_INTEGER_MAX = 2**53 - 1
 
+
+def _text(decoded: dict[str, Any], name: str) -> str:
+    value = decoded.get(name)
+    return value if isinstance(value, str) else ""
+
+
 EVIDENCE_OUTBOUND_TOPIC_TEMPLATE = "ori/{device_id}/evidence/outbound"
 EVIDENCE_OUTBOUND_ACK_TOPIC_TEMPLATE = "ori/{device_id}/evidence/outbound/ack"
 EVIDENCE_OUTBOUND_ACK_MESSAGE_TYPE = "evidence_outbound_ack"
@@ -203,13 +209,15 @@ class EvidenceOutboundAckRouter:
                 )
             except GatewayMessageAuthError as exc:
                 return AckRouted(ROUTED_REFUSED, f"envelope unauthenticated: {exc}")
-        elif str(decoded.get("device_id", "")) != self._device_id:
+        elif decoded.get("device_id") != self._device_id:
             return AckRouted(ROUTED_REFUSED, "acknowledgement names another device")
 
-        artifact_type = str(decoded.get("artifact_type", "") or "")
-        digest = str(decoded.get("artifact_digest", "") or "")
-        outcome = str(decoded.get("outcome", "") or "")
-        reason = str(decoded.get("reason", "") or "")
+        # Members are taken only as text: str() of a value nested past the
+        # recursion limit raises from a route that never raises.
+        artifact_type = _text(decoded, "artifact_type")
+        digest = _text(decoded, "artifact_digest")
+        outcome = _text(decoded, "outcome")
+        reason = _text(decoded, "reason")
         if artifact_type not in OUTBOUND_ARTIFACT_TYPES:
             return AckRouted(ROUTED_REFUSED, f"unknown artifact_type {artifact_type!r}")
         if not _DIGEST.match(digest):

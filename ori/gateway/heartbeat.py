@@ -201,7 +201,10 @@ class MqttGatewayHeartbeatSubscriber:
             # OverflowError: Infinity parses as a JSON number and int() refuses it.
             timestamp_ms = now_ms()
 
-        status = str(payload.get("status", "") or "")
+        # Taken only as text: str() of a value nested past the recursion
+        # limit raises on paho's thread.
+        raw_status = payload.get("status")
+        status = raw_status if isinstance(raw_status, str) else ""
         if status and status not in _VALID_STATUSES:
             logger.debug(
                 "[gateway-heartbeat] unrecognised status %r; heartbeat still recorded",
