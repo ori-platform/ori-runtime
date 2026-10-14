@@ -129,9 +129,13 @@ def _has_type(value: object, expected: type) -> bool:
 
 #: A disposition whose effect is already in force.
 REJECT_SUPERSEDED = "superseded"
+#: A verified artifact that disagrees with a final record this receiver holds.
+REJECT_RESTATEMENT_CONFLICT = "restatement_conflict"
+#: The evidence-exchange/v3 receiver rejection vocabulary, closed.
 REJECT_REASONS = frozenset(
     {
         REJECT_SUPERSEDED,
+        REJECT_RESTATEMENT_CONFLICT,
         REJECT_UNRECOGNISED_VERSION,
         REJECT_MALFORMED,
         REJECT_UNKNOWN_KEY,
@@ -154,6 +158,13 @@ class IngestRejectedError(Exception):
         super().__init__(detail)
         self.reason = reason
         self.detail = detail
+
+
+class UnreadableChainRowError(Exception):
+    """A sealed chain row digest the store gave back is not a digest.
+
+    Not a rejection: the store failed, so the receipt is left undecided.
+    """
 
 
 @dataclass(frozen=True)
@@ -452,9 +463,8 @@ def verify_delivery_receipt(
         if not _SHA256_DIGEST_RE.fullmatch(str(chain_row_digests[seq]))
     ]
     if unreadable:
-        raise IngestRejectedError(
-            REJECT_BINDING_MISMATCH,
-            f"{len(unreadable)} sealed chain row digests in the range are unreadable",
+        raise UnreadableChainRowError(
+            f"{len(unreadable)} sealed chain row digests in the range are unreadable"
         )
     concatenated = b"".join(
         bytes.fromhex(str(chain_row_digests[seq])[len("sha256:") :]) for seq in held
@@ -481,14 +491,14 @@ def verify_epoch_confirmation(
     *,
     device_id: str,
     registry: dict[tuple[str, str], AuthorityKey],
-    expected_pubkey_hex: str,
 ) -> VerifiedEpochConfirmation:
-    """Prove the authority confirmed this device's anchor for an epoch.
+    """Prove the authority confirmed an anchor of this device for an epoch.
 
-    The confirmation names the public key it is confirming, and it must be this
-    device's. Without that binding an authority statement about some other
-    device's anchor would advance this one's epoch — which is the substitution
-    the whole `(purpose, key_id)` and device-binding apparatus exists to stop.
+    The confirmation names the public key it confirms. Whether this device
+    sealed a registration for that epoch under that key is the ledger's to
+    answer, since an earlier epoch was sealed under an earlier key; without
+    that binding an authority statement about some other device's anchor
+    would advance this one's epoch.
     """
     parsed = _require_shape(artifact, EPOCH_SHAPE, "epoch confirmation")
     key = _select(registry, PURPOSE_EPOCH, parsed["key_id"])
@@ -503,11 +513,6 @@ def verify_epoch_confirmation(
     if parsed["device_id"] != device_id:
         raise IngestRejectedError(
             REJECT_BINDING_MISMATCH, "the confirmation names another device"
-        )
-    if parsed["pubkey_hex"].lower() != expected_pubkey_hex.lower():
-        raise IngestRejectedError(
-            REJECT_BINDING_MISMATCH,
-            "the confirmation names a verification key that is not this device's",
         )
     if not parsed["anchor_epoch_id"]:
         raise IngestRejectedError(REJECT_MALFORMED, "the confirmation names no epoch")

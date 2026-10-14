@@ -1,0 +1,185 @@
+{
+  "vector_set": "gateway-evidence-carriage/v1 inbound retirement",
+  "contract": "gateway-evidence-carriage/v1",
+  "vocabulary": [
+    "malformed",
+    "bad_authenticator",
+    "binding_mismatch",
+    "non_contiguous_range",
+    "unrecognised_version",
+    "wrong_purpose",
+    "unknown_key",
+    "retired_key",
+    "unknown_sequence",
+    "superseded",
+    "restatement_conflict"
+  ],
+  "vocabulary_source": "evidence-exchange/v3 receiver rejection vocabulary",
+  "cases": [
+    {
+      "name": "applied",
+      "note": "An acknowledgement that the runtime applied the artifact retires it.",
+      "acknowledgement": {
+        "outcome": "applied",
+        "reason": ""
+      },
+      "retire": true,
+      "head": "retired",
+      "redelivery": null,
+      "clause": "The runtime therefore publishes an ingest acknowledgement, and the gateway retires an artifact from its durable queue only on receiving one."
+    },
+    {
+      "name": "refused_malformed",
+      "note": "A refusal for malformed retires the artifact.",
+      "acknowledgement": {
+        "outcome": "refused",
+        "reason": "malformed"
+      },
+      "retire": true,
+      "head": "retired",
+      "redelivery": null,
+      "clause": "The bytes. They are not a well-formed artifact and will not become one."
+    },
+    {
+      "name": "refused_bad_authenticator",
+      "note": "A refusal for bad_authenticator retires the artifact.",
+      "acknowledgement": {
+        "outcome": "refused",
+        "reason": "bad_authenticator"
+      },
+      "retire": true,
+      "head": "retired",
+      "redelivery": null,
+      "clause": "The bytes and the named key. The authenticator does not verify, and resending cannot change that."
+    },
+    {
+      "name": "refused_binding_mismatch",
+      "note": "A refusal for binding_mismatch retires the artifact.",
+      "acknowledgement": {
+        "outcome": "refused",
+        "reason": "binding_mismatch"
+      },
+      "retire": true,
+      "head": "retired",
+      "redelivery": null,
+      "clause": "The bytes. The artifact is about another device, another key, or an artifact this runtime never sealed, or a receipt's range digest does not match the chain rows sealed for its range."
+    },
+    {
+      "name": "refused_non_contiguous_range",
+      "note": "A refusal for non_contiguous_range retires the artifact.",
+      "acknowledgement": {
+        "outcome": "refused",
+        "reason": "non_contiguous_range"
+      },
+      "retire": true,
+      "head": "retired",
+      "redelivery": null,
+      "clause": "The bytes. The claimed range is not a closed interval."
+    },
+    {
+      "name": "refused_unrecognised_version",
+      "note": "A refusal for unrecognised_version keeps the artifact at the head of its lane until a relevant runtime state change.",
+      "acknowledgement": {
+        "outcome": "refused",
+        "reason": "unrecognised_version"
+      },
+      "retire": false,
+      "head": "kept",
+      "redelivery": "on_state_change",
+      "clause": "Receiver capability. A later release may interpret that version."
+    },
+    {
+      "name": "refused_wrong_purpose",
+      "note": "A refusal for wrong_purpose keeps the artifact at the head of its lane until a relevant runtime state change.",
+      "acknowledgement": {
+        "outcome": "refused",
+        "reason": "wrong_purpose"
+      },
+      "retire": false,
+      "head": "kept",
+      "redelivery": "on_state_change",
+      "clause": "Receiver state. The purpose a `key_id` is held under is registry state, not something readable from the artifact."
+    },
+    {
+      "name": "refused_unknown_key",
+      "note": "A refusal for unknown_key keeps the artifact at the head of its lane until a relevant runtime state change.",
+      "acknowledgement": {
+        "outcome": "refused",
+        "reason": "unknown_key"
+      },
+      "retire": false,
+      "head": "kept",
+      "redelivery": "on_state_change",
+      "clause": "Receiver state. A later release may ship the authority key."
+    },
+    {
+      "name": "refused_retired_key",
+      "note": "A refusal for retired_key keeps the artifact at the head of its lane until a relevant runtime state change.",
+      "acknowledgement": {
+        "outcome": "refused",
+        "reason": "retired_key"
+      },
+      "retire": false,
+      "head": "kept",
+      "redelivery": "on_state_change",
+      "clause": "Receiver state, resolved by operator action."
+    },
+    {
+      "name": "refused_unknown_sequence",
+      "note": "A refusal for unknown_sequence keeps the artifact at the head of its lane until a relevant runtime state change.",
+      "acknowledgement": {
+        "outcome": "refused",
+        "reason": "unknown_sequence"
+      },
+      "retire": false,
+      "head": "kept",
+      "redelivery": "on_state_change",
+      "clause": "Receiver state. The envelope may not be sealed yet."
+    },
+    {
+      "name": "refused_superseded",
+      "note": "A refusal for superseded retires the artifact.",
+      "acknowledgement": {
+        "outcome": "refused",
+        "reason": "superseded"
+      },
+      "retire": true,
+      "head": "retired",
+      "redelivery": null,
+      "clause": "The runtime's durable resolution of the disposition's subject, which never reverts."
+    },
+    {
+      "name": "refused_restatement_conflict",
+      "note": "A refusal for restatement_conflict retires the artifact.",
+      "acknowledgement": {
+        "outcome": "refused",
+        "reason": "restatement_conflict"
+      },
+      "retire": true,
+      "head": "retired",
+      "redelivery": null,
+      "clause": "The bytes against a final record the runtime holds, verified and immutable, which never reverts."
+    },
+    {
+      "name": "refused_unrecognised_reason",
+      "note": "A refusal naming a reason outside the vocabulary is held as a non-retiring refusal.",
+      "acknowledgement": {
+        "outcome": "refused",
+        "reason": "not_a_contract_reason"
+      },
+      "retire": false,
+      "head": "kept",
+      "redelivery": "on_state_change",
+      "clause": "A gateway accepts and retires on a reason before any runtime it serves sends it; a gateway that does not recognise a reason cannot retire the artifact, and holds it at the head of that device's lane as a non-retiring refusal."
+    },
+    {
+      "name": "no_acknowledgement_after_store_fault",
+      "note": "The runtime's store faulted: it released the broker message and sent no acknowledgement. The head stays and is redelivered in a newly signed envelope.",
+      "acknowledgement": null,
+      "retire": false,
+      "head": "kept",
+      "redelivery": "fresh_envelope",
+      "clause": "The courier keeps the artifact, as it keeps any artifact it holds no acknowledgement for, and redelivers it in a newly signed envelope."
+    }
+  ]
+}

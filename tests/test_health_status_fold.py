@@ -13,7 +13,10 @@ from __future__ import annotations
 import ast
 import inspect
 import itertools
+import json
+import pathlib
 import textwrap
+import types
 from collections.abc import Callable
 from typing import Any
 
@@ -60,6 +63,10 @@ def _set(name: str, value: Any) -> Callable[[OriRuntime], None]:
     return lambda runtime: setattr(runtime, name, value)
 
 
+async def _evidence_storage_fault() -> dict[str, Any]:
+    return {"application_storage_fault": True}
+
+
 CONDITIONS: dict[str, tuple[str, Callable[[OriRuntime], None]]] = {
     "decision_record_lost": ("critical", _set("_decision_records_lost", lambda: 1)),
     "liveness_critical": (
@@ -91,6 +98,10 @@ CONDITIONS: dict[str, tuple[str, Callable[[OriRuntime], None]]] = {
         _set("_config_authority_health", lambda: {"unsigned_value_source": True}),
     ),
     "tier_c_records_degraded": ("degraded", _set("_dispatcher", _Dispatcher())),
+    "evidence_application_storage_fault": (
+        "degraded",
+        _set("_evidence_health", _evidence_storage_fault),
+    ),
 }
 # Both liveness entries drive the one liveness branch.
 BRANCHES = len(CONDITIONS) - 1
@@ -256,3 +267,73 @@ def test_only_the_fold_assigns_status_and_critical() -> None:
     assert len(fold) == 1 and ast.unparse(fold[0].value) == (
         "_fold_health_status(severities)"
     ), "the builder's `status` comes from the fold alone"
+
+
+HEALTH_V4 = json.loads(
+    (
+        pathlib.Path(__file__).resolve().parent
+        / "vectors"
+        / "runtime_health"
+        / "health-vectors-v4.json"
+    ).read_text()
+)
+
+
+def test_the_storage_fault_folds_at_runtime_health_v4s_severity() -> None:
+    """The one v4 condition this v3 snapshot carries, at the corpus's severity."""
+    assert (
+        CONDITIONS["evidence_application_storage_fault"][0]
+        == HEALTH_V4["conditions"]["evidence_application_storage_fault"]
+    )
+
+
+class _StorageFaultAttestor:
+    available = True
+    public_key_hex = ""
+    action_event_type = ""
+    anchor = None
+
+    def __init__(self, raised: bool) -> None:
+        self.application_storage_fault = raised
+
+    async def chain_head_hash(self) -> None:
+        return None
+
+    async def pending_export_count(self) -> None:
+        return None
+
+    async def awaiting_receipt(self, _now: int) -> None:
+        return None
+
+    async def ingest_refusal_summary(self) -> None:
+        return None
+
+
+@pytest.mark.parametrize(
+    "enabled, available, raised, reported",
+    [
+        (True, True, True, True),
+        (True, True, False, False),
+        # runtime-health/v4: false while evidence is disabled or not yet open.
+        (False, True, True, False),
+        (True, False, True, False),
+    ],
+)
+async def test_the_evidence_block_reports_the_storage_fault_signal(
+    enabled: bool, available: bool, raised: bool, reported: bool
+) -> None:
+    runtime = object.__new__(OriRuntime)
+    setattr(
+        runtime,
+        "_config",
+        types.SimpleNamespace(evidence=types.SimpleNamespace(enabled=enabled)),
+    )
+    runtime._state_store = None
+    runtime._evidence_inbound_subscriber = None
+    attestor = _StorageFaultAttestor(raised)
+    attestor.available = available
+    setattr(runtime, "_evidence_attestor", attestor)
+
+    health = await runtime._evidence_health()
+
+    assert health["application_storage_fault"] is reported

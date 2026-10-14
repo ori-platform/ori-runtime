@@ -48,6 +48,11 @@ class IngestBackend(Protocol):
         """Every artifact refused, so a refusal is visible rather than silent."""
         raise NotImplementedError
 
+    @property
+    def application_storage_fault(self) -> bool:
+        """Whether the store failed since an inbound artifact was last applied."""
+        raise NotImplementedError
+
 
 class ConfirmedEpochProvider(Protocol):
     """What the confirmation façade reads. Implemented by ConfirmedEpochReader."""
@@ -97,6 +102,12 @@ class BoundIngestService:
     @property
     def rejections(self) -> tuple[IngestOutcome, ...]:
         return self._executor.run(lambda: self._service.rejections)
+
+    @property
+    def application_storage_fault(self) -> bool:
+        """Read without the evidence worker: the signal is in memory, so it is
+        reported while that worker is held by a store that does not answer."""
+        return bool(self._service.application_storage_fault)
 
 
 class OutboundLedger(Protocol):

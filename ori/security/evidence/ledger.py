@@ -33,7 +33,10 @@ import base64
 import hashlib
 import json
 import logging
+import re
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +44,7 @@ from ori.security.evidence.canonical import canonical_json
 from ori.security.evidence.chain import ENVELOPE_FIELDS, SCHEMA_VERSION
 from ori.security.evidence.device_key import EvidenceDeviceKey
 from ori.security.evidence.disposition import DispositionValue, VerifiedDisposition
+from ori.security.evidence.policy import safe_failure_reason
 from ori.security.evidence.registration import reoffer_due
 
 ENVELOPE_VERSION = 1
@@ -84,6 +88,9 @@ COURIER_ANSWERS = frozenset({"queued", "queue_full", "refused"})
 # The largest integer every JSON reader holds exactly; a courier's signed time
 # far in the past is still an age, never an unrepresentable one.
 _MAX_AGE_MS = 2**53 - 1
+
+_PUBKEY_HEX_RE = re.compile(r"\A[0-9a-f]{64}\Z")
+_SHA256_RE = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
 
 # Recorded custody is final, this runtime's own record time included, so a
 # redelivered acknowledgement cannot make a held envelope look newer.
@@ -698,6 +705,53 @@ class DispositionRefusedError(DeliveryLedgerError):
         self.detail = detail
 
 
+class RestatementConflictError(DeliveryLedgerError):
+    """A verified artifact restates a final record and disagrees with it."""
+
+
+class UnsealedRegistrationError(DeliveryLedgerError):
+    """A confirmation names no registration this device sealed."""
+
+
+class EvidenceStoreFaultError(RuntimeError):
+    """The store could not give a record a decision needs; nothing was decided."""
+
+
+def is_store_fault(exc: BaseException) -> bool:
+    """Whether *exc* is an operational failure of the store, per evidence-exchange/v3.
+
+    A constraint refusing a write is a receiver defect, never a store fault, and
+    neither is misuse of the connection.
+    """
+    if isinstance(exc, EvidenceStoreFaultError):
+        return True
+    if isinstance(
+        exc,
+        (
+            sqlite3.IntegrityError,
+            sqlite3.ProgrammingError,
+            sqlite3.InterfaceError,
+            sqlite3.NotSupportedError,
+        ),
+    ):
+        return False
+    return isinstance(exc, (sqlite3.DatabaseError, OSError))
+
+
+def _stored_int(value: object, what: str) -> int:
+    """An integer the store holds, or a store fault when it holds anything else."""
+    if type(value) is not int:
+        raise EvidenceStoreFaultError(f"the stored {what} is not an integer")
+    return value
+
+
+def _stored_text(value: object, what: str) -> str:
+    """Text the store holds, or a store fault when it holds anything else."""
+    if type(value) is not str:
+        raise EvidenceStoreFaultError(f"the stored {what} is not text")
+    return value
+
+
 def _reoffer_due_row(row: sqlite3.Row, at_ms: int) -> bool:
     """Whether an obligation's next re-offer is due.
 
@@ -1266,6 +1320,25 @@ class EvidenceDeliveryLedger:
         ).fetchone()
         return row is not None
 
+    def _require_readable_registrations(self, anchor_epoch_id: str) -> None:
+        """Raise a store fault when a registration sealed for the epoch is unreadable.
+
+        Matching on the stored key cannot tell a damaged key from another one,
+        and answering "never sealed" for it would retire a valid confirmation.
+        """
+        rows = self._connection.execute(
+            """
+            SELECT pubkey_hex FROM evidence_registration_obligation
+             WHERE anchor_epoch_id = ? AND device_id = ?
+            """,
+            (str(anchor_epoch_id), self._device_id),
+        ).fetchall()
+        for row in rows:
+            if not _PUBKEY_HEX_RE.fullmatch(
+                _stored_text(row["pubkey_hex"], "registration key")
+            ):
+                raise EvidenceStoreFaultError("a sealed registration key is unreadable")
+
     def record_current_anchor(self, *, posture: str, recorded_at_ms: int) -> None:
         """Record the anchor this ledger seals under, for a local tool to bind to."""
         self._connection.execute(
@@ -1459,15 +1532,8 @@ class EvidenceDeliveryLedger:
         already in force -- and raises `DispositionRefusedError` otherwise,
         changing nothing.
         """
-        self._connection.execute("BEGIN IMMEDIATE")
-        try:
-            outcome = self._apply_disposition_in_transaction(disposition, at_ms)
-            self._connection.execute("COMMIT")
-        except BaseException:
-            if self._connection.in_transaction:
-                self._connection.execute("ROLLBACK")
-            raise
-        return outcome
+        with self._application():
+            return self._apply_disposition_in_transaction(disposition, at_ms)
 
     def _apply_disposition_in_transaction(
         self, disposition: VerifiedDisposition, at_ms: int
@@ -1618,12 +1684,18 @@ class EvidenceDeliveryLedger:
             (str(digest),),
         ).fetchone()
         if row is not None:
+            # A sealed copy that cannot be read is the store failing, and an
+            # answer of "never sealed" would retire a valid disposition.
             try:
-                artifact = json.loads(str(row["artifact_json"]))
-            except ValueError:
-                return None
+                artifact = json.loads(_stored_text(row["artifact_json"], "artifact"))
+            except ValueError as exc:
+                raise EvidenceStoreFaultError(
+                    "a sealed artifact's stored bytes cannot be read"
+                ) from exc
             if not isinstance(artifact, dict):
-                return None
+                raise EvidenceStoreFaultError(
+                    "a sealed artifact's stored bytes are not an object"
+                )
             return (
                 str(row["artifact_type"]),
                 str(artifact.get("anchor_epoch_id") or ""),
@@ -1709,6 +1781,31 @@ class EvidenceDeliveryLedger:
 
     def close(self) -> None:
         self._connection.close()
+
+    @contextmanager
+    def _application(self) -> Iterator[None]:
+        """One transaction for every read and write applying one artifact.
+
+        Anything raised inside it, or by its commit, rolls every write back,
+        so an artifact is applied whole or not at all.
+        """
+        self._connection.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+            self._connection.execute("COMMIT")
+        except BaseException:
+            self._roll_back()
+            raise
+
+    def _roll_back(self) -> None:
+        if not self._connection.in_transaction:
+            return
+        try:
+            self._connection.execute("ROLLBACK")
+        except Exception as exc:
+            # SQLite rolls an interrupted transaction back when the file is
+            # next opened; nothing here can do more than report it.
+            logger.error("[evidence] rollback failed (%s)", safe_failure_reason(exc))
 
     # -- sealing ---------------------------------------------------------
 
@@ -1965,10 +2062,9 @@ class EvidenceDeliveryLedger:
         authority effective on its own say-so, which is the decision the epoch
         confirmation exists to take out of the device's hands.
 
-        Last confirmation wins. The authority is the sole source of epoch
-        truth, so a later statement supersedes an earlier one rather than
-        conflicting with it; a device holding two and choosing between them
-        would be adjudicating something it does not decide.
+        Written only by the first confirmation of the epoch this ledger seals
+        under, so the projection moves when that epoch is first confirmed and
+        a restatement never moves it.
         """
         self._connection.execute(
             """
@@ -2014,20 +2110,43 @@ class EvidenceDeliveryLedger:
         One transaction: a confirmation recorded without closing its
         obligation would leave the device re-offering an applied registration,
         and an obligation closed without the confirmation would report
-        `confirmed` with nothing held. Returns the obligations closed.
+        `confirmed` with nothing held.
+
+        A confirmation of an epoch already confirmed restates that record:
+        when its `confirmed_at_ms`, `actor` and `key_id` agree it changes
+        nothing, and otherwise it raises `RestatementConflictError` and changes
+        nothing. Returns the obligations closed.
         """
         pubkey = str(pubkey_hex).lower()
-        self._connection.execute("BEGIN IMMEDIATE")
-        try:
+        with self._application():
             if str(device_id) != self._device_id or not self.registration_sealed(
                 anchor_epoch_id, pubkey
             ):
-                raise DeliveryLedgerError(
+                self._require_readable_registrations(anchor_epoch_id)
+                raise UnsealedRegistrationError(
                     "the confirmation names no registration this device sealed"
                 )
+            held = self._connection.execute(
+                """
+                SELECT actor, confirmed_at_ms, key_id
+                  FROM evidence_registration_confirmation
+                 WHERE anchor_epoch_id = ?
+                """,
+                (str(anchor_epoch_id),),
+            ).fetchone()
+            if held is not None:
+                if (
+                    _stored_int(held["confirmed_at_ms"], "confirmation time"),
+                    _stored_text(held["actor"], "confirmation actor"),
+                    _stored_text(held["key_id"], "confirmation key"),
+                ) != (int(confirmed_at_ms), str(actor), str(key_id)):
+                    raise RestatementConflictError(
+                        "the confirmation disagrees with the one recorded for its epoch"
+                    )
+                return 0
             self._connection.execute(
                 """
-                INSERT OR IGNORE INTO evidence_registration_confirmation (
+                INSERT INTO evidence_registration_confirmation (
                     anchor_epoch_id, device_id, pubkey_hex, actor,
                     confirmed_at_ms, key_id, applied_at_ms
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -2065,13 +2184,7 @@ class EvidenceDeliveryLedger:
                     OBLIGATION_OPEN,
                 ),
             )
-            closed = cursor.rowcount
-            self._connection.execute("COMMIT")
-        except BaseException:
-            if self._connection.in_transaction:
-                self._connection.execute("ROLLBACK")
-            raise
-        return closed
+            return int(cursor.rowcount)
 
     def active_anchor_epoch_id(self, device_id: str) -> str | None:
         """The epoch the authority last confirmed for this device, if any.
@@ -2122,6 +2235,23 @@ class EvidenceDeliveryLedger:
             )
         return row
 
+    def sealed_envelope_digest(self, local_seq: int) -> str | None:
+        """The digest of the envelope sealed at *local_seq*, or None when none was.
+
+        A digest the store cannot give back intact is a store fault: matching
+        an acknowledgement against it would refuse a valid one.
+        """
+        row = self._connection.execute(
+            "SELECT envelope_digest FROM evidence_delivery_ledger WHERE local_seq = ?",
+            (int(local_seq),),
+        ).fetchone()
+        if row is None:
+            return None
+        digest = _stored_text(row["envelope_digest"], "envelope digest")
+        if not _SHA256_RE.fullmatch(digest):
+            raise EvidenceStoreFaultError("a sealed envelope digest is unreadable")
+        return digest
+
     def _apply_verified_custody(
         self, local_seq: int, *, custody_at_ms: int, key_id: str, recorded_at_ms: int
     ) -> None:
@@ -2132,31 +2262,64 @@ class EvidenceDeliveryLedger:
         whatever it is given. The MAC verification that makes the claim
         meaningful belongs to ingest, and a public unverified route into the
         same state would make that verification optional in practice.
+
+        Custody already held is restated, never rewritten. The same
+        `custody_at_ms`, under either generation, agrees: it keeps the first
+        key and supplies only a missing record time. Another time raises
+        `RestatementConflictError` and writes nothing.
         """
         if not key_id:
             raise DeliveryLedgerError(
                 "a custody acknowledgement must name its key generation"
             )
-        self._require_sealed(local_seq)
-        self._connection.execute(
-            """
-            UPDATE evidence_delivery_ledger
-               SET custody_state = ?, custody_at_ms = ?, custody_key_id = ?,
-                   custody_recorded_at_ms = COALESCE(custody_recorded_at_ms, ?)
-             WHERE local_seq = ?
-            """,
-            (
-                CUSTODY_HELD,
-                int(custody_at_ms),
-                str(key_id),
-                int(recorded_at_ms),
-                int(local_seq),
-            ),
-        )
+        with self._application():
+            held = self._require_sealed(local_seq)
+            if str(held["custody_state"]) == CUSTODY_HELD:
+                if _stored_int(held["custody_at_ms"], "custody time") != int(
+                    custody_at_ms
+                ):
+                    raise RestatementConflictError(
+                        "the acknowledgement names another custody time than the one held"
+                    )
+                if held["custody_recorded_at_ms"] is None:
+                    self._connection.execute(
+                        """
+                        UPDATE evidence_delivery_ledger
+                           SET custody_recorded_at_ms = ?
+                         WHERE local_seq = ? AND custody_recorded_at_ms IS NULL
+                        """,
+                        (int(recorded_at_ms), int(local_seq)),
+                    )
+                return
+            self._connection.execute(
+                """
+                UPDATE evidence_delivery_ledger
+                   SET custody_state = ?, custody_at_ms = ?, custody_key_id = ?,
+                       custody_recorded_at_ms = ?
+                 WHERE local_seq = ?
+                """,
+                (
+                    CUSTODY_HELD,
+                    int(custody_at_ms),
+                    str(key_id),
+                    int(recorded_at_ms),
+                    int(local_seq),
+                ),
+            )
 
     def _apply_verified_receipt(
         self, local_seq: int, *, receipt_at_ms: int, key_id: str
-    ) -> None:
+    ) -> bool:
+        """Record one receipted sequence; see `_apply_verified_receipts`."""
+        return bool(
+            self._apply_verified_receipts(
+                (local_seq,), receipt_at_ms=receipt_at_ms, key_id=key_id
+            )
+        )
+
+    def _apply_verified_receipts(
+        self, sequences: tuple[int, ...], *, receipt_at_ms: int, key_id: str
+    ) -> tuple[int, ...]:
         """Record a receipt whose signature, purpose and range are already checked.
 
         Same reasoning as custody, and it matters more here: this is the state
@@ -2164,20 +2327,31 @@ class EvidenceDeliveryLedger:
         string would let a caller assert a delivery no authority ever issued,
         and the trigger guarding it proves only that a string exists — not that
         it names a key which signed anything. Ingest is the sole route in.
+
+        A receipt agrees on coverage: a sequence already receipted keeps its
+        first time and key, and only the others are written, all in one
+        transaction. Returns the sequences written, ascending.
         """
         if not key_id:
             raise DeliveryLedgerError(
                 "a receipt must name the authority key that issued it"
             )
-        self._require_sealed(local_seq)
-        self._connection.execute(
-            """
-            UPDATE evidence_delivery_ledger
-               SET receipt_state = ?, receipt_at_ms = ?, receipt_key_id = ?
-             WHERE local_seq = ?
-            """,
-            (RECEIPT_ACCEPTED, int(receipt_at_ms), str(key_id), int(local_seq)),
-        )
+        applied: list[int] = []
+        with self._application():
+            for local_seq in sorted(set(int(seq) for seq in sequences)):
+                held = self._require_sealed(local_seq)
+                if str(held["receipt_state"]) == RECEIPT_ACCEPTED:
+                    continue
+                self._connection.execute(
+                    """
+                    UPDATE evidence_delivery_ledger
+                       SET receipt_state = ?, receipt_at_ms = ?, receipt_key_id = ?
+                     WHERE local_seq = ?
+                    """,
+                    (RECEIPT_ACCEPTED, int(receipt_at_ms), str(key_id), local_seq),
+                )
+                applied.append(local_seq)
+        return tuple(applied)
 
     def record_attempt(
         self, local_seq: int, *, at_ms: int, failure: str | None

@@ -1,0 +1,10 @@
+{
+  "source_repository": "ori-platform/ori-specs",
+  "source_path": "runtime-health",
+  "source_commit": "2154b1cf4b71c1758f583b499a0aea55876e0cd3",
+  "contract_version": "v4",
+  "note": "Vendored copies of the normative vectors. The runtime must produce and accept the bytes they describe, so they are its conformance fixtures. Digests detect a local edit; the source commit is the provenance trail.",
+  "files": {
+    "health-vectors-v4.json": "db278c1f70240f396d586a09766ad67e1722d9339c77911955c2b1789c0a05c6"
+  }
+}

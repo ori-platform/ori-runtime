@@ -1,0 +1,128 @@
+{
+  "contract": "gateway-evidence-carriage/v1 per-device return order and declared inbound carriage",
+  "note": "Each sequence replays one site gateway's return queue. `devices` are the configured runtime devices and `declared` their `gateway-config/v1` `evidence.device_carriage` declarations; a device it does not name is `gateway-api/v1`. `stage` stages one authority artifact for a device, `publish` publishes every lane head the gateway may publish at once, and `ack` is that device's runtime acknowledging the artifact at its lane's head; a runtime that never acknowledges is one that never sends `ack`. `declare` changes one device's declaration. `published` lists the artifacts one `publish` sends, `lanes` each device's ordered return lane, `kept` the artifacts kept outside every lane because the device's declared contract cannot carry them, and `faults` the courier faults this raises. A `stage` may name the artifact's `digest`, which defaults to its `id`, and its `bytes`, which default to 1. `capacity` is the return store's item and byte capacity, which every lane entry and every kept artifact counts toward; `outbound` is each device's outbound lane, and `response` is the authority's response to the entry at its head, carrying `artifacts` staged in order: when one cannot be kept the response is not durably staged, the entry stays at the head, and `retrying` lists it. `remove` removes a device from configuration, and a later `declare` restores it. `stored` is the return store's items and bytes.",
+  "sequences": [
+    {
+      "name": "a mixed site: legacy device A never acknowledges and device B still receives its receipt and confirmation",
+      "devices": ["site-a-edge-01", "site-b-edge-02"],
+      "declared": {"site-a-edge-01": "gateway-api/v1", "site-b-edge-02": "gateway-evidence-carriage/v1"},
+      "steps": [
+        {"event": "stage", "device_id": "site-a-edge-01", "id": "rcpt-a1", "artifact_type": "delivery_receipt", "expect": {"lanes": {"site-a-edge-01": ["rcpt-a1"], "site-b-edge-02": []}}},
+        {"event": "stage", "device_id": "site-b-edge-02", "id": "rcpt-b1", "artifact_type": "delivery_receipt", "expect": {}},
+        {"event": "stage", "device_id": "site-b-edge-02", "id": "conf-b1", "artifact_type": "epoch_confirmation", "expect": {"lanes": {"site-a-edge-01": ["rcpt-a1"], "site-b-edge-02": ["rcpt-b1", "conf-b1"]}}},
+        {"event": "publish", "expect": {"published": ["rcpt-a1", "rcpt-b1"]}},
+        {"event": "ack", "device_id": "site-b-edge-02", "id": "rcpt-b1", "expect": {}},
+        {"event": "publish", "expect": {"published": ["rcpt-a1", "conf-b1"]}},
+        {"event": "ack", "device_id": "site-b-edge-02", "id": "conf-b1", "expect": {"lanes": {"site-a-edge-01": ["rcpt-a1"], "site-b-edge-02": []}}},
+        {"event": "stage", "device_id": "site-a-edge-01", "id": "disp-a1", "artifact_type": "evidence_disposition", "expect": {"lanes": {"site-a-edge-01": ["rcpt-a1"], "site-b-edge-02": []}, "kept": {"site-a-edge-01": ["disp-a1"], "site-b-edge-02": []}, "faults": ["return_path_incompatible"]}},
+        {"event": "stage", "device_id": "site-b-edge-02", "id": "rcpt-b2", "artifact_type": "delivery_receipt", "expect": {}},
+        {"event": "publish", "expect": {"published": ["rcpt-a1", "rcpt-b2"], "faults": ["return_path_incompatible"]}},
+        {"event": "ack", "device_id": "site-b-edge-02", "id": "rcpt-b2", "expect": {"lanes": {"site-a-edge-01": ["rcpt-a1"], "site-b-edge-02": []}, "kept": {"site-a-edge-01": ["disp-a1"], "site-b-edge-02": []}}}
+      ]
+    },
+    {
+      "name": "a disposition for a legacy device is kept outside its lane and raises return_path_incompatible",
+      "devices": ["site-a-edge-01"],
+      "declared": {"site-a-edge-01": "gateway-api/v1"},
+      "steps": [
+        {"event": "stage", "device_id": "site-a-edge-01", "id": "disp-a1", "artifact_type": "evidence_disposition", "expect": {"lanes": {"site-a-edge-01": []}, "kept": {"site-a-edge-01": ["disp-a1"]}, "faults": ["return_path_incompatible"]}},
+        {"event": "stage", "device_id": "site-a-edge-01", "id": "cust-a1", "artifact_type": "custody_acknowledgement", "expect": {"lanes": {"site-a-edge-01": ["cust-a1"]}, "kept": {"site-a-edge-01": ["disp-a1"]}}},
+        {"event": "publish", "expect": {"published": ["cust-a1"], "faults": ["return_path_incompatible"]}},
+        {"event": "ack", "device_id": "site-a-edge-01", "id": "cust-a1", "expect": {"lanes": {"site-a-edge-01": []}, "kept": {"site-a-edge-01": ["disp-a1"]}, "faults": ["return_path_incompatible"]}}
+      ]
+    },
+    {
+      "name": "an undeclared device is gateway-api/v1",
+      "devices": ["site-a-edge-01", "site-b-edge-02"],
+      "declared": {"site-b-edge-02": "gateway-evidence-carriage/v1"},
+      "steps": [
+        {"event": "stage", "device_id": "site-a-edge-01", "id": "disp-a1", "artifact_type": "evidence_disposition", "expect": {"lanes": {"site-a-edge-01": [], "site-b-edge-02": []}, "kept": {"site-a-edge-01": ["disp-a1"], "site-b-edge-02": []}, "faults": ["return_path_incompatible"]}},
+        {"event": "stage", "device_id": "site-b-edge-02", "id": "disp-b1", "artifact_type": "evidence_disposition", "expect": {"lanes": {"site-a-edge-01": [], "site-b-edge-02": ["disp-b1"]}, "kept": {"site-a-edge-01": ["disp-a1"], "site-b-edge-02": []}}},
+        {"event": "publish", "expect": {"published": ["disp-b1"]}}
+      ]
+    },
+    {
+      "name": "a declaration changed to gateway-evidence-carriage/v1 stages the kept artifacts in order",
+      "devices": ["site-a-edge-01"],
+      "declared": {},
+      "steps": [
+        {"event": "stage", "device_id": "site-a-edge-01", "id": "rcpt-a1", "artifact_type": "delivery_receipt", "expect": {}},
+        {"event": "stage", "device_id": "site-a-edge-01", "id": "disp-a1", "artifact_type": "evidence_disposition", "expect": {}},
+        {"event": "stage", "device_id": "site-a-edge-01", "id": "disp-a2", "artifact_type": "evidence_disposition", "expect": {"lanes": {"site-a-edge-01": ["rcpt-a1"]}, "kept": {"site-a-edge-01": ["disp-a1", "disp-a2"]}, "faults": ["return_path_incompatible"]}},
+        {"event": "declare", "device_id": "site-a-edge-01", "contract": "gateway-evidence-carriage/v1", "expect": {"lanes": {"site-a-edge-01": ["rcpt-a1", "disp-a1", "disp-a2"]}, "kept": {"site-a-edge-01": []}, "faults": []}},
+        {"event": "publish", "expect": {"published": ["rcpt-a1"]}},
+        {"event": "ack", "device_id": "site-a-edge-01", "id": "rcpt-a1", "expect": {}},
+        {"event": "publish", "expect": {"published": ["disp-a1"]}}
+      ]
+    },
+    {
+      "name": "a refused head holds only its own device's lane",
+      "devices": ["site-a-edge-01", "site-b-edge-02"],
+      "declared": {"site-a-edge-01": "gateway-evidence-carriage/v1", "site-b-edge-02": "gateway-evidence-carriage/v1"},
+      "steps": [
+        {"event": "stage", "device_id": "site-a-edge-01", "id": "rcpt-a1", "artifact_type": "delivery_receipt", "expect": {}},
+        {"event": "stage", "device_id": "site-a-edge-01", "id": "rcpt-a2", "artifact_type": "delivery_receipt", "expect": {}},
+        {"event": "stage", "device_id": "site-b-edge-02", "id": "conf-b1", "artifact_type": "epoch_confirmation", "expect": {}},
+        {"event": "publish", "expect": {"published": ["rcpt-a1", "conf-b1"]}},
+        {"event": "publish", "expect": {"published": ["rcpt-a1", "conf-b1"]}},
+        {"event": "ack", "device_id": "site-b-edge-02", "id": "conf-b1", "expect": {}},
+        {"event": "stage", "device_id": "site-b-edge-02", "id": "rcpt-b1", "artifact_type": "delivery_receipt", "expect": {}},
+        {"event": "publish", "expect": {"published": ["rcpt-a1", "rcpt-b1"], "lanes": {"site-a-edge-01": ["rcpt-a1", "rcpt-a2"], "site-b-edge-02": ["rcpt-b1"]}}}
+      ]
+    },
+    {
+      "name": "kept artifacts are idempotent by digest",
+      "devices": ["site-a-edge-01"],
+      "declared": {"site-a-edge-01": "gateway-api/v1"},
+      "steps": [
+        {"event": "stage", "device_id": "site-a-edge-01", "id": "disp-a1", "digest": "sha256:d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1", "artifact_type": "evidence_disposition", "expect": {"kept": {"site-a-edge-01": ["disp-a1"]}, "stored": [1, 1], "faults": ["return_path_incompatible"]}},
+        {"event": "stage", "device_id": "site-a-edge-01", "id": "disp-a1-repeat", "digest": "sha256:d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1", "artifact_type": "evidence_disposition", "expect": {"kept": {"site-a-edge-01": ["disp-a1"]}, "stored": [1, 1]}},
+        {"event": "stage", "device_id": "site-a-edge-01", "id": "disp-a2", "digest": "sha256:d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2", "artifact_type": "evidence_disposition", "expect": {"kept": {"site-a-edge-01": ["disp-a1", "disp-a2"]}, "stored": [2, 2]}},
+        {"event": "declare", "device_id": "site-a-edge-01", "contract": "gateway-evidence-carriage/v1", "expect": {"lanes": {"site-a-edge-01": ["disp-a1", "disp-a2"]}, "kept": {"site-a-edge-01": []}, "faults": []}}
+      ]
+    },
+    {
+      "name": "kept artifacts keep their arrival order",
+      "devices": ["site-a-edge-01"],
+      "declared": {"site-a-edge-01": "gateway-api/v1"},
+      "steps": [
+        {"event": "stage", "device_id": "site-a-edge-01", "id": "rcpt-a1", "artifact_type": "delivery_receipt", "expect": {"lanes": {"site-a-edge-01": ["rcpt-a1"]}}},
+        {"event": "stage", "device_id": "site-a-edge-01", "id": "disp-z", "artifact_type": "evidence_disposition", "expect": {}},
+        {"event": "stage", "device_id": "site-a-edge-01", "id": "disp-b", "artifact_type": "evidence_disposition", "expect": {"kept": {"site-a-edge-01": ["disp-z", "disp-b"]}}},
+        {"event": "declare", "device_id": "site-a-edge-01", "contract": "gateway-evidence-carriage/v1", "expect": {"lanes": {"site-a-edge-01": ["rcpt-a1", "disp-z", "disp-b"]}, "kept": {"site-a-edge-01": []}}}
+      ]
+    },
+    {
+      "name": "a removed device's kept artifacts are retained until it is restored under a compatible declaration",
+      "devices": ["site-a-edge-01", "site-b-edge-02"],
+      "declared": {"site-a-edge-01": "gateway-api/v1", "site-b-edge-02": "gateway-evidence-carriage/v1"},
+      "steps": [
+        {"event": "stage", "device_id": "site-a-edge-01", "id": "disp-a1", "artifact_type": "evidence_disposition", "expect": {"kept": {"site-a-edge-01": ["disp-a1"], "site-b-edge-02": []}, "faults": ["return_path_incompatible"]}},
+        {"event": "remove", "device_id": "site-a-edge-01", "expect": {"kept": {"site-a-edge-01": ["disp-a1"], "site-b-edge-02": []}, "stored": [1, 1], "faults": ["return_path_incompatible"]}},
+        {"event": "stage", "device_id": "site-b-edge-02", "id": "rcpt-b1", "artifact_type": "delivery_receipt", "expect": {"stored": [2, 2]}},
+        {"event": "publish", "expect": {"published": ["rcpt-b1"], "kept": {"site-a-edge-01": ["disp-a1"], "site-b-edge-02": []}, "faults": ["return_path_incompatible"]}},
+        {"event": "declare", "device_id": "site-a-edge-01", "contract": "gateway-api/v1", "expect": {"lanes": {"site-a-edge-01": [], "site-b-edge-02": ["rcpt-b1"]}, "kept": {"site-a-edge-01": ["disp-a1"], "site-b-edge-02": []}, "faults": ["return_path_incompatible"]}},
+        {"event": "declare", "device_id": "site-a-edge-01", "contract": "gateway-evidence-carriage/v1", "expect": {"lanes": {"site-a-edge-01": ["disp-a1"], "site-b-edge-02": ["rcpt-b1"]}, "kept": {"site-a-edge-01": [], "site-b-edge-02": []}, "faults": []}}
+      ]
+    },
+    {
+      "name": "a response that cannot be kept leaves its lane entry unadvanced and retried, and another device is unaffected",
+      "devices": ["site-a-edge-01", "site-b-edge-02"],
+      "declared": {"site-a-edge-01": "gateway-api/v1", "site-b-edge-02": "gateway-evidence-carriage/v1"},
+      "capacity": {"items": 3, "bytes": 3000},
+      "outbound": {"site-a-edge-01": ["env-a1"], "site-b-edge-02": ["env-b1"]},
+      "steps": [
+        {"event": "stage", "device_id": "site-a-edge-01", "id": "disp-a0", "bytes": 1000, "artifact_type": "evidence_disposition", "expect": {"kept": {"site-a-edge-01": ["disp-a0"], "site-b-edge-02": []}}},
+        {"event": "stage", "device_id": "site-b-edge-02", "id": "rcpt-b0", "bytes": 500, "artifact_type": "delivery_receipt", "expect": {"stored": [2, 1500]}},
+        {"event": "response", "device_id": "site-a-edge-01", "entry": "env-a1", "artifacts": [{"id": "disp-a1", "bytes": 1000, "artifact_type": "evidence_disposition"}, {"id": "disp-a2", "bytes": 1000, "artifact_type": "evidence_disposition"}], "expect": {"kept": {"site-a-edge-01": ["disp-a0", "disp-a1"], "site-b-edge-02": []}, "outbound": {"site-a-edge-01": ["env-a1"], "site-b-edge-02": ["env-b1"]}, "retrying": ["env-a1"], "stored": [3, 2500]}},
+        {"event": "publish", "expect": {"published": ["rcpt-b0"], "retrying": ["env-a1"]}},
+        {"event": "ack", "device_id": "site-b-edge-02", "id": "rcpt-b0", "expect": {"stored": [2, 2000]}},
+        {"event": "response", "device_id": "site-b-edge-02", "entry": "env-b1", "artifacts": [{"id": "rcpt-b1", "bytes": 500, "artifact_type": "delivery_receipt"}], "expect": {"outbound": {"site-a-edge-01": ["env-a1"], "site-b-edge-02": []}, "retrying": ["env-a1"], "stored": [3, 2500]}},
+        {"event": "publish", "expect": {"published": ["rcpt-b1"]}},
+        {"event": "response", "device_id": "site-a-edge-01", "entry": "env-a1", "artifacts": [{"id": "disp-a1", "bytes": 1000, "artifact_type": "evidence_disposition"}, {"id": "disp-a2", "bytes": 1000, "artifact_type": "evidence_disposition"}], "expect": {"kept": {"site-a-edge-01": ["disp-a0", "disp-a1"], "site-b-edge-02": []}, "outbound": {"site-a-edge-01": ["env-a1"], "site-b-edge-02": []}, "retrying": ["env-a1"]}},
+        {"event": "ack", "device_id": "site-b-edge-02", "id": "rcpt-b1", "expect": {"stored": [2, 2000]}},
+        {"event": "response", "device_id": "site-a-edge-01", "entry": "env-a1", "artifacts": [{"id": "disp-a1", "bytes": 1000, "artifact_type": "evidence_disposition"}, {"id": "disp-a2", "bytes": 1000, "artifact_type": "evidence_disposition"}], "expect": {"kept": {"site-a-edge-01": ["disp-a0", "disp-a1", "disp-a2"], "site-b-edge-02": []}, "outbound": {"site-a-edge-01": [], "site-b-edge-02": []}, "retrying": [], "stored": [3, 3000], "faults": ["return_path_incompatible"]}}
+      ]
+    }
+  ]
+}

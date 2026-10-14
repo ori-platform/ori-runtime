@@ -1,7 +1,7 @@
 {
   "source_repository": "ori-platform/ori-specs",
   "source_path": "runtime-evidence-anchor/vectors",
-  "source_commit": "013be1b59b290f5d8b04e7d1bfe381d6a2fbc5db",
+  "source_commit": "2154b1cf4b71c1758f583b499a0aea55876e0cd3",
   "contract_version": "v2",
   "note": "Vendored copies of the normative vectors. The runtime must produce and accept the bytes they describe, so they are its conformance fixtures. Digests detect a local edit; the source commit is the provenance trail.",
   "files": {

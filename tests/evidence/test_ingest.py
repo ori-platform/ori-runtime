@@ -49,6 +49,7 @@ from ori.security.evidence.ingest import (
     REJECT_MALFORMED,
     REJECT_NON_CONTIGUOUS,
     REJECT_REASONS,
+    REJECT_RESTATEMENT_CONFLICT,
     REJECT_RETIRED_KEY,
     REJECT_SUPERSEDED,
     REJECT_UNKNOWN_KEY,
@@ -71,6 +72,7 @@ REASON_CONSTANTS = {
     "REJECT_BINDING_MISMATCH": REJECT_BINDING_MISMATCH,
     "REJECT_MALFORMED": REJECT_MALFORMED,
     "REJECT_NON_CONTIGUOUS": REJECT_NON_CONTIGUOUS,
+    "REJECT_RESTATEMENT_CONFLICT": REJECT_RESTATEMENT_CONFLICT,
     "REJECT_RETIRED_KEY": REJECT_RETIRED_KEY,
     "REJECT_SUPERSEDED": REJECT_SUPERSEDED,
     "REJECT_UNKNOWN_KEY": REJECT_UNKNOWN_KEY,
@@ -136,7 +138,7 @@ def _replay_context(name: str, artifact: dict) -> dict:
                 valid["from_seq"], valid["to_seq"], valid["range_digest"]
             )
         }
-    return {"expected_pubkey_hex": case(name, "valid")["artifact"]["pubkey_hex"]}
+    return {}
 
 
 @pytest.mark.parametrize(
@@ -360,7 +362,6 @@ def test_the_valid_epoch_confirmation_verifies(registry):
         artifact,
         device_id=DEVICE,
         registry=registry,
-        expected_pubkey_hex=artifact["pubkey_hex"],
     )
     assert verified.anchor_epoch_id == artifact["anchor_epoch_id"]
 
@@ -373,9 +374,7 @@ def test_a_confirmation_signed_with_the_receipt_key_is_refused(registry):
         == case("epoch-confirmation-v2", "valid")["artifact"]["key_id"]
     )
     with pytest.raises(IngestRejectedError) as raised:
-        verify_epoch_confirmation(
-            artifact, device_id=DEVICE, registry=registry, expected_pubkey_hex="00" * 32
-        )
+        verify_epoch_confirmation(artifact, device_id=DEVICE, registry=registry)
     assert raised.value.reason == REJECT_BAD_AUTHENTICATOR
 
 
@@ -396,14 +395,13 @@ def test_an_artifact_naming_a_key_held_for_another_purpose_is_refused(registry):
     assert raised.value.reason == REJECT_WRONG_PURPOSE
 
 
-def test_a_confirmation_naming_another_key_is_refused(registry):
-    """Without this binding, a statement about another device's anchor would advance this one's."""
-    artifact = case("epoch-confirmation-v2", "valid")["artifact"]
-    with pytest.raises(IngestRejectedError) as raised:
-        verify_epoch_confirmation(
-            artifact, device_id=DEVICE, registry=registry, expected_pubkey_hex="11" * 32
-        )
-    assert raised.value.reason == REJECT_BINDING_MISMATCH
+def test_the_confirmed_key_is_left_to_the_sealed_registration(registry):
+    """An earlier epoch was sealed under an earlier key, so the verifier cannot
+    bind the key to this device's current one; the ledger binds it to the
+    registration sealed for that epoch."""
+    artifact = dict(case("epoch-confirmation-v2", "valid")["artifact"])
+    verified = verify_epoch_confirmation(artifact, device_id=DEVICE, registry=registry)
+    assert verified.pubkey_hex == artifact["pubkey_hex"]
 
 
 def test_a_confirmation_for_another_device_is_refused(registry):
@@ -413,7 +411,6 @@ def test_a_confirmation_for_another_device_is_refused(registry):
             artifact,
             device_id="some-other-device",
             registry=registry,
-            expected_pubkey_hex=artifact["pubkey_hex"],
         )
     assert raised.value.reason == REJECT_BINDING_MISMATCH
 
@@ -694,7 +691,7 @@ def test_a_tombstone_cannot_name_a_generation_that_still_holds_a_secret():
         (
             verify_epoch_confirmation,
             "epoch-confirmation-v2",
-            {"expected_pubkey_hex": "00" * 32},
+            {},
         ),
     ],
 )
@@ -719,11 +716,7 @@ def test_an_unrecognised_version_is_rejected_before_anything_is_trusted(
 def test_an_undefined_field_is_rejected(registry, name):
     artifact = dict(case(name, "valid")["artifact"])
     artifact["unexpected"] = True
-    kwargs = (
-        {"chain_row_digests": {}}
-        if name == "delivery-receipt-v2"
-        else {"expected_pubkey_hex": "00" * 32}
-    )
+    kwargs = {"chain_row_digests": {}} if name == "delivery-receipt-v2" else {}
     verifier = (
         verify_delivery_receipt
         if name == "delivery-receipt-v2"

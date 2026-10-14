@@ -1,0 +1,2432 @@
+{
+  "contract": "gateway-evidence-carriage/v1 site-health evidence_delivery projection",
+  "note": "Each case is an `evidence_delivery` projection and whether a conforming consumer accepts it. A refused case names the rule it breaks. Each incident sequence archives retained refusals, acknowledges incidents and restarts the gateway; a step's `expect` gives the projected unacknowledged `incidents` and, as `members`, the number of distinct member digests the gateway keeps per coalescing key, acknowledged or not. Each last_error case is the `last_error` a courier records for one refusal and whether that recording conforms. `stopped_custody` entries are a device's lanes in stopped custody, never counted in `pending` or `blocked`, and `reprovisioning_required` is in `faults` exactly while one exists.",
+  "cases": [
+    {
+      "name": "clean delivery has no device entries",
+      "valid": true,
+      "projection": {
+        "pending": 0,
+        "degraded": false,
+        "blocked": false,
+        "devices": []
+      }
+    },
+    {
+      "name": "one held device beside one still delivering degrades without blocking",
+      "valid": true,
+      "projection": {
+        "pending": 5,
+        "degraded": true,
+        "blocked": false,
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 3,
+            "state": "held",
+            "held": {
+              "queue_record": "3f1c0a9d2b7e4c6f8a1d0e2b4c6f8a1d3e5b7c9d1f2a4c6e8b0d2f4a6c8e0b2d",
+              "artifact_digest": "sha256:42f21f21565c4a7a98b228eac9708ce9f5ff1bf2889ee4affa4ed85cb7045b07",
+              "artifact_type": "checkpoint",
+              "refusal_status": 409,
+              "reason": "conflict",
+              "first_held_at_ms": 1787000003100,
+              "acknowledged": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "every device with pending evidence held is blocked",
+      "valid": true,
+      "projection": {
+        "pending": 2,
+        "degraded": true,
+        "blocked": true,
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 2,
+            "state": "held",
+            "held": {
+              "queue_record": "3f1c0a9d2b7e4c6f8a1d0e2b4c6f8a1d3e5b7c9d1f2a4c6e8b0d2f4a6c8e0b2d",
+              "artifact_digest": "sha256:42f21f21565c4a7a98b228eac9708ce9f5ff1bf2889ee4affa4ed85cb7045b07",
+              "artifact_type": "delivery_envelope",
+              "refusal_status": 422,
+              "reason": "bad_authenticator",
+              "first_held_at_ms": 1787000003100,
+              "acknowledged": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a device waiting for a handoff and one backing off",
+      "valid": true,
+      "projection": {
+        "pending": 4,
+        "degraded": true,
+        "blocked": false,
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 1,
+            "state": "waiting_handoff"
+          },
+          {
+            "device_id": "site-a-edge-02",
+            "lane": "evidence",
+            "pending": 3,
+            "state": "backing_off"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an unrecognised reason is reported as such",
+      "valid": true,
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": true,
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "registration",
+            "pending": 1,
+            "state": "held",
+            "held": {
+              "queue_record": "3f1c0a9d2b7e4c6f8a1d0e2b4c6f8a1d3e5b7c9d1f2a4c6e8b0d2f4a6c8e0b2d",
+              "artifact_digest": "sha256:42f21f21565c4a7a98b228eac9708ce9f5ff1bf2889ee4affa4ed85cb7045b07",
+              "artifact_type": "anchor_registration",
+              "refusal_status": 400,
+              "reason": "unrecognised",
+              "first_held_at_ms": 1787000003100,
+              "acknowledged": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "blocked while another device is still delivering",
+      "valid": false,
+      "rule": "blocked",
+      "projection": {
+        "pending": 5,
+        "degraded": true,
+        "blocked": true,
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 3,
+            "state": "held",
+            "held": {
+              "queue_record": "3f1c0a9d2b7e4c6f8a1d0e2b4c6f8a1d3e5b7c9d1f2a4c6e8b0d2f4a6c8e0b2d",
+              "artifact_digest": "sha256:42f21f21565c4a7a98b228eac9708ce9f5ff1bf2889ee4affa4ed85cb7045b07",
+              "artifact_type": "checkpoint",
+              "refusal_status": 409,
+              "reason": "conflict",
+              "first_held_at_ms": 1787000003100,
+              "acknowledged": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "entries claiming more pending than the gateway holds",
+      "valid": false,
+      "rule": "pending",
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": false,
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 4,
+            "state": "backing_off"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a held entry without its held object",
+      "valid": false,
+      "rule": "held_presence",
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": true,
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 1,
+            "state": "held"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a held object on a device that is not held",
+      "valid": false,
+      "rule": "held_presence",
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": false,
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 1,
+            "state": "backing_off",
+            "held": {
+              "queue_record": "3f1c0a9d2b7e4c6f8a1d0e2b4c6f8a1d3e5b7c9d1f2a4c6e8b0d2f4a6c8e0b2d",
+              "artifact_digest": "sha256:42f21f21565c4a7a98b228eac9708ce9f5ff1bf2889ee4affa4ed85cb7045b07",
+              "artifact_type": "checkpoint",
+              "refusal_status": 503,
+              "reason": "unavailable",
+              "first_held_at_ms": 1787000003100,
+              "acknowledged": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a reason its refusal status does not admit",
+      "valid": false,
+      "rule": "reason",
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": true,
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 1,
+            "state": "held",
+            "held": {
+              "queue_record": "3f1c0a9d2b7e4c6f8a1d0e2b4c6f8a1d3e5b7c9d1f2a4c6e8b0d2f4a6c8e0b2d",
+              "artifact_digest": "sha256:42f21f21565c4a7a98b228eac9708ce9f5ff1bf2889ee4affa4ed85cb7045b07",
+              "artifact_type": "checkpoint",
+              "refusal_status": 409,
+              "reason": "unknown_key",
+              "first_held_at_ms": 1787000003100,
+              "acknowledged": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a far-end hostname as a reason",
+      "valid": false,
+      "rule": "reason",
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": true,
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 1,
+            "state": "held",
+            "held": {
+              "queue_record": "3f1c0a9d2b7e4c6f8a1d0e2b4c6f8a1d3e5b7c9d1f2a4c6e8b0d2f4a6c8e0b2d",
+              "artifact_digest": "sha256:42f21f21565c4a7a98b228eac9708ce9f5ff1bf2889ee4affa4ed85cb7045b07",
+              "artifact_type": "checkpoint",
+              "refusal_status": 422,
+              "reason": "authority.internal",
+              "first_held_at_ms": 1787000003100,
+              "acknowledged": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a clean device listed",
+      "valid": false,
+      "rule": "state",
+      "projection": {
+        "pending": 0,
+        "degraded": false,
+        "blocked": false,
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 0,
+            "state": "clean"
+          }
+        ]
+      }
+    },
+    {
+      "name": "degraded false with a device entry",
+      "valid": false,
+      "rule": "degraded",
+      "projection": {
+        "pending": 1,
+        "degraded": false,
+        "blocked": false,
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 1,
+            "state": "backing_off"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a held status that cannot hold",
+      "valid": false,
+      "rule": "refusal_status",
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": true,
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 1,
+            "state": "held",
+            "held": {
+              "queue_record": "3f1c0a9d2b7e4c6f8a1d0e2b4c6f8a1d3e5b7c9d1f2a4c6e8b0d2f4a6c8e0b2d",
+              "artifact_digest": "sha256:42f21f21565c4a7a98b228eac9708ce9f5ff1bf2889ee4affa4ed85cb7045b07",
+              "artifact_type": "checkpoint",
+              "refusal_status": 401,
+              "reason": "stale",
+              "first_held_at_ms": 1787000003100,
+              "acknowledged": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "an uppercase queue record",
+      "valid": false,
+      "rule": "queue_record",
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": true,
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 1,
+            "state": "held",
+            "held": {
+              "queue_record": "3F1C0A9D2B7E4C6F8A1D0E2B4C6F8A1D3E5B7C9D1F2A4C6E8B0D2F4A6C8E0B2D",
+              "artifact_digest": "sha256:42f21f21565c4a7a98b228eac9708ce9f5ff1bf2889ee4affa4ed85cb7045b07",
+              "artifact_type": "checkpoint",
+              "refusal_status": 409,
+              "reason": "conflict",
+              "first_held_at_ms": 1787000003100,
+              "acknowledged": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a commissioning authorisation as the held type",
+      "valid": false,
+      "rule": "artifact_type",
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": true,
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 1,
+            "state": "held",
+            "held": {
+              "queue_record": "3f1c0a9d2b7e4c6f8a1d0e2b4c6f8a1d3e5b7c9d1f2a4c6e8b0d2f4a6c8e0b2d",
+              "artifact_digest": "sha256:42f21f21565c4a7a98b228eac9708ce9f5ff1bf2889ee4affa4ed85cb7045b07",
+              "artifact_type": "commissioning_authorization",
+              "refusal_status": 409,
+              "reason": "conflict",
+              "first_held_at_ms": 1787000003100,
+              "acknowledged": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a handoff reason can never be held",
+      "valid": false,
+      "rule": "reason",
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": true,
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 1,
+            "state": "held",
+            "held": {
+              "queue_record": "3f1c0a9d2b7e4c6f8a1d0e2b4c6f8a1d3e5b7c9d1f2a4c6e8b0d2f4a6c8e0b2d",
+              "artifact_digest": "sha256:42f21f21565c4a7a98b228eac9708ce9f5ff1bf2889ee4affa4ed85cb7045b07",
+              "artifact_type": "checkpoint",
+              "refusal_status": 422,
+              "reason": "unknown_key",
+              "first_held_at_ms": 1787000003100,
+              "acknowledged": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a held device with nothing pending",
+      "valid": false,
+      "rule": "pending",
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 0,
+            "state": "held",
+            "held": {
+              "queue_record": "3f1c0a9d2b7e4c6f8a1d0e2b4c6f8a1d3e5b7c9d1f2a4c6e8b0d2f4a6c8e0b2d",
+              "artifact_digest": "sha256:42f21f21565c4a7a98b228eac9708ce9f5ff1bf2889ee4affa4ed85cb7045b07",
+              "artifact_type": "checkpoint",
+              "refusal_status": 409,
+              "reason": "conflict",
+              "first_held_at_ms": 1787000003100,
+              "acknowledged": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a boolean pending",
+      "valid": false,
+      "rule": "pending",
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": false,
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": true,
+            "state": "backing_off"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a URL as the device",
+      "valid": false,
+      "rule": "device_id",
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": false,
+        "devices": [
+          {
+            "device_id": "https://authority.internal/v1",
+            "lane": "evidence",
+            "pending": 1,
+            "state": "backing_off"
+          }
+        ]
+      }
+    },
+    {
+      "name": "the same device listed twice",
+      "valid": false,
+      "rule": "device_id",
+      "projection": {
+        "pending": 2,
+        "degraded": true,
+        "blocked": false,
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 1,
+            "state": "backing_off"
+          },
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 1,
+            "state": "waiting_handoff"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an entry carrying an endpoint and a raw error",
+      "valid": false,
+      "rule": "fields",
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": false,
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 1,
+            "state": "backing_off",
+            "endpoint": "https://authority.internal:8443",
+            "error": "dial tcp 10.0.4.17:8443: connection refused"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a held object carrying an extra field",
+      "valid": false,
+      "rule": "fields",
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": true,
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 1,
+            "state": "held",
+            "held": {
+              "queue_record": "3f1c0a9d2b7e4c6f8a1d0e2b4c6f8a1d3e5b7c9d1f2a4c6e8b0d2f4a6c8e0b2d",
+              "artifact_digest": "sha256:42f21f21565c4a7a98b228eac9708ce9f5ff1bf2889ee4affa4ed85cb7045b07",
+              "artifact_type": "checkpoint",
+              "refusal_status": 409,
+              "reason": "conflict",
+              "first_held_at_ms": 1787000003100,
+              "acknowledged": false,
+              "raw_reason": "authority.internal"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a negative first-held time",
+      "valid": false,
+      "rule": "first_held_at_ms",
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": true,
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 1,
+            "state": "held",
+            "held": {
+              "queue_record": "3f1c0a9d2b7e4c6f8a1d0e2b4c6f8a1d3e5b7c9d1f2a4c6e8b0d2f4a6c8e0b2d",
+              "artifact_digest": "sha256:42f21f21565c4a7a98b228eac9708ce9f5ff1bf2889ee4affa4ed85cb7045b07",
+              "artifact_type": "checkpoint",
+              "refusal_status": 409,
+              "reason": "conflict",
+              "first_held_at_ms": -1,
+              "acknowledged": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a boolean first-held time",
+      "valid": false,
+      "rule": "first_held_at_ms",
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": true,
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 1,
+            "state": "held",
+            "held": {
+              "queue_record": "3f1c0a9d2b7e4c6f8a1d0e2b4c6f8a1d3e5b7c9d1f2a4c6e8b0d2f4a6c8e0b2d",
+              "artifact_digest": "sha256:42f21f21565c4a7a98b228eac9708ce9f5ff1bf2889ee4affa4ed85cb7045b07",
+              "artifact_type": "checkpoint",
+              "refusal_status": 409,
+              "reason": "conflict",
+              "first_held_at_ms": true,
+              "acknowledged": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "acknowledged with no acknowledgement surface",
+      "valid": false,
+      "rule": "acknowledged",
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": true,
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 1,
+            "state": "held",
+            "held": {
+              "queue_record": "3f1c0a9d2b7e4c6f8a1d0e2b4c6f8a1d3e5b7c9d1f2a4c6e8b0d2f4a6c8e0b2d",
+              "artifact_digest": "sha256:42f21f21565c4a7a98b228eac9708ce9f5ff1bf2889ee4affa4ed85cb7045b07",
+              "artifact_type": "checkpoint",
+              "refusal_status": 409,
+              "reason": "conflict",
+              "first_held_at_ms": 1787000003100,
+              "acknowledged": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "an admission fault with nothing queued",
+      "valid": true,
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [
+          "admission_failed"
+        ],
+        "devices": []
+      }
+    },
+    {
+      "name": "both courier faults at once",
+      "valid": true,
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [
+          "store_unavailable",
+          "admission_failed"
+        ]
+      }
+    },
+    {
+      "name": "a held device and a fault, blocked by the held device alone",
+      "valid": true,
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": true,
+        "faults": [
+          "store_unavailable"
+        ],
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 1,
+            "state": "held",
+            "held": {
+              "queue_record": "3f1c0a9d2b7e4c6f8a1d0e2b4c6f8a1d3e5b7c9d1f2a4c6e8b0d2f4a6c8e0b2d",
+              "artifact_digest": "sha256:42f21f21565c4a7a98b228eac9708ce9f5ff1bf2889ee4affa4ed85cb7045b07",
+              "artifact_type": "checkpoint",
+              "refusal_status": 409,
+              "reason": "conflict",
+              "first_held_at_ms": 1787000003100,
+              "acknowledged": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "an older producer without devices or faults",
+      "valid": true,
+      "projection": {
+        "pending": 3,
+        "degraded": false,
+        "blocked": false
+      }
+    },
+    {
+      "name": "a raw error as a fault",
+      "valid": false,
+      "rule": "faults",
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [
+          "dial tcp 10.0.4.17:8443: connection refused"
+        ]
+      }
+    },
+    {
+      "name": "an unknown fault token",
+      "valid": false,
+      "rule": "faults",
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [
+          "disk_full"
+        ]
+      }
+    },
+    {
+      "name": "a repeated fault",
+      "valid": false,
+      "rule": "faults",
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [
+          "store_unavailable",
+          "store_unavailable"
+        ]
+      }
+    },
+    {
+      "name": "not degraded while a fault is active",
+      "valid": false,
+      "rule": "degraded",
+      "projection": {
+        "pending": 0,
+        "degraded": false,
+        "blocked": false,
+        "faults": [
+          "store_unavailable"
+        ]
+      }
+    },
+    {
+      "name": "blocked without devices",
+      "valid": false,
+      "rule": "blocked",
+      "projection": {
+        "pending": 2,
+        "degraded": true,
+        "blocked": true,
+        "faults": [
+          "store_unavailable"
+        ]
+      }
+    },
+    {
+      "name": "a last_error from the vocabulary",
+      "valid": true,
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": false,
+        "last_failure_at_ms": 1787000003100,
+        "last_error": "channel_unavailable",
+        "faults": [],
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 1,
+            "state": "backing_off"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a raw error as last_error",
+      "valid": false,
+      "rule": "last_error",
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": false,
+        "last_error": "dial tcp 10.0.4.17:8443: connection refused",
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 1,
+            "state": "backing_off"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an endpoint at the top level",
+      "valid": false,
+      "rule": "fields",
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": false,
+        "endpoint": "https://authority.internal:8443",
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 1,
+            "state": "backing_off"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a producer that cannot enumerate devices reports impaired delivery",
+      "valid": true,
+      "projection": {
+        "pending": 4,
+        "degraded": true,
+        "blocked": false,
+        "faults": [
+          "delivery_impaired"
+        ]
+      }
+    },
+    {
+      "name": "an unconfigured device is reported without its identifier",
+      "valid": true,
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [
+          "device_unconfigured"
+        ]
+      }
+    },
+    {
+      "name": "not degraded while an unconfigured device is being refused",
+      "valid": false,
+      "rule": "degraded",
+      "projection": {
+        "pending": 0,
+        "degraded": false,
+        "blocked": false,
+        "faults": [
+          "device_unconfigured"
+        ]
+      }
+    },
+    {
+      "name": "blocked claimed from impaired delivery without devices",
+      "valid": false,
+      "rule": "blocked",
+      "projection": {
+        "pending": 4,
+        "degraded": true,
+        "blocked": true,
+        "faults": [
+          "delivery_impaired"
+        ]
+      }
+    },
+    {
+      "name": "impaired delivery beside an empty device list",
+      "valid": false,
+      "rule": "delivery_impaired",
+      "projection": {
+        "pending": 2,
+        "degraded": true,
+        "blocked": false,
+        "faults": [
+          "delivery_impaired"
+        ],
+        "devices": []
+      }
+    },
+    {
+      "name": "impaired delivery beside a listed device",
+      "valid": false,
+      "rule": "delivery_impaired",
+      "projection": {
+        "pending": 4,
+        "degraded": true,
+        "blocked": false,
+        "faults": [
+          "delivery_impaired"
+        ],
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 2,
+            "state": "backing_off"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a registration backing off while the same device's evidence is still delivering",
+      "valid": true,
+      "projection": {
+        "pending": 6,
+        "degraded": true,
+        "blocked": false,
+        "faults": [],
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "registration",
+            "pending": 1,
+            "state": "backing_off"
+          }
+        ]
+      }
+    },
+    {
+      "name": "both lanes of one device held and covering everything pending is blocked",
+      "valid": true,
+      "projection": {
+        "pending": 3,
+        "degraded": true,
+        "blocked": true,
+        "faults": [],
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "registration",
+            "pending": 1,
+            "state": "held",
+            "held": {
+              "queue_record": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "artifact_type": "anchor_registration",
+              "refusal_status": 422,
+              "reason": "commissioning_digest_mismatch",
+              "first_held_at_ms": 1787000004000,
+              "acknowledged": false
+            }
+          },
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 2,
+            "state": "held",
+            "held": {
+              "queue_record": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "artifact_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "artifact_type": "delivery_envelope",
+              "refusal_status": 409,
+              "reason": "conflict",
+              "first_held_at_ms": 1787000004100,
+              "acknowledged": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a held registration beside the same device's evidence backing off does not block",
+      "valid": true,
+      "projection": {
+        "pending": 3,
+        "degraded": true,
+        "blocked": false,
+        "faults": [],
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "registration",
+            "pending": 1,
+            "state": "held",
+            "held": {
+              "queue_record": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "artifact_type": "anchor_registration",
+              "refusal_status": 422,
+              "reason": "commissioning_digest_mismatch",
+              "first_held_at_ms": 1787000004000,
+              "acknowledged": false
+            }
+          },
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 2,
+            "state": "backing_off"
+          }
+        ]
+      }
+    },
+    {
+      "name": "the same device and lane listed twice",
+      "valid": false,
+      "rule": "device_id",
+      "projection": {
+        "pending": 3,
+        "degraded": true,
+        "blocked": false,
+        "faults": [],
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 1,
+            "state": "backing_off"
+          },
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 2,
+            "state": "waiting_handoff"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an unknown lane",
+      "valid": false,
+      "rule": "lane",
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": false,
+        "faults": [],
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "control",
+            "pending": 1,
+            "state": "backing_off"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a checkpoint heading the registration lane",
+      "valid": false,
+      "rule": "lane",
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": true,
+        "faults": [],
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "registration",
+            "pending": 1,
+            "state": "held",
+            "held": {
+              "queue_record": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "artifact_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "artifact_type": "checkpoint",
+              "refusal_status": 409,
+              "reason": "conflict",
+              "first_held_at_ms": 1787000004100,
+              "acknowledged": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a registration heading the evidence lane",
+      "valid": false,
+      "rule": "lane",
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": true,
+        "faults": [],
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 1,
+            "state": "held",
+            "held": {
+              "queue_record": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "artifact_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "artifact_type": "anchor_registration",
+              "refusal_status": 422,
+              "reason": "commissioning_digest_mismatch",
+              "first_held_at_ms": 1787000004000,
+              "acknowledged": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "an entry without its lane",
+      "valid": false,
+      "rule": "fields",
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": false,
+        "faults": [],
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "pending": 1,
+            "state": "backing_off"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a device_id carrying a control character",
+      "valid": false,
+      "rule": "device_id",
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": false,
+        "faults": [],
+        "devices": [
+          {
+            "device_id": "site-a\u001cedge",
+            "lane": "evidence",
+            "pending": 1,
+            "state": "backing_off"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an unacknowledged registration incident degrades without pending or blocking",
+      "valid": true,
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [],
+        "devices": [],
+        "incidents": [
+          {
+            "device_id": "site-a-edge-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "artifact_type": "anchor_registration",
+            "refusal_status": 422,
+            "reason": "commissioning_digest_mismatch",
+            "count": 1,
+            "first_refused_at_ms": 1787000005000,
+            "last_refused_at_ms": 1787000005000,
+            "first_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "latest_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an incident beside a held evidence lane does not change blocked",
+      "valid": true,
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": true,
+        "faults": [],
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 1,
+            "state": "held",
+            "held": {
+              "queue_record": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "artifact_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "artifact_type": "delivery_envelope",
+              "refusal_status": 409,
+              "reason": "conflict",
+              "first_held_at_ms": 1787000004100,
+              "acknowledged": false
+            }
+          }
+        ],
+        "incidents": [
+          {
+            "device_id": "site-a-edge-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "artifact_type": "anchor_registration",
+            "refusal_status": 422,
+            "reason": "commissioning_digest_mismatch",
+            "count": 1,
+            "first_refused_at_ms": 1787000005000,
+            "last_refused_at_ms": 1787000005000,
+            "first_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "latest_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          }
+        ]
+      }
+    },
+    {
+      "name": "not degraded while an incident is listed",
+      "valid": false,
+      "rule": "degraded",
+      "projection": {
+        "pending": 0,
+        "degraded": false,
+        "blocked": false,
+        "faults": [],
+        "devices": [],
+        "incidents": [
+          {
+            "device_id": "site-a-edge-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "artifact_type": "anchor_registration",
+            "refusal_status": 422,
+            "reason": "commissioning_digest_mismatch",
+            "count": 1,
+            "first_refused_at_ms": 1787000005000,
+            "last_refused_at_ms": 1787000005000,
+            "first_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "latest_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an incident at a status that never archives",
+      "valid": false,
+      "rule": "refusal_status",
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [],
+        "incidents": [
+          {
+            "device_id": "site-a-edge-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "artifact_type": "anchor_registration",
+            "refusal_status": 503,
+            "reason": "unavailable",
+            "count": 1,
+            "first_refused_at_ms": 1787000005000,
+            "last_refused_at_ms": 1787000005000,
+            "first_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "latest_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an incident of pending_registration_conflict, which stays active",
+      "valid": false,
+      "rule": "reason",
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [],
+        "incidents": [
+          {
+            "device_id": "site-a-edge-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "artifact_type": "anchor_registration",
+            "refusal_status": 409,
+            "reason": "pending_registration_conflict",
+            "count": 1,
+            "first_refused_at_ms": 1787000005000,
+            "last_refused_at_ms": 1787000005000,
+            "first_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "latest_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an incident carrying the refused bytes",
+      "valid": false,
+      "rule": "incident",
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [],
+        "incidents": [
+          {
+            "device_id": "site-a-edge-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "artifact_type": "anchor_registration",
+            "refusal_status": 422,
+            "reason": "commissioning_digest_mismatch",
+            "count": 1,
+            "first_refused_at_ms": 1787000005000,
+            "last_refused_at_ms": 1787000005000,
+            "first_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "latest_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "bytes": "e30="
+          }
+        ]
+      }
+    },
+    {
+      "name": "two incidents sharing the coalescing key",
+      "valid": false,
+      "rule": "incident",
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [],
+        "incidents": [
+          {
+            "device_id": "site-a-edge-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "artifact_type": "anchor_registration",
+            "refusal_status": 422,
+            "reason": "commissioning_digest_mismatch",
+            "count": 1,
+            "first_refused_at_ms": 1787000005000,
+            "last_refused_at_ms": 1787000005000,
+            "first_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "latest_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          },
+          {
+            "device_id": "site-a-edge-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "artifact_type": "anchor_registration",
+            "refusal_status": 422,
+            "reason": "commissioning_digest_mismatch",
+            "count": 2,
+            "first_refused_at_ms": 1787000005000,
+            "last_refused_at_ms": 1787000006000,
+            "first_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "latest_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an incident carrying an acknowledged field",
+      "valid": false,
+      "rule": "incident",
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [],
+        "incidents": [
+          {
+            "device_id": "site-a-edge-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "artifact_type": "anchor_registration",
+            "refusal_status": 422,
+            "reason": "commissioning_digest_mismatch",
+            "count": 1,
+            "first_refused_at_ms": 1787000005000,
+            "last_refused_at_ms": 1787000005000,
+            "first_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "latest_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "acknowledged": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "an evidence-lane incident of checkpoint rollbacks degrades without blocking",
+      "valid": true,
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [],
+        "devices": [],
+        "incidents": [
+          {
+            "device_id": "site-a-edge-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "artifact_type": "checkpoint",
+            "refusal_status": 409,
+            "reason": "conflict",
+            "count": 3,
+            "first_refused_at_ms": 1787000005000,
+            "last_refused_at_ms": 1787000009000,
+            "first_digest": "sha256:306b6a7bc62143ed7aa6bc48f76bfab65859a6c8f14f9b05ec52780106d96515",
+            "latest_digest": "sha256:15fcbca373ac4001f6fd95867a8a1997e09c261b43b56b4333d418a2c28ce221"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an incident whose epoch the authority could not parse",
+      "valid": true,
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [],
+        "devices": [],
+        "incidents": [
+          {
+            "device_id": "site-a-edge-01",
+            "anchor_epoch_id": "",
+            "artifact_type": "delivery_envelope",
+            "refusal_status": 400,
+            "reason": "malformed",
+            "count": 1,
+            "first_refused_at_ms": 1787000005000,
+            "last_refused_at_ms": 1787000005000,
+            "first_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "latest_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          }
+        ]
+      }
+    },
+    {
+      "name": "two incidents that differ only in epoch",
+      "valid": true,
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [],
+        "devices": [],
+        "incidents": [
+          {
+            "device_id": "site-a-edge-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "artifact_type": "anchor_registration",
+            "refusal_status": 422,
+            "reason": "commissioning_digest_mismatch",
+            "count": 1,
+            "first_refused_at_ms": 1787000005000,
+            "last_refused_at_ms": 1787000005000,
+            "first_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "latest_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          },
+          {
+            "device_id": "site-a-edge-01",
+            "anchor_epoch_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "artifact_type": "anchor_registration",
+            "refusal_status": 422,
+            "reason": "commissioning_digest_mismatch",
+            "count": 1,
+            "first_refused_at_ms": 1787000005000,
+            "last_refused_at_ms": 1787000005000,
+            "first_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "latest_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an incident with a count of zero",
+      "valid": false,
+      "rule": "incident",
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [],
+        "devices": [],
+        "incidents": [
+          {
+            "device_id": "site-a-edge-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "artifact_type": "anchor_registration",
+            "refusal_status": 422,
+            "reason": "commissioning_digest_mismatch",
+            "count": 0,
+            "first_refused_at_ms": 1787000005000,
+            "last_refused_at_ms": 1787000005000,
+            "first_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "latest_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an incident of two members whose latest is its first",
+      "valid": false,
+      "rule": "incident",
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [],
+        "devices": [],
+        "incidents": [
+          {
+            "device_id": "site-a-edge-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "artifact_type": "anchor_registration",
+            "refusal_status": 422,
+            "reason": "commissioning_digest_mismatch",
+            "count": 2,
+            "first_refused_at_ms": 1787000005000,
+            "last_refused_at_ms": 1787000005000,
+            "first_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "latest_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an incident of one member whose latest differs from its first",
+      "valid": false,
+      "rule": "incident",
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [],
+        "devices": [],
+        "incidents": [
+          {
+            "device_id": "site-a-edge-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "artifact_type": "anchor_registration",
+            "refusal_status": 422,
+            "reason": "commissioning_digest_mismatch",
+            "count": 1,
+            "first_refused_at_ms": 1787000005000,
+            "last_refused_at_ms": 1787000005000,
+            "first_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "latest_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an incident whose last refusal precedes its first",
+      "valid": false,
+      "rule": "incident",
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [],
+        "devices": [],
+        "incidents": [
+          {
+            "device_id": "site-a-edge-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "artifact_type": "anchor_registration",
+            "refusal_status": 422,
+            "reason": "commissioning_digest_mismatch",
+            "count": 2,
+            "first_refused_at_ms": 1787000005000,
+            "last_refused_at_ms": 1787000004000,
+            "first_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "latest_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an incident naming an epoch that is not a digest",
+      "valid": false,
+      "rule": "incident",
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [],
+        "devices": [],
+        "incidents": [
+          {
+            "device_id": "site-a-edge-01",
+            "anchor_epoch_id": "epoch-1",
+            "artifact_type": "anchor_registration",
+            "refusal_status": 422,
+            "reason": "commissioning_digest_mismatch",
+            "count": 1,
+            "first_refused_at_ms": 1787000005000,
+            "last_refused_at_ms": 1787000005000,
+            "first_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "latest_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an incident of an unrecognised reason, which never archives",
+      "valid": false,
+      "rule": "reason",
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [],
+        "devices": [],
+        "incidents": [
+          {
+            "device_id": "site-a-edge-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "artifact_type": "anchor_registration",
+            "refusal_status": 422,
+            "reason": "unrecognised",
+            "count": 1,
+            "first_refused_at_ms": 1787000005000,
+            "last_refused_at_ms": 1787000005000,
+            "first_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "latest_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an incident of a 507, which holds and never archives",
+      "valid": false,
+      "rule": "refusal_status",
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [],
+        "devices": [],
+        "incidents": [
+          {
+            "device_id": "site-a-edge-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "artifact_type": "anchor_registration",
+            "refusal_status": 507,
+            "reason": "retention_capacity_exhausted",
+            "count": 1,
+            "first_refused_at_ms": 1787000005000,
+            "last_refused_at_ms": 1787000005000,
+            "first_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "latest_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an incident of a non-terminal unknown_key",
+      "valid": false,
+      "rule": "reason",
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [],
+        "devices": [],
+        "incidents": [
+          {
+            "device_id": "site-a-edge-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "artifact_type": "anchor_registration",
+            "refusal_status": 422,
+            "reason": "unknown_key",
+            "count": 1,
+            "first_refused_at_ms": 1787000005000,
+            "last_refused_at_ms": 1787000005000,
+            "first_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "latest_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an incident naming an artifact type outside the carriage vocabulary",
+      "valid": false,
+      "rule": "artifact_type",
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [],
+        "devices": [],
+        "incidents": [
+          {
+            "device_id": "site-a-edge-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "artifact_type": "commissioning_authorization",
+            "refusal_status": 422,
+            "reason": "commissioning_digest_mismatch",
+            "count": 1,
+            "first_refused_at_ms": 1787000005000,
+            "last_refused_at_ms": 1787000005000,
+            "first_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "latest_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          }
+        ]
+      }
+    },
+    {
+      "name": "an incident missing its latest digest",
+      "valid": false,
+      "rule": "incident",
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [],
+        "devices": [],
+        "incidents": [
+          {
+            "device_id": "site-a-edge-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "artifact_type": "anchor_registration",
+            "refusal_status": 422,
+            "reason": "commissioning_digest_mismatch",
+            "count": 1,
+            "first_refused_at_ms": 1787000005000,
+            "last_refused_at_ms": 1787000005000,
+            "first_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          }
+        ]
+      }
+    },
+    {
+      "name": "a 507 hold of the evidence lane",
+      "valid": true,
+      "projection": {
+        "pending": 2,
+        "degraded": true,
+        "blocked": true,
+        "faults": [],
+        "incidents": [],
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 2,
+            "state": "held",
+            "held": {
+              "queue_record": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "artifact_digest": "sha256:a435270b90e9b7091c77f478df0b8f78dddd32079b75698b8de902061f74efaf",
+              "artifact_type": "delivery_envelope",
+              "refusal_status": 507,
+              "reason": "retention_capacity_exhausted",
+              "first_held_at_ms": 1787000004100,
+              "acknowledged": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a terminal refusal held because it was not retained",
+      "valid": true,
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": true,
+        "faults": [],
+        "incidents": [],
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 1,
+            "state": "held",
+            "held": {
+              "queue_record": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "artifact_digest": "sha256:cb62add2b247c14d97697dacc5035f5dc42b2f4cf26bf6064d615c413a09e8a9",
+              "artifact_type": "checkpoint",
+              "refusal_status": 409,
+              "reason": "conflict",
+              "first_held_at_ms": 1787000004100,
+              "acknowledged": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "a 507 hold reported by its last error",
+      "valid": true,
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": true,
+        "faults": [],
+        "incidents": [],
+        "last_error": "channel_capacity_exhausted",
+        "last_failure_at_ms": 1787000004100,
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 1,
+            "state": "held",
+            "held": {
+              "queue_record": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "artifact_digest": "sha256:a43969fc83842dbd69e52c9e5ef648f48c381047fcef9a8ccb5b3ddfa92d33d3",
+              "artifact_type": "checkpoint",
+              "refusal_status": 507,
+              "reason": "retention_capacity_exhausted",
+              "first_held_at_ms": 1787000004100,
+              "acknowledged": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "an identity-stopped device is stopped custody, never pending or blocked",
+      "valid": true,
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [
+          "reprovisioning_required"
+        ],
+        "incidents": [],
+        "devices": [],
+        "stopped_custody": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "scope": "identity",
+            "count": 2
+          },
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "registration",
+            "scope": "identity",
+            "count": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "an epoch-stopped lane beside another device delivering degrades without blocking",
+      "valid": true,
+      "projection": {
+        "pending": 2,
+        "degraded": true,
+        "blocked": false,
+        "faults": [
+          "reprovisioning_required"
+        ],
+        "incidents": [],
+        "devices": [],
+        "stopped_custody": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "scope": "epoch",
+            "count": 2
+          }
+        ]
+      }
+    },
+    {
+      "name": "stopped custody beside a held lane: only the held lane counts toward blocked",
+      "valid": true,
+      "projection": {
+        "pending": 1,
+        "degraded": true,
+        "blocked": true,
+        "faults": [
+          "reprovisioning_required"
+        ],
+        "incidents": [],
+        "devices": [
+          {
+            "device_id": "site-b-edge-02",
+            "lane": "evidence",
+            "pending": 1,
+            "state": "held",
+            "held": {
+              "queue_record": "3f1c0a9d2b7e4c6f8a1d0e2b4c6f8a1d3e5b7c9d1f2a4c6e8b0d2f4a6c8e0b2d",
+              "artifact_digest": "sha256:42f21f21565c4a7a98b228eac9708ce9f5ff1bf2889ee4affa4ed85cb7045b07",
+              "artifact_type": "checkpoint",
+              "refusal_status": 409,
+              "reason": "conflict",
+              "first_held_at_ms": 1787000003100,
+              "acknowledged": false
+            }
+          }
+        ],
+        "stopped_custody": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "scope": "epoch",
+            "count": 2
+          }
+        ]
+      }
+    },
+    {
+      "name": "stopped custody at a bound reports stopped_custody_full",
+      "valid": true,
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [
+          "reprovisioning_required",
+          "stopped_custody_full"
+        ],
+        "incidents": [],
+        "devices": [],
+        "stopped_custody": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "scope": "identity",
+            "count": 2
+          },
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "registration",
+            "scope": "identity",
+            "count": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "an authority artifact a legacy device cannot carry degrades without blocking",
+      "valid": true,
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [
+          "return_path_incompatible"
+        ],
+        "incidents": [],
+        "devices": [],
+        "stopped_custody": []
+      }
+    },
+    {
+      "name": "a stopped state in devices",
+      "valid": false,
+      "rule": "state",
+      "projection": {
+        "pending": 2,
+        "degraded": true,
+        "blocked": true,
+        "faults": [
+          "reprovisioning_required"
+        ],
+        "incidents": [],
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 2,
+            "state": "stopped"
+          }
+        ],
+        "stopped_custody": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "scope": "identity",
+            "count": 2
+          }
+        ]
+      }
+    },
+    {
+      "name": "a delivering state in devices",
+      "valid": false,
+      "rule": "state",
+      "projection": {
+        "pending": 3,
+        "degraded": true,
+        "blocked": false,
+        "faults": [
+          "reprovisioning_required"
+        ],
+        "incidents": [],
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 3,
+            "state": "delivering"
+          }
+        ],
+        "stopped_custody": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "scope": "identity",
+            "count": 2
+          }
+        ]
+      }
+    },
+    {
+      "name": "a device entry carrying a stopped count",
+      "valid": false,
+      "rule": "fields",
+      "projection": {
+        "pending": 3,
+        "degraded": true,
+        "blocked": false,
+        "faults": [
+          "reprovisioning_required"
+        ],
+        "incidents": [],
+        "devices": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "pending": 3,
+            "state": "backing_off",
+            "stopped": 2
+          }
+        ],
+        "stopped_custody": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "scope": "identity",
+            "count": 2
+          }
+        ]
+      }
+    },
+    {
+      "name": "stopped custody reported blocked with nothing pending",
+      "valid": false,
+      "rule": "blocked",
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": true,
+        "faults": [
+          "reprovisioning_required"
+        ],
+        "incidents": [],
+        "devices": [],
+        "stopped_custody": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "scope": "identity",
+            "count": 2
+          },
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "registration",
+            "scope": "identity",
+            "count": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "stopped custody without reprovisioning_required",
+      "valid": false,
+      "rule": "reprovisioning",
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [],
+        "incidents": [],
+        "devices": [],
+        "stopped_custody": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "scope": "identity",
+            "count": 2
+          },
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "registration",
+            "scope": "identity",
+            "count": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "reprovisioning_required with no stopped custody",
+      "valid": false,
+      "rule": "reprovisioning",
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [
+          "reprovisioning_required"
+        ],
+        "incidents": [],
+        "devices": [],
+        "stopped_custody": []
+      }
+    },
+    {
+      "name": "stopped custody listing a device and lane twice",
+      "valid": false,
+      "rule": "stopped_custody",
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [
+          "reprovisioning_required"
+        ],
+        "incidents": [],
+        "devices": [],
+        "stopped_custody": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "scope": "identity",
+            "count": 2
+          },
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "scope": "identity",
+            "count": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "a stopped-custody count of zero",
+      "valid": false,
+      "rule": "stopped_custody",
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [
+          "reprovisioning_required"
+        ],
+        "incidents": [],
+        "devices": [],
+        "stopped_custody": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "scope": "identity",
+            "count": 0
+          }
+        ]
+      }
+    },
+    {
+      "name": "a stopped-custody entry without scope",
+      "valid": false,
+      "rule": "stopped_custody",
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [
+          "reprovisioning_required"
+        ],
+        "incidents": [],
+        "devices": [],
+        "stopped_custody": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "count": 2
+          }
+        ]
+      }
+    },
+    {
+      "name": "a stopped-custody entry whose scope is neither epoch nor identity",
+      "valid": false,
+      "rule": "stopped_custody",
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [
+          "reprovisioning_required"
+        ],
+        "incidents": [],
+        "devices": [],
+        "stopped_custody": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "scope": "artifact",
+            "count": 2
+          }
+        ]
+      }
+    },
+    {
+      "name": "a stopped-custody entry whose scope is null",
+      "valid": false,
+      "rule": "stopped_custody",
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [
+          "reprovisioning_required"
+        ],
+        "incidents": [],
+        "devices": [],
+        "stopped_custody": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "scope": null,
+            "count": 2
+          }
+        ]
+      }
+    },
+    {
+      "name": "a stopped-custody entry carrying pending",
+      "valid": false,
+      "rule": "stopped_custody",
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [
+          "reprovisioning_required"
+        ],
+        "incidents": [],
+        "devices": [],
+        "stopped_custody": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "scope": "identity",
+            "count": 2,
+            "pending": 2
+          }
+        ]
+      }
+    },
+    {
+      "name": "stopped custody that does not degrade",
+      "valid": false,
+      "rule": "degraded",
+      "projection": {
+        "pending": 0,
+        "degraded": false,
+        "blocked": false,
+        "faults": [
+          "reprovisioning_required"
+        ],
+        "incidents": [],
+        "devices": [],
+        "stopped_custody": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "evidence",
+            "scope": "identity",
+            "count": 2
+          },
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "registration",
+            "scope": "identity",
+            "count": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "a stopped-custody entry in an unknown lane",
+      "valid": false,
+      "rule": "lane",
+      "projection": {
+        "pending": 0,
+        "degraded": true,
+        "blocked": false,
+        "faults": [
+          "reprovisioning_required"
+        ],
+        "incidents": [],
+        "devices": [],
+        "stopped_custody": [
+          {
+            "device_id": "site-a-edge-01",
+            "lane": "stopped",
+            "scope": "identity",
+            "count": 1
+          }
+        ]
+      }
+    },
+    {
+      "name": "a projection still carrying archived_registrations",
+      "valid": false,
+      "rule": "fields",
+      "projection": {
+        "pending": 0,
+        "degraded": false,
+        "blocked": false,
+        "faults": [],
+        "devices": [],
+        "incidents": [],
+        "archived_registrations": []
+      }
+    }
+  ],
+  "last_error_cases": [
+    {"name": "a 503 retention_capacity_unavailable is recorded as authority_retention_capacity_unavailable", "status": 503, "reason": "retention_capacity_unavailable", "last_error": "authority_retention_capacity_unavailable", "valid": true},
+    {"name": "a 503 retention_capacity_unavailable flattened into the generic channel_unavailable", "status": 503, "reason": "retention_capacity_unavailable", "last_error": "channel_unavailable", "valid": false},
+    {"name": "a generic 503 unavailable is recorded as channel_unavailable", "status": 503, "reason": "unavailable", "last_error": "channel_unavailable", "valid": true},
+    {"name": "a generic 503 unavailable reported as retention capacity", "status": 503, "reason": "unavailable", "last_error": "authority_retention_capacity_unavailable", "valid": false},
+    {"name": "a 507 retention_capacity_exhausted is recorded as channel_capacity_exhausted", "status": 507, "reason": "retention_capacity_exhausted", "last_error": "channel_capacity_exhausted", "valid": true},
+    {"name": "a 507 recorded as the 503 capacity condition", "status": 507, "reason": "retention_capacity_exhausted", "last_error": "authority_retention_capacity_unavailable", "valid": false},
+    {"name": "a terminal 422 binding_mismatch is recorded as channel_permanent_refusal", "status": 422, "reason": "binding_mismatch", "last_error": "channel_permanent_refusal", "valid": true},
+    {"name": "a last_error outside the closed vocabulary", "status": 503, "reason": "retention_capacity_unavailable", "last_error": "authority_full", "valid": false}
+  ],
+  "incident_sequences": [
+    {
+      "name": "79 distinct refusals coalesce into one incident with count 79, every member enumerable",
+      "steps": [
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:306b6a7bc62143ed7aa6bc48f76bfab65859a6c8f14f9b05ec52780106d96515", "at_ms": 1787000101000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:f8d5635289df23d34e3ac8e12342e8d032dc433a35f2c968a4af0a4873086206", "at_ms": 1787000102000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:15fcbca373ac4001f6fd95867a8a1997e09c261b43b56b4333d418a2c28ce221", "at_ms": 1787000103000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:bd0025031d4a40ca7316715da312db483116de9ad150e22b438734abe4a0ee22", "at_ms": 1787000104000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:0b782d87df1549986ca557aebe092bf96d942ecf45b822b87098f0aa52359007", "at_ms": 1787000105000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:48a3957a63dc863c2e798264cda54dd033dea96e950d09fca19a309073c21836", "at_ms": 1787000106000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:d9a07becc191df9fce00e119c344fd6f6290affb613c7c882d9af0d887153a6c", "at_ms": 1787000107000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:2644a39d162845ee7064e33061c5251d9a453f5147d56ca1d301cbd08b71cbfa", "at_ms": 1787000108000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:17e741e2a4c8dc5f34fcd1463343d523720c7cf7bca226f9fba59fc214392ae4", "at_ms": 1787000109000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:5e6ae709e55a810275d85496507a685a6c19aee361cf39932841f26f695a69cf", "at_ms": 1787000110000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:fa745b2bd777b399e30b35c3a2f2cedfc99885972eb13c21b471d62cc6545313", "at_ms": 1787000111000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:78b3d54474812f618528693e4a4e08f9cced7a24a8b9ce349a81954ad8effc3e", "at_ms": 1787000112000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:a54d9a2464971c7641247ce8bffb5ce8f9932a6c423b7447cde6dff6c9f0ae6b", "at_ms": 1787000113000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:e59d7bf374f1daa07c93336e9ac4ef8d897faa8c69b5a03e529325c06331f352", "at_ms": 1787000114000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:a2b7c53917b2830c378044d32231d85918d324f9ff3de1dc3069e30523e9a6ae", "at_ms": 1787000115000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:5a747de12cde1e0d784340173ff1485bf250c7b96a57ebfab6c4b3fb0c4c3e3b", "at_ms": 1787000116000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:b720cae1ddfe38d48b80d1de0b647b54d1ff0777f221a4040215af22ed6e1651", "at_ms": 1787000117000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:f12ef7f5a4db04967ec0982f4073ebd07eb763ee96391fd5345524c7d39c0001", "at_ms": 1787000118000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:34e13e204eb31a5bc03ae80fb7a40516868d3e881f82fa90546699eef7a23c67", "at_ms": 1787000119000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:9d4d587863541c5e37daa1965d53f819b7461b3337d1fde2eed5902de77049c8", "at_ms": 1787000120000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:6eecb085260f155b4e2ead3b8fcf2d2d8bb353a446fb7bc76e0dac27c74c249b", "at_ms": 1787000121000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:70767bd3149618e8e52befd69b80e4c30887b07788f6c03dd2f9583d3c5a1953", "at_ms": 1787000122000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:fd3cd785a1efdccc214a8d7a14aabe0514c5aef917ec7ec8bee661c19bca5b28", "at_ms": 1787000123000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:ce348508b057fe8bc9d4c71344ac03becac3207b9198d4bf515b1cb8a9fef9e9", "at_ms": 1787000124000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:4a7fde072fc5aefa00ba967f3d99515f36c77837e931f7a8d1291597115c7b7e", "at_ms": 1787000125000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:c9d417861632637ba03de1cb0d643e7deba9195798b48e7205ebd8965863ab02", "at_ms": 1787000126000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:21ae75ffbc8116e8cadc20b374711ea355fa7da42109e692fee4e83fd00f9558", "at_ms": 1787000127000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:75a11374e35070e4a89a3d15dc388774856d9013685bc269b4cbcef9a494fdf1", "at_ms": 1787000128000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:7b9ed35982bdce1dc9982bc7d7fbdf6f63dc883041a7077f1269d4ac7a63385d", "at_ms": 1787000129000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:5972cdc2d306d2a04181bbb1be67afcda51b61f769c54acbea9015cb0b0db983", "at_ms": 1787000130000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:a4993a767b223fc7cba467274687365c91a317fac8cdf9163fb8cddaaf07dbbb", "at_ms": 1787000131000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:0cf42e3f36e105fd082c4218b6ed5600d299cdc02ccd897e7edb7929b295512f", "at_ms": 1787000132000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:440b0a9636aca6571804705d1699324d00e63338822de9ad30c490d1b4b2f060", "at_ms": 1787000133000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:2ff91f2cb51e33b25b6161f2590227c0d1711fbff35d853b06e89e37651dd36c", "at_ms": 1787000134000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:bdd08db3959fbd531da7c50bba4cc9da38821f5296b6f575ede05b8b7d244517", "at_ms": 1787000135000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:b46bc6a0ebe37bc29293ce3dcb4ad9a8dc3c0f2ffbc6507337ce7abaad55cd39", "at_ms": 1787000136000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:141996bd15c51a81b0ec46007d2ef54c04d8e205e33b3f18a0498f5cae3f8153", "at_ms": 1787000137000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:9902533e57d12cf239efc3bcc39a32d4e672b325265a156cca3e5cbced9f9d56", "at_ms": 1787000138000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:c4a092f0a9abf581be396fafed15a90f93b6a0c2177db5e8374880f1997501d7", "at_ms": 1787000139000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:7266ec8d094d598f2553c01d8ed03454263ed55a928d4c936de2f9210668396d", "at_ms": 1787000140000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:0eeb355b4ebef93fcd961eb0b9c23c9261901485c79cfc570ca6e3b41d209524", "at_ms": 1787000141000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:4d2353253c5719b304cba775c4c5501e4663924e4f3ad5573bf2401933d4903e", "at_ms": 1787000142000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:a6d7e3e66074601e65914d4957fc48b42488e1b33336db559d86e95e264b5aa0", "at_ms": 1787000143000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:f8cd044dbcbb6c9364c763b63f355fd15cc851f3ad67e540616a646f85889aee", "at_ms": 1787000144000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:73ffb430a1bc06fc13d485345c7b6c3d24d065ae614900fc71d75c60cdf6fb84", "at_ms": 1787000145000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:c8b7a8d5ccae9fd581cad4dbaa14f0b66359b5075dc818973c3d0135245f9282", "at_ms": 1787000146000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:e616adea9589149cf1bb4fe1989234d6bdfaa1a58c2a1764ccb4743737941bf7", "at_ms": 1787000147000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:6d5ba3865015727e741ae96fb310552b7be4c7f2af4df701c664550ae130d3af", "at_ms": 1787000148000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:8ce4cbfee577f375ca39618a530e1bf79ec54ac92e3c5f495e9a197b20eab0c0", "at_ms": 1787000149000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:483189e9e2b96c3c047dde2efc59ce09c7124b7c76b036835e02ace507374d49", "at_ms": 1787000150000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:ec0d570b62bbf7eb0ba608fab855520c7961153713ddea5bb370078ca634cb30", "at_ms": 1787000151000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:f89eccf17768a8c2f64f3544eedb41ec10fb61c653afe3f0f82b85ef116d1c4b", "at_ms": 1787000152000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:1cfb32c2122dd331c8aaee93e5a398b4961d7e44e0fa678a58900f9975a01a7e", "at_ms": 1787000153000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:f815227070af01bc5eef6974975e2274e52cb71390f526c1933e0797327f8cbb", "at_ms": 1787000154000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:71dccc5e498a4a5075e43b840cfcc47b4f40b189cac1018e03e91892bff0560e", "at_ms": 1787000155000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:354a15fa2f27b2f99d04ed5d906c9db10a2a335349c5ebadf833bc23d23b6be9", "at_ms": 1787000156000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:8ec473bd9dbfb6b4f0dbb0c23d1fc895bbd90c476a8b4d528079e21223e085d0", "at_ms": 1787000157000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:f896d75d0932615a3318896e5a86cff0d4550c6fc3a14ea00f6a623bb57ae245", "at_ms": 1787000158000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:c99413d156727a3e16d185169bf7d9c127165e76b22d369ef1e0b00667c4ade0", "at_ms": 1787000159000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:a44afe6263656935ea07aaa90f55ef436f6d3c4e0ae6422d095c16014034c342", "at_ms": 1787000160000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:d83123de9f1d694849f9721cda8cbd1a1da28806d7b2cb8c5a2badeca57361b0", "at_ms": 1787000161000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:6081f66bb762b7610d1383d2d7a0e3f0325df737ab303e691f54ac5444e0472e", "at_ms": 1787000162000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:7bca4a5d564a46a6fab37363197be135bf1d15cbee282862688f72d47cc5bd9c", "at_ms": 1787000163000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:7816a61c2fdfd6afe2bd08fdf323da377bd76b49225db341c679c3eb8b32294b", "at_ms": 1787000164000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:97284a70adaf99b063ca49667b68a5fdba6c6f4a04a6975aa16b1967b06baf6f", "at_ms": 1787000165000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:b5900f253c5136aa35f717129bd49f75a712c62cce8d214a2d41b1a3c5cf83b1", "at_ms": 1787000166000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:2b077921a68c9ef60c954073d7ab05ff38fd701a4fa68c2d85528c280cf9ab67", "at_ms": 1787000167000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:40e7a12977ed085d688edb3194053bd0677a968484e9ee17f07362bdac94d26d", "at_ms": 1787000168000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:17c575eaf778614af911fdfa03d4e55c227680182d8c316112af54ae9ae77e5d", "at_ms": 1787000169000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:923e4a9095905f1c95caf24c9ca497bb81f41f4ad4e5d5de1e0e2c14078ca8db", "at_ms": 1787000170000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:a7569e9907e1856f8849a16a4578962c8f0f662b8d7aab1879470c6a4d7e1919", "at_ms": 1787000171000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:68b168d12dbbc71985685bf9f89ca32988d823b7f17c743e2d7c0e9b202b4dcb", "at_ms": 1787000172000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:357d2ca7929c186522e38ae98932fcbde385d3b0c80f0215fff7b1df77058918", "at_ms": 1787000173000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:6f63b26ad4a3cfccd7e9ea7f7916f46ebfb9a5bc8e0144594f801b11b5fdeebb", "at_ms": 1787000174000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:b55c4db369ac5e7c18fc5835e6b0dea67de961fc2f1d23707befa63ebb611e03", "at_ms": 1787000175000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:467bdfae0db3de115d35005d3707421cf3710868e9066eac279b22622b75b80a", "at_ms": 1787000176000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:c6f53887e01576ece405e0b717d80461d72f40c47e2b00ff8d167806da77744e", "at_ms": 1787000177000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:9d0d84b683b6ee94e524bf50fc4d569ffe185fc64d7d4c382cc2a7a66ef55c14", "at_ms": 1787000178000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:82305f13510992faa9aa4fd6689e5047fdb70bd2b6e6fa85a3fcdf47a084bb35", "at_ms": 1787000179000, "expect": {"incidents": [{"device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "count": 79, "first_refused_at_ms": 1787000101000, "last_refused_at_ms": 1787000179000, "first_digest": "sha256:306b6a7bc62143ed7aa6bc48f76bfab65859a6c8f14f9b05ec52780106d96515", "latest_digest": "sha256:82305f13510992faa9aa4fd6689e5047fdb70bd2b6e6fa85a3fcdf47a084bb35"}], "members": [[["site-a-edge-01", "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "checkpoint", 409, "conflict"], 79]]}}
+      ]
+    },
+    {
+      "name": "an identical retry never increments the count or moves the latest fields",
+      "steps": [
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:306b6a7bc62143ed7aa6bc48f76bfab65859a6c8f14f9b05ec52780106d96515", "at_ms": 1787000100000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:f8d5635289df23d34e3ac8e12342e8d032dc433a35f2c968a4af0a4873086206", "at_ms": 1787000101000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:306b6a7bc62143ed7aa6bc48f76bfab65859a6c8f14f9b05ec52780106d96515", "at_ms": 1787000102000, "expect": {"incidents": [{"device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "count": 2, "first_refused_at_ms": 1787000100000, "last_refused_at_ms": 1787000101000, "first_digest": "sha256:306b6a7bc62143ed7aa6bc48f76bfab65859a6c8f14f9b05ec52780106d96515", "latest_digest": "sha256:f8d5635289df23d34e3ac8e12342e8d032dc433a35f2c968a4af0a4873086206"}], "members": [[["site-a-edge-01", "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "checkpoint", 409, "conflict"], 2]]}}
+      ]
+    },
+    {
+      "name": "restart preserves aggregation",
+      "steps": [
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:306b6a7bc62143ed7aa6bc48f76bfab65859a6c8f14f9b05ec52780106d96515", "at_ms": 1787000100000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:f8d5635289df23d34e3ac8e12342e8d032dc433a35f2c968a4af0a4873086206", "at_ms": 1787000101000},
+        {"event": "restart", "expect": {"incidents": [{"device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "count": 2, "first_refused_at_ms": 1787000100000, "last_refused_at_ms": 1787000101000, "first_digest": "sha256:306b6a7bc62143ed7aa6bc48f76bfab65859a6c8f14f9b05ec52780106d96515", "latest_digest": "sha256:f8d5635289df23d34e3ac8e12342e8d032dc433a35f2c968a4af0a4873086206"}], "members": [[["site-a-edge-01", "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "checkpoint", 409, "conflict"], 2]]}},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:15fcbca373ac4001f6fd95867a8a1997e09c261b43b56b4333d418a2c28ce221", "at_ms": 1787000102000, "expect": {"incidents": [{"device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "count": 3, "first_refused_at_ms": 1787000100000, "last_refused_at_ms": 1787000102000, "first_digest": "sha256:306b6a7bc62143ed7aa6bc48f76bfab65859a6c8f14f9b05ec52780106d96515", "latest_digest": "sha256:15fcbca373ac4001f6fd95867a8a1997e09c261b43b56b4333d418a2c28ce221"}], "members": [[["site-a-edge-01", "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "checkpoint", 409, "conflict"], 3]]}}
+      ]
+    },
+    {
+      "name": "acknowledgement changes alert visibility only",
+      "steps": [
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:306b6a7bc62143ed7aa6bc48f76bfab65859a6c8f14f9b05ec52780106d96515", "at_ms": 1787000100000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:f8d5635289df23d34e3ac8e12342e8d032dc433a35f2c968a4af0a4873086206", "at_ms": 1787000101000},
+        {"event": "acknowledge", "key": ["site-a-edge-01", "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "checkpoint", 409, "conflict"], "expect": {"incidents": [], "members": [[["site-a-edge-01", "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "checkpoint", 409, "conflict"], 2]]}},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:f8d5635289df23d34e3ac8e12342e8d032dc433a35f2c968a4af0a4873086206", "at_ms": 1787000105000, "expect": {"incidents": [], "members": [[["site-a-edge-01", "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "checkpoint", 409, "conflict"], 2]]}},
+        {"event": "restart", "expect": {"incidents": [], "members": [[["site-a-edge-01", "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "checkpoint", 409, "conflict"], 2]]}}
+      ]
+    },
+    {
+      "name": "a new refusal after acknowledgement reopens the incident with its first fields unchanged",
+      "steps": [
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:306b6a7bc62143ed7aa6bc48f76bfab65859a6c8f14f9b05ec52780106d96515", "at_ms": 1787000100000},
+        {"event": "acknowledge", "key": ["site-a-edge-01", "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "checkpoint", 409, "conflict"], "expect": {"incidents": [], "members": [[["site-a-edge-01", "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "checkpoint", 409, "conflict"], 1]]}},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:f8d5635289df23d34e3ac8e12342e8d032dc433a35f2c968a4af0a4873086206", "at_ms": 1787000109000, "expect": {"incidents": [{"device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "count": 2, "first_refused_at_ms": 1787000100000, "last_refused_at_ms": 1787000109000, "first_digest": "sha256:306b6a7bc62143ed7aa6bc48f76bfab65859a6c8f14f9b05ec52780106d96515", "latest_digest": "sha256:f8d5635289df23d34e3ac8e12342e8d032dc433a35f2c968a4af0a4873086206"}], "members": [[["site-a-edge-01", "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "checkpoint", 409, "conflict"], 2]]}}
+      ]
+    },
+    {
+      "name": "a different epoch, type or class never coalesces",
+      "steps": [
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:306b6a7bc62143ed7aa6bc48f76bfab65859a6c8f14f9b05ec52780106d96515", "at_ms": 1787000100000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "digest": "sha256:f8d5635289df23d34e3ac8e12342e8d032dc433a35f2c968a4af0a4873086206", "at_ms": 1787000101000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "delivery_envelope", "refusal_status": 409, "reason": "conflict", "digest": "sha256:15fcbca373ac4001f6fd95867a8a1997e09c261b43b56b4333d418a2c28ce221", "at_ms": 1787000102000},
+        {"event": "archive", "device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 422, "reason": "bad_authenticator", "digest": "sha256:bd0025031d4a40ca7316715da312db483116de9ad150e22b438734abe4a0ee22", "at_ms": 1787000103000, "expect": {"incidents": [{"device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "count": 1, "first_refused_at_ms": 1787000100000, "last_refused_at_ms": 1787000100000, "first_digest": "sha256:306b6a7bc62143ed7aa6bc48f76bfab65859a6c8f14f9b05ec52780106d96515", "latest_digest": "sha256:306b6a7bc62143ed7aa6bc48f76bfab65859a6c8f14f9b05ec52780106d96515"}, {"device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111", "artifact_type": "checkpoint", "refusal_status": 409, "reason": "conflict", "count": 1, "first_refused_at_ms": 1787000101000, "last_refused_at_ms": 1787000101000, "first_digest": "sha256:f8d5635289df23d34e3ac8e12342e8d032dc433a35f2c968a4af0a4873086206", "latest_digest": "sha256:f8d5635289df23d34e3ac8e12342e8d032dc433a35f2c968a4af0a4873086206"}, {"device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "delivery_envelope", "refusal_status": 409, "reason": "conflict", "count": 1, "first_refused_at_ms": 1787000102000, "last_refused_at_ms": 1787000102000, "first_digest": "sha256:15fcbca373ac4001f6fd95867a8a1997e09c261b43b56b4333d418a2c28ce221", "latest_digest": "sha256:15fcbca373ac4001f6fd95867a8a1997e09c261b43b56b4333d418a2c28ce221"}, {"device_id": "site-a-edge-01", "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "artifact_type": "checkpoint", "refusal_status": 422, "reason": "bad_authenticator", "count": 1, "first_refused_at_ms": 1787000103000, "last_refused_at_ms": 1787000103000, "first_digest": "sha256:bd0025031d4a40ca7316715da312db483116de9ad150e22b438734abe4a0ee22", "latest_digest": "sha256:bd0025031d4a40ca7316715da312db483116de9ad150e22b438734abe4a0ee22"}], "members": [[["site-a-edge-01", "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "checkpoint", 409, "conflict"], 1], [["site-a-edge-01", "sha256:1111111111111111111111111111111111111111111111111111111111111111", "checkpoint", 409, "conflict"], 1], [["site-a-edge-01", "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "delivery_envelope", 409, "conflict"], 1], [["site-a-edge-01", "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a", "checkpoint", 422, "bad_authenticator"], 1]]}}
+      ]
+    }
+  ]
+}

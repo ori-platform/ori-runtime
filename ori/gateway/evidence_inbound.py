@@ -34,7 +34,8 @@ from ori.gateway.route_io import RouteIO, Slots
 from ori.security.evidence.bound import BoundIngestService
 from ori.security.evidence.canonical import canonical_json
 from ori.security.evidence.executor import EvidenceExecutorSaturatedError
-from ori.security.evidence.ingest_service import IngestOutcome
+from ori.security.evidence.ingest import REJECT_REASONS
+from ori.security.evidence.ingest_service import UNDECIDED, IngestOutcome
 from ori.security.gateway_messages import (
     GatewayMessageAuthenticator,
     GatewayMessageAuthError,
@@ -149,13 +150,15 @@ class EvidenceInboundRouter:
     def handle_payload(self, payload: bytes | str | dict[str, Any]) -> Routed:
         """Route one message, returning what happened and what to acknowledge.
 
-        Never raises for a bad message: a refusal is a value, not an exception
-        for some handler up the stack to interpret.
+        Never raises: a refusal is a value, not an exception for some handler
+        up the stack to interpret, and a failure inside ingest leaves the
+        artifact undecided rather than escaping.
 
-        An acknowledgement accompanies only an outcome ingest actually reached.
+        An acknowledgement accompanies only an outcome ingest actually decided.
         A transport refusal produces none: it is not a statement about an
         artifact, and answering an unauthenticated message with a signed reply
-        would hand anything on the site network a signing oracle.
+        would hand anything on the site network a signing oracle. An undecided
+        artifact produces none either, so the courier delivers it again.
 
         Blocks the calling thread on the evidence worker; the subscriber uses
         :meth:`route`, which holds no thread while it waits.
@@ -164,21 +167,33 @@ class EvidenceInboundRouter:
         if isinstance(admitted, InboundRefusal):
             return Routed(admitted)
         artifact_type, artifact, ingest = admitted
-        if artifact_type == ARTIFACT_CUSTODY:
-            outcome = ingest.accept_custody(artifact)
-        elif artifact_type == ARTIFACT_RECEIPT:
-            outcome = ingest.accept_receipt(artifact)
-        else:
-            outcome = ingest.accept_epoch_confirmation(artifact)
+        try:
+            if artifact_type == ARTIFACT_CUSTODY:
+                outcome = ingest.accept_custody(artifact)
+            elif artifact_type == ARTIFACT_RECEIPT:
+                outcome = ingest.accept_receipt(artifact)
+            else:
+                outcome = ingest.accept_epoch_confirmation(artifact)
+        except Exception:
+            outcome = _failed(artifact_type)
         return Routed(outcome, self._acknowledgement(artifact_type, artifact, outcome))
 
     async def route(self, payload: bytes | str | dict[str, Any]) -> Routed:
-        """:meth:`handle_payload`, awaiting the evidence worker on the event loop."""
+        """:meth:`handle_payload`, awaiting the evidence worker on the event loop.
+
+        A saturated evidence worker is raised, so the subscriber leaves the
+        message with the broker; any other failure leaves it undecided.
+        """
         admitted = self._admit(payload)
         if isinstance(admitted, InboundRefusal):
             return Routed(admitted)
         artifact_type, artifact, ingest = admitted
-        outcome = await ingest.accept_async(_INGEST_KIND[artifact_type], artifact)
+        try:
+            outcome = await ingest.accept_async(_INGEST_KIND[artifact_type], artifact)
+        except EvidenceExecutorSaturatedError:
+            raise
+        except Exception:
+            outcome = _failed(artifact_type)
         return Routed(outcome, self._acknowledgement(artifact_type, artifact, outcome))
 
     def _admit(
@@ -224,8 +239,8 @@ class EvidenceInboundRouter:
 
     def _acknowledgement(
         self, artifact_type: str, artifact: dict[str, Any], outcome: IngestOutcome
-    ) -> dict[str, Any]:
-        """The courier's retirement signal for one artifact.
+    ) -> dict[str, Any] | None:
+        """The courier's retirement signal for one artifact, or None.
 
         Identified by a digest over the artifact's canonical bytes rather than
         a correlation identifier: the artifact already carries its identity in
@@ -233,15 +248,38 @@ class EvidenceInboundRouter:
         second name the two sides could disagree about.
 
         It reports that this receiver decided, never that the artifact was
-        true.
+        true, so an undecided artifact is not acknowledged. Neither is one with
+        no canonical bytes, since nothing could name it.
         """
-        digest = hashlib.sha256(canonical_json(artifact)).hexdigest()
+        if not outcome.decided:
+            return None
+        if outcome.accepted:
+            answer, reason = "applied", ""
+        elif outcome.reason in REJECT_REASONS:
+            answer, reason = "refused", str(outcome.reason)
+        else:
+            # Unreachable through IngestOutcome, which refuses to be built so;
+            # checked again here because this is what leaves the device.
+            logger.error(
+                "[evidence-inbound] a %s refusal names no receiver rejection "
+                "reason; it is not acknowledged",
+                artifact_type,
+            )
+            return None
+        try:
+            digest = hashlib.sha256(canonical_json(artifact)).hexdigest()
+        except Exception:
+            logger.warning(
+                "[evidence-inbound] a %s with no canonical form cannot be acknowledged",
+                artifact_type,
+            )
+            return None
         payload: dict[str, Any] = {
             "device_id": self._device_id,
             "artifact_type": artifact_type,
             "artifact_digest": f"sha256:{digest}",
-            "outcome": "applied" if outcome.accepted else "refused",
-            "reason": "" if outcome.accepted else str(outcome.reason or ""),
+            "outcome": answer,
+            "reason": reason,
             "acknowledged_at_ms": now_ms(),
         }
         if self._message_auth is None:
@@ -249,6 +287,16 @@ class EvidenceInboundRouter:
         return self._message_auth.sign(
             payload, message_type=EVIDENCE_INBOUND_ACK_MESSAGE_TYPE
         )
+
+
+def _failed(artifact_type: str) -> IngestOutcome:
+    """An ingest failure no rule anticipated: logged, undecided, never raised."""
+    logger.exception(
+        "[evidence-inbound] applying a %s failed; it is left undecided", artifact_type
+    )
+    return IngestOutcome(
+        artifact=artifact_type, state=UNDECIDED, detail="ingest failed unexpectedly"
+    )
 
 
 def _decode(
@@ -720,6 +768,14 @@ def _log_result(result: IngestOutcome | InboundRefusal) -> None:
         logger.warning(
             "[evidence-inbound] message refused before ingest: %s (%s)",
             result.reason,
+            result.detail,
+        )
+        return
+    if not result.decided:
+        logger.warning(
+            "[evidence-inbound] %s left undecided (%s); released without an "
+            "acknowledgement so the courier delivers it again",
+            result.artifact,
             result.detail,
         )
         return

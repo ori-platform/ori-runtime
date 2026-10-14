@@ -89,10 +89,15 @@ def canonical_json(value: Any) -> bytes:
     they are a parsing concern for whoever reads the bytes back.
     """
     _reject(value, "$")
-    return json.dumps(
+    text = json.dumps(
         value,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
         allow_nan=False,
-    ).encode("utf-8")
+    )
+    try:
+        return text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        # A lone surrogate decodes from JSON's \u escapes and has no UTF-8 form.
+        raise CanonicalisationError("$: a string holds a lone surrogate") from exc

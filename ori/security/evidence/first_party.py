@@ -182,6 +182,12 @@ class FirstPartyEvidenceAttestor:
         """Whether custody acknowledgements can be verified at all."""
         return self._custody_keys is not None
 
+    @property
+    def application_storage_fault(self) -> bool:
+        """runtime-health/v4's application-storage fault signal; False with no ingest."""
+        ingest = self._ingest
+        return bool(ingest is not None and ingest.application_storage_fault)
+
     async def ingest_refusal_summary(self) -> dict[str, Any] | None:
         """Retained refusal count and the latest refusal; None when unavailable."""
         if self._ledger is None:

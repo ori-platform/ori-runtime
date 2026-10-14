@@ -535,16 +535,16 @@ fi
 # ── 11. a set vendors the version it claims, and nothing from a later one ─────
 #
 # A vector directory can hold more than one version of its contract. The
-# exchange set claims v2: for each stem it takes the newest tokened file at or
-# below v2, the untokened file only when no tokened one is at or below v2, and
-# nothing tokened above it. The sensor-configuration set claims no version
+# exchange set claims v2 or later: for each stem it takes the newest tokened
+# file at or below the claim, the untokened file only when no tokened one is at
+# or below it, and nothing tokened above it. The sensor-configuration set claims no version
 # and takes untokened files only.
 
 box="$(new_fixture claimed-version)"
 ex="${box}/specs/evidence-exchange/vectors"
 printf '{"stem":"a","v":1}\n' > "${ex}/a.json"
 printf '{"stem":"a","v":2}\n' > "${ex}/a-v2.json"
-printf '{"stem":"b","v":3}\n' > "${ex}/b-v3.json"
+printf '{"stem":"b","v":9}\n' > "${ex}/b-v9.json"
 printf '{"stem":"c","v":1}\n' > "${ex}/c-v1.json"
 printf '{"stem":"d","v":2}\n' > "${box}/specs/sensor-configuration/vectors/d-v2.json"
 git -C "${box}/specs" add -A >/dev/null
@@ -563,18 +563,19 @@ else
   bad "an earlier tokened file and an unreplaced untokened file are both vendored" \
       "$(ls "${vendored}")"
 fi
-if [ ! -f "${vendored}/b-v3.json" ]; then
+if [ ! -f "${vendored}/b-v9.json" ]; then
   ok "a file from a later version than the claim is not vendored"
 else
-  bad "a file from a later version than the claim is not vendored" "b-v3.json present"
+  bad "a file from a later version than the claim is not vendored" "b-v9.json present"
 fi
 if [ ! -f "${box}/consumer/tests/vectors/sensor_configuration/d-v2.json" ]; then
   ok "a set claiming no version vendors untokened files only"
 else
   bad "a set claiming no version vendors untokened files only" "d-v2.json present"
 fi
-if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d.get("contract_version")=="v2" and sorted(d["files"])==["a-v2.json","c-v1.json","vectors.json"] else 1)' \
-     "${vendored}/MANIFEST.json"; then
+exchange_claim="$(awk -F'"' '/^  "evidence-exchange\/vectors:/{n=split($2, p, ":"); print p[3]}' "${SCRIPT}")"
+if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d.get("contract_version")==sys.argv[2] and sorted(d["files"])==["a-v2.json","c-v1.json","vectors.json"] else 1)' \
+     "${vendored}/MANIFEST.json" "${exchange_claim}"; then
   ok "the manifest records the claimed version and exactly the selected files"
 else
   bad "the manifest records the claimed version and exactly the selected files" \
@@ -596,7 +597,7 @@ fi
 # Drift is judged over the selection: a change to a later version's file is
 # not this set's drift, a change to a selected file is, and a new file at the
 # claimed version is new.
-printf '{"stem":"b","v":3,"changed":true}\n' > "${ex}/b-v3.json"
+printf '{"stem":"b","v":9,"changed":true}\n' > "${ex}/b-v9.json"
 git -C "${box}/specs" add -A >/dev/null
 git -C "${box}/specs" commit -qm "vectors: a later version moves"
 out="$(check "${box}")"; code=$?
@@ -639,6 +640,33 @@ if [ "${code}" -ne 0 ] && grep -q "^NEW " <<< "${out}" && ! grep -q '\*\.json' <
   ok "a first vendoring reports only new vectors, never its own glob"
 else
   bad "a first vendoring reports only new vectors, never its own glob" "exit ${code}: ${out}"
+fi
+
+# A claim moved in SETS can select the very same bytes, when the new version
+# adds no file to the set. The manifest still records the old claim, so the
+# check must report it, apply must record the new one, and the next check pass.
+box="$(new_fixture claim-moved)"
+vendor "${box}"
+python3 -c 'import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]) / "consumer/tests/vectors/evidence_exchange/MANIFEST.json"
+d = json.loads(p.read_text()); d["contract_version"] = "v1"
+p.write_text(json.dumps(d, indent=2) + "\n")' "${box}"
+out="$(check "${box}")"; code=$?
+if [ "${code}" -ne 0 ] && grep -q "manifest records the claim 'v1'" <<< "${out}" \
+   && ! grep -q "does not name a commit this check can resolve" <<< "${out}"; then
+  ok "a claim the manifest does not record is reported as a claim, not a pin"
+else
+  bad "a claim the manifest does not record is reported as a claim, not a pin" "exit ${code}: ${out}"
+fi
+vendor "${box}"
+out="$(check "${box}")"; code=$?
+claimed="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["contract_version"])' \
+  "${box}/consumer/tests/vectors/evidence_exchange/MANIFEST.json")"
+expected_claim="$(awk -F'"' '/^  "evidence-exchange\/vectors:/{n=split($2, p, ":"); print p[3]}' "${SCRIPT}")"
+if [ "${code}" -eq 0 ] && [ "${claimed}" = "${expected_claim}" ]; then
+  ok "apply records the claimed version and the next check passes"
+else
+  bad "apply records the claimed version and the next check passes" "claim ${claimed}, exit ${code}: ${out}"
 fi
 
 echo

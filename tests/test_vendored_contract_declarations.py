@@ -66,6 +66,17 @@ _WIRE_SCHEMA_ONLY = (
     "payload value and not the contract's version; no member names a contract."
 )
 
+#: Claims whose contract adds no file to the set, so its corpus is an earlier
+#: version's files: (set, claimed version) -> (highest version shown, reason).
+CLAIMS_CARRIED_BY_EARLIER_FILES: dict[tuple[str, int], tuple[int, str]] = {
+    ("evidence_exchange", 3): (
+        2,
+        "evidence-exchange/v3 is wire-identical to v2 and names v2's wire "
+        "corpora as its own (v3.md, Test vectors); only its receiver-state "
+        "corpus is new.",
+    ),
+}
+
 #: Corpora that declare no contract at all. The file-name rule still applies.
 UNDECLARED = {
     ("commissioned_safety_binding", "revision-misreadings-v2.json"): (
@@ -296,7 +307,9 @@ def contract_violations(root: Path) -> list[str]:
                 f"{set_name}: untokened files declare different original versions "
                 f"{dict(sorted(originals.items()))}; a directory opens at one version"
             )
-        if max(shown, default=ORIGINAL_VERSION) != claim:
+        highest = max(shown, default=ORIGINAL_VERSION)
+        carried = CLAIMS_CARRIED_BY_EARLIER_FILES.get((set_name, claim))
+        if highest != claim and (carried is None or carried[0] != highest):
             problems.append(
                 f"{set_name}: claims {contract}/v{claim} but the highest version "
                 f"its files show is v{max(shown, default=ORIGINAL_VERSION)}"
@@ -348,7 +361,7 @@ MUTATIONS = {
     "canonicalisation cites the vendored contract above its claim": (
         "runtime_evidence_anchor/runtime-anchor-v2.json",
         "canonicalisation",
-        "evidence-exchange/v3.md canonical encoding",
+        "evidence-exchange/v4.md canonical encoding",
     ),
     "untokened corpus names a later version": (
         "safety_profile/profiles.json",
@@ -378,7 +391,12 @@ MUTATIONS = {
     "claim raised past every file": (
         "evidence_exchange/MANIFEST.json",
         "contract_version",
-        "v3",
+        "v4",
+    ),
+    "claim carried by earlier files at another version": (
+        "evidence_exchange_receiver_state/MANIFEST.json",
+        "contract_version",
+        "v2",
     ),
     "claim lowered below a tokened file": (
         "runtime_evidence_anchor/MANIFEST.json",

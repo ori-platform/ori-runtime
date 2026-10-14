@@ -40,18 +40,26 @@ CLEANUP=""
 # third field claims the original version and vendors only untokened files.
 SETS=(
   "evidence/vectors:tests/vectors/evidence:v3"
-  "evidence-exchange/vectors:tests/vectors/evidence_exchange:v2"
+  "evidence-exchange/vectors:tests/vectors/evidence_exchange:v3"
   "runtime-evidence-anchor/vectors:tests/vectors/runtime_evidence_anchor:v2"
   # Receiver-state vectors are a separate set because the copy loop below is a
   # flat glob. They cover the rules a wire artifact cannot express -- the ones
   # a byte-level suite silently omits, and therefore the ones most worth
   # drift-checking.
-  "evidence-exchange/vectors/receiver-state:tests/vectors/evidence_exchange_receiver_state:v2"
+  "evidence-exchange/vectors/receiver-state:tests/vectors/evidence_exchange_receiver_state:v3"
   # Transport rather than artifact: gateway-api fixes how an inbound artifact
   # travels, and versions independently of the evidence contracts. Vendored
   # here so the same drift check covers it, and pinned separately because it
   # has no reason to move when the evidence vectors do.
   "gateway-api/vectors:tests/vectors/gateway_api:v2"
+  # The inbound carriage of evidence-exchange/v3: which answer the runtime
+  # gives decides whether the courier retires an artifact. Only the
+  # retirement corpus is the runtime's; the return-path and site-health
+  # corpora are the courier's and travel with the directory.
+  "gateway-evidence-carriage/vectors:tests/vectors/gateway_evidence_carriage:v1"
+  # runtime-health/v4. The runtime serves v3 and carries v4's
+  # application-storage fault signal into it; that row is what is consumed.
+  "runtime-health:tests/vectors/runtime_health:v4"
   # Commissioned safety binding: a separate contract again, and the only
   # vendored set whose vectors describe physical commissioning rather than
   # evidence carriage. It pins independently because it has no reason to move
@@ -153,6 +161,7 @@ overall_drift=0
 overall_content=0
 overall_stale=0
 overall_pin=0
+overall_claim=0
 
 write_manifest() {
   python3 - "$1" "$2" "$3" "$4" <<'PY'
@@ -255,6 +264,18 @@ for entry in "${SETS[@]}"; do
       "${DEST}/MANIFEST.json" 2>/dev/null || echo "")"
   fi
 
+  # The manifest records the version claimed here. A claim moved in SETS
+  # selects the same bytes when the new version adds no file to this set, so
+  # nothing above notices it; the manifest would go on recording the old one.
+  claim_moved=0
+  if [ -f "${DEST}/MANIFEST.json" ]; then
+    MANIFEST_CLAIM="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("contract_version", ""))' \
+      "${DEST}/MANIFEST.json" 2>/dev/null || echo "?")"
+    if [ "${MANIFEST_CLAIM}" != "${version}" ]; then
+      claim_moved=1
+    fi
+  fi
+
   # Before it can be resolved, a pin has to be the kind of thing that names one
   # commit and goes on naming it. A branch or tag resolves to whatever it points
   # at whenever the check runs, so it is never found stale and never identifies
@@ -317,7 +338,8 @@ for entry in "${SETS[@]}"; do
     done
   fi
 
-  if [ "${drift}" -eq 0 ] && [ "${reachable}" -eq 1 ] && [ "${stale}" -eq 0 ]; then
+  if [ "${drift}" -eq 0 ] && [ "${reachable}" -eq 1 ] && [ "${stale}" -eq 0 ] \
+      && [ "${claim_moved}" -eq 0 ]; then
     if [ "${PINNED}" = "${COMMIT}" ]; then
       echo "${label}: vectors match ori-specs at ${COMMIT}"
     else
@@ -327,6 +349,10 @@ for entry in "${SETS[@]}"; do
   fi
 
   if [ "${APPLY}" != "1" ]; then
+    if [ "${claim_moved}" -eq 1 ]; then
+      echo "${label}: the manifest records the claim '${MANIFEST_CLAIM}', and this" >&2
+      echo "  script claims '${version}'." >&2
+    fi
     if [ "${drift}" -eq 0 ] && [ "${reachable}" -eq 0 ]; then
       if [ -z "${PINNED}" ]; then
         echo "${label}: contents match, but the manifest records no source" >&2
@@ -350,6 +376,8 @@ for entry in "${SETS[@]}"; do
       overall_content=1
     elif [ "${stale}" -eq 1 ]; then
       overall_stale=1
+    elif [ "${reachable}" -eq 1 ]; then
+      overall_claim=1
     else
       overall_pin=1
     fi
@@ -386,6 +414,10 @@ if [ "${overall_drift}" -ne 0 ]; then
   if [ "${overall_pin}" -ne 0 ]; then
     echo "A manifest does not name a commit this check can resolve on ori-specs" >&2
     echo "main. The bytes are current; nothing records where they came from." >&2
+  fi
+  if [ "${overall_claim}" -ne 0 ]; then
+    echo "A manifest records a contract version other than the one this script" >&2
+    echo "claims for its set. The bytes are current; the recorded claim is not." >&2
   fi
   if [ "${overall_content}" -ne 0 ]; then
     echo "Re-run with ORI_VECTORS_APPLY=1 to update, then review the diff:" >&2

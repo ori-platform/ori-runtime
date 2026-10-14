@@ -600,6 +600,21 @@ VECTOR_CONSUMERS = {
     ("firmware_telemetry", "reading-age-vectors-v2"): (
         "firmware/test_reading_age_vectors_v2.py::test_every_query_is_reproduced",
     ),
+    ("evidence_exchange_receiver_state", "restated-records-v3"): (
+        "evidence/test_restated_records_vectors.py::test_every_restated_record_case",
+        "evidence/test_restated_records_vectors.py"
+        "::test_the_corpus_material_is_what_the_runtime_derives",
+    ),
+    ("gateway_evidence_carriage", "inbound-retirement-v1"): (
+        "evidence/test_inbound_restatements.py"
+        "::test_the_runtime_refuses_with_exactly_the_carriage_vocabulary",
+        "evidence/test_inbound_restatements.py"
+        "::test_each_answer_the_runtime_gives_is_the_one_the_courier_reads",
+    ),
+    ("runtime_health", "health-vectors-v4"): (
+        "test_health_status_fold.py"
+        "::test_the_storage_fault_folds_at_runtime_health_v4s_severity",
+    ),
     ("firmware_commands", "liveness-vectors-v2"): (
         "firmware/test_liveness_v2.py::test_the_signer_reproduces_every_accepted_case",
         "firmware/test_liveness_v2.py"
@@ -652,6 +667,26 @@ VECTOR_EXEMPTIONS = {
             "authorisation -- it holds only the digest as a reference -- so "
             "there is no resolution here to drive. Vendored so the drift check "
             "covers the bytes the authority must match."
+        ),
+    },
+    ("gateway_evidence_carriage", "return-path"): {
+        "owner": "the site gateway",
+        "status": "proof_pending",
+        "tracking": "ori-gateway#132",
+        "reason": (
+            "Courier-side. Each sequence replays a site gateway's per-device "
+            "return queue and its declared carriage; the runtime receives "
+            "what a lane delivers and keeps no queue of its own."
+        ),
+    },
+    ("gateway_evidence_carriage", "site-health-evidence-delivery"): {
+        "owner": "the site gateway",
+        "status": "proof_pending",
+        "tracking": "ori-gateway#103",
+        "reason": (
+            "Courier-side. The `evidence_delivery` projection is the site "
+            "gateway's health view of each device's delivery; the runtime "
+            "reports its own health and projects no site."
         ),
     },
     ("safety_profile", "activation"): {

@@ -33,6 +33,8 @@ class _RecordingIngest:
     connection in test_executor.py.
     """
 
+    application_storage_fault = False
+
     def __init__(self) -> None:
         self.threads: dict[str, int] = {}
         self.calls: list[tuple[str, object]] = []

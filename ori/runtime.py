@@ -3617,6 +3617,17 @@ class OriRuntime:
             # refused receipt is distinguishable from one that never arrived.
             "ingest_refusal_count": None,
             "last_ingest_refusal": None,
+            # runtime-health/v4's application-storage fault signal, carried
+            # into this v3 snapshot: the store failed deciding or applying a
+            # verified inbound artifact, and none has been applied since. In
+            # memory, so it reads while the store does not; false while
+            # evidence is disabled or not yet open.
+            "application_storage_fault": bool(
+                enabled
+                and attestor is not None
+                and attestor.available
+                and getattr(attestor, "application_storage_fault", False)
+            ),
             # Why evidence trust is not established, from a closed vocabulary;
             # empty when it is. Signing can be available while trust is not.
             "posture_problems": list(getattr(self, "_evidence_posture_problems", ())),
@@ -3923,6 +3934,10 @@ class OriRuntime:
         if getattr(self, "_evidence_posture_problems", ()):
             # Evidence trust not established is degraded, not critical: the
             # safety path is unaffected, and what is at risk is the record.
+            severities.append("degraded")
+        if snapshot["evidence"].get("application_storage_fault") is True:
+            # The record of what the authority said is what is at risk, so
+            # degraded; it gates no action, no Tier D and no safety binding.
             severities.append("degraded")
         records_dispatcher = getattr(self, "_dispatcher", None)
         if (
