@@ -24,6 +24,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import sqlite3
 import threading
 from base64 import urlsafe_b64decode, urlsafe_b64encode
@@ -67,6 +68,13 @@ def _signed_at_ms(auth: Mapping[str, Any]) -> int:
 
 class GatewayMessageAuthError(ValueError):
     """Raised when a runtime-gateway MQTT envelope fails authentication."""
+
+
+#: What a hostile payload can make signing raise: a value with no JSON form
+#: (NaN, a lone surrogate), or one nested past the recursion limit. An
+#: authentication error is itself a ValueError, so it is re-raised first.
+_UNVERIFIABLE = (ValueError, TypeError, RecursionError)
+_SIGNATURE_RE = re.compile(r"\Ahmac-sha256:[0-9a-f]{64}\Z")
 
 
 class GatewayMessageEncryptionError(ValueError):
@@ -248,7 +256,33 @@ class GatewayMessageAuthenticator:
         expected_request_id: str | None = None,
         now_ms_value: int | None = None,
     ) -> dict[str, Any]:
-        """Verify *payload* and return a copy without the auth block."""
+        """Verify *payload* and return a copy without the auth block.
+
+        Raises only `GatewayMessageAuthError` for anything a sender can put on
+        the wire, so every caller's refusal path is the only path.
+        """
+        try:
+            return self._verify(
+                payload,
+                message_type=message_type,
+                expected_device_id=expected_device_id,
+                expected_request_id=expected_request_id,
+                now_ms_value=now_ms_value,
+            )
+        except GatewayMessageAuthError:
+            raise
+        except _UNVERIFIABLE as exc:
+            raise GatewayMessageAuthError("unverifiable_payload") from exc
+
+    def _verify(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        message_type: str,
+        expected_device_id: str,
+        expected_request_id: str | None,
+        now_ms_value: int | None,
+    ) -> dict[str, Any]:
         auth = payload.get(AUTH_FIELD)
         if not isinstance(auth, Mapping):
             raise GatewayMessageAuthError("missing_auth")
@@ -315,6 +349,22 @@ class GatewayMessageAuthenticator:
         The replay key is ``message_type + signed_at_ms + signature`` — unique per
         signed message without needing per-device scoping.
         """
+        try:
+            return self._verify_broadcast(
+                payload, message_type=message_type, now_ms_value=now_ms_value
+            )
+        except GatewayMessageAuthError:
+            raise
+        except _UNVERIFIABLE as exc:
+            raise GatewayMessageAuthError("unverifiable_payload") from exc
+
+    def _verify_broadcast(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        message_type: str,
+        now_ms_value: int | None,
+    ) -> dict[str, Any]:
         auth = payload.get(AUTH_FIELD)
         if not isinstance(auth, Mapping):
             raise GatewayMessageAuthError("missing_auth")
@@ -375,6 +425,10 @@ class GatewayMessageAuthenticator:
         message_type: str,
         signed_at_ms: int,
     ) -> str:
+        # Shape before comparison: compare_digest refuses a non-ASCII string
+        # with TypeError, and a signature of another shape matches nothing.
+        if not _SIGNATURE_RE.fullmatch(signature):
+            raise GatewayMessageAuthError("malformed_signature")
         expected = self._signature(
             payload=payload,
             message_type=message_type,

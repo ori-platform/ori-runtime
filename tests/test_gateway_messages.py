@@ -555,3 +555,68 @@ def test_both_verifiers_refuse_a_signed_time_that_is_not_an_integer(value):
     broadcast["auth"]["signed_at_ms"] = value
     with pytest.raises(GatewayMessageAuthError, match="invalid_signed_at_ms"):
         auth.verify_broadcast(broadcast, message_type="m", now_ms_value=1000)
+
+
+def _hostile(shape: str) -> dict:
+    """A correctly shaped, unauthenticated envelope a sender controls fully."""
+    from ori.utils.time_utils import now_ms
+
+    payload: dict = {
+        "device_id": "dev-01",
+        "body": {"value": 1},
+        "auth": {
+            "scheme": "hmac-sha256",
+            "signed_at_ms": now_ms(),
+            "signature": "hmac-sha256:" + "0" * 64,
+        },
+    }
+    if shape == "non_ascii_signature":
+        payload["auth"]["signature"] = "hmac-sha256:é"
+    elif shape == "surrogate":
+        payload["body"]["value"] = "\ud800"
+    elif shape == "non_finite":
+        payload["body"]["value"] = float("nan")
+    elif shape == "deep":
+        nested: object = 0
+        for _ in range(5000):
+            nested = [nested]
+        payload["body"]["value"] = nested
+    elif shape == "signature_shape":
+        payload["auth"]["signature"] = "hmac-sha256:" + "Z" * 64
+    return payload
+
+
+HOSTILE_SHAPES = [
+    "non_ascii_signature",
+    "surrogate",
+    "non_finite",
+    "deep",
+    "signature_shape",
+]
+
+
+@pytest.mark.parametrize("shape", HOSTILE_SHAPES)
+def test_verify_raises_only_an_auth_error_for_anything_on_the_wire(shape):
+    """Every caller catches GatewayMessageAuthError alone, so nothing else may escape."""
+    with pytest.raises(GatewayMessageAuthError):
+        _auth().verify(
+            _hostile(shape),
+            message_type="evidence_inbound",
+            expected_device_id="dev-01",
+        )
+
+
+@pytest.mark.parametrize("shape", HOSTILE_SHAPES)
+def test_verify_broadcast_raises_only_an_auth_error_for_anything_on_the_wire(shape):
+    with pytest.raises(GatewayMessageAuthError):
+        _auth().verify_broadcast(_hostile(shape), message_type="gateway_heartbeat")
+
+
+@pytest.mark.parametrize("shape", ["non_ascii_signature", "signature_shape"])
+def test_a_signature_of_another_shape_is_malformed_before_any_comparison(shape):
+    with pytest.raises(GatewayMessageAuthError, match="malformed_signature"):
+        _auth().verify(
+            _hostile(shape),
+            message_type="evidence_inbound",
+            expected_device_id="dev-01",
+        )

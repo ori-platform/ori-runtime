@@ -21,7 +21,10 @@ import pytest
 from ori.gateway.evidence_inbound import (
     ARTIFACT_CUSTODY,
     ARTIFACT_RECEIPT,
+    REFUSE_ENVELOPE_UNAUTHENTICATED,
+    REFUSE_UNADMISSIBLE,
     EvidenceInboundRouter,
+    InboundRefusal,
     Routed,
 )
 from ori.security.evidence.custody_keys import (
@@ -41,12 +44,14 @@ from ori.security.evidence.ingest_service import (
     UNDECIDED,
     IngestOutcome,
 )
+from ori.utils.time_utils import now_ms
 from tests.waiting import wait_until
 
 from .test_inbound_route import (
     CUSTODY_SECRET,
     DEVICE,
     PREVIOUS_CUSTODY_SECRET,
+    _authenticator,
     _envelope,
     _FakeClient,
     _mac,
@@ -248,6 +253,31 @@ def test_an_unreadable_sealed_envelope_digest_is_a_store_fault(sealed):
     assert routed.outcome.state == UNDECIDED
     assert routed.acknowledgement is None
     assert _row(attestor)["custody_state"] == "none"
+
+
+def test_a_sealed_digest_rewritten_to_another_digest_is_a_store_fault(sealed):
+    """On a production seal: the stored envelope bytes are the oracle."""
+    attestor, router, base = sealed
+    ledger = attestor._ledger
+
+    def damage() -> None:
+        connection = ledger._connection
+        guard = connection.execute(
+            "SELECT sql FROM sqlite_master"
+            " WHERE name = 'evidence_ledger_no_sealed_update'"
+        ).fetchone()[0]
+        connection.execute("DROP TRIGGER evidence_ledger_no_sealed_update")
+        connection.execute(
+            "UPDATE evidence_delivery_ledger SET envelope_digest = ?",
+            ("sha256:" + "0" * 64,),
+        )
+        connection.execute(guard)
+
+    attestor._executor.run(damage)
+    routed = _route(router, _custody(base, CUSTODY_SECRET, 1787000000900))
+
+    assert routed.outcome.state == UNDECIDED and routed.acknowledgement is None
+    assert attestor.application_storage_fault is True
 
 
 def test_an_artifact_with_no_canonical_form_is_refused_without_escaping(sealed):
@@ -461,3 +491,117 @@ def test_a_refusal_without_a_vocabulary_reason_is_never_published(reason):
     )
 
     assert routed.acknowledgement is None
+
+
+def _hostile_envelope(base: dict[str, Any], shape: str) -> bytes:
+    """A message as a sender controls it: well shaped, not authenticated."""
+    artifact: dict[str, Any] = dict(base, key_id=derive_custody_key_id(CUSTODY_SECRET))
+    message: dict[str, Any] = {
+        **_envelope(ARTIFACT_CUSTODY, _mac(artifact, CUSTODY_SECRET)),
+        "auth": {
+            "scheme": "hmac-sha256",
+            "signed_at_ms": now_ms(),
+            "signature": "hmac-sha256:" + "0" * 64,
+        },
+    }
+    if shape == "non_ascii_signature":
+        message["auth"]["signature"] = "hmac-sha256:é"
+    elif shape == "surrogate":
+        message["artifact"]["device_id"] = "\ud800"
+    elif shape == "non_finite":
+        message["artifact"]["custody_at_ms"] = float("inf")
+    return json.dumps(message).encode()
+
+
+HOSTILE = ["non_ascii_signature", "surrogate", "non_finite"]
+
+
+@pytest.mark.parametrize("shape", HOSTILE)
+@pytest.mark.parametrize("entry", ["handle_payload", "route"])
+def test_a_hostile_envelope_is_refused_by_the_transport_and_changes_nothing(
+    sealed, shape, entry
+):
+    attestor, _, base = sealed
+    router = EvidenceInboundRouter(
+        device_id=DEVICE, ingest=attestor.ingest, message_auth=_authenticator()
+    )
+    held = _row(attestor)
+    payload = _hostile_envelope(base, shape)
+
+    if entry == "route":
+        routed = asyncio.run(router.route(payload))
+    else:
+        routed = asyncio.run(asyncio.to_thread(router.handle_payload, payload))
+
+    assert isinstance(routed.outcome, InboundRefusal)
+    assert routed.outcome.reason == REFUSE_ENVELOPE_UNAUTHENTICATED
+    assert routed.acknowledgement is None
+    assert _row(attestor) == held
+    assert attestor.application_storage_fault is False
+
+
+@pytest.mark.parametrize("shape", HOSTILE)
+def test_a_hostile_envelope_on_the_wire_is_released_once_and_unacknowledged(
+    sealed, shape
+):
+    """Held, it would come back identical and be refused as a replay forever."""
+    attestor, _, base = sealed
+    client = _AckingClient()
+    subscriber = _subscriber(client, ingest=attestor.ingest)
+
+    async def scenario() -> None:
+        shutdown = asyncio.Event()
+        task = asyncio.create_task(subscriber.serve_until(shutdown))
+        await wait_until(lambda: subscriber.connected, what="the route to come up")
+        message = SimpleNamespace(payload=_hostile_envelope(base, shape), mid=9, qos=1)
+        assert client.on_message is not None
+        await asyncio.to_thread(client.on_message, client, None, message)
+        await wait_until(lambda: client.acked, what="the message to be released")
+        shutdown.set()
+        await asyncio.wait_for(task, timeout=2)
+
+    asyncio.run(scenario())
+    assert client.acked == [9]
+    assert client.published == []
+    assert subscriber._redelivery_owed is False
+
+
+def test_an_admission_failure_no_rule_anticipated_is_a_transport_refusal(
+    sealed, monkeypatch
+):
+    attestor, _, base = sealed
+    router = EvidenceInboundRouter(
+        device_id=DEVICE, ingest=attestor.ingest, message_auth=_authenticator()
+    )
+
+    def broken(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("a verifier defect")
+
+    monkeypatch.setattr(router._message_auth, "verify", broken)
+    routed = asyncio.run(router.route(_hostile_envelope(base, "valid_shape")))
+
+    assert isinstance(routed.outcome, InboundRefusal)
+    assert routed.outcome.reason == REFUSE_UNADMISSIBLE
+    assert routed.acknowledgement is None
+
+
+def test_a_decision_whose_acknowledgement_cannot_be_signed_stands_unanswered(
+    sealed, monkeypatch
+):
+    attestor, _, base = sealed
+    auth = _authenticator()
+    router = EvidenceInboundRouter(
+        device_id=DEVICE, ingest=attestor.ingest, message_auth=auth
+    )
+    artifact = dict(base, key_id=derive_custody_key_id(CUSTODY_SECRET))
+    payload = _signed(_envelope(ARTIFACT_CUSTODY, _mac(artifact, CUSTODY_SECRET)))
+
+    def broken(*_args: Any, **_kwargs: Any) -> Any:
+        raise ValueError("cannot sign")
+
+    monkeypatch.setattr(auth, "sign", broken)
+    routed = asyncio.run(router.route(payload))
+
+    assert isinstance(routed.outcome, IngestOutcome) and routed.outcome.accepted
+    assert routed.acknowledgement is None
+    assert _row(attestor)["custody_state"] == "held"

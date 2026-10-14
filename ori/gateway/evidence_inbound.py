@@ -87,6 +87,7 @@ REFUSE_ENVELOPE_UNAUTHENTICATED = "envelope_unauthenticated"
 REFUSE_UNKNOWN_ARTIFACT_TYPE = "unknown_artifact_type"
 REFUSE_MISSING_ARTIFACT = "missing_artifact"
 REFUSE_INGEST_UNAVAILABLE = "ingest_unavailable"
+REFUSE_UNADMISSIBLE = "unadmissible"
 
 
 @dataclass(frozen=True)
@@ -163,7 +164,7 @@ class EvidenceInboundRouter:
         Blocks the calling thread on the evidence worker; the subscriber uses
         :meth:`route`, which holds no thread while it waits.
         """
-        admitted = self._admit(payload)
+        admitted = self._admit_or_refuse(payload)
         if isinstance(admitted, InboundRefusal):
             return Routed(admitted)
         artifact_type, artifact, ingest = admitted
@@ -184,7 +185,7 @@ class EvidenceInboundRouter:
         A saturated evidence worker is raised, so the subscriber leaves the
         message with the broker; any other failure leaves it undecided.
         """
-        admitted = self._admit(payload)
+        admitted = self._admit_or_refuse(payload)
         if isinstance(admitted, InboundRefusal):
             return Routed(admitted)
         artifact_type, artifact, ingest = admitted
@@ -195,6 +196,23 @@ class EvidenceInboundRouter:
         except Exception:
             outcome = _failed(artifact_type)
         return Routed(outcome, self._acknowledgement(artifact_type, artifact, outcome))
+
+    def _admit_or_refuse(
+        self, payload: bytes | str | dict[str, Any]
+    ) -> InboundRefusal | tuple[str, dict[str, Any], BoundIngestService]:
+        """Admission, never raising: a message it cannot place is refused.
+
+        A transport refusal, so no acknowledgement; the subscriber still
+        releases the message, and a redelivered identical envelope would be
+        refused as a replay anyway.
+        """
+        try:
+            return self._admit(payload)
+        except Exception:
+            logger.exception("[evidence-inbound] admitting a message failed")
+            return InboundRefusal(
+                REFUSE_UNADMISSIBLE, "the message could not be admitted"
+            )
 
     def _admit(
         self, payload: bytes | str | dict[str, Any]
@@ -284,9 +302,15 @@ class EvidenceInboundRouter:
         }
         if self._message_auth is None:
             return payload
-        return self._message_auth.sign(
-            payload, message_type=EVIDENCE_INBOUND_ACK_MESSAGE_TYPE
-        )
+        try:
+            return self._message_auth.sign(
+                payload, message_type=EVIDENCE_INBOUND_ACK_MESSAGE_TYPE
+            )
+        except Exception:
+            # The decision stands; only its answer is lost, and the courier
+            # delivers the artifact again.
+            logger.exception("[evidence-inbound] signing an acknowledgement failed")
+            return None
 
 
 def _failed(artifact_type: str) -> IngestOutcome:
