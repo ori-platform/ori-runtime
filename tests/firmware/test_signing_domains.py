@@ -24,9 +24,9 @@ from ori.gateway.firmware_commands import FirmwareCommandService
 from ori.security.firmware.commands import FirmwareCommandError, FirmwareCommandSigner
 from ori.security.firmware.ingest import FirmwareTelemetryGate
 from ori.security.firmware.liveness import (
-    FirmwareLivenessError,
     FirmwareLivenessSigner,
     FirmwareLivenessSupervisor,
+    SigningDomainsUndeclaredError,
 )
 from ori.security.firmware.signing_domains import (
     command_preimage,
@@ -139,7 +139,7 @@ async def test_liveness_for_an_undeclared_device_is_refused_before_allocation(
 
     store.allocate_firmware_runtime_seq = counted  # type: ignore[method-assign]
     signer = FirmwareLivenessSigner(store, RUNTIME_SEED, supervisor=supervisor)
-    with pytest.raises(FirmwareLivenessError, match="runtime_key_domains"):
+    with pytest.raises(SigningDomainsUndeclaredError, match="runtime_key_domains"):
         await signer.sign_liveness(
             device_id=DEVICE, boot_id=41, capability_hash=row["capability_hash"]
         )
