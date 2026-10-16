@@ -87,7 +87,7 @@ PRODUCTION_POSTURES = ("sealed_flash", "hardware_key")
 DEVICE_MODES = frozenset({"sensor_node", "bridge_node", "actuator_node", "mixed"})
 # Names the rules validate_manifest_policy applies, so a stored anchor is
 # re-checked when they change rather than once for all time.
-MANIFEST_POLICY_REVISION = "firmware-telemetry/v2 controller-profiles"
+MANIFEST_POLICY_REVISION = "firmware-telemetry/v2 runtime-key-domains"
 SUPPORTED_TRANSPORTS = frozenset({"mqtt", "uart", "rs485"})
 SUPPORTED_CHANNEL_PROTOCOLS = frozenset(
     {"adc", "gpio", "i2c", "uart", "modbus_rtu", "rs232", "pulse", "one_wire"}
@@ -776,9 +776,13 @@ def _validate_manifest_fields(manifest: dict[str, Any]) -> None:
                 ERR_INVALID_ENVELOPE,
                 "deployment_maintenance_limit_ms must be a positive integer",
             )
+    _validate_runtime_key_domains(manifest)
+
+
+def _validate_runtime_key_domains(manifest: dict[str, Any]) -> None:
     # Compared whole: never by prefix, length, NUL, trimming, case or
     # normalization, any of which would admit a value the contract defines
-    # nothing for.
+    # nothing for. Applied to fresh and stored manifests alike.
     if RUNTIME_KEY_DOMAINS_FIELD in manifest and not declares_signing_domains(manifest):
         raise FirmwareVerificationError(
             ERR_INVALID_RUNTIME_KEY_DOMAINS,
@@ -834,6 +838,7 @@ def validate_manifest_policy(manifest: Any) -> None:
             ERR_INVALID_ENVELOPE, "stored manifest has no actions list"
         )
     _validate_device_mode(manifest, channels)
+    _validate_runtime_key_domains(manifest)
 
 
 def _validate_device_mode(

@@ -266,3 +266,203 @@ async def test_reprovisioning_with_an_undeclared_manifest_says_so(
         for r in caplog.records
         if r.levelno == logging.WARNING
     )
+
+
+# --- One key per purpose ------------------------------------------------------
+
+
+def test_the_service_refuses_one_key_for_both_purposes() -> None:
+    with pytest.raises(FirmwareCommandError, match="must differ"):
+        FirmwareCommandService(
+            store=None,
+            publisher=_NoPublisher(),  # type: ignore[arg-type]
+            runtime_command_key_bytes=RUNTIME_SEED,
+            provisioner_key_bytes=RUNTIME_SEED,
+            liveness_supervisor=FirmwareLivenessSupervisor(),
+            liveness_table=None,
+        )
+
+
+def test_the_approval_builder_refuses_the_runtime_key_as_provisioner() -> None:
+    from ori.security.firmware.commands import build_provisioning_approval_bytes
+
+    runtime_b64 = base64.b64encode(
+        FirmwareCommandSigner(
+            store=None, private_key_bytes=RUNTIME_SEED
+        ).public_key_bytes()
+    ).decode("ascii")
+    with pytest.raises(FirmwareCommandError, match="must differ"):
+        build_provisioning_approval_bytes(
+            capability_hash="sha256:" + "ab" * 32,
+            device_id=DEVICE,
+            posture="sealed_flash",
+            public_key_b64=TELEMETRY_VECTORS["public_key_b64"],
+            runtime_public_key_b64=runtime_b64,
+            provisioner_private_key_bytes=RUNTIME_SEED,
+        )
+
+
+def test_the_provisioner_cli_refuses_one_seed_under_two_names(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import secrets
+
+    from ori.firmware_provisioner import main
+
+    # A fresh seed: a published test seed is refused before the key check.
+    seed = base64.b64encode(secrets.token_bytes(32)).decode("ascii")
+    (tmp_path / "provisioner.seed").write_text(seed)
+    (tmp_path / "runtime.seed").write_text(seed)
+    code = main(
+        [
+            "prepare-approval",
+            "--db",
+            str(tmp_path / "state.db"),
+            "--device-id",
+            DEVICE,
+            "--provisioner-seed",
+            str(tmp_path / "provisioner.seed"),
+            "--runtime-command-seed",
+            str(tmp_path / "runtime.seed"),
+        ]
+    )
+    assert code == 2
+    assert "must differ" in capsys.readouterr().err
+
+
+# --- Stored manifests are held to the declaration rule too ------------------
+
+_MANIFEST_CORPUS = json.loads(
+    (
+        Path(__file__).parent.parent
+        / "vectors"
+        / "firmware_telemetry"
+        / "manifest-vectors-v2.json"
+    ).read_text()
+)
+_DECLARATION_REFUSALS = [
+    c
+    for c in _MANIFEST_CORPUS["reject_cases"]
+    if c["reason"] == "invalid_runtime_key_domains"
+]
+
+
+@pytest.mark.parametrize("case", _DECLARATION_REFUSALS, ids=lambda c: c["name"])
+def test_the_stored_policy_refuses_every_invalid_declaration(
+    case: dict[str, Any],
+) -> None:
+    from ori.security.firmware.telemetry import (
+        FirmwareVerificationError,
+        validate_manifest_policy,
+    )
+
+    with pytest.raises(FirmwareVerificationError) as refused:
+        validate_manifest_policy(case["message"]["manifest"])
+    assert refused.value.code == "invalid_runtime_key_domains"
+
+
+def test_the_stored_policy_revision_names_the_declaration_rule() -> None:
+    from ori.security.firmware.telemetry import MANIFEST_POLICY_REVISION
+
+    assert "runtime-key-domains" in MANIFEST_POLICY_REVISION
+
+
+async def test_a_retained_candidate_with_an_invalid_declaration_is_not_promoted(
+    store: StateStore,
+) -> None:
+    """Stored before this rule, as an earlier verifier admitted it."""
+    from ori.security.firmware.telemetry import FirmwareVerificationError
+
+    case = next(c for c in _DECLARATION_REFUSALS if c["name"].endswith("_padded"))
+    manifest = case["message"]["manifest"]
+    gate = FirmwareTelemetryGate(store)
+    outcome = await store.upsert_firmware_device_anchor(
+        device_id=manifest["device_id"],
+        public_key_b64=manifest["public_key_b64"],
+        posture=manifest["posture"],
+        capability_hash=case["message"]["manifest_hash"],
+        board_profile=manifest["board_profile"],
+        manifest_json=json.dumps(manifest, sort_keys=True, separators=(",", ":")),
+        channel_map_json="{}",
+    )
+    assert outcome not in ("refused_revoked", "refused_key_change")
+    with pytest.raises(FirmwareVerificationError) as refused:
+        await gate.approve_device(manifest["device_id"], actor="op", reason="test")
+    assert refused.value.code == "invalid_runtime_key_domains"
+
+
+# --- A candidate is reported as a candidate, the active manifest as active ---
+
+
+def _warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+
+
+async def test_an_undeclared_candidate_does_not_report_the_active_one_unavailable(
+    store: StateStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    await _provision(store, declaring_message(SEALED))
+    gate = FirmwareTelemetryGate(store)
+    later = dict(SEALED, firmware_version="0.9.9")
+    case_message = _bare_message()
+    from tests.firmware.test_telemetry import signed_manifest_for_key
+
+    del later, case_message
+    from tests.firmware.declaring import _SEED
+
+    candidate = signed_manifest_for_key(
+        _SEED,
+        device_id=DEVICE,
+        firmware_version="0.9.9",
+        posture="sealed_flash",
+        secure_boot_enabled=True,
+        flash_encryption_enabled=True,
+        key_storage="efuse_derived",
+    )
+    with caplog.at_level(logging.WARNING):
+        await gate.register_device(
+            device_id=DEVICE,
+            public_key_b64=TELEMETRY_VECTORS["public_key_b64"],
+            posture="sealed_flash",
+            manifest_message=candidate,
+        )
+    said = _warnings(caplog)
+    assert any("candidate" in m and DEVICE in m for m in said)
+    assert not any("active manifest" in m for m in said)
+    # The active manifest still declares, so a command is still signed.
+    signer = FirmwareCommandSigner(store, RUNTIME_SEED)
+    await signer.sign_command(device_id=DEVICE, action="relay_open", channel="relay0")
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        assert await gate.approve_device(DEVICE, actor="op", reason="promote")
+    assert any("active manifest" in m and DEVICE in m for m in _warnings(caplog))
+
+
+async def test_promoting_a_declaring_candidate_reports_nothing(
+    store: StateStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    await _provision(store, _bare_message())
+    gate = FirmwareTelemetryGate(store)
+    from tests.firmware.declaring import _SEED
+    from tests.firmware.test_telemetry import signed_manifest_for_key
+
+    candidate = signed_manifest_for_key(
+        _SEED,
+        device_id=DEVICE,
+        firmware_version="0.9.9",
+        posture="sealed_flash",
+        secure_boot_enabled=True,
+        flash_encryption_enabled=True,
+        key_storage="efuse_derived",
+        runtime_key_domains="firmware-commands/v2",
+    )
+    await gate.register_device(
+        device_id=DEVICE,
+        public_key_b64=TELEMETRY_VECTORS["public_key_b64"],
+        posture="sealed_flash",
+        manifest_message=candidate,
+    )
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        assert await gate.approve_device(DEVICE, actor="op", reason="promote")
+    assert not any("runtime_key_domains" in m for m in _warnings(caplog))

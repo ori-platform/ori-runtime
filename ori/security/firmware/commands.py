@@ -162,6 +162,13 @@ def _build_approval_object_bytes(
     ).encode("utf-8")
 
 
+def _raw_public_b64(key: Any) -> str:
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+    raw = key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    return base64.b64encode(raw).decode("ascii")
+
+
 def build_provisioning_approval_bytes(
     *,
     capability_hash: str,
@@ -192,9 +199,16 @@ def build_provisioning_approval_bytes(
         public_key_b64=public_key_b64,
         runtime_public_key_b64=runtime_public_key_b64,
     )
-    signature = Ed25519PrivateKey.from_private_bytes(
-        provisioner_private_key_bytes
-    ).sign(approval)
+    provisioner = Ed25519PrivateKey.from_private_bytes(provisioner_private_key_bytes)
+    # The runtime command key signs only the two domain preimages of
+    # firmware-commands/v2. An approval is signed over its bare bytes by the
+    # provisioning authority, so the two keys can never be one.
+    if _raw_public_b64(provisioner) == runtime_public_key_b64:
+        raise FirmwareCommandError(
+            "the provisioning authority key and the runtime command key are the "
+            "same key; they must differ"
+        )
+    signature = provisioner.sign(approval)
     sig_b64 = base64.b64encode(signature).decode("ascii")
     return (
         b'{"approval":'

@@ -507,6 +507,9 @@ EGRESS_CALLEES = frozenset(
         "declares_signing_domains",
         # A read of the registry for the startup report; it publishes nothing.
         "list_firmware_device_manifests",
+        # Derives a key's public half to refuse one key for two purposes; it
+        # signs and publishes nothing.
+        "_raw_public_b64",
         "tuple",
     }
 )

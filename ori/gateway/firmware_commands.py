@@ -274,6 +274,13 @@ class FirmwareCommandService:
             raise FirmwareCommandError(
                 "provisioner key must be 32 raw Ed25519 seed bytes"
             )
+        if provisioner_key_bytes == runtime_command_key_bytes:
+            # The runtime command key signs only the two domain preimages; a
+            # provisioning approval is signed over its bare bytes.
+            raise FirmwareCommandError(
+                "the provisioning authority key and the runtime command key are "
+                "the same key; they must differ"
+            )
         self._provisioner_key_bytes = provisioner_key_bytes
 
     async def report_undeclared_devices(self) -> tuple[str, ...]:
