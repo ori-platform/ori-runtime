@@ -51,6 +51,7 @@ from ori.security.firmware.liveness import (
     LIVENESS_PUBLISH_INTERVAL_S,
     MAX_LIVENESS_PUBLISH_INTERVAL_S,
     FirmwareLivenessError,
+    SigningDomainsUndeclaredError,
 )
 
 logger = logging.getLogger(__name__)
@@ -91,7 +92,8 @@ class TickResult:
         """A tick that owed publications and delivered none.
 
         Refusals do not count as owed: a refused device is one this runtime
-        is no longer supervising, and it is supposed to lapse. What matters
+        is no longer supervising, or one whose manifest does not declare the
+        signing domains, and either is supposed to lapse. What matters
         is having devices to reach and reaching none of them.
         """
         return self.failed > 0 and self.sent == 0
@@ -200,6 +202,7 @@ class FirmwareLivenessScheduler:
         self._last_tick_error: str = ""
         # device_id -> monotonic time of its last successful publication.
         self._last_device_success: dict[str, float] = {}
+        self._undeclared_reported: set[str] = set()
 
     @property
     def interval_s(self) -> float:
@@ -351,6 +354,19 @@ class FirmwareLivenessScheduler:
                 ),
                 timeout=self._per_device_timeout_s,
             )
+        except SigningDomainsUndeclaredError:
+            # Supervised, but its manifest declares no domain this runtime
+            # signs in: it receives no liveness and lapses. Said once per
+            # device, since it repeats every tick until the manifest changes.
+            if device.device_id not in self._undeclared_reported:
+                self._undeclared_reported.add(device.device_id)
+                logger.warning(
+                    "[firmware-liveness] %s does not declare runtime_key_domains; "
+                    "no liveness is published to it and it will report this "
+                    "runtime unreachable",
+                    device.device_id,
+                )
+            return "refused"
         except FirmwareLivenessError:
             # Supervision ended between the snapshot and the signature, or
             # the counter is exhausted. Refusing is the mechanism working:
@@ -431,8 +447,9 @@ class FirmwareLivenessScheduler:
             if outcome == "sent":
                 self._last_device_success[device.device_id] = now
             elif outcome == "refused":
-                # No longer supervised, so it is meant to lapse. Keeping it
-                # would report a correctly-expiring device as a failure.
+                # No longer supervised, or declaring no signing domain, so it is
+                # meant to lapse. Keeping it would report a correctly-expiring
+                # device as a failure.
                 self._last_device_success.pop(device.device_id, None)
                 supervised_ids.discard(device.device_id)
             elif device.device_id not in self._last_device_success:

@@ -110,6 +110,14 @@ class FirmwareLivenessError(ValueError):
     """A liveness message that must not be signed."""
 
 
+class SigningDomainsUndeclaredError(FirmwareLivenessError):
+    """The device's accepted manifest does not declare runtime_key_domains.
+
+    Unlike a lapsed supervision, the device may still be sending; it simply
+    verifies in no domain this runtime signs in, so it receives no liveness.
+    """
+
+
 @dataclass(frozen=True)
 class SupervisedDevice:
     """One supervised device, with everything signing needs.
@@ -436,7 +444,7 @@ class FirmwareLivenessSigner:
         if not isinstance(row, dict) or not declares_signing_domains(
             row.get("manifest")
         ):
-            raise FirmwareLivenessError(
+            raise SigningDomainsUndeclaredError(
                 f"{device_id}: does not declare runtime_key_domains; no liveness "
                 "is signed for it"
             )

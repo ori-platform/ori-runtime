@@ -3,10 +3,10 @@
 
 """Runtime command signing against the shared golden command vectors.
 
-The vectors in tests/fixtures/firmware_command_vectors.json are shared
-with ori-edge-firmware, whose C verifier accepts exactly these bytes.
-This signer must reproduce them byte-for-byte; a divergence means
-commands the device will refuse.
+The vectors are the firmware-commands/v2 command corpus vendored from
+ori-specs, which the firmware verifier also consumes. This signer must
+reproduce them byte for byte; a divergence means commands the device
+will refuse.
 """
 
 from __future__ import annotations

@@ -3,8 +3,10 @@
 
 """Runtime-side signing of inbound firmware commands.
 
-Implements the producer half of ``ori-specs/firmware-commands/v1.md``:
-one fixed byte grammar, signed with the runtime command key. The
+Implements the producer half of ``ori-specs/firmware-commands/v2.md``:
+one fixed byte grammar, signed with the runtime command key in the command
+signing domain (``ori.firmware_command.v2``, a NUL, the object bytes), and
+only for a device whose accepted manifest declares ``runtime_key_domains``. The
 device verifier accepts exactly this canonical form and nothing else,
 so this module builds the bytes directly — no JSON library, because the
 contract is the exact byte sequence, not "equivalent JSON".
@@ -26,10 +28,11 @@ refusal, and not when nothing came back. Nothing here or in the egress
 service retries. A fresh Tier D attempt under ``safety-profile/v1`` is a new
 command, and no firmware-commanded zone exists in this runtime to make one.
 
-The shared command and provisioning-approval golden vectors
-(``tests/fixtures/firmware_command_vectors.json`` and
-``tests/fixtures/firmware_provisioning_approval_vectors.json``) pin the
-runtime's signed bytes against the C verifier in the firmware project.
+The command corpus vendored from ori-specs
+(``tests/vectors/firmware_commands/command-vectors-v2.json``) and the
+provisioning-approval vectors
+(``tests/fixtures/firmware_provisioning_approval_vectors.json``) pin the
+runtime's signed bytes.
 """
 
 from __future__ import annotations

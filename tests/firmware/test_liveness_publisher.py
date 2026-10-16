@@ -899,3 +899,27 @@ async def test_an_orderly_stop_holds_no_liveness_condition() -> None:
     stopped = scheduler.health()
     assert stopped["critical"] is False
     assert stopped["degraded"] is False
+
+
+async def test_an_undeclared_device_is_named_once_and_lapses(caplog) -> None:
+    """Refused every tick, counted as a refusal, said once at WARNING."""
+    import logging
+
+    from ori.security.firmware.liveness import SigningDomainsUndeclaredError
+
+    service = _FakeService(
+        [_device("ori-fw-a"), _device("ori-fw-b")],
+        fail={"ori-fw-a": SigningDomainsUndeclaredError("ori-fw-a: undeclared")},
+    )
+    scheduler = FirmwareLivenessScheduler(service)
+    with caplog.at_level(logging.WARNING):
+        first = await scheduler.publish_once()
+        second = await scheduler.publish_once()
+    assert (first.refused, first.failed, first.sent) == (1, 0, 1)
+    assert (second.refused, second.failed, second.sent) == (1, 0, 1)
+    named = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING and "ori-fw-a" in r.getMessage()
+    ]
+    assert len(named) == 1

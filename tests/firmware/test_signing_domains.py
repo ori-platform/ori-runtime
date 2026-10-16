@@ -236,3 +236,33 @@ async def test_an_unreadable_registry_is_reported_not_ignored(
     with caplog.at_level(logging.ERROR):
         assert await _service(store).report_undeclared_devices() == ()
     assert any("undeclared signing domains" in r.getMessage() for r in caplog.records)
+
+
+async def test_reprovisioning_with_an_undeclared_manifest_says_so(
+    store: StateStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    from tests.firmware.test_telemetry import signed_manifest_for_key
+
+    await _provision(store, declaring_message(SEALED))
+    rotated = signed_manifest_for_key(
+        bytes([0x37]) * 32,
+        device_id=DEVICE,
+        posture="sealed_flash",
+        secure_boot_enabled=True,
+        flash_encryption_enabled=True,
+        key_storage="efuse_derived",
+    )
+    with caplog.at_level(logging.WARNING):
+        await FirmwareTelemetryGate(store).reprovision_device(
+            device_id=DEVICE,
+            public_key_b64=rotated["public_key_b64"],
+            posture="sealed_flash",
+            manifest_message=rotated,
+            actor="op",
+            reason="rotation",
+        )
+    assert any(
+        "runtime_key_domains" in r.getMessage() and DEVICE in r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.WARNING
+    )
