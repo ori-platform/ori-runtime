@@ -29,6 +29,7 @@ from ori.security.firmware.telemetry import (
     verify_fault_message,
 )
 from ori.state.store import StateStore
+from tests.firmware.declaring import fault_under
 from tests.firmware.test_command_authority import _last_cmd_seq
 from tests.firmware.test_command_egress import (
     PROVISIONER_SEED,
@@ -218,8 +219,13 @@ async def test_a_rate_limited_refusal_is_recorded_and_nothing_is_reissued(
             device_id=device_id, action="relay_open", channel="relay0"
         )
         refusal = CASES["v2_command_rejected_rate_limited"]
+        # The device signs its fault under the manifest it declared, the one
+        # the command was signed against.
+        row = await store.get_firmware_device(device_id)
+        assert row is not None
+        pinned = row["capability_hash"]
         verification = await FirmwareTelemetryGate(store).ingest_fault(
-            message(refusal), received_at_ms=1
+            fault_under(message(refusal), pinned), received_at_ms=1
         )
         # Nothing left running could publish later: a delayed retry is a task,
         # and both operations have returned, so any task still alive is one.
@@ -495,6 +501,13 @@ EGRESS_CALLEES = frozenset(
         "warning",
         # A frozen record of what one interval signed; it publishes nothing.
         "LivenessPair",
+        # The signing-domain preimage and the manifest declaration check:
+        # pure functions of their bytes, publishing nothing.
+        "command_preimage",
+        "declares_signing_domains",
+        # A read of the registry for the startup report; it publishes nothing.
+        "list_firmware_device_manifests",
+        "tuple",
     }
 )
 

@@ -514,6 +514,7 @@ async def _rotate_key(gate: FirmwareTelemetryGate) -> None:
         secure_boot_enabled=True,
         flash_encryption_enabled=True,
         key_storage="efuse_derived",
+        runtime_key_domains="firmware-commands/v2",
     )
     await gate.reprovision_device(
         device_id=SEALED_DEVICE,
@@ -739,6 +740,7 @@ async def _promote_same_key_manifest(gate: FirmwareTelemetryGate) -> None:
         secure_boot_enabled=True,
         flash_encryption_enabled=True,
         key_storage="efuse_derived",
+        runtime_key_domains="firmware-commands/v2",
     )
     await gate.register_device(
         device_id=SEALED_DEVICE,

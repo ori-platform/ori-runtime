@@ -6323,6 +6323,19 @@ class StateStore:
     async def get_firmware_device(self, device_id: str) -> dict | None:
         return await self._run_read(self._get_firmware_device_sync, device_id)
 
+    async def list_firmware_device_manifests(self) -> list[tuple[str, Any]]:
+        """Each unrevoked registered device with its accepted manifest, by device_id."""
+        return await self._run_read(self._list_firmware_device_manifests_sync)
+
+    def _list_firmware_device_manifests_sync(
+        self, conn: sqlite3.Connection
+    ) -> list[tuple[str, Any]]:
+        rows = conn.execute(
+            "SELECT device_id, manifest_json FROM firmware_device_registry "
+            "WHERE revoked = 0 ORDER BY device_id"
+        ).fetchall()
+        return [(str(row[0]), json.loads(row[1])) for row in rows]
+
     def _get_firmware_device_sync(
         self, conn: sqlite3.Connection, device_id: str
     ) -> dict | None:

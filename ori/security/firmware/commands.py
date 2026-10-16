@@ -39,6 +39,10 @@ import re
 from typing import Any, cast
 
 from ori.security.ed25519_keys import refused_public_key_clause
+from ori.security.firmware.signing_domains import (
+    command_preimage,
+    declares_signing_domains,
+)
 
 __all__ = [
     "FirmwareCommandSigner",
@@ -238,10 +242,10 @@ class FirmwareCommandSigner:
         return self._key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
 
     def sign_command_bytes(self, command: bytes) -> bytes:
-        """Wire message for pre-built command bytes (vector/test path)."""
+        """Wire message for pre-built command bytes, signed in the command domain."""
         import base64
 
-        signature = self._key.sign(command)
+        signature = self._key.sign(command_preimage(command))
         sig_b64 = base64.b64encode(signature).decode("ascii")
         return (
             b'{"command":'
@@ -302,6 +306,15 @@ class FirmwareCommandSigner:
             raise FirmwareCommandError(
                 f"manifest does not grant runtime_commanded authority for "
                 f"({action!r}, {channel!r}) on device {device_id!r}"
+            )
+        # A device that does not declare the signing domains would refuse a
+        # command signed in them, and nothing else is ever signed: its
+        # runtime_commanded actions are unavailable, and the refusal comes
+        # before a sequence is spent.
+        if not declares_signing_domains(row.get("manifest")):
+            raise FirmwareCommandError(
+                f"device {device_id!r} does not declare runtime_key_domains; its "
+                "runtime_commanded actions are unavailable and nothing was signed"
             )
         # The allocation re-checks everything above in its own commit, so a
         # revocation, rotation or promotion that lands meanwhile stops it.

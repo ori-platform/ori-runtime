@@ -47,6 +47,7 @@ from ori.security.firmware.controller_profiles import (
     measurement_in_range,
 )
 from ori.security.firmware.reading_age import ReadingAgeTracker
+from ori.security.firmware.signing_domains import declares_signing_domains
 from ori.security.firmware.telemetry import (
     ALARM_WORD_SENSOR_TYPE,
     ERR_BOOT_ROLLBACK,
@@ -73,6 +74,18 @@ from ori.security.firmware.telemetry import (
 from ori.state.store import FIRMWARE_ANCHOR_COLUMNS
 
 logger = logging.getLogger(__name__)
+
+
+def _warn_if_undeclared(device_id: str, manifest: Any) -> None:
+    """Say so when a manifest is accepted that leaves runtime_commanded unavailable."""
+    if not declares_signing_domains(manifest):
+        logger.warning(
+            "firmware device %r: manifest does not declare runtime_key_domains; "
+            "no command or liveness is signed for it and its runtime_commanded "
+            "actions are unavailable",
+            device_id,
+        )
+
 
 __all__ = ["FirmwareTelemetryGate"]
 
@@ -286,6 +299,7 @@ class FirmwareTelemetryGate:
                 "independent identity confirmation",
             )
 
+        _warn_if_undeclared(device_id, manifest)
         if outcome == "pending_manifest_epoch":
             logger.info(
                 "firmware device %r published a new manifest epoch; stored as a "
@@ -446,6 +460,7 @@ class FirmwareTelemetryGate:
                 "be the one rotated away from because it was compromised, so "
                 "returning to it would make rotation reversible",
             )
+        _warn_if_undeclared(device_id, manifest)
         logger.info(
             "firmware device %r re-provisioned with a new key; pending promotion",
             device_id,

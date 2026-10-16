@@ -644,7 +644,9 @@ START_HOLDER_ATTRIBUTES = (
     "_firmware_command_publisher",
     "_firmware_liveness_scheduler",
 )
-START_LIFECYCLE_METHODS = ("connect", "serve_until")
+# report_undeclared_devices reads the registry and logs; it signs nothing,
+# publishes nothing, and is awaited in start rather than handed anywhere.
+START_LIFECYCLE_METHODS = ("connect", "serve_until", "report_undeclared_devices")
 
 
 #: How a reading says it came from firmware: the keys the telemetry gate sets on
@@ -2739,6 +2741,28 @@ def test_every_firmware_attribute_of_the_runtime_is_named() -> None:
     )
     stale = sorted(set(NOT_HOLDERS) - stored)
     assert not stale, f"NOT_HOLDERS names attributes that no longer exist: {stale}"
+
+
+@pytest.fixture
+def startup_reports(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Records each startup report, installed before the probe builds a runtime."""
+    calls: list[int] = []
+    original = FirmwareCommandService.report_undeclared_devices
+
+    async def recorded(self: FirmwareCommandService) -> tuple[str, ...]:
+        calls.append(1)
+        return await original(self)
+
+    monkeypatch.setattr(FirmwareCommandService, "report_undeclared_devices", recorded)
+    return calls
+
+
+async def test_start_reports_undeclared_devices_once(
+    startup_reports: list[int], probe: _Probe
+) -> None:
+    """A manifest held before adopting the signing domains is reported at start."""
+    assert probe.runtime._firmware_command_service is not None
+    assert startup_reports == [1]
 
 
 def test_start_holds_the_service_only_in_its_lifecycle_bindings() -> None:

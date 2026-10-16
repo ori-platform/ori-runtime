@@ -618,6 +618,11 @@ VECTOR_CONSUMERS = {
         "test_health_status_fold.py"
         "::test_the_storage_fault_folds_at_runtime_health_v4s_severity",
     ),
+    ("firmware_commands", "command-vectors-v2"): (
+        "firmware/test_commands.py::test_signer_reproduces_vector_bytes",
+        "firmware/test_commands.py::test_signer_never_produces_a_refused_signature",
+        "firmware/test_commands.py::test_each_signer_reproduces_only_its_own_purpose",
+    ),
     ("firmware_commands", "liveness-at-v-1-vectors-v2"): (
         "firmware/test_liveness_vectors.py"
         "::test_production_signer_reproduces_the_whole_wire_message",

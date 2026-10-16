@@ -41,6 +41,7 @@ from ori.security.firmware.liveness import (
     SupervisedDevice,
 )
 from ori.security.firmware.reading_age import LivenessTable
+from ori.security.firmware.signing_domains import declares_signing_domains
 from ori.security.published_test_keys import is_published_seed
 
 logger = logging.getLogger(__name__)
@@ -274,6 +275,34 @@ class FirmwareCommandService:
                 "provisioner key must be 32 raw Ed25519 seed bytes"
             )
         self._provisioner_key_bytes = provisioner_key_bytes
+
+    async def report_undeclared_devices(self) -> tuple[str, ...]:
+        """Warn for every held device whose manifest does not declare the domains.
+
+        Their runtime_commanded actions are unavailable and nothing is signed
+        for them. A store that cannot list devices is reported, not ignored.
+        """
+        try:
+            manifests = await self._store.list_firmware_device_manifests()
+        except Exception:
+            logger.exception(
+                "[firmware-commands] could not read device manifests to report "
+                "undeclared signing domains"
+            )
+            return ()
+        undeclared = tuple(
+            device_id
+            for device_id, manifest in manifests
+            if not declares_signing_domains(manifest)
+        )
+        for device_id in undeclared:
+            logger.warning(
+                "[firmware-commands] device %r does not declare runtime_key_domains; "
+                "no command or liveness is signed for it and its runtime_commanded "
+                "actions are unavailable",
+                device_id,
+            )
+        return undeclared
 
     async def publish_provisioning_approval(self, device_id: str) -> bytes:
         row = await self._require_approved_device(device_id)

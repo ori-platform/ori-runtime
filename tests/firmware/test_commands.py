@@ -23,11 +23,21 @@ from ori.security.firmware.commands import (
     build_command_bytes,
 )
 from ori.security.firmware.ingest import FirmwareTelemetryGate
+from ori.security.firmware.liveness import (
+    FirmwareLivenessSigner,
+    FirmwareLivenessSupervisor,
+)
+from ori.security.firmware.signing_domains import command_preimage
 from ori.state.store import FIRMWARE_ANCHOR_COLUMNS, StateStore
+from tests.firmware.declaring import declaring_message
 
+# The vendored firmware-commands/v2 command corpus, Signing Domains.
 VECTORS = json.loads(
     (
-        Path(__file__).parent.parent / "fixtures" / "firmware_command_vectors.json"
+        Path(__file__).parent.parent
+        / "vectors"
+        / "firmware_commands"
+        / "command-vectors-v2.json"
     ).read_text()
 )
 RUNTIME_SEED = bytes.fromhex(VECTORS["runtime_test_seed_hex"])
@@ -57,9 +67,36 @@ class TestGoldenCommandVectors:
             device_id=i["device_id"],
         )
         assert command.hex() == case["command_hex"]
+        assert command_preimage(command).hex() == case["preimage_hex"]
         message = signer.sign_command_bytes(command)
         # Ed25519 is deterministic: the whole wire message is pinned.
         assert message.hex() == case["message_hex"]
+
+    @pytest.mark.parametrize("case", VECTORS["reject_cases"], ids=lambda c: c["name"])
+    def test_signer_never_produces_a_refused_signature(self, case: dict) -> None:
+        """Each refusal is a real signature in a form the device refuses; the
+        signer's message over the same bytes is never it."""
+        signer = FirmwareCommandSigner(store=None, private_key_bytes=RUNTIME_SEED)
+        message = signer.sign_command_bytes(bytes.fromhex(case["command_hex"]))
+        assert message.hex() != case["message_hex"]
+        assert case["signature_b64"].encode() not in message
+
+    @pytest.mark.parametrize("entry", VECTORS["cross_purpose"], ids=lambda e: e["name"])
+    def test_each_signer_reproduces_only_its_own_purpose(self, entry: dict) -> None:
+        """Identical bytes, three signatures: each signer makes its own and no other."""
+        body = bytes.fromhex(entry["object_hex"])
+        if entry["purpose"] == "command":
+            wire = FirmwareCommandSigner(
+                store=None, private_key_bytes=RUNTIME_SEED
+            ).sign_command_bytes(body)
+        else:
+            wire = FirmwareLivenessSigner(
+                None, RUNTIME_SEED, supervisor=FirmwareLivenessSupervisor()
+            ).sign_liveness_bytes(body)
+        signature = wire.rsplit(b'"ed25519:', 1)[1][:-2].decode()
+        assert signature == entry["signatures"][entry["purpose"]]
+        others = set(entry["signatures"]) - {entry["purpose"]}
+        assert all(signature != entry["signatures"][o] for o in others)
 
 
 class TestFailClosedBuild:
@@ -104,12 +141,8 @@ async def store(tmp_path):
 
 
 def manifest_message(case_name: str) -> dict:
-    case = MANIFEST_CASES[case_name]
-    return {
-        "manifest": case["input"],
-        "manifest_hash": "sha256:" + case["canonical_sha256_hex"],
-        "signature": "ed25519:" + case["signature_b64"],
-    }
+    """The fixture manifest, declaring the runtime key's signing domains."""
+    return declaring_message(MANIFEST_CASES[case_name]["input"])
 
 
 async def provision(store) -> str:

@@ -36,7 +36,7 @@ VECTOR_PATH = (
 )
 # The digest firmware-commands/v2 Golden vectors pins for this corpus.
 SPEC_DECLARED_SHA256 = (
-    "21a76aa7367acad1c0910625a01ee89303c031541228dc2c38356cdf4bc39632"
+    "456efbd957fc53ebc71087593d8ed96f7312a5a3b8cb3ed419d21944e3d7b98e"
 )
 VECTORS = json.loads(VECTOR_PATH.read_text())
 SEED = bytes.fromhex(VECTORS["runtime_test_seed_hex"])
@@ -75,6 +75,13 @@ DEVICE_ONLY = {
     "reject_v2_wrong_boot",
     "reject_v2_manifest_mismatch",
     "reject_v2_rogue_key",
+}
+# Real runtime-key signatures in a form the device refuses: the object alone,
+# the command domain, the liveness domain with no NUL. The signer never makes them.
+SIGNER_NEVER_PRODUCES = {
+    "reject_v2_signed_over_object_alone",
+    "reject_v2_signed_in_command_domain",
+    "reject_v2_liveness_domain_without_nul",
 }
 
 
@@ -132,8 +139,31 @@ def test_every_refusal_is_triaged_exactly() -> None:
     }
     transport = {c["name"] for c in VECTORS["transport_reject_cases"]}
     precedence = {c["name"] for c in VECTORS["precedence_cases"]}
-    assert refusals == BUILDER_REFUSES | DEVICE_ONLY | transport | precedence
+    assert refusals == (
+        BUILDER_REFUSES | DEVICE_ONLY | SIGNER_NEVER_PRODUCES | transport | precedence
+    )
     assert not BUILDER_REFUSES & DEVICE_ONLY
+    assert not SIGNER_NEVER_PRODUCES & (BUILDER_REFUSES | DEVICE_ONLY)
+
+
+@pytest.mark.parametrize("name", sorted(SIGNER_NEVER_PRODUCES))
+def test_the_signer_never_signs_a_refused_form(name: str) -> None:
+    case = next(c for c in VECTORS["reject_cases"] if c["name"] == name)
+    fields = case["input"]
+    signer = _signer(
+        table=_table(),
+        nonce_source=lambda: bytes.fromhex(fields["nonce"]),
+        clock=lambda: 5,
+    )
+    message = signer.sign_liveness_v2_bytes(
+        device_id=fields["device_id"],
+        boot_id=fields["boot_id"],
+        capability_hash=fields["capability_hash"],
+        runtime_seq=fields["runtime_seq"],
+    )
+    assert bytes.fromhex(case["liveness_hex"]) in message
+    assert message.hex() != case["message_hex"]
+    assert case["signature_b64"].encode() not in message
 
 
 @pytest.mark.parametrize("name", sorted(BUILDER_REFUSES))
@@ -222,6 +252,12 @@ class _Allocator:
     def __init__(self, *, fail_from: int | None = None) -> None:
         self.next = 10
         self.fail_from = fail_from
+
+    async def get_firmware_device(self, device_id: str) -> dict:
+        return {
+            "device_id": device_id,
+            "manifest": {"runtime_key_domains": "firmware-commands/v2"},
+        }
 
     async def allocate_firmware_runtime_seq(
         self, device_id: str, *, capability_hash: str

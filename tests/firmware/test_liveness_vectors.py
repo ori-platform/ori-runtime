@@ -33,6 +33,10 @@ from ori.security.firmware.liveness import (
     FirmwareLivenessSupervisor,
     build_liveness_bytes,
 )
+from ori.security.firmware.signing_domains import (
+    command_preimage,
+    liveness_preimage,
+)
 
 VECTOR_PATH = (
     Path(__file__).parent.parent / "fixtures" / "firmware_liveness_vectors.json"
@@ -49,7 +53,7 @@ VECTOR_PATH = (
 # the artifact in the contract repo is also what lets a reviewer ratify
 # the cases rather than a hexadecimal number.
 SPEC_DECLARED_SHA256 = (
-    "a12c31346e9d27f9ba7e37f660e37ffd339ab2f3e245563521dfb0d967fb74ed"
+    "0967d6fb5740ebb2e29cc2d8113eb60ac7b0337277d2100fce8906b811794cb2"
 )
 
 VECTORS = json.loads(VECTOR_PATH.read_text())
@@ -84,6 +88,14 @@ RUNTIME_UNEXECUTED_REJECT_CASES = {
     "reject_missing_field",
     "reject_malformed_signature",
     "reject_signature_wrong_length",
+}
+
+# Signatures over the right bytes in a form the runtime must never sign:
+# the object alone, the command domain, the liveness domain with no NUL.
+SIGNER_NEVER_PRODUCES = {
+    "reject_signed_over_object_alone",
+    "reject_signed_in_command_domain",
+    "reject_liveness_domain_without_nul",
 }
 
 # The producer counterpart: values the builder must refuse outright.
@@ -195,12 +207,17 @@ def test_signatures_detect_tampering(case) -> None:
     public = Ed25519PublicKey.from_public_bytes(
         bytes.fromhex(VECTORS["runtime_public_key_hex"])
     )
-    public.verify(signature, liveness)
+    public.verify(signature, liveness_preimage(liveness))
 
     tampered = bytearray(liveness)
     tampered[-2] ^= 0x01
     with pytest.raises(Exception):
-        public.verify(signature, bytes(tampered))
+        public.verify(signature, liveness_preimage(bytes(tampered)))
+    # Bound to its purpose: the same signature is no signature over the bare
+    # bytes or in the command domain.
+    for other in (liveness, command_preimage(liveness)):
+        with pytest.raises(Exception):
+            public.verify(signature, other)
 
 
 @pytest.mark.parametrize("case", CASES, ids=[c["name"] for c in CASES])
@@ -225,9 +242,13 @@ def test_rogue_key_is_actually_a_different_key() -> None:
 
     case = next(c for c in REJECT_CASES if c["name"] == "reject_rogue_key")
     liveness, signature = _split(case["message_hex"])
-    Ed25519PublicKey.from_public_bytes(rogue).verify(signature, liveness)
+    Ed25519PublicKey.from_public_bytes(rogue).verify(
+        signature, liveness_preimage(liveness)
+    )
     with pytest.raises(Exception):
-        Ed25519PublicKey.from_public_bytes(runtime).verify(signature, liveness)
+        Ed25519PublicKey.from_public_bytes(runtime).verify(
+            signature, liveness_preimage(liveness)
+        )
 
 
 def _split(message_hex: str) -> tuple[bytes, bytes]:
@@ -251,7 +272,9 @@ def test_reject_cases_are_exactly_partitioned() -> None:
     absorbed.
     """
     names = {c["name"] for c in REJECT_CASES}
-    declared = RUNTIME_UNEXECUTED_REJECT_CASES | BUILDER_REFUSED_CASES
+    declared = (
+        RUNTIME_UNEXECUTED_REJECT_CASES | BUILDER_REFUSED_CASES | SIGNER_NEVER_PRODUCES
+    )
 
     assert declared - names == set(), (
         f"declared cases no longer in the corpus: {declared - names}"
@@ -260,6 +283,32 @@ def test_reject_cases_are_exactly_partitioned() -> None:
         f"corpus gained reject cases nobody triaged: {names - declared}"
     )
     assert not (RUNTIME_UNEXECUTED_REJECT_CASES & BUILDER_REFUSED_CASES)
+    assert not (
+        SIGNER_NEVER_PRODUCES
+        & (RUNTIME_UNEXECUTED_REJECT_CASES | BUILDER_REFUSED_CASES)
+    )
+
+
+@pytest.mark.parametrize("name", sorted(SIGNER_NEVER_PRODUCES))
+def test_the_signer_never_signs_a_refused_form(name, signer) -> None:
+    """The production signer's message over the case's bytes is not the case's.
+
+    Each case is a real runtime-key signature over its object in a form the
+    device refuses; the signer must produce a different one, valid only in
+    the liveness domain.
+    """
+    case = next(c for c in REJECT_CASES if c["name"] == name)
+    liveness, refused = _split(case["message_hex"])
+    produced = signer.sign_liveness_bytes(liveness)
+    _, signature = _split(produced.hex())
+    assert signature != refused
+    public = Ed25519PublicKey.from_public_bytes(
+        bytes.fromhex(VECTORS["runtime_public_key_hex"])
+    )
+    public.verify(signature, liveness_preimage(liveness))
+    for other in (liveness, command_preimage(liveness)):
+        with pytest.raises(Exception):
+            public.verify(signature, other)
 
 
 def test_the_builder_refuses_what_the_device_must_refuse() -> None:
@@ -349,7 +398,7 @@ def test_binding_and_freshness_rejects_carry_a_valid_signature() -> None:
             f"leave the check unproven"
         )
         liveness, signature = _split(case["message_hex"])
-        public.verify(signature, liveness)
+        public.verify(signature, liveness_preimage(liveness))
 
     assert seen == after_signature, f"missing reasons: {after_signature - seen}"
 
@@ -390,7 +439,7 @@ def test_transport_rejects_are_otherwise_acceptable_messages() -> None:
     for case in cases:
         assert case["transport"]["retain"] is True
         liveness, signature = _split(case["message_hex"])
-        public.verify(signature, liveness)
+        public.verify(signature, liveness_preimage(liveness))
         ctx = case["verifier_context"]
         seq = int(liveness.split(b'"runtime_seq":')[1].split(b",")[0])
         assert seq > ctx["last_accepted_runtime_seq"]

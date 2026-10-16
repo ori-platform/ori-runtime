@@ -25,10 +25,14 @@ from ori.security.firmware.commands import (
 from ori.security.firmware.ingest import FirmwareTelemetryGate
 from ori.security.firmware.liveness import FirmwareLivenessSupervisor
 from ori.state.store import StateStore
+from tests.firmware.declaring import declaring_message
 
 COMMAND_VECTORS = json.loads(
     (
-        Path(__file__).parent.parent / "fixtures" / "firmware_command_vectors.json"
+        Path(__file__).parent.parent
+        / "vectors"
+        / "firmware_commands"
+        / "command-vectors-v2.json"
     ).read_text()
 )
 # The runtime seed is conformance material: it comes from the shared vector
@@ -71,12 +75,8 @@ async def store(tmp_path):
 
 
 def _manifest_message(case_name: str) -> dict:
-    case = MANIFEST_CASES[case_name]
-    return {
-        "manifest": case["input"],
-        "manifest_hash": "sha256:" + case["canonical_sha256_hex"],
-        "signature": "ed25519:" + case["signature_b64"],
-    }
+    """The fixture manifest, declaring the runtime key's signing domains."""
+    return declaring_message(MANIFEST_CASES[case_name]["input"])
 
 
 async def _register_device(store: StateStore, *, approve: bool = True) -> str:

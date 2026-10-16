@@ -23,6 +23,7 @@ from ori.security.firmware.liveness import (
     FirmwareLivenessSupervisor,
     build_liveness_bytes,
 )
+from ori.security.firmware.signing_domains import liveness_preimage
 
 DEVICE = "ori-fw-7c9f2b3a"
 HASH = "sha256:" + "a" * 64
@@ -39,6 +40,12 @@ class FakeClock:
 
     def advance(self, seconds: float) -> None:
         self.now += seconds
+
+
+# A manifest that declares the runtime key's signing domains; without it the
+# signer refuses before allocating anything.
+DECLARING_MANIFEST = {"runtime_key_domains": "firmware-commands/v2"}
+DECLARING_MANIFEST_JSON = '{"runtime_key_domains":"firmware-commands/v2"}'
 
 
 class FakeStore:
@@ -58,6 +65,11 @@ class FakeStore:
 
     def register(self, device_id: str, start: int = 0) -> None:
         self.seqs[device_id] = start
+
+    async def get_firmware_device(self, device_id: str) -> dict | None:
+        if device_id not in self.seqs:
+            return None
+        return {"device_id": device_id, "manifest": DECLARING_MANIFEST}
 
 
 # ── canonical bytes ───────────────────────────────────────────────────
@@ -213,7 +225,8 @@ async def test_signed_message_verifies_and_wraps_the_exact_bytes() -> None:
     )
     assert signed in message  # the signature covers exactly these bytes
     Ed25519PublicKey.from_public_bytes(signer.public_key_bytes()).verify(
-        base64.b64decode(obj["signature"].removeprefix("ed25519:")), signed
+        base64.b64decode(obj["signature"].removeprefix("ed25519:")),
+        liveness_preimage(signed),
     )
 
 
@@ -295,8 +308,10 @@ async def test_unknown_device_raises_rather_than_signing() -> None:
         store, SEED, supervisor=FirmwareLivenessSupervisor()
     )
     signer.supervisor.note_telemetry(device_id=DEVICE, boot_id=41, capability_hash=HASH)
-    with pytest.raises(KeyError):
+    # Refused before allocation: an unknown device declares nothing.
+    with pytest.raises(FirmwareLivenessError, match="runtime_key_domains"):
         await signer.sign_liveness(device_id=DEVICE, boot_id=41, capability_hash=HASH)
+    assert store.seqs == {}
 
 
 def test_signer_requires_a_raw_32_byte_seed() -> None:
@@ -334,10 +349,10 @@ def _register_sync(store, device_id: str) -> None:
         """
         INSERT INTO firmware_device_registry
             (device_id, public_key_b64, posture, capability_hash,
-             provisioned_at_ms, approved, anchor_epoch_id)
-        VALUES (?, 'x', 'sealed_flash', ?, 0, 1, ?)
+             provisioned_at_ms, approved, anchor_epoch_id, manifest_json)
+        VALUES (?, 'x', 'sealed_flash', ?, 0, 1, ?, ?)
         """,
-        (device_id, HASH, epoch),
+        (device_id, HASH, epoch, DECLARING_MANIFEST_JSON),
     )
     store._conn.execute(
         """

@@ -17,7 +17,6 @@ what is actually asserted.
 from __future__ import annotations
 
 import base64
-import copy
 import json
 import secrets
 from pathlib import Path
@@ -43,6 +42,7 @@ from ori.security.firmware.liveness import (
     FirmwareLivenessSupervisor,
 )
 from ori.state.store import StateStore
+from tests.firmware.declaring import declaring_message, envelope_under
 
 _RUNTIME_SEED = secrets.token_bytes(32)  # never a committed seed
 _PROVISIONER_SEED = secrets.token_bytes(32)  # distinct from the runtime key
@@ -55,24 +55,18 @@ VECTORS = json.loads(
 CASES = {case["name"]: case for case in VECTORS["cases"]}
 PUBLIC_KEY_B64 = VECTORS["public_key_b64"]
 SEALED_DEVICE = "ori-fw-7c9f2b3a"
-SEALED_HASH = "sha256:" + CASES["manifest_full_sealed"]["canonical_sha256_hex"]
+SEALED_HASH = declaring_message(CASES["manifest_full_sealed"]["input"])["manifest_hash"]
 
 
 def _telemetry_message(case_name: str) -> dict:
-    case = CASES[case_name]
-    return {
-        "envelope": copy.deepcopy(case["input"]),
-        "signature": "ed25519:" + case["signature_b64"],
-    }
+    """The fixture envelope, signed under the declaring manifest it belongs to."""
+    declared = declaring_message(CASES["manifest_full_sealed"]["input"])
+    return envelope_under(CASES[case_name]["input"], declared["manifest_hash"])
 
 
 def _manifest_message(case_name: str) -> dict:
-    case = CASES[case_name]
-    return {
-        "manifest": copy.deepcopy(case["input"]),
-        "manifest_hash": "sha256:" + case["canonical_sha256_hex"],
-        "signature": "ed25519:" + case["signature_b64"],
-    }
+    """The fixture manifest, declaring the runtime key's signing domains."""
+    return declaring_message(CASES[case_name]["input"])
 
 
 class _FakeBus:

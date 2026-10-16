@@ -1893,6 +1893,10 @@ class OriRuntime:
             self._firmware_command_publisher = publisher
             self._firmware_command_service = service
             logger.info("[runtime] MQTT firmware command egress enabled")
+            # A manifest stored before this runtime adopted the signing
+            # domains is reported at its first start, not when it is next
+            # republished or first needed.
+            await service.report_undeclared_devices()
 
             # Started only after connect(): the first tick would otherwise
             # sign a message, spend a sequence number, and fail to publish

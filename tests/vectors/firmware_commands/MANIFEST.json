@@ -1,11 +1,12 @@
 {
   "source_repository": "ori-platform/ori-specs",
   "source_path": "firmware-commands",
-  "source_commit": "8d24ed84ee04f951a79900ac4d5d75ec9eba9b70",
+  "source_commit": "4880b99a015fc063186bae1473d779a13d4a44b5",
   "contract_version": "v2",
   "note": "Vendored copies of the normative vectors. The runtime must produce and accept the bytes they describe, so they are its conformance fixtures. Digests detect a local edit; the source commit is the provenance trail.",
   "files": {
-    "liveness-at-v-1-vectors-v2.json": "a12c31346e9d27f9ba7e37f660e37ffd339ab2f3e245563521dfb0d967fb74ed",
-    "liveness-vectors-v2.json": "21a76aa7367acad1c0910625a01ee89303c031541228dc2c38356cdf4bc39632"
+    "command-vectors-v2.json": "8be782aa1848b458dd58369dd03e3ee967cff4d7dd503768a17215468f9b387d",
+    "liveness-at-v-1-vectors-v2.json": "0967d6fb5740ebb2e29cc2d8113eb60ac7b0337277d2100fce8906b811794cb2",
+    "liveness-vectors-v2.json": "456efbd957fc53ebc71087593d8ed96f7312a5a3b8cb3ed419d21944e3d7b98e"
   }
 }

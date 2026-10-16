@@ -5,6 +5,21 @@ release is cut.
 
 ## Upgrade notes
 
+- Firmware commands and runtime liveness are now signed in separate signing
+  domains (`firmware-commands/v2` Signing Domains): a command over
+  `ori.firmware_command.v2`, a NUL and its object bytes, liveness over
+  `ori.firmware_liveness.v2`, a NUL and its object bytes. Nothing the runtime
+  command key signs is over the bare bytes any longer, so a device whose
+  firmware verifies the earlier form refuses every command this release signs
+  and every liveness message it publishes. The runtime signs for a device only
+  while its accepted manifest declares `runtime_key_domains:
+  "firmware-commands/v2"` (`firmware-telemetry/v2` Runtime Key Domains); for any
+  other device it signs nothing, logs a WARNING when it accepts the manifest and
+  at each start over one it already holds, and its `runtime_commanded` actions
+  are unavailable. Upgrade device firmware to a release that verifies in the
+  domains and declares the member before relying on runtime commands or
+  liveness. A manifest whose `runtime_key_domains` is anything but that exact
+  string is refused at registration with `invalid_runtime_key_domains`.
 - A deployment's `skills[]` entry in `ori.yaml` now accepts only `name` and
   `version`, and a skill's `skill.yaml` accepts only the trigger and action
   keys the loader reads. A configuration or skill that carries any other key
