@@ -693,6 +693,16 @@ VECTOR_EXEMPTIONS = {
             "must match."
         ),
     },
+    ("gateway_api", "payload-size-v2"): {
+        "owner": "the runtime",
+        "status": "proof_pending",
+        "tracking": "ori-runtime#874",
+        "reason": (
+            "The runtime does not yet bound a payload's size before parsing, "
+            "nor build its required replies against the floor this corpus "
+            "pins. Vendored so the drift check covers the bytes it must match."
+        ),
+    },
     ("gateway_evidence_carriage", "return-path"): {
         "owner": "the site gateway",
         "status": "proof_pending",

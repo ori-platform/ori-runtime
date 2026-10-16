@@ -1,0 +1,1398 @@
+{
+  "contract": "ori-specs/gateway-api/v2.md#payload-size",
+  "version": 2,
+  "comment": "Golden vectors for gateway-api/v2 Payload Size. Build each payload from its construction and length, confirm its SHA-256, and apply the topic's maximum, or the configured maximum when one is given, before anything else: the verdict is admitted, payload_too_large, or configuration_refused for a configured maximum above the table or below the floor.",
+  "constructions": {
+    "json_object": "{\"pad\":\" then 'a' repeated then \"}",
+    "invalid_utf8": "the byte 0xFF repeated"
+  },
+  "cases": [
+    {
+      "name": "gateway_health_at_maximum",
+      "topic": "ori/gateway/health",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 16384,
+      "sha256": "2bc32546c535d7c6e1ef528b3139c41cdf1fa7c95ee08115853abc8f044f43f9",
+      "verdict": "admitted",
+      "note": "exactly the maximum"
+    },
+    {
+      "name": "gateway_health_one_over",
+      "topic": "ori/gateway/health",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 16385,
+      "sha256": "fe1bbeac62e609e3dde4879f2da7285beb2f227183ac1abbcbbded4c455ead91",
+      "verdict": "payload_too_large",
+      "note": "one byte over the maximum"
+    },
+    {
+      "name": "gateway_health_four_times",
+      "topic": "ori/gateway/health",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 65536,
+      "sha256": "29984b4001951449be60c4fd767d3d4102c3c2d38f3c6be0bf90259642ac618d",
+      "verdict": "payload_too_large",
+      "note": "refused without reading past the length"
+    },
+    {
+      "name": "gateway_health_invalid_utf8_one_over",
+      "topic": "ori/gateway/health",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": null,
+      "construction": "invalid_utf8",
+      "length": 16385,
+      "sha256": "7abfdb0169408da9f0fc88b5b531f77bd0747eabb1ec7087bc76f1af4d848aff",
+      "verdict": "payload_too_large",
+      "note": "size is decided before the Payload Member Rule's invalid_unicode"
+    },
+    {
+      "name": "gateway_health_configured_half_at",
+      "topic": "ori/gateway/health",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": 8192,
+      "construction": "json_object",
+      "length": 8192,
+      "sha256": "bfd296e8efb7cb77c12be539798691bb9ac049bbb0f67743aaa20c518b6a2ef5",
+      "verdict": "admitted",
+      "note": "a configured lower maximum admits a payload at it"
+    },
+    {
+      "name": "gateway_health_configured_half_over",
+      "topic": "ori/gateway/health",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": 8192,
+      "construction": "json_object",
+      "length": 8193,
+      "sha256": "0374e6d54cedcac12382c4bbc76f6006460ada4d79cd501cfbf6912ea6f7c39b",
+      "verdict": "payload_too_large",
+      "note": "a configured lower maximum refuses a conforming payload above it"
+    },
+    {
+      "name": "gateway_health_configured_above_table",
+      "topic": "ori/gateway/health",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": 16385,
+      "construction": "json_object",
+      "length": 16384,
+      "sha256": "2bc32546c535d7c6e1ef528b3139c41cdf1fa7c95ee08115853abc8f044f43f9",
+      "verdict": "configuration_refused",
+      "note": "configuration may lower a maximum, never raise it"
+    },
+    {
+      "name": "gateway_health_configured_below_floor",
+      "topic": "ori/gateway/health",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": 4095,
+      "construction": "json_object",
+      "length": 4095,
+      "sha256": "210260f892464ec0a18ff601a02de4c0973605cf3192a67015f3969991842af7",
+      "verdict": "configuration_refused",
+      "note": "configuration never lowers a maximum below the floor"
+    },
+    {
+      "name": "runtime_heartbeat_at_maximum",
+      "topic": "ori/{device_id}/runtime/heartbeat",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 65536,
+      "sha256": "29984b4001951449be60c4fd767d3d4102c3c2d38f3c6be0bf90259642ac618d",
+      "verdict": "admitted",
+      "note": "exactly the maximum"
+    },
+    {
+      "name": "runtime_heartbeat_one_over",
+      "topic": "ori/{device_id}/runtime/heartbeat",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 65537,
+      "sha256": "6ac2834168df7011f704be6c800fe31f187fb53da5a10b11b1e042d6d0ee73a1",
+      "verdict": "payload_too_large",
+      "note": "one byte over the maximum"
+    },
+    {
+      "name": "runtime_heartbeat_four_times",
+      "topic": "ori/{device_id}/runtime/heartbeat",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 262144,
+      "sha256": "18a17a484369bcd3e016509f7db203b92d448211128bec99b53728858b0df110",
+      "verdict": "payload_too_large",
+      "note": "refused without reading past the length"
+    },
+    {
+      "name": "runtime_heartbeat_invalid_utf8_one_over",
+      "topic": "ori/{device_id}/runtime/heartbeat",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": null,
+      "construction": "invalid_utf8",
+      "length": 65537,
+      "sha256": "ef9993e97e36b66b65b16a741da437aecddffa22185e176a49f8cfe9ecc7a07c",
+      "verdict": "payload_too_large",
+      "note": "size is decided before the Payload Member Rule's invalid_unicode"
+    },
+    {
+      "name": "runtime_heartbeat_configured_half_at",
+      "topic": "ori/{device_id}/runtime/heartbeat",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": 32768,
+      "construction": "json_object",
+      "length": 32768,
+      "sha256": "5b20358eb6d45ad57f231d859584c273c148c971edc4ae43185ddcc46cd9159c",
+      "verdict": "admitted",
+      "note": "a configured lower maximum admits a payload at it"
+    },
+    {
+      "name": "runtime_heartbeat_configured_half_over",
+      "topic": "ori/{device_id}/runtime/heartbeat",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": 32768,
+      "construction": "json_object",
+      "length": 32769,
+      "sha256": "23ef213c386a00be594c53a21cc2232a2a245a0dabb0736722b292aaa936e192",
+      "verdict": "payload_too_large",
+      "note": "a configured lower maximum refuses a conforming payload above it"
+    },
+    {
+      "name": "runtime_heartbeat_configured_above_table",
+      "topic": "ori/{device_id}/runtime/heartbeat",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": 65537,
+      "construction": "json_object",
+      "length": 65536,
+      "sha256": "29984b4001951449be60c4fd767d3d4102c3c2d38f3c6be0bf90259642ac618d",
+      "verdict": "configuration_refused",
+      "note": "configuration may lower a maximum, never raise it"
+    },
+    {
+      "name": "runtime_heartbeat_configured_below_floor",
+      "topic": "ori/{device_id}/runtime/heartbeat",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": 4095,
+      "construction": "json_object",
+      "length": 4095,
+      "sha256": "210260f892464ec0a18ff601a02de4c0973605cf3192a67015f3969991842af7",
+      "verdict": "configuration_refused",
+      "note": "configuration never lowers a maximum below the floor"
+    },
+    {
+      "name": "reasoning_request_at_maximum",
+      "topic": "ori/{device_id}/reasoning/request",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 262144,
+      "sha256": "18a17a484369bcd3e016509f7db203b92d448211128bec99b53728858b0df110",
+      "verdict": "admitted",
+      "note": "exactly the maximum"
+    },
+    {
+      "name": "reasoning_request_one_over",
+      "topic": "ori/{device_id}/reasoning/request",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 262145,
+      "sha256": "826ab7501a568478ba94582982dd564123c2ae49d550174db530f5ff1aaf38cc",
+      "verdict": "payload_too_large",
+      "note": "one byte over the maximum"
+    },
+    {
+      "name": "reasoning_request_four_times",
+      "topic": "ori/{device_id}/reasoning/request",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 1048576,
+      "sha256": "0f00198b5070cb184acf8a320bd9d958587bed862f10d5e1319d2c8e4df3cacd",
+      "verdict": "payload_too_large",
+      "note": "refused without reading past the length"
+    },
+    {
+      "name": "reasoning_request_invalid_utf8_one_over",
+      "topic": "ori/{device_id}/reasoning/request",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": null,
+      "construction": "invalid_utf8",
+      "length": 262145,
+      "sha256": "3572153d4befe766816e50b52097b45c54288a0c52bd199a9c083d788c9613e8",
+      "verdict": "payload_too_large",
+      "note": "size is decided before the Payload Member Rule's invalid_unicode"
+    },
+    {
+      "name": "reasoning_request_configured_half_at",
+      "topic": "ori/{device_id}/reasoning/request",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": 131072,
+      "construction": "json_object",
+      "length": 131072,
+      "sha256": "d701186756b2143081089e7fd73fde59321f7968ffff9bb2fd82b68c8e0307ff",
+      "verdict": "admitted",
+      "note": "a configured lower maximum admits a payload at it"
+    },
+    {
+      "name": "reasoning_request_configured_half_over",
+      "topic": "ori/{device_id}/reasoning/request",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": 131072,
+      "construction": "json_object",
+      "length": 131073,
+      "sha256": "255d3a050ed0047f6edb8034a6b918d56ba59d239ffecde71827e98ed8b1ec02",
+      "verdict": "payload_too_large",
+      "note": "a configured lower maximum refuses a conforming payload above it"
+    },
+    {
+      "name": "reasoning_request_configured_above_table",
+      "topic": "ori/{device_id}/reasoning/request",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": 262145,
+      "construction": "json_object",
+      "length": 262144,
+      "sha256": "18a17a484369bcd3e016509f7db203b92d448211128bec99b53728858b0df110",
+      "verdict": "configuration_refused",
+      "note": "configuration may lower a maximum, never raise it"
+    },
+    {
+      "name": "reasoning_request_configured_below_floor",
+      "topic": "ori/{device_id}/reasoning/request",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": 4095,
+      "construction": "json_object",
+      "length": 4095,
+      "sha256": "210260f892464ec0a18ff601a02de4c0973605cf3192a67015f3969991842af7",
+      "verdict": "configuration_refused",
+      "note": "configuration never lowers a maximum below the floor"
+    },
+    {
+      "name": "reasoning_response_at_maximum",
+      "topic": "ori/{device_id}/reasoning/response",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 262144,
+      "sha256": "18a17a484369bcd3e016509f7db203b92d448211128bec99b53728858b0df110",
+      "verdict": "admitted",
+      "note": "exactly the maximum"
+    },
+    {
+      "name": "reasoning_response_one_over",
+      "topic": "ori/{device_id}/reasoning/response",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 262145,
+      "sha256": "826ab7501a568478ba94582982dd564123c2ae49d550174db530f5ff1aaf38cc",
+      "verdict": "payload_too_large",
+      "note": "one byte over the maximum"
+    },
+    {
+      "name": "reasoning_response_four_times",
+      "topic": "ori/{device_id}/reasoning/response",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 1048576,
+      "sha256": "0f00198b5070cb184acf8a320bd9d958587bed862f10d5e1319d2c8e4df3cacd",
+      "verdict": "payload_too_large",
+      "note": "refused without reading past the length"
+    },
+    {
+      "name": "reasoning_response_invalid_utf8_one_over",
+      "topic": "ori/{device_id}/reasoning/response",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": null,
+      "construction": "invalid_utf8",
+      "length": 262145,
+      "sha256": "3572153d4befe766816e50b52097b45c54288a0c52bd199a9c083d788c9613e8",
+      "verdict": "payload_too_large",
+      "note": "size is decided before the Payload Member Rule's invalid_unicode"
+    },
+    {
+      "name": "reasoning_response_configured_half_at",
+      "topic": "ori/{device_id}/reasoning/response",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": 131072,
+      "construction": "json_object",
+      "length": 131072,
+      "sha256": "d701186756b2143081089e7fd73fde59321f7968ffff9bb2fd82b68c8e0307ff",
+      "verdict": "admitted",
+      "note": "a configured lower maximum admits a payload at it"
+    },
+    {
+      "name": "reasoning_response_configured_half_over",
+      "topic": "ori/{device_id}/reasoning/response",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": 131072,
+      "construction": "json_object",
+      "length": 131073,
+      "sha256": "255d3a050ed0047f6edb8034a6b918d56ba59d239ffecde71827e98ed8b1ec02",
+      "verdict": "payload_too_large",
+      "note": "a configured lower maximum refuses a conforming payload above it"
+    },
+    {
+      "name": "reasoning_response_configured_above_table",
+      "topic": "ori/{device_id}/reasoning/response",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": 262145,
+      "construction": "json_object",
+      "length": 262144,
+      "sha256": "18a17a484369bcd3e016509f7db203b92d448211128bec99b53728858b0df110",
+      "verdict": "configuration_refused",
+      "note": "configuration may lower a maximum, never raise it"
+    },
+    {
+      "name": "reasoning_response_configured_below_floor",
+      "topic": "ori/{device_id}/reasoning/response",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": 4095,
+      "construction": "json_object",
+      "length": 4095,
+      "sha256": "210260f892464ec0a18ff601a02de4c0973605cf3192a67015f3969991842af7",
+      "verdict": "configuration_refused",
+      "note": "configuration never lowers a maximum below the floor"
+    },
+    {
+      "name": "tier_c_enrichment_request_at_maximum",
+      "topic": "ori/{device_id}/tier_c/enrichment/request",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 262144,
+      "sha256": "18a17a484369bcd3e016509f7db203b92d448211128bec99b53728858b0df110",
+      "verdict": "admitted",
+      "note": "exactly the maximum"
+    },
+    {
+      "name": "tier_c_enrichment_request_one_over",
+      "topic": "ori/{device_id}/tier_c/enrichment/request",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 262145,
+      "sha256": "826ab7501a568478ba94582982dd564123c2ae49d550174db530f5ff1aaf38cc",
+      "verdict": "payload_too_large",
+      "note": "one byte over the maximum"
+    },
+    {
+      "name": "tier_c_enrichment_request_four_times",
+      "topic": "ori/{device_id}/tier_c/enrichment/request",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 1048576,
+      "sha256": "0f00198b5070cb184acf8a320bd9d958587bed862f10d5e1319d2c8e4df3cacd",
+      "verdict": "payload_too_large",
+      "note": "refused without reading past the length"
+    },
+    {
+      "name": "tier_c_enrichment_request_invalid_utf8_one_over",
+      "topic": "ori/{device_id}/tier_c/enrichment/request",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": null,
+      "construction": "invalid_utf8",
+      "length": 262145,
+      "sha256": "3572153d4befe766816e50b52097b45c54288a0c52bd199a9c083d788c9613e8",
+      "verdict": "payload_too_large",
+      "note": "size is decided before the Payload Member Rule's invalid_unicode"
+    },
+    {
+      "name": "tier_c_enrichment_request_configured_half_at",
+      "topic": "ori/{device_id}/tier_c/enrichment/request",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": 131072,
+      "construction": "json_object",
+      "length": 131072,
+      "sha256": "d701186756b2143081089e7fd73fde59321f7968ffff9bb2fd82b68c8e0307ff",
+      "verdict": "admitted",
+      "note": "a configured lower maximum admits a payload at it"
+    },
+    {
+      "name": "tier_c_enrichment_request_configured_half_over",
+      "topic": "ori/{device_id}/tier_c/enrichment/request",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": 131072,
+      "construction": "json_object",
+      "length": 131073,
+      "sha256": "255d3a050ed0047f6edb8034a6b918d56ba59d239ffecde71827e98ed8b1ec02",
+      "verdict": "payload_too_large",
+      "note": "a configured lower maximum refuses a conforming payload above it"
+    },
+    {
+      "name": "tier_c_enrichment_request_configured_above_table",
+      "topic": "ori/{device_id}/tier_c/enrichment/request",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": 262145,
+      "construction": "json_object",
+      "length": 262144,
+      "sha256": "18a17a484369bcd3e016509f7db203b92d448211128bec99b53728858b0df110",
+      "verdict": "configuration_refused",
+      "note": "configuration may lower a maximum, never raise it"
+    },
+    {
+      "name": "tier_c_enrichment_request_configured_below_floor",
+      "topic": "ori/{device_id}/tier_c/enrichment/request",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": 4095,
+      "construction": "json_object",
+      "length": 4095,
+      "sha256": "210260f892464ec0a18ff601a02de4c0973605cf3192a67015f3969991842af7",
+      "verdict": "configuration_refused",
+      "note": "configuration never lowers a maximum below the floor"
+    },
+    {
+      "name": "tier_c_enrichment_response_at_maximum",
+      "topic": "ori/{device_id}/tier_c/enrichment/response",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 262144,
+      "sha256": "18a17a484369bcd3e016509f7db203b92d448211128bec99b53728858b0df110",
+      "verdict": "admitted",
+      "note": "exactly the maximum"
+    },
+    {
+      "name": "tier_c_enrichment_response_one_over",
+      "topic": "ori/{device_id}/tier_c/enrichment/response",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 262145,
+      "sha256": "826ab7501a568478ba94582982dd564123c2ae49d550174db530f5ff1aaf38cc",
+      "verdict": "payload_too_large",
+      "note": "one byte over the maximum"
+    },
+    {
+      "name": "tier_c_enrichment_response_four_times",
+      "topic": "ori/{device_id}/tier_c/enrichment/response",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 1048576,
+      "sha256": "0f00198b5070cb184acf8a320bd9d958587bed862f10d5e1319d2c8e4df3cacd",
+      "verdict": "payload_too_large",
+      "note": "refused without reading past the length"
+    },
+    {
+      "name": "tier_c_enrichment_response_invalid_utf8_one_over",
+      "topic": "ori/{device_id}/tier_c/enrichment/response",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": null,
+      "construction": "invalid_utf8",
+      "length": 262145,
+      "sha256": "3572153d4befe766816e50b52097b45c54288a0c52bd199a9c083d788c9613e8",
+      "verdict": "payload_too_large",
+      "note": "size is decided before the Payload Member Rule's invalid_unicode"
+    },
+    {
+      "name": "tier_c_enrichment_response_configured_half_at",
+      "topic": "ori/{device_id}/tier_c/enrichment/response",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": 131072,
+      "construction": "json_object",
+      "length": 131072,
+      "sha256": "d701186756b2143081089e7fd73fde59321f7968ffff9bb2fd82b68c8e0307ff",
+      "verdict": "admitted",
+      "note": "a configured lower maximum admits a payload at it"
+    },
+    {
+      "name": "tier_c_enrichment_response_configured_half_over",
+      "topic": "ori/{device_id}/tier_c/enrichment/response",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": 131072,
+      "construction": "json_object",
+      "length": 131073,
+      "sha256": "255d3a050ed0047f6edb8034a6b918d56ba59d239ffecde71827e98ed8b1ec02",
+      "verdict": "payload_too_large",
+      "note": "a configured lower maximum refuses a conforming payload above it"
+    },
+    {
+      "name": "tier_c_enrichment_response_configured_above_table",
+      "topic": "ori/{device_id}/tier_c/enrichment/response",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": 262145,
+      "construction": "json_object",
+      "length": 262144,
+      "sha256": "18a17a484369bcd3e016509f7db203b92d448211128bec99b53728858b0df110",
+      "verdict": "configuration_refused",
+      "note": "configuration may lower a maximum, never raise it"
+    },
+    {
+      "name": "tier_c_enrichment_response_configured_below_floor",
+      "topic": "ori/{device_id}/tier_c/enrichment/response",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": 4095,
+      "construction": "json_object",
+      "length": 4095,
+      "sha256": "210260f892464ec0a18ff601a02de4c0973605cf3192a67015f3969991842af7",
+      "verdict": "configuration_refused",
+      "note": "configuration never lowers a maximum below the floor"
+    },
+    {
+      "name": "export_request_at_maximum",
+      "topic": "ori/{device_id}/export/request",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 16384,
+      "sha256": "2bc32546c535d7c6e1ef528b3139c41cdf1fa7c95ee08115853abc8f044f43f9",
+      "verdict": "admitted",
+      "note": "exactly the maximum"
+    },
+    {
+      "name": "export_request_one_over",
+      "topic": "ori/{device_id}/export/request",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 16385,
+      "sha256": "fe1bbeac62e609e3dde4879f2da7285beb2f227183ac1abbcbbded4c455ead91",
+      "verdict": "payload_too_large",
+      "note": "one byte over the maximum"
+    },
+    {
+      "name": "export_request_four_times",
+      "topic": "ori/{device_id}/export/request",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 65536,
+      "sha256": "29984b4001951449be60c4fd767d3d4102c3c2d38f3c6be0bf90259642ac618d",
+      "verdict": "payload_too_large",
+      "note": "refused without reading past the length"
+    },
+    {
+      "name": "export_request_invalid_utf8_one_over",
+      "topic": "ori/{device_id}/export/request",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": null,
+      "construction": "invalid_utf8",
+      "length": 16385,
+      "sha256": "7abfdb0169408da9f0fc88b5b531f77bd0747eabb1ec7087bc76f1af4d848aff",
+      "verdict": "payload_too_large",
+      "note": "size is decided before the Payload Member Rule's invalid_unicode"
+    },
+    {
+      "name": "export_request_configured_half_at",
+      "topic": "ori/{device_id}/export/request",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": 8192,
+      "construction": "json_object",
+      "length": 8192,
+      "sha256": "bfd296e8efb7cb77c12be539798691bb9ac049bbb0f67743aaa20c518b6a2ef5",
+      "verdict": "admitted",
+      "note": "a configured lower maximum admits a payload at it"
+    },
+    {
+      "name": "export_request_configured_half_over",
+      "topic": "ori/{device_id}/export/request",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": 8192,
+      "construction": "json_object",
+      "length": 8193,
+      "sha256": "0374e6d54cedcac12382c4bbc76f6006460ada4d79cd501cfbf6912ea6f7c39b",
+      "verdict": "payload_too_large",
+      "note": "a configured lower maximum refuses a conforming payload above it"
+    },
+    {
+      "name": "export_request_configured_above_table",
+      "topic": "ori/{device_id}/export/request",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": 16385,
+      "construction": "json_object",
+      "length": 16384,
+      "sha256": "2bc32546c535d7c6e1ef528b3139c41cdf1fa7c95ee08115853abc8f044f43f9",
+      "verdict": "configuration_refused",
+      "note": "configuration may lower a maximum, never raise it"
+    },
+    {
+      "name": "export_request_configured_below_floor",
+      "topic": "ori/{device_id}/export/request",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": 4095,
+      "construction": "json_object",
+      "length": 4095,
+      "sha256": "210260f892464ec0a18ff601a02de4c0973605cf3192a67015f3969991842af7",
+      "verdict": "configuration_refused",
+      "note": "configuration never lowers a maximum below the floor"
+    },
+    {
+      "name": "export_response_at_maximum",
+      "topic": "ori/{device_id}/export/response/{request_id}",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 4194304,
+      "sha256": "623f374c9cf9e1bd4b8e7b4423ab6b2a5ced519da358a66b18ec0be2af274ecc",
+      "verdict": "admitted",
+      "note": "exactly the maximum"
+    },
+    {
+      "name": "export_response_one_over",
+      "topic": "ori/{device_id}/export/response/{request_id}",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 4194305,
+      "sha256": "eb9ebdb7ad0f5e57102893c5e27629c94bcddeb3bcc82b04a34150d64f3cfaf7",
+      "verdict": "payload_too_large",
+      "note": "one byte over the maximum"
+    },
+    {
+      "name": "export_response_four_times",
+      "topic": "ori/{device_id}/export/response/{request_id}",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 16777216,
+      "sha256": "69d47d486dc8303150abd076e233f3ede0a640ba9e0d3fec9a08517ca632f2c4",
+      "verdict": "payload_too_large",
+      "note": "refused without reading past the length"
+    },
+    {
+      "name": "export_response_invalid_utf8_one_over",
+      "topic": "ori/{device_id}/export/response/{request_id}",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": null,
+      "construction": "invalid_utf8",
+      "length": 4194305,
+      "sha256": "dddf135e07d45537fc524b44e533f7e9c5002759337a73e8d977d7a12267d76c",
+      "verdict": "payload_too_large",
+      "note": "size is decided before the Payload Member Rule's invalid_unicode"
+    },
+    {
+      "name": "export_response_configured_half_at",
+      "topic": "ori/{device_id}/export/response/{request_id}",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": 2097152,
+      "construction": "json_object",
+      "length": 2097152,
+      "sha256": "0547bdf6b4d61ad92decbb26ccdd4817e765aa255352c2733e2cca37b2a411a1",
+      "verdict": "admitted",
+      "note": "a configured lower maximum admits a payload at it"
+    },
+    {
+      "name": "export_response_configured_half_over",
+      "topic": "ori/{device_id}/export/response/{request_id}",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": 2097152,
+      "construction": "json_object",
+      "length": 2097153,
+      "sha256": "1e2fc8505b9cde04e907cea460ad52db3ae02242ae23b710f7016d806412e1d5",
+      "verdict": "payload_too_large",
+      "note": "a configured lower maximum refuses a conforming payload above it"
+    },
+    {
+      "name": "export_response_configured_above_table",
+      "topic": "ori/{device_id}/export/response/{request_id}",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": 4194305,
+      "construction": "json_object",
+      "length": 4194304,
+      "sha256": "623f374c9cf9e1bd4b8e7b4423ab6b2a5ced519da358a66b18ec0be2af274ecc",
+      "verdict": "configuration_refused",
+      "note": "configuration may lower a maximum, never raise it"
+    },
+    {
+      "name": "export_response_configured_below_floor",
+      "topic": "ori/{device_id}/export/response/{request_id}",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": 4095,
+      "construction": "json_object",
+      "length": 4095,
+      "sha256": "210260f892464ec0a18ff601a02de4c0973605cf3192a67015f3969991842af7",
+      "verdict": "configuration_refused",
+      "note": "configuration never lowers a maximum below the floor"
+    },
+    {
+      "name": "evidence_outbound_at_maximum",
+      "topic": "ori/{device_id}/evidence/outbound",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 1572864,
+      "sha256": "24ed0b15be6b0cfe7a0a1e974bfc0464180dda677a0a38a6bec995cb6d161c1b",
+      "verdict": "admitted",
+      "note": "exactly the maximum"
+    },
+    {
+      "name": "evidence_outbound_one_over",
+      "topic": "ori/{device_id}/evidence/outbound",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 1572865,
+      "sha256": "31426a48b0a7e8a4775fcfccc792c19c2c7a25aad5c05ffdbb3029fb0049f1b0",
+      "verdict": "payload_too_large",
+      "note": "one byte over the maximum"
+    },
+    {
+      "name": "evidence_outbound_four_times",
+      "topic": "ori/{device_id}/evidence/outbound",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 6291456,
+      "sha256": "c6fc1939e1ea7c4d988101829b31678a2b70eaacf5764d91ed611765d3d46ecf",
+      "verdict": "payload_too_large",
+      "note": "refused without reading past the length"
+    },
+    {
+      "name": "evidence_outbound_invalid_utf8_one_over",
+      "topic": "ori/{device_id}/evidence/outbound",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": null,
+      "construction": "invalid_utf8",
+      "length": 1572865,
+      "sha256": "008ca05a61929a076ad1140aabb44473723f3843944474977afcbfe7c4d00d5d",
+      "verdict": "payload_too_large",
+      "note": "size is decided before the Payload Member Rule's invalid_unicode"
+    },
+    {
+      "name": "evidence_outbound_configured_half_at",
+      "topic": "ori/{device_id}/evidence/outbound",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": 786432,
+      "construction": "json_object",
+      "length": 786432,
+      "sha256": "cd280b8c7179e7f2897d124ff479ff854c492b4a4f248906fef761c3f9a4d9bc",
+      "verdict": "configuration_refused",
+      "note": "an evidence topic is never lowered"
+    },
+    {
+      "name": "evidence_outbound_configured_half_over",
+      "topic": "ori/{device_id}/evidence/outbound",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": 786432,
+      "construction": "json_object",
+      "length": 786433,
+      "sha256": "b5e6679f310e55e1db6b84c432326d07bab11470b363cfedd2c0c837f20a1398",
+      "verdict": "configuration_refused",
+      "note": "an evidence topic is never lowered"
+    },
+    {
+      "name": "evidence_outbound_configured_above_table",
+      "topic": "ori/{device_id}/evidence/outbound",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": 1572865,
+      "construction": "json_object",
+      "length": 1572864,
+      "sha256": "24ed0b15be6b0cfe7a0a1e974bfc0464180dda677a0a38a6bec995cb6d161c1b",
+      "verdict": "configuration_refused",
+      "note": "configuration may lower a maximum, never raise it"
+    },
+    {
+      "name": "evidence_outbound_configured_below_floor",
+      "topic": "ori/{device_id}/evidence/outbound",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": 4095,
+      "construction": "json_object",
+      "length": 4095,
+      "sha256": "210260f892464ec0a18ff601a02de4c0973605cf3192a67015f3969991842af7",
+      "verdict": "configuration_refused",
+      "note": "configuration never lowers a maximum below the floor"
+    },
+    {
+      "name": "evidence_outbound_ack_at_maximum",
+      "topic": "ori/{device_id}/evidence/outbound/ack",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 16384,
+      "sha256": "2bc32546c535d7c6e1ef528b3139c41cdf1fa7c95ee08115853abc8f044f43f9",
+      "verdict": "admitted",
+      "note": "exactly the maximum"
+    },
+    {
+      "name": "evidence_outbound_ack_one_over",
+      "topic": "ori/{device_id}/evidence/outbound/ack",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 16385,
+      "sha256": "fe1bbeac62e609e3dde4879f2da7285beb2f227183ac1abbcbbded4c455ead91",
+      "verdict": "payload_too_large",
+      "note": "one byte over the maximum"
+    },
+    {
+      "name": "evidence_outbound_ack_four_times",
+      "topic": "ori/{device_id}/evidence/outbound/ack",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 65536,
+      "sha256": "29984b4001951449be60c4fd767d3d4102c3c2d38f3c6be0bf90259642ac618d",
+      "verdict": "payload_too_large",
+      "note": "refused without reading past the length"
+    },
+    {
+      "name": "evidence_outbound_ack_invalid_utf8_one_over",
+      "topic": "ori/{device_id}/evidence/outbound/ack",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": null,
+      "construction": "invalid_utf8",
+      "length": 16385,
+      "sha256": "7abfdb0169408da9f0fc88b5b531f77bd0747eabb1ec7087bc76f1af4d848aff",
+      "verdict": "payload_too_large",
+      "note": "size is decided before the Payload Member Rule's invalid_unicode"
+    },
+    {
+      "name": "evidence_outbound_ack_configured_half_at",
+      "topic": "ori/{device_id}/evidence/outbound/ack",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": 8192,
+      "construction": "json_object",
+      "length": 8192,
+      "sha256": "bfd296e8efb7cb77c12be539798691bb9ac049bbb0f67743aaa20c518b6a2ef5",
+      "verdict": "admitted",
+      "note": "a configured lower maximum admits a payload at it"
+    },
+    {
+      "name": "evidence_outbound_ack_configured_half_over",
+      "topic": "ori/{device_id}/evidence/outbound/ack",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": 8192,
+      "construction": "json_object",
+      "length": 8193,
+      "sha256": "0374e6d54cedcac12382c4bbc76f6006460ada4d79cd501cfbf6912ea6f7c39b",
+      "verdict": "payload_too_large",
+      "note": "a configured lower maximum refuses a conforming payload above it"
+    },
+    {
+      "name": "evidence_outbound_ack_configured_above_table",
+      "topic": "ori/{device_id}/evidence/outbound/ack",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": 16385,
+      "construction": "json_object",
+      "length": 16384,
+      "sha256": "2bc32546c535d7c6e1ef528b3139c41cdf1fa7c95ee08115853abc8f044f43f9",
+      "verdict": "configuration_refused",
+      "note": "configuration may lower a maximum, never raise it"
+    },
+    {
+      "name": "evidence_outbound_ack_configured_below_floor",
+      "topic": "ori/{device_id}/evidence/outbound/ack",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": 4095,
+      "construction": "json_object",
+      "length": 4095,
+      "sha256": "210260f892464ec0a18ff601a02de4c0973605cf3192a67015f3969991842af7",
+      "verdict": "configuration_refused",
+      "note": "configuration never lowers a maximum below the floor"
+    },
+    {
+      "name": "evidence_inbound_at_maximum",
+      "topic": "ori/{device_id}/evidence/inbound",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 1114112,
+      "sha256": "211c66627b1a1bbfe2ffaf96454880eab284956e10f0d580d1639cc3eba96380",
+      "verdict": "admitted",
+      "note": "exactly the maximum"
+    },
+    {
+      "name": "evidence_inbound_one_over",
+      "topic": "ori/{device_id}/evidence/inbound",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 1114113,
+      "sha256": "ef16d3e9a079e31c31325d91d1264243ea816aa5f88086b1ec03403740571bc6",
+      "verdict": "payload_too_large",
+      "note": "one byte over the maximum"
+    },
+    {
+      "name": "evidence_inbound_four_times",
+      "topic": "ori/{device_id}/evidence/inbound",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 4456448,
+      "sha256": "72db5fac07614690c8cb1da666ef2e566b0a2ac738ef62c4d20d1b3507d879bc",
+      "verdict": "payload_too_large",
+      "note": "refused without reading past the length"
+    },
+    {
+      "name": "evidence_inbound_invalid_utf8_one_over",
+      "topic": "ori/{device_id}/evidence/inbound",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": null,
+      "construction": "invalid_utf8",
+      "length": 1114113,
+      "sha256": "40159a1ec1e3d82bb084cfd5f9b8c1d4c2b68907d3c3ec5e13f80b15f3aa6283",
+      "verdict": "payload_too_large",
+      "note": "size is decided before the Payload Member Rule's invalid_unicode"
+    },
+    {
+      "name": "evidence_inbound_configured_half_at",
+      "topic": "ori/{device_id}/evidence/inbound",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": 557056,
+      "construction": "json_object",
+      "length": 557056,
+      "sha256": "3d774829a3dc508b184d047f09cac9e20f7b5c30ba575ef0ab8cbf9bbc6e1515",
+      "verdict": "configuration_refused",
+      "note": "an evidence topic is never lowered"
+    },
+    {
+      "name": "evidence_inbound_configured_half_over",
+      "topic": "ori/{device_id}/evidence/inbound",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": 557056,
+      "construction": "json_object",
+      "length": 557057,
+      "sha256": "f5a991787a274977b2e16383d807cd45c55ad66efad51cbd70f849cec1a56c56",
+      "verdict": "configuration_refused",
+      "note": "an evidence topic is never lowered"
+    },
+    {
+      "name": "evidence_inbound_configured_above_table",
+      "topic": "ori/{device_id}/evidence/inbound",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": 1114113,
+      "construction": "json_object",
+      "length": 1114112,
+      "sha256": "211c66627b1a1bbfe2ffaf96454880eab284956e10f0d580d1639cc3eba96380",
+      "verdict": "configuration_refused",
+      "note": "configuration may lower a maximum, never raise it"
+    },
+    {
+      "name": "evidence_inbound_configured_below_floor",
+      "topic": "ori/{device_id}/evidence/inbound",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": 4095,
+      "construction": "json_object",
+      "length": 4095,
+      "sha256": "210260f892464ec0a18ff601a02de4c0973605cf3192a67015f3969991842af7",
+      "verdict": "configuration_refused",
+      "note": "configuration never lowers a maximum below the floor"
+    },
+    {
+      "name": "evidence_inbound_ack_at_maximum",
+      "topic": "ori/{device_id}/evidence/inbound/ack",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 16384,
+      "sha256": "2bc32546c535d7c6e1ef528b3139c41cdf1fa7c95ee08115853abc8f044f43f9",
+      "verdict": "admitted",
+      "note": "exactly the maximum"
+    },
+    {
+      "name": "evidence_inbound_ack_one_over",
+      "topic": "ori/{device_id}/evidence/inbound/ack",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 16385,
+      "sha256": "fe1bbeac62e609e3dde4879f2da7285beb2f227183ac1abbcbbded4c455ead91",
+      "verdict": "payload_too_large",
+      "note": "one byte over the maximum"
+    },
+    {
+      "name": "evidence_inbound_ack_four_times",
+      "topic": "ori/{device_id}/evidence/inbound/ack",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 65536,
+      "sha256": "29984b4001951449be60c4fd767d3d4102c3c2d38f3c6be0bf90259642ac618d",
+      "verdict": "payload_too_large",
+      "note": "refused without reading past the length"
+    },
+    {
+      "name": "evidence_inbound_ack_invalid_utf8_one_over",
+      "topic": "ori/{device_id}/evidence/inbound/ack",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": null,
+      "construction": "invalid_utf8",
+      "length": 16385,
+      "sha256": "7abfdb0169408da9f0fc88b5b531f77bd0747eabb1ec7087bc76f1af4d848aff",
+      "verdict": "payload_too_large",
+      "note": "size is decided before the Payload Member Rule's invalid_unicode"
+    },
+    {
+      "name": "evidence_inbound_ack_configured_half_at",
+      "topic": "ori/{device_id}/evidence/inbound/ack",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": 8192,
+      "construction": "json_object",
+      "length": 8192,
+      "sha256": "bfd296e8efb7cb77c12be539798691bb9ac049bbb0f67743aaa20c518b6a2ef5",
+      "verdict": "admitted",
+      "note": "a configured lower maximum admits a payload at it"
+    },
+    {
+      "name": "evidence_inbound_ack_configured_half_over",
+      "topic": "ori/{device_id}/evidence/inbound/ack",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": 8192,
+      "construction": "json_object",
+      "length": 8193,
+      "sha256": "0374e6d54cedcac12382c4bbc76f6006460ada4d79cd501cfbf6912ea6f7c39b",
+      "verdict": "payload_too_large",
+      "note": "a configured lower maximum refuses a conforming payload above it"
+    },
+    {
+      "name": "evidence_inbound_ack_configured_above_table",
+      "topic": "ori/{device_id}/evidence/inbound/ack",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": 16385,
+      "construction": "json_object",
+      "length": 16384,
+      "sha256": "2bc32546c535d7c6e1ef528b3139c41cdf1fa7c95ee08115853abc8f044f43f9",
+      "verdict": "configuration_refused",
+      "note": "configuration may lower a maximum, never raise it"
+    },
+    {
+      "name": "evidence_inbound_ack_configured_below_floor",
+      "topic": "ori/{device_id}/evidence/inbound/ack",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": 4095,
+      "construction": "json_object",
+      "length": 4095,
+      "sha256": "210260f892464ec0a18ff601a02de4c0973605cf3192a67015f3969991842af7",
+      "verdict": "configuration_refused",
+      "note": "configuration never lowers a maximum below the floor"
+    }
+  ],
+  "paging": [
+    {
+      "name": "pages_of_three",
+      "fixed_bytes": 100,
+      "item_bytes": [
+        300,
+        300,
+        300,
+        300,
+        300,
+        300,
+        300,
+        300,
+        300,
+        300
+      ],
+      "maximum": 1000,
+      "pages": [
+        {
+          "items": 3,
+          "next": 3
+        },
+        {
+          "items": 3,
+          "next": 6
+        },
+        {
+          "items": 3,
+          "next": 9
+        },
+        {
+          "items": 1,
+          "next": 10
+        }
+      ],
+      "error": null,
+      "note": "three items fill a page exactly; the last page holds the remainder"
+    },
+    {
+      "name": "an_item_too_large_alone",
+      "fixed_bytes": 100,
+      "item_bytes": [
+        200,
+        2000,
+        100
+      ],
+      "maximum": 1000,
+      "pages": [
+        {
+          "items": 1,
+          "next": 1
+        }
+      ],
+      "error": {
+        "at": 1,
+        "error": "item_exceeds_payload_maximum"
+      },
+      "note": "the second item cannot fit beside the fixed bytes, so the export ends there"
+    },
+    {
+      "name": "a_page_filled_to_the_byte",
+      "fixed_bytes": 100,
+      "item_bytes": [
+        450,
+        450,
+        1
+      ],
+      "maximum": 1000,
+      "pages": [
+        {
+          "items": 2,
+          "next": 2
+        },
+        {
+          "items": 1,
+          "next": 3
+        }
+      ],
+      "error": null,
+      "note": "two items reach the maximum exactly; the third goes to the next page"
+    },
+    {
+      "name": "one_item_at_the_limit",
+      "fixed_bytes": 100,
+      "item_bytes": [
+        900,
+        900
+      ],
+      "maximum": 1000,
+      "pages": [
+        {
+          "items": 1,
+          "next": 1
+        },
+        {
+          "items": 1,
+          "next": 2
+        }
+      ],
+      "error": null,
+      "note": "each item alone fills its page"
+    },
+    {
+      "name": "small_items",
+      "fixed_bytes": 100,
+      "item_bytes": [
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10,
+        10
+      ],
+      "maximum": 1000,
+      "pages": [
+        {
+          "items": 90,
+          "next": 90
+        },
+        {
+          "items": 5,
+          "next": 95
+        }
+      ],
+      "error": null,
+      "note": "ninety items fit; five remain"
+    }
+  ],
+  "envelopes": [
+    {
+      "name": "evidence_outbound_at_bound",
+      "topic": "ori/{device_id}/evidence/outbound",
+      "encoding": "escaped",
+      "device_id_scalar": "U+0061",
+      "device_id_scalars": 128,
+      "artifact_type": "anchor_registration",
+      "outcome": null,
+      "reason": null,
+      "artifact_bytes": 1048576,
+      "length": 1398304,
+      "sha256": "0d4c2c9bb048efb591083950bbf1da515d88c3f4af672585048fc2a22a005e2d",
+      "verdict": "admitted"
+    },
+    {
+      "name": "evidence_outbound_ack_at_bound",
+      "topic": "ori/{device_id}/evidence/outbound/ack",
+      "encoding": "escaped",
+      "device_id_scalar": "U+0061",
+      "device_id_scalars": 128,
+      "artifact_type": "anchor_registration",
+      "outcome": "refused",
+      "reason": "binding_mismatch",
+      "artifact_bytes": null,
+      "length": 515,
+      "sha256": "902dc427abc1d83bf9a7a5ffd66b131eefdd8c8bfea5e4415700572b076fde20",
+      "verdict": "admitted"
+    },
+    {
+      "name": "evidence_inbound_canonical_at_bound",
+      "topic": "ori/{device_id}/evidence/inbound",
+      "encoding": "canonical",
+      "device_id_scalar": "U+0061",
+      "device_id_scalars": 128,
+      "artifact_type": "custody_acknowledgement",
+      "outcome": null,
+      "reason": null,
+      "artifact_bytes": 1048576,
+      "length": 1048929,
+      "sha256": "14fc7f3d38c85ccc963bb26e1b728d518a80dbf28374502554fe40ac23c363b2",
+      "verdict": "admitted"
+    },
+    {
+      "name": "evidence_inbound_escaped_at_bound",
+      "topic": "ori/{device_id}/evidence/inbound",
+      "encoding": "escaped",
+      "device_id_scalar": "U+0061",
+      "device_id_scalars": 128,
+      "artifact_type": "custody_acknowledgement",
+      "outcome": null,
+      "reason": null,
+      "artifact_bytes": 1048576,
+      "length": 3146061,
+      "sha256": "cb14617ee12e890e8a167e81e749ae363f32f650b85922c2416fb1cccb9a7a43",
+      "verdict": "payload_too_large"
+    },
+    {
+      "name": "evidence_inbound_ack_at_bound",
+      "topic": "ori/{device_id}/evidence/inbound/ack",
+      "encoding": "escaped",
+      "device_id_scalar": "U+0061",
+      "device_id_scalars": 128,
+      "artifact_type": "custody_acknowledgement",
+      "outcome": "refused",
+      "reason": "restatement_conflict",
+      "artifact_bytes": null,
+      "length": 523,
+      "sha256": "e725efc41adeb3fb55d6187d680a6c7d982ae2656a5fba0dc50df3b8bf7bb6f9",
+      "verdict": "admitted"
+    }
+  ],
+  "replies": [
+    {
+      "name": "reasoning_error",
+      "topic": "ori/{device_id}/reasoning/response",
+      "configured_maximum": 4096,
+      "length": 2130,
+      "sha256": "41f62b2bf9d0b4f83947e69d7b4665d1d58f08659568eb77c7e2793fbd919861",
+      "verdict": "admitted"
+    },
+    {
+      "name": "enrichment_error",
+      "topic": "ori/{device_id}/tier_c/enrichment/response",
+      "configured_maximum": 4096,
+      "length": 2076,
+      "sha256": "efe51620ddc4ddebd6a67f66ac642e4a6cebfb415ecbb10dffd3baefbb1628e1",
+      "verdict": "admitted"
+    },
+    {
+      "name": "export_error_encrypted",
+      "topic": "ori/{device_id}/export/response/{request_id}",
+      "configured_maximum": 4096,
+      "length": 3157,
+      "sha256": "98e4819c959e20354c6a1c30bda89b6938b29b2d13d616983cee7e1ae5da7c83",
+      "verdict": "admitted"
+    },
+    {
+      "name": "runtime_heartbeat_no_triggers",
+      "topic": "ori/{device_id}/runtime/heartbeat",
+      "configured_maximum": 4096,
+      "length": 1619,
+      "sha256": "3d490a04a44af4a2b488f68158e5c9558f10ea2bb4d09206250778936431e946",
+      "verdict": "admitted"
+    },
+    {
+      "name": "gateway_heartbeat",
+      "topic": "ori/gateway/health",
+      "configured_maximum": 4096,
+      "length": 538,
+      "sha256": "53fc1009809af2799515934a58145d701bb8a1a8c86ceae0d5a10c441142e0d4",
+      "verdict": "admitted"
+    }
+  ]
+}
