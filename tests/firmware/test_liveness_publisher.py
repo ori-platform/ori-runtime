@@ -903,8 +903,6 @@ async def test_an_orderly_stop_holds_no_liveness_condition() -> None:
 
 async def test_an_undeclared_device_is_named_once_and_lapses(caplog) -> None:
     """Refused every tick, counted as a refusal, said once at WARNING."""
-    import logging
-
     from ori.security.firmware.liveness import SigningDomainsUndeclaredError
 
     service = _FakeService(
