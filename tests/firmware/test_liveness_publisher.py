@@ -705,6 +705,20 @@ async def test_a_tick_of_pure_refusals_is_not_a_failure() -> None:
     assert result.delivered_nothing is False
 
 
+async def test_a_nonce_that_cannot_be_drawn_is_a_failed_publication() -> None:
+    """Not a refusal: the device is still supervised and owed this interval's
+    message, which at v 2 alone nothing else carries."""
+    from ori.security.firmware.liveness import FirmwareLivenessNonceError
+
+    service = _FakeService(
+        [_device("ori-fw-a")],
+        fail={"ori-fw-a": FirmwareLivenessNonceError("nonce source broken")},
+    )
+    result = await FirmwareLivenessScheduler(service).publish_once()
+    assert result.failed == 1 and result.refused == 0
+    assert result.delivered_nothing is True
+
+
 async def test_a_partial_failure_still_records_a_successful_tick() -> None:
     """Some devices were reached, so the loop is working; the failure is
     visible per device rather than as a tick-level outage."""

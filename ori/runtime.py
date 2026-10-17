@@ -7393,11 +7393,7 @@ def _firmware_reading_age(config: Config) -> ReadingAgeTracker | None:
         if isinstance(getattr(config.gateway, "firmware_commands", {}), dict)
         else {}
     )
-    if not (
-        bool(config.gateway.enabled)
-        and bool(command_cfg.get("enabled", False))
-        and command_cfg.get("publish_liveness_v2") is True
-    ):
+    if not (bool(config.gateway.enabled) and bool(command_cfg.get("enabled", False))):
         # No v 2 nonce is signed, so nothing could match a table.
         return ReadingAgeTracker(None)
     interval = command_cfg.get("liveness_interval_s", LIVENESS_PUBLISH_INTERVAL_S)
@@ -7457,7 +7453,6 @@ def _build_firmware_command_service(
             provisioner_key_bytes=provisioner_key,
             liveness_supervisor=liveness_supervisor,
             liveness_table=liveness_table,
-            publish_liveness_v2=command_cfg.get("publish_liveness_v2") is True,
         )
     except Exception:
         logger.exception("[runtime] invalid firmware command egress configuration")

@@ -4,8 +4,9 @@
 
 The signer reproduces the corpus's bytes, never repeats a nonce, replaces one
 the live table holds, and reads the signing start before it signs. Each
-interval publishes ``v`` 1 at N and ``v`` 2 at N+1, and a ``v`` 2 failure never
-suppresses ``v`` 1.
+interval publishes one message at ``v`` 2 and never ``v`` 1, and an interval
+whose nonce, signing or publish fails sends nothing in its place
+(firmware-commands/v2, Which ``v`` the runtime publishes).
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from ori.gateway.firmware_commands import FirmwareCommandService
 from ori.security.firmware import reading_age
 from ori.security.firmware.liveness import (
     FirmwareLivenessError,
+    FirmwareLivenessNonceError,
     FirmwareLivenessSigner,
     FirmwareLivenessSupervisor,
     build_liveness_bytes,
@@ -212,7 +214,7 @@ def test_a_source_that_only_collides_refuses_rather_than_reuses() -> None:
     table = _table()
     signer = _signer(table=table, nonce_source=lambda: b"\x01" * 16, clock=lambda: 1)
     _v2(signer)
-    with pytest.raises(FirmwareLivenessError, match="collided"):
+    with pytest.raises(FirmwareLivenessNonceError, match="collided"):
         _v2(signer)
     assert len(table) == 1
 
@@ -275,117 +277,170 @@ def _supervised_signer(store: Any, **kwargs: Any) -> FirmwareLivenessSigner:
     return FirmwareLivenessSigner(store, SEED, supervisor=supervisor, **kwargs)
 
 
-async def test_an_interval_signs_v1_at_n_and_v2_at_n_plus_one() -> None:
+async def test_an_interval_signs_one_message_at_v2() -> None:
     table = _table()
     signer = _supervised_signer(_Allocator(), table=table)
-    pair = await signer.sign_liveness_pair(
-        device_id=DEVICE, boot_id=41, capability_hash=HASH
-    )
-    v1 = json.loads(pair.v1)["liveness"]
-    assert pair.v2 is not None
-    v2 = json.loads(pair.v2)["liveness"]
-    assert (v1["v"], v1["runtime_seq"], "nonce" in v1) == (1, 10, False)
-    assert (v2["v"], v2["runtime_seq"]) == (2, 11)
-    assert table.holds(v2["nonce"])
+    message = json.loads(
+        await signer.sign_liveness(device_id=DEVICE, boot_id=41, capability_hash=HASH)
+    )["liveness"]
+    assert (message["v"], message["runtime_seq"]) == (2, 10)
+    assert table.holds(message["nonce"]) and len(table) == 1
 
 
-@pytest.mark.parametrize("failure", ["allocation", "nonce", "signing"])
-async def test_a_v2_failure_never_suppresses_v1(failure: str) -> None:
-    table = _table()
+def _failing(failure: str, table: LivenessTable) -> FirmwareLivenessSigner:
+    """A supervised signer whose *failure* step fails for every message."""
     kwargs: dict[str, Any] = {"table": table}
-    store = _Allocator(fail_from=11 if failure == "allocation" else None)
     if failure == "nonce":
         kwargs["nonce_source"] = lambda: b"short"
-    signer = _supervised_signer(store, **kwargs)
+    if failure == "clock":
+        kwargs["clock"] = lambda: 1 // 0
+    signer = _supervised_signer(_Allocator(), **kwargs)
     if failure == "signing":
         real = signer.sign_liveness_bytes
 
         def sign(liveness: bytes) -> bytes:
-            if b'"v":2' in liveness:
+            # Only the v 2 signature fails, so a fallback signing v 1
+            # through the same method would succeed and be seen.
+            if b'"nonce"' in liveness:
                 raise RuntimeError("hsm unavailable")
             return real(liveness)
 
         signer.sign_liveness_bytes = sign  # type: ignore[method-assign]
-    pair = await signer.sign_liveness_pair(
-        device_id=DEVICE, boot_id=41, capability_hash=HASH
-    )
-    assert json.loads(pair.v1)["liveness"]["v"] == 1
-    assert pair.v2 is None and pair.v2_error
-    assert len(table) == 0, "a failed signing leaves no entry"
+    return signer
 
 
-async def test_an_unsupervised_device_gets_neither_message() -> None:
+@pytest.mark.parametrize(
+    ("failure", "raised"),
+    [("nonce", FirmwareLivenessNonceError), ("signing", RuntimeError)],
+)
+async def test_a_failed_interval_signs_nothing_and_leaves_no_entry(
+    failure: str, raised: type[Exception]
+) -> None:
+    """No `v` 1 message in its place, and a failed signing records nothing."""
+    table = _table()
+    with pytest.raises(raised):
+        await _failing(failure, table).sign_liveness(
+            device_id=DEVICE, boot_id=41, capability_hash=HASH
+        )
+    assert len(table) == 0
+
+
+async def test_a_nonce_failure_is_not_a_supervision_refusal() -> None:
+    """The publish loop counts a refusal as the device meant to lapse; a nonce
+    the runtime could not draw is a publication it owed and failed."""
+    assert not issubclass(FirmwareLivenessNonceError, FirmwareLivenessError)
+
+
+async def test_an_unreadable_clock_still_signs_at_v2_with_no_entry() -> None:
+    table = _table()
+    message = json.loads(
+        await _failing("clock", table).sign_liveness(
+            device_id=DEVICE, boot_id=41, capability_hash=HASH
+        )
+    )["liveness"]
+    assert message["v"] == 2 and len(table) == 0
+
+
+async def test_an_unsupervised_device_gets_no_message() -> None:
     signer = FirmwareLivenessSigner(
         _Allocator(), SEED, supervisor=FirmwareLivenessSupervisor(), table=_table()
     )
     with pytest.raises(FirmwareLivenessError, match="not supervised"):
-        await signer.sign_liveness_pair(
-            device_id=DEVICE, boot_id=41, capability_hash=HASH
-        )
+        await signer.sign_liveness(device_id=DEVICE, boot_id=41, capability_hash=HASH)
 
 
 class _Publisher:
-    def __init__(self, *, fail: set[int] = frozenset()) -> None:  # type: ignore[assignment]
+    def __init__(self, *, fail: bool = False) -> None:
         self.sent: list[int] = []
         self.fail = fail
 
     async def publish_runtime_liveness(self, device_id: str, message: bytes) -> None:
-        version = json.loads(message)["liveness"]["v"]
-        self.sent.append(version)
-        if version in self.fail:
-            raise ConnectionError(f"v {version} publish failed")
+        self.sent.append(json.loads(message)["liveness"]["v"])
+        if self.fail:
+            raise ConnectionError("publish failed")
 
 
 def _service(
-    publisher: _Publisher, table: LivenessTable, *, publish_liveness_v2: bool = True
+    publisher: _Publisher, table: LivenessTable, *, signer_failure: str = ""
 ) -> FirmwareCommandService:
     supervisor = FirmwareLivenessSupervisor()
     supervisor.note_telemetry(device_id=DEVICE, boot_id=41, capability_hash=HASH)
-    return FirmwareCommandService(
+    service = FirmwareCommandService(
         store=_Allocator(),
         publisher=publisher,  # type: ignore[arg-type]
         runtime_command_key_bytes=SEED,
         provisioner_key_bytes=bytes(range(32)),
         liveness_supervisor=supervisor,
         liveness_table=table,
-        publish_liveness_v2=publish_liveness_v2,
     )
+    if signer_failure:
+        service._liveness = _failing(signer_failure, table)
+    return service
 
 
-async def test_by_default_the_service_publishes_v1_alone_and_records_nothing() -> None:
-    """Until devices accept v 2 and keep command capacity from liveness."""
+async def test_the_service_publishes_one_message_at_v2() -> None:
     publisher = _Publisher()
     table = _table()
-    pair = await _service(
-        publisher, table, publish_liveness_v2=False
-    ).publish_runtime_liveness(device_id=DEVICE, boot_id=41, capability_hash=HASH)
-    assert publisher.sent == [1] and pair.v2 is None
-    assert len(table) == 0
+    message = await _service(publisher, table).publish_runtime_liveness(
+        device_id=DEVICE, boot_id=41, capability_hash=HASH
+    )
+    assert publisher.sent == [2] and json.loads(message)["liveness"]["v"] == 2
+    assert len(table) == 1
 
 
-async def test_the_service_publishes_v1_then_v2() -> None:
+async def test_the_service_never_publishes_liveness_at_v1() -> None:
+    """Whatever produced the message, the service is the one door, and it
+    refuses one not at v 2: as a failure, not a supervision refusal."""
     publisher = _Publisher()
-    pair = await _service(publisher, _table()).publish_runtime_liveness(
-        device_id=DEVICE, boot_id=41, capability_hash=HASH
-    )
-    assert publisher.sent == [1, 2] and pair.v2 is not None
+    service = _service(publisher, _table())
 
+    async def v1(**_kwargs: Any) -> bytes:
+        return service._liveness.sign_liveness_bytes(
+            build_liveness_bytes(
+                boot_id=41, capability_hash=HASH, device_id=DEVICE, runtime_seq=1
+            )
+        )
 
-async def test_a_v2_publish_failure_leaves_v1_published() -> None:
-    publisher = _Publisher(fail={2})
-    await _service(publisher, _table()).publish_runtime_liveness(
-        device_id=DEVICE, boot_id=41, capability_hash=HASH
-    )
-    assert publisher.sent == [1, 2]
-
-
-async def test_a_v1_publish_failure_is_raised_after_v2_is_attempted() -> None:
-    publisher = _Publisher(fail={1})
-    with pytest.raises(ConnectionError, match="v 1"):
-        await _service(publisher, _table()).publish_runtime_liveness(
+    service._liveness.sign_liveness = v1  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="not at v 2") as raised:
+        await service.publish_runtime_liveness(
             device_id=DEVICE, boot_id=41, capability_hash=HASH
         )
-    assert publisher.sent == [1, 2]
+    assert not isinstance(raised.value, FirmwareLivenessError)
+    assert publisher.sent == []
+
+
+@pytest.mark.parametrize(
+    ("failure", "raised", "sent", "entries"),
+    [
+        ("nonce", FirmwareLivenessNonceError, [], 0),
+        ("signing", RuntimeError, [], 0),
+        ("publish", ConnectionError, [2], 1),
+        ("clock", None, [2], 0),
+    ],
+)
+async def test_no_failure_is_ever_answered_with_v1(
+    failure: str, raised: type[Exception] | None, sent: list[int], entries: int
+) -> None:
+    """Each of the four failures: never a `v` 1 substitute. A nonce or signing
+    failure sends nothing; a publish failure is raised after its one attempt,
+    its entry kept from the signing start; an unreadable clock still publishes,
+    with no entry."""
+    publisher = _Publisher(fail=failure == "publish")
+    table = _table()
+    service = _service(
+        publisher, table, signer_failure=failure if failure != "publish" else ""
+    )
+    call = service.publish_runtime_liveness(
+        device_id=DEVICE, boot_id=41, capability_hash=HASH
+    )
+    if raised is None:
+        await call
+    else:
+        with pytest.raises(raised):
+            await call
+    assert publisher.sent == sent and 1 not in publisher.sent
+    assert len(table) == entries
 
 
 @pytest.mark.parametrize(
@@ -461,7 +516,6 @@ def test_a_restart_empties_the_table_and_a_stored_reading_has_no_bound() -> None
     from tests.firmware.test_liveness_composition import _command_cfg
 
     config = _command_cfg()
-    config.gateway.firmware_commands["publish_liveness_v2"] = True
     first = _firmware_reading_age(config)
     assert first is not None and first.table is not None
     signer = _signer(table=first.table)
@@ -485,14 +539,14 @@ def test_a_restart_empties_the_table_and_a_stored_reading_has_no_bound() -> None
     assert second.table.per_device_bound >= 3600 / 15
 
 
-def test_a_runtime_that_does_not_sign_liveness_bounds_nothing() -> None:
+def test_only_a_runtime_that_signs_liveness_keeps_a_table() -> None:
     from ori.runtime import _firmware_reading_age
     from tests.firmware.test_liveness_composition import _cfg, _command_cfg
 
     telemetry_only = _firmware_reading_age(_cfg())
     assert telemetry_only is not None and telemetry_only.table is None
-    v1_only = _firmware_reading_age(_command_cfg())
-    assert v1_only is not None and v1_only.table is None
+    signing = _firmware_reading_age(_command_cfg())
+    assert signing is not None and signing.table is not None
     no_telemetry = _command_cfg()
     no_telemetry.gateway.firmware_telemetry = {"enabled": False}
     assert _firmware_reading_age(no_telemetry) is None
@@ -503,7 +557,6 @@ def test_a_short_interval_cannot_grow_the_table_without_limit() -> None:
     from tests.firmware.test_liveness_composition import _command_cfg
 
     config = _command_cfg()
-    config.gateway.firmware_commands["publish_liveness_v2"] = True
     config.gateway.firmware_commands["liveness_interval_s"] = 1.0
     tracker = _firmware_reading_age(config)
     assert tracker is not None and tracker.table is not None
