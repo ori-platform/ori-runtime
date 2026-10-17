@@ -664,6 +664,17 @@ VECTOR_CONSUMERS = {
 #: tracked, because naming a repository says who is answerable rather than that
 #: the work is done.
 VECTOR_EXEMPTIONS = {
+    ("gateway_api", "replay-v2"): {
+        "owner": "the runtime",
+        "status": "proof_pending",
+        "tracking": "ori-runtime#879",
+        "reason": (
+            "The runtime does not yet keep the replay floor, refuse "
+            "before_replay_floor, or evict a full cache with a floor raise, "
+            "as gateway-api/v2 Envelope Freshness and Replay requires. "
+            "Vendored so the drift check covers the bytes it must match."
+        ),
+    },
     ("evidence_exchange", "routing-projection-v2"): {
         "owner": "the site gateway",
         "status": "proof_pending",
