@@ -170,8 +170,8 @@ class GatewayReplayCache:
         self._max_entries = max(1, int(max_entries))
         self._seen_until_ms: dict[str, int] = {}
         # Expiry order, so pruning pops what has expired instead of scanning
-        # a cache the replay window may make large. An entry whose key was
-        # forgotten or re-seen is skipped when it surfaces.
+        # a cache the replay window may make large. A key is never unrecorded
+        # or re-seen while live, so each live key has exactly one entry.
         self._expiries: list[tuple[int, str]] = []
         self._lock = threading.Lock()
         self._conn: sqlite3.Connection | None = None
@@ -318,30 +318,6 @@ class GatewayReplayCache:
             expires_ms, key = heapq.heappop(expiries)
             if self._seen_until_ms.get(key) == expires_ms:
                 del self._seen_until_ms[key]
-        # Forgotten and re-seen keys leave entries behind; past twice the live
-        # keys, the heap is rebuilt from them, so it never outgrows the cache.
-        if len(expiries) > 2 * len(self._seen_until_ms) + 64:
-            self._expiries = [(e, k) for k, e in self._seen_until_ms.items()]
-            heapq.heapify(self._expiries)
-
-    def forget(self, key: str) -> None:
-        """Unrecord *key*: the message it names was never acted on."""
-        with self._lock:
-            self._seen_until_ms.pop(key, None)
-            if self._conn is None:
-                return
-            try:
-                self._conn.execute(
-                    "DELETE FROM gateway_replay_cache WHERE key = ?", (key,)
-                )
-                self._conn.commit()
-            except sqlite3.Error:
-                logger.warning(
-                    "[gateway-auth] persistent replay cache delete failed; "
-                    "continuing with in-memory replay protection.",
-                    exc_info=True,
-                )
-                self._conn = None
 
 
 class GatewayMessageAuthenticator:
@@ -460,11 +436,6 @@ class GatewayMessageAuthenticator:
             signed_at_ms=message.signed_at_ms,
         ):
             raise GatewayMessageAuthError("replay_detected")
-
-    def release(self, message: AuthenticatedMessage) -> None:
-        """Undo `commit` for a message the receiver then could not act on at
-        all, so its identical redelivery is not refused as a replay."""
-        self._replay_cache.forget(message.replay_key)
 
     async def verify_async(
         self,

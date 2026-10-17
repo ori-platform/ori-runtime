@@ -1218,367 +1218,81 @@ def test_an_admitted_message_is_recorded_once_and_its_replay_refused(tmp_path):
     assert len(ingest.calls) == 1
 
 
-def test_a_message_the_saturated_worker_refused_is_admitted_when_redelivered(tmp_path):
-    """Refused at submission, it was never acted on: its key is released, so
-    the broker's redelivery of the same bytes is not a replay."""
-    from ori.security.evidence.executor import EvidenceExecutorSaturatedError
-
-    db = tmp_path / "replay.db"
-
-    class _Saturating(_RecordingIngest):
-        saturated = True
-
-        async def accept_async(
-            self, artifact_type: str, artifact: object
-        ) -> IngestOutcome:
-            if self.saturated:
-                raise EvidenceExecutorSaturatedError("the worker is full")
-            return await super().accept_async(artifact_type, artifact)
-
-    ingest = _Saturating()
-    router = _persisted_router(db, ingest)
-    payload = _signed(_envelope(ARTIFACT_CUSTODY, {"v": 1}))
-
-    with pytest.raises(EvidenceExecutorSaturatedError):
-        asyncio.run(router.route(payload))
-    assert _replay_rows(db) == 0
-    ingest.saturated = False
-    assert asyncio.run(router.route(payload)).outcome.accepted
-    assert _replay_rows(db) == 1
-
-
-class _HeldIngest(_RecordingIngest):
-    """Holds the first route inside ingest until released, then answers or
-    reports the worker saturated."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.entered = asyncio.Event()
-        self.release = asyncio.Event()
-        self.saturate_once = False
+class _Saturating(_RecordingIngest):
+    saturated = True
 
     async def accept_async(self, artifact_type: str, artifact: object) -> IngestOutcome:
         from ori.security.evidence.executor import EvidenceExecutorSaturatedError
 
-        if not self.entered.is_set():
-            self.entered.set()
-            await self.release.wait()
-            if self.saturate_once:
-                raise EvidenceExecutorSaturatedError("the worker is full")
+        if self.saturated:
+            raise EvidenceExecutorSaturatedError("the worker is full")
         return await super().accept_async(artifact_type, artifact)
 
 
-@pytest.mark.parametrize("original", ["saturated", "accepted"])
-def test_a_copy_of_a_message_still_being_routed_is_left_not_refused(tmp_path, original):
-    """The broker's copy of a message whose route has not settled is neither
-    recorded nor refused as a replay, so the original's release on saturation
-    still has a redelivery to admit."""
-    from ori.gateway.evidence_inbound import EvidenceInFlightError
-    from ori.security.evidence.executor import EvidenceExecutorSaturatedError
-
+def test_a_message_the_saturated_worker_refused_keeps_its_key_and_a_new_envelope_lands(
+    tmp_path,
+):
+    """gateway-api/v2: receivers do not relax replay protection to accommodate
+    redelivery. Left undecided with no acknowledgement, like a store fault: its
+    key stays recorded, so the identical bytes are refused as a replay, and the
+    courier's redelivery in a newly signed envelope is admitted."""
     db = tmp_path / "replay.db"
-    ingest = _HeldIngest()
-    ingest.saturate_once = original == "saturated"
+    ingest = _Saturating()
     router = _persisted_router(db, ingest)
-    payload = _signed(_envelope(ARTIFACT_CUSTODY, {"v": 1}))
+    envelope = _envelope(ARTIFACT_CUSTODY, {"v": 1})
+    payload = _signed(envelope)
 
-    async def scenario() -> None:
-        first = asyncio.create_task(router.route(payload))
-        await ingest.entered.wait()
-        rows = _replay_rows(db)
-        with pytest.raises(EvidenceInFlightError):
-            await router.route(payload)
-        assert _replay_rows(db) == rows == 1
-        ingest.release.set()
-        if original == "saturated":
-            await asyncio.wait([first])
-            assert isinstance(first.exception(), EvidenceExecutorSaturatedError)
-            assert _replay_rows(db) == 0
-            # The broker's redelivery, after the reconnect, is admitted.
-            assert (await router.route(payload)).outcome.accepted
-        else:
-            assert (await first).outcome.accepted
-            replayed = (await router.route(payload)).outcome
-            assert isinstance(replayed, InboundRefusal)
-            assert replayed.reason == REFUSE_ENVELOPE_UNAUTHENTICATED
-        assert _replay_rows(db) == 1
-        assert len(ingest.calls) == 1
+    saturated = asyncio.run(router.route(payload))
+    assert isinstance(saturated.outcome, IngestOutcome)
+    assert not saturated.outcome.decided and saturated.acknowledgement is None
+    assert _replay_rows(db) == 1
 
-    asyncio.run(scenario())
+    ingest.saturated = False
+    replayed = asyncio.run(router.route(payload)).outcome
+    assert isinstance(replayed, InboundRefusal)
+    assert replayed.reason == REFUSE_ENVELOPE_UNAUTHENTICATED
+    resigned = json.dumps(
+        _authenticator().sign(
+            envelope,
+            message_type=EVIDENCE_INBOUND_MESSAGE_TYPE,
+            signed_at_ms=json.loads(payload)["auth"]["signed_at_ms"] + 1,
+        )
+    ).encode()
+    assert asyncio.run(router.route(resigned)).outcome.accepted
+    assert _replay_rows(db) == 2
 
 
-def test_the_blocking_route_refuses_a_copy_still_being_routed_unrecorded(tmp_path):
-    """The same rule on `handle_payload`: a copy found in flight is refused in
-    transport, unrecorded, and the original goes on to settle."""
-    import threading
+def test_the_authenticator_cannot_unrecord_a_replay_key():
+    """Never unrecorded is a property of the surface, not of every caller."""
+    from ori.security.gateway_messages import GatewayReplayCache
 
-    from ori.gateway.evidence_inbound import REFUSE_IN_FLIGHT
-
-    db = tmp_path / "replay.db"
-    ingest = _HeldIngest()
-    router = _persisted_router(db, ingest)
-    payload = _signed(_envelope(ARTIFACT_CUSTODY, {"v": 1}))
-    loop = asyncio.new_event_loop()
-    thread = threading.Thread(target=loop.run_forever)
-    thread.start()
-    try:
-        first = asyncio.run_coroutine_threadsafe(router.route(payload), loop)
-        asyncio.run_coroutine_threadsafe(ingest.entered.wait(), loop).result(5)
-
-        copy = router.handle_payload(payload).outcome
-        assert isinstance(copy, InboundRefusal) and copy.reason == REFUSE_IN_FLIGHT
-        assert _replay_rows(db) == 1
-
-        loop.call_soon_threadsafe(ingest.release.set)
-        assert first.result(5).outcome.accepted
-        assert len(ingest.calls) == 1
-    finally:
-        loop.call_soon_threadsafe(loop.stop)
-        thread.join(5)
-        loop.close()
+    assert not hasattr(GatewayMessageAuthenticator, "release")
+    assert not hasattr(GatewayReplayCache, "forget")
 
 
 def test_the_route_writes_replay_keys_off_the_event_loop(tmp_path, monkeypatch):
-    """Each commit and each release is an SQLite commit: on a worker thread,
-    and awaited before the message is acted on."""
+    """Each commit is an SQLite commit: on a worker thread, and awaited before
+    the message is acted on."""
     import threading
 
-    from ori.security.evidence.executor import EvidenceExecutorSaturatedError
     from ori.security.gateway_messages import GatewayReplayCache
 
-    writes: list[tuple[str, int]] = []
-    persist, forget = GatewayReplayCache._persist, GatewayReplayCache.forget
+    writes: list[int] = []
+    persist = GatewayReplayCache._persist
 
     def recorded_persist(self, *args, **kwargs):
-        writes.append(("persist", threading.get_ident()))
+        writes.append(threading.get_ident())
         return persist(self, *args, **kwargs)
 
-    def recorded_forget(self, *args, **kwargs):
-        writes.append(("forget", threading.get_ident()))
-        return forget(self, *args, **kwargs)
-
     monkeypatch.setattr(GatewayReplayCache, "_persist", recorded_persist)
-    monkeypatch.setattr(GatewayReplayCache, "forget", recorded_forget)
-
-    class _SaturatedOnce(_RecordingIngest):
-        saturated = True
-
-        async def accept_async(
-            self, artifact_type: str, artifact: object
-        ) -> IngestOutcome:
-            if self.saturated:
-                self.saturated = False
-                raise EvidenceExecutorSaturatedError("the worker is full")
-            return await super().accept_async(artifact_type, artifact)
-
-    router = _persisted_router(tmp_path / "replay.db", _SaturatedOnce())
+    ingest = _RecordingIngest()
+    router = _persisted_router(tmp_path / "replay.db", ingest)
     payload = _signed(_envelope(ARTIFACT_CUSTODY, {"v": 1}))
 
     async def scenario() -> int:
-        with pytest.raises(EvidenceExecutorSaturatedError):
-            await router.route(payload)
         assert (await router.route(payload)).outcome.accepted
         return threading.get_ident()
 
     loop_thread = asyncio.run(scenario())
-    assert [kind for kind, _ in writes] == ["persist", "forget", "persist"]
-    assert all(thread != loop_thread for _, thread in writes)
-
-
-def _held_persist(monkeypatch):
-    """Hold every replay-key insert until released; record each undo."""
-    import threading
-
-    from ori.security.gateway_messages import GatewayReplayCache
-
-    entered, release, forgotten = (threading.Event() for _ in range(3))
-    persist, forget = GatewayReplayCache._persist, GatewayReplayCache.forget
-
-    def held(self, *args, **kwargs):
-        entered.set()
-        release.wait(5)
-        return persist(self, *args, **kwargs)
-
-    def recorded_forget(self, *args, **kwargs):
-        result = forget(self, *args, **kwargs)
-        forgotten.set()
-        return result
-
-    monkeypatch.setattr(GatewayReplayCache, "_persist", held)
-    monkeypatch.setattr(GatewayReplayCache, "forget", recorded_forget)
-    return entered, release, forgotten, persist
-
-
-def test_a_key_written_while_the_runtime_shuts_down_is_left_unrecorded(
-    tmp_path, monkeypatch
-):
-    """`asyncio.run` cancels every task at shutdown, the write's included; the
-    write still lands on its thread, and is undone there, since nothing was
-    ingested and the broker still holds the message."""
-    import threading
-
-    from ori.security.gateway_messages import GatewayReplayCache
-
-    entered, release, forgotten, persist = _held_persist(monkeypatch)
-    db = tmp_path / "replay.db"
-    ingest = _RecordingIngest()
-    payload = _signed(_envelope(ARTIFACT_CUSTODY, {"v": 1}))
-
-    async def runtime() -> None:
-        router = _persisted_router(db, ingest)
-        asyncio.get_running_loop().create_task(router.route(payload))
-        await asyncio.to_thread(entered.wait, 5)
-        # The write lands only once teardown has begun.
-        threading.Timer(0.2, release.set).start()
-
-    asyncio.run(runtime())
-
-    assert forgotten.wait(5), "the landed write was never undone"
-    assert ingest.calls == [] and _replay_rows(db) == 0
-    monkeypatch.setattr(GatewayReplayCache, "_persist", persist)
-    after_restart = _persisted_router(db, ingest)
-    assert asyncio.run(after_restart.route(payload)).outcome.accepted
-
-
-def test_a_copy_arriving_before_a_cancelled_write_lands_is_left_not_refused(
-    tmp_path, monkeypatch
-):
-    """The key stays held until its write is undone, so the copy is left with
-    the broker; once undone, its redelivery is admitted."""
-    from ori.gateway.evidence_inbound import EvidenceInFlightError
-    from ori.security.gateway_messages import GatewayReplayCache
-
-    entered, release, forgotten, persist = _held_persist(monkeypatch)
-    db = tmp_path / "replay.db"
-    ingest = _RecordingIngest()
-    router = _persisted_router(db, ingest)
-    payload = _signed(_envelope(ARTIFACT_CUSTODY, {"v": 1}))
-
-    async def scenario() -> None:
-        route = asyncio.create_task(router.route(payload))
-        await asyncio.to_thread(entered.wait, 5)
-        route.cancel()
-        await asyncio.wait([route])
-        assert route.cancelled()
-        with pytest.raises(EvidenceInFlightError):
-            await router.route(payload)
-        release.set()
-        await asyncio.to_thread(forgotten.wait, 5)
-        assert forgotten.is_set() and _replay_rows(db) == 0
-        monkeypatch.setattr(GatewayReplayCache, "_persist", persist)
-        assert (await router.route(payload)).outcome.accepted
-        assert len(ingest.calls) == 1
-
-    asyncio.run(scenario())
-
-
-def test_a_route_cancelled_after_its_write_landed_undoes_it(tmp_path, monkeypatch):
-    """The write landed before the route resumed: the route's own abandonment
-    undoes it, since nothing was ingested."""
-    import threading
-
-    from ori.gateway.evidence_inbound import _KeyWrite
-    from ori.security.gateway_messages import GatewayReplayCache
-
-    landed, proceed, undone = threading.Event(), threading.Event(), threading.Event()
-    commit, forget = _KeyWrite.commit, GatewayReplayCache.forget
-    forgotten_on: list[int] = []
-
-    def recorded_forget(self, *args, **kwargs):
-        forgotten_on.append(threading.get_ident())
-        result = forget(self, *args, **kwargs)
-        undone.set()
-        return result
-
-    monkeypatch.setattr(GatewayReplayCache, "forget", recorded_forget)
-
-    def landed_then_parked(self):
-        commit(self)
-        landed.set()
-        proceed.wait(5)
-
-    monkeypatch.setattr(_KeyWrite, "commit", landed_then_parked)
-    db = tmp_path / "replay.db"
-    ingest = _RecordingIngest()
-    router = _persisted_router(db, ingest)
-    payload = _signed(_envelope(ARTIFACT_CUSTODY, {"v": 1}))
-
-    async def scenario() -> None:
-        route = asyncio.create_task(router.route(payload))
-        await asyncio.to_thread(landed.wait, 5)
-        assert _replay_rows(db) == 1
-        route.cancel()
-        await asyncio.wait([route])
-        assert route.cancelled()
-        proceed.set()
-        await asyncio.to_thread(undone.wait, 5)
-        assert forgotten_on and threading.get_ident() not in forgotten_on, (
-            "the undo wrote on the event loop"
-        )
-        await wait_until(lambda: not router._in_flight, what="the key unheld")
-        assert _replay_rows(db) == 0 and ingest.calls == []
-        monkeypatch.setattr(_KeyWrite, "commit", commit)
-        assert (await router.route(payload)).outcome.accepted
-
-    asyncio.run(scenario())
-
-
-@pytest.mark.parametrize("path", ["commit", "release on saturation"])
-def test_a_key_write_still_queued_for_a_worker_runs_when_its_route_is_cancelled(
-    tmp_path, path
-):
-    """Every worker busy, the write still waiting when the route is cancelled:
-    it runs once a worker frees, so nothing stays recorded or held."""
-    import concurrent.futures
-    import threading
-
-    from ori.security.evidence.executor import EvidenceExecutorSaturatedError
-
-    db = tmp_path / "replay.db"
-    saturating = path != "commit"
-    busy, free = threading.Event(), threading.Event()
-    saturate = asyncio.Event()
-
-    class _Saturating(_RecordingIngest):
-        async def accept_async(
-            self, artifact_type: str, artifact: object
-        ) -> IngestOutcome:
-            await saturate.wait()
-            raise EvidenceExecutorSaturatedError("the worker is full")
-
-    ingest = _Saturating() if saturating else _RecordingIngest()
-    router = _persisted_router(db, ingest)
-    payload = _signed(_envelope(ARTIFACT_CUSTODY, {"v": 1}))
-
-    def occupy() -> None:
-        busy.set()
-        free.wait(5)
-
-    async def scenario() -> None:
-        loop = asyncio.get_running_loop()
-        loop.set_default_executor(concurrent.futures.ThreadPoolExecutor(1))
-        route: asyncio.Task[Any] | None = None
-        if saturating:
-            # Committed with the worker free; it then waits in ingest.
-            route = asyncio.create_task(router.route(payload))
-            await wait_until(lambda: _replay_rows(db) == 1, what="the commit")
-        blocker = loop.run_in_executor(None, occupy)
-        await wait_until(busy.is_set, what="the only worker to be busy")
-        if saturating:
-            saturate.set()
-        else:
-            route = asyncio.create_task(router.route(payload))
-        assert route is not None
-        # The route reaches its write, which queues behind the busy worker.
-        for _ in range(5):
-            await asyncio.sleep(0)
-        route.cancel()
-        await asyncio.wait([route])
-        assert route.cancelled()
-        free.set()
-        assert await blocker is None
-        await loop.run_in_executor(None, lambda: None)  # the queue has drained
-        assert _replay_rows(db) == 0
-        assert not router._in_flight, "a key is held with nothing left to release it"
-
-    asyncio.run(scenario())
+    assert len(writes) == 1 and loop_thread not in writes
+    assert len(ingest.calls) == 1, "recorded before it was acted on, then acted on"
