@@ -877,7 +877,7 @@ gateway:
     shared_secret_env: GATEWAY_SHARED_SECRET
     previous_shared_secret_env: ""
     max_clock_skew_ms: 300000
-    replay_ttl_ms: 300000
+    replay_ttl_ms: 300000 # Minimum from receipt; also retained until the envelope is stale.
   encryption:
     enabled: false
   node_heartbeat:

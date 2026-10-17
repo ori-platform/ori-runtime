@@ -55,6 +55,12 @@ from ori.gateway.evidence_outbound import (
     MqttEvidenceOutboundPublisher,
     artifact_digest,
 )
+from ori.gateway.payload_bounds import (
+    EVIDENCE_INBOUND,
+    EVIDENCE_OUTBOUND_ACK,
+    INGRESS_RATES,
+    RATE_EXCEEDED,
+)
 from ori.network.events import OriEvent, SensorReading
 from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.reasoning.dispatch_coordinator import DispatchCoordinator
@@ -1244,10 +1250,12 @@ async def test_the_broker_redelivers_what_the_route_had_no_room_for(
             on_message = subscriber._on_message
             factory = evidence_inbound._default_client_factory
 
-            def observed(client: Any, userdata: Any, message: Any) -> None:
+            def observed(
+                session: Any, client: Any, userdata: Any, message: Any
+            ) -> None:
                 body = json.loads(message.payload)
                 arrivals.append((int(body["artifact"]["n"]), bool(message.dup)))
-                on_message(client, userdata, message)
+                on_message(session, client, userdata, message)
 
             def client_factory(**kwargs: Any) -> Any:
                 client = factory(**kwargs)
@@ -1563,7 +1571,14 @@ class TestTheInFlightSlots:
             assert ran, "the queued trip never ran"
             if latency_bounds_apply():
                 assert ran[0] - unblocked < _TRIP_BOUND_S, ran[0] - unblocked
-            assert subscriber.shed_count > 1000, subscriber.shed_count
+            # Refused at the in-flight bound or, earlier, at the family's rate.
+            refused = (
+                subscriber.shed_count + subscriber._ingress.refusals()[RATE_EXCEEDED]
+            )
+            assert refused > 1000, refused
+            # The slots still shed what the rate admits past them.
+            admitted = INGRESS_RATES[EVIDENCE_INBOUND].burst
+            assert subscriber.shed_count >= admitted - INBOUND_IN_FLIGHT_BOUND
             assert peak <= INBOUND_IN_FLIGHT_BOUND, peak
             site.release()
             await wait_until(
@@ -1619,8 +1634,15 @@ class TestTheInFlightSlots:
                 time.sleep(0.3)
                 sender.join(_PROMPT_S)
                 await asyncio.sleep(0.1)
-            assert site.publisher.acks_shed > 1000, site.publisher.acks_shed
-            assert peak <= evidence_outbound.ACK_IN_FLIGHT_BOUND, peak
+            refused = (
+                site.publisher.acks_shed
+                + site.publisher._ingress.refusals()[RATE_EXCEEDED]
+            )
+            assert refused > 1000, refused
+            admitted = INGRESS_RATES[EVIDENCE_OUTBOUND_ACK].burst
+            bound = evidence_outbound.ACK_IN_FLIGHT_BOUND
+            assert site.publisher.acks_shed >= admitted - bound
+            assert peak <= bound, peak
             site.release()
             await wait_until(
                 lambda: site.publisher._acks_in_flight == 0,
@@ -1690,7 +1712,8 @@ class TestTheInFlightSlots:
             )
             assert subscriber._in_flight == INBOUND_IN_FLIGHT_BOUND
             with patch.object(evidence_inbound, "_RECONNECT_MIN_S", 0.01):
-                subscriber._signal_lost()
+                assert subscriber._session is not None
+                subscriber._signal_lost(subscriber._session)
                 await wait_until(
                     lambda: subscriber.connected is False,
                     what="subscriber.connected is False",

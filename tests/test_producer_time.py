@@ -218,6 +218,7 @@ async def _export(store: StateStore, export_type: str, **fields: Any) -> list[di
     }
     request.update(fields)
     response = await _responder(store).handle_request(request)
+    assert response is not None
     assert response.error is None, response.error
     return response.items
 

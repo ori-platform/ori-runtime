@@ -565,7 +565,7 @@ def test_a_hostile_envelope_on_the_wire_is_released_once_and_unacknowledged(
     asyncio.run(scenario())
     assert client.acked == [9]
     assert client.published == []
-    assert subscriber._redelivery_owed is False
+    assert subscriber._session is not None and subscriber._session.owed is False
 
 
 def test_an_admission_failure_no_rule_anticipated_is_a_transport_refusal(
@@ -579,7 +579,7 @@ def test_an_admission_failure_no_rule_anticipated_is_a_transport_refusal(
     def broken(*_args: Any, **_kwargs: Any) -> Any:
         raise RuntimeError("a verifier defect")
 
-    monkeypatch.setattr(router._message_auth, "verify", broken)
+    monkeypatch.setattr(router._message_auth, "authenticate", broken)
     routed = asyncio.run(router.route(_hostile_envelope(base, "valid_shape")))
 
     assert isinstance(routed.outcome, InboundRefusal)

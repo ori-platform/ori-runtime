@@ -14,10 +14,21 @@ import asyncio
 import inspect
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable
 
 from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_url
+from ori.gateway.payload_bounds import (
+    EXPORT_REQUEST,
+    EXPORT_RESPONSE,
+    IN_FLIGHT_EXCEEDED,
+    IngressBound,
+    bounded_error,
+    fits,
+    fitting_count,
+    routing_id,
+)
+from ori.gateway.route_io import Slots
 from ori.network.producer_time import PRODUCER_TIMES, read_producer_time
 from ori.security.gateway_messages import (
     GatewayMessageAuthenticator,
@@ -53,6 +64,10 @@ SENSITIVE_EXPORT_TYPES = {
 MAX_EXPORT_LIMIT = 1000
 MAX_SENSOR_HISTORY_SOURCE_ROWS = 10_000
 DEFAULT_SENSOR_BUCKET_MS = 0
+ITEM_EXCEEDS_PAYLOAD_MAXIMUM = "item_exceeds_payload_maximum"
+#: Export requests being answered at once. A stalled store would otherwise
+#: let requests the rate admits wait without limit; past it one is dropped.
+EXPORT_IN_FLIGHT_BOUND = 4
 
 
 @dataclass(frozen=True)
@@ -64,6 +79,9 @@ class ExportResponse:
     next_page_token: str = ""
     complete: bool = True
     error: str | None = None
+    #: The index of `items[0]` in the export, so a page cut to fit continues
+    #: from the first item it no longer holds. Not on the wire.
+    page_offset: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -123,114 +141,88 @@ class GatewayExportResponder:
         return EXPORT_REQUEST_TOPIC_TEMPLATE.format(device_id=self._device_id)
 
     def response_topic(self, request_id: str) -> str:
-        safe_request_id = _safe_topic_segment(str(request_id).strip()) or "invalid"
+        if not routing_id(request_id):
+            raise ValueError("request_id is outside gateway-api/v2's routing form")
         return EXPORT_RESPONSE_TOPIC_TEMPLATE.format(
-            device_id=self._device_id,
-            request_id=safe_request_id,
+            device_id=self._device_id, request_id=request_id
         )
 
     async def handle_payload(
         self, payload: bytes | str | dict[str, Any]
-    ) -> ExportResponse:
-        try:
-            request = self._decode_payload(payload)
-            if self._message_auth is not None:
-                expected_request_id = str(request.get("request_id", "") or "")
+    ) -> ExportResponse | None:
+        """The response to *payload*, or None when it is refused unanswered.
+
+        A request whose `request_id` is not JSON text in gateway-api/v2's
+        routing form names no response topic that can be relied on, so it is
+        not answered, as an oversized payload is not.
+        """
+        request = self._decode_payload(payload)
+        if request is None or not routing_id(request.get("request_id")):
+            return None
+        request_id = str(request["request_id"])
+        if self._message_auth is not None:
+            try:
                 request = self._message_auth.verify(
                     request,
                     message_type="export_request",
                     expected_device_id=self._device_id,
-                    expected_request_id=expected_request_id or None,
+                    expected_request_id=request_id,
                 )
-            return await self.handle_request(request)
-        except GatewayMessageAuthError as exc:
-            request = self._decode_payload_for_error(payload)
-            return self._error_response(
-                request_id=str(request.get("request_id", "invalid") or "invalid"),
-                export_type=str(request.get("export_type", "unknown") or "unknown"),
-                error=f"auth_failed: {exc}",
-            )
-        except _ExportRequestError as exc:
-            return self._error_response(
-                request_id=exc.request_id,
-                export_type=exc.export_type,
-                error=exc.message,
-            )
-        except Exception as exc:
-            logger.exception("[gateway-export] unhandled request failure")
-            return self._error_response(
-                request_id="invalid",
-                export_type="unknown",
-                error=f"internal_error: {exc}",
-            )
+            except GatewayMessageAuthError as exc:
+                return self._error_response(
+                    request_id=request_id,
+                    export_type=_echoed_export_type(request),
+                    error=f"auth_failed: {exc}",
+                )
+            except Exception:
+                logger.exception("[gateway-export] verifying a request failed")
+                return self._error_response(
+                    request_id=request_id,
+                    export_type=_echoed_export_type(request),
+                    error="internal_error",
+                )
+        return await self.handle_request(request)
 
-    async def handle_request(self, request: dict[str, Any]) -> ExportResponse:
+    async def handle_request(self, request: dict[str, Any]) -> ExportResponse | None:
+        if not routing_id(request.get("request_id")):
+            return None
+        request_id = str(request["request_id"])
         try:
-            return await self._handle_request(request)
+            return await self._handle_request(request, request_id)
         except _ExportRequestError as exc:
-            return self._error_response(
-                request_id=exc.request_id,
-                export_type=exc.export_type,
-                error=exc.message,
-            )
-        except Exception as exc:
-            logger.exception("[gateway-export] unhandled request failure")
-            request_id = str(request.get("request_id", "invalid") or "invalid")
-            export_type = str(request.get("export_type", "unknown") or "unknown")
             return self._error_response(
                 request_id=request_id,
-                export_type=export_type,
-                error=f"internal_error: {exc}",
+                export_type=_echoed_export_type(request),
+                error=exc.message,
+            )
+        except Exception:
+            logger.exception("[gateway-export] unhandled request failure")
+            return self._error_response(
+                request_id=request_id,
+                export_type=_echoed_export_type(request),
+                error="internal_error",
             )
 
-    async def _handle_request(self, request: dict[str, Any]) -> ExportResponse:
-        request_id = _required_text(request, "request_id")
-        if _safe_topic_segment(request_id) != request_id:
-            raise _ExportRequestError(
-                "request_id must not contain MQTT separators or wildcards",
-                request_id="invalid",
-                export_type=str(request.get("export_type", "unknown") or "unknown"),
-            )
+    async def _handle_request(
+        self, request: dict[str, Any], request_id: str
+    ) -> ExportResponse:
         export_type = _required_text(request, "export_type")
         if export_type not in SUPPORTED_EXPORT_TYPES:
-            raise _ExportRequestError(
-                f"unsupported export_type: {export_type}",
-                request_id=request_id,
-                export_type=export_type,
-            )
+            raise _ExportRequestError("unsupported export_type")
 
         requested_device_id = _required_text(request, "device_id")
         if requested_device_id != self._device_id:
-            raise _ExportRequestError(
-                "device_id does not match this runtime",
-                request_id=request_id,
-                export_type=export_type,
-            )
+            raise _ExportRequestError("device_id does not match this runtime")
 
-        try:
-            limit = _bounded_limit(request.get("limit", 100))
-            offset = _page_offset(request.get("page_token", ""))
-            since_ms = _optional_int(request.get("since_ms"), "since_ms")
-            until_ms = _optional_int(request.get("until_ms"), "until_ms")
-        except _ExportRequestError as exc:
-            raise _ExportRequestError(
-                exc.message,
-                request_id=request_id,
-                export_type=export_type,
-            ) from exc
+        limit = _bounded_limit(request.get("limit", 100))
+        offset = _page_offset(request.get("page_token", ""))
+        since_ms = _optional_int(request.get("since_ms"), "since_ms")
+        until_ms = _optional_int(request.get("until_ms"), "until_ms")
         if since_ms is not None and until_ms is not None and until_ms < since_ms:
-            raise _ExportRequestError(
-                "until_ms must be >= since_ms",
-                request_id=request_id,
-                export_type=export_type,
-            )
+            raise _ExportRequestError("until_ms must be >= since_ms")
         params = request.get("params") or {}
         if not isinstance(params, dict):
-            raise _ExportRequestError(
-                "params must be an object",
-                request_id=request_id,
-                export_type=export_type,
-            )
+            raise _ExportRequestError("params must be an object")
 
         if export_type == "health":
             snapshot = self._health_snapshot_provider()
@@ -299,36 +291,19 @@ class GatewayExportResponder:
     ) -> ExportResponse:
         sensor_id = str(params.get("sensor_id", "") or "").strip()
         if not sensor_id:
-            raise _ExportRequestError(
-                "params.sensor_id is required",
-                request_id=request_id,
-                export_type=export_type,
-            )
+            raise _ExportRequestError("params.sensor_id is required")
         start_ms = since_ms
         end_ms = until_ms
         if start_ms is None or end_ms is None:
             raise _ExportRequestError(
-                "since_ms and until_ms are required for sensor_history",
-                request_id=request_id,
-                export_type=export_type,
+                "since_ms and until_ms are required for sensor_history"
             )
-        try:
-            bucket_ms = _optional_int(
-                params.get("bucket_ms", DEFAULT_SENSOR_BUCKET_MS), "params.bucket_ms"
-            )
-        except _ExportRequestError as exc:
-            raise _ExportRequestError(
-                exc.message,
-                request_id=request_id,
-                export_type=export_type,
-            ) from exc
+        bucket_ms = _optional_int(
+            params.get("bucket_ms", DEFAULT_SENSOR_BUCKET_MS), "params.bucket_ms"
+        )
         bucket_ms = int(bucket_ms or 0)
         if bucket_ms < 0:
-            raise _ExportRequestError(
-                "params.bucket_ms must be >= 0",
-                request_id=request_id,
-                export_type=export_type,
-            )
+            raise _ExportRequestError("params.bucket_ms must be >= 0")
 
         source_limit = MAX_SENSOR_HISTORY_SOURCE_ROWS
         rows = await self._state_store.export_sensor_history(
@@ -366,9 +341,41 @@ class GatewayExportResponder:
             items=page,
             next_page_token=next_page_token,
             complete=not bool(next_page_token),
+            page_offset=offset,
         )
 
-    def _decode_payload(self, payload: bytes | str | dict[str, Any]) -> dict[str, Any]:
+    def encode(self, response: ExportResponse) -> bytes:
+        """*response* as published, its page cut to its topic's maximum.
+
+        A page holds as many items as fit after encryption, encoding and
+        `auth`, and its `next_page_token` continues from the first it no longer
+        holds. An item that does not fit by itself ends the export with
+        `item_exceeds_payload_maximum` (gateway-api/v2 Payload Size).
+        """
+        body = self._encode(response)
+        if fits(EXPORT_RESPONSE, body):
+            return body
+        count = fitting_count(
+            len(response.items),
+            lambda n: fits(EXPORT_RESPONSE, self._encode(_first_items(response, n))),
+        )
+        if count == 0:
+            return self._encode(
+                self._error_response(
+                    request_id=response.request_id,
+                    export_type=response.export_type,
+                    error=ITEM_EXCEEDS_PAYLOAD_MAXIMUM,
+                )
+            )
+        return self._encode(_first_items(response, count))
+
+    def _encode(self, response: ExportResponse) -> bytes:
+        return response.to_json_bytes(self._message_auth, self._message_encryptor)
+
+    def _decode_payload(
+        self, payload: bytes | str | dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """The request object, or None for a payload that is not one."""
         if isinstance(payload, dict):
             return payload
         try:
@@ -379,19 +386,9 @@ class GatewayExportResponder:
             decoded = json.loads(text)
             # A lone surrogate decodes but cannot be echoed into a response.
             json.dumps(decoded, ensure_ascii=False).encode("utf-8")
-        except (ValueError, RecursionError) as exc:
-            raise _ExportRequestError("request payload must be JSON") from exc
-        if not isinstance(decoded, dict):
-            raise _ExportRequestError("request payload must be a JSON object")
-        return decoded
-
-    def _decode_payload_for_error(
-        self, payload: bytes | str | dict[str, Any]
-    ) -> dict[str, Any]:
-        try:
-            return self._decode_payload(payload)
-        except Exception:
-            return {}
+        except (ValueError, RecursionError):
+            return None
+        return decoded if isinstance(decoded, dict) else None
 
     def _error_response(
         self,
@@ -401,13 +398,13 @@ class GatewayExportResponder:
         error: str,
     ) -> ExportResponse:
         return ExportResponse(
-            request_id=request_id or "invalid",
-            export_type=export_type or "unknown",
+            request_id=request_id,
+            export_type=export_type,
             device_id=self._device_id,
             items=[],
             next_page_token="",
             complete=True,
-            error=error,
+            error=bounded_error(error),
         )
 
 
@@ -429,6 +426,10 @@ class MqttGatewayExportServer:
         self._client_factory = client_factory or _default_client_factory
         self._client: Any = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._ingress = IngressBound(EXPORT_REQUEST)
+        # Taken in the client's callback thread before anything is scheduled,
+        # and held until the response is published or has failed.
+        self._slots = Slots(EXPORT_IN_FLIGHT_BOUND)
 
     async def serve_until(self, shutdown_event: asyncio.Event) -> None:
         self._loop = asyncio.get_running_loop()
@@ -493,37 +494,61 @@ class MqttGatewayExportServer:
             logger.warning("[gateway-export] message received before event loop ready")
             return
         payload = getattr(message, "payload", b"")
-        future = asyncio.run_coroutine_threadsafe(
-            self._publish_response(client, payload), loop
-        )
-        future.add_done_callback(_log_future_failure)
+        if self._ingress.admit(payload) is not None:
+            return
+        if not self._slots.try_take():
+            self._ingress.refuse(IN_FLIGHT_EXCEEDED)
+            return
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self._publish_response(client, payload), loop
+            )
+        except Exception:
+            self._slots.give_back()
+            raise
+        future.add_done_callback(self._settled)
+
+    def _settled(self, future: Any) -> None:
+        self._slots.give_back()
+        _log_future_failure(future)
 
     async def _publish_response(self, client: Any, payload: bytes) -> None:
         response = await self._responder.handle_payload(payload)
+        if response is None:
+            return
         topic = self._responder.response_topic(response.request_id)
-        await asyncio.to_thread(
-            client.publish,
-            topic,
-            response.to_json_bytes(
-                self._responder._message_auth,
-                self._responder._message_encryptor,
-            ),
-            qos=1,
-        )
+        # Off the loop: fitting a page re-encodes, encrypts and signs it.
+        body = await asyncio.to_thread(self._responder.encode, response)
+        await asyncio.to_thread(client.publish, topic, body, qos=1)
 
 
 class _ExportRequestError(ValueError):
-    def __init__(
-        self,
-        message: str,
-        *,
-        request_id: str = "invalid",
-        export_type: str = "unknown",
-    ) -> None:
+    """A request answered with an error; *message* is fixed text, never input."""
+
+    def __init__(self, message: str) -> None:
         super().__init__(message)
         self.message = message
-        self.request_id = request_id or "invalid"
-        self.export_type = export_type or "unknown"
+
+
+def _echoed_export_type(request: dict[str, Any]) -> str:
+    """The request's `export_type` if the runtime serves it, else `unknown`.
+
+    Echoing an unsupported one would carry gateway text into a reply that must
+    fit the 4096-byte floor.
+    """
+    export_type = request.get("export_type")
+    if isinstance(export_type, str) and export_type in SUPPORTED_EXPORT_TYPES:
+        return export_type
+    return "unknown"
+
+
+def _first_items(response: ExportResponse, count: int) -> ExportResponse:
+    return replace(
+        response,
+        items=response.items[:count],
+        next_page_token=str(response.page_offset + count),
+        complete=False,
+    )
 
 
 def _default_client_factory(*, client_id: str) -> Any:
@@ -541,20 +566,16 @@ def _default_client_factory(*, client_id: str) -> Any:
 
 
 def _required_text(request: dict[str, Any], key: str) -> str:
-    value = str(request.get(key, "") or "").strip()
+    raw = request.get(key, "")
+    if not isinstance(raw, str):
+        # Taken only as text: str() of a value nested past the recursion
+        # limit raises, and of a list or object names no export.
+        raise _ExportRequestError(f"{key} must be text")
+    value = raw.strip()
     if not value:
         raise _ExportRequestError(f"{key} is required")
     if len(value) > 128:
         raise _ExportRequestError(f"{key} is too long")
-    return value
-
-
-def _safe_topic_segment(value: str) -> str:
-    value = str(value or "").strip()
-    if not value or len(value) > 128:
-        return ""
-    if any(ch in value for ch in "/+#"):
-        return ""
     return value
 
 
@@ -655,6 +676,9 @@ def _bucket_sensor_rows(
 
 
 def _log_future_failure(future: Any) -> None:
+    if future.cancelled():
+        # Cancelled at shutdown: nothing failed.
+        return
     try:
         future.result()
     except Exception:

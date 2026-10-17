@@ -1155,3 +1155,93 @@ def test_the_vendored_fixture_matches_the_message_types_the_route_uses():
     router = EvidenceInboundRouter(device_id="site-a-edge-01", ingest=None)
     assert _fixture_case("inbound_custody_acknowledgement")["topic"] == router.topic
     assert _fixture_case("ingest_acknowledgement_applied")["topic"] == router.ack_topic
+
+
+def _replay_rows(db: pathlib.Path) -> int:
+    import sqlite3
+
+    with sqlite3.connect(db) as connection:
+        return connection.execute(
+            "SELECT COUNT(*) FROM gateway_replay_cache"
+        ).fetchone()[0]
+
+
+def _persisted_router(db: pathlib.Path, ingest=None) -> EvidenceInboundRouter:
+    from ori.security.gateway_messages import GatewayReplayCache
+
+    return EvidenceInboundRouter(
+        device_id=DEVICE,
+        ingest=ingest,
+        message_auth=GatewayMessageAuthenticator(
+            GatewayMessageAuthConfig(shared_secret=ENVELOPE_SECRET),
+            replay_cache=GatewayReplayCache(db_path=str(db)),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "envelope, reason",
+    [
+        (_envelope("not_an_artifact", {"v": 1}), REFUSE_UNKNOWN_ARTIFACT_TYPE),
+        (
+            {"device_id": DEVICE, "artifact_type": ARTIFACT_CUSTODY},
+            REFUSE_MISSING_ARTIFACT,
+        ),
+        (_envelope(ARTIFACT_CUSTODY, {"v": 1}), REFUSE_INGEST_UNAVAILABLE),
+    ],
+)
+def test_an_authenticated_message_refused_in_transport_adds_no_replay_state(
+    tmp_path, envelope, reason
+):
+    """gateway-api/v2 Payload Volume: it answers nothing the device holds."""
+    db = tmp_path / "replay.db"
+    router = _persisted_router(db)
+    payload = _signed(envelope)
+
+    for _ in range(2):
+        outcome = _route_outcome(router, payload)
+        assert isinstance(outcome, InboundRefusal) and outcome.reason == reason
+    assert _replay_rows(db) == 0
+
+
+def test_an_admitted_message_is_recorded_once_and_its_replay_refused(tmp_path):
+    db = tmp_path / "replay.db"
+    ingest = _RecordingIngest()
+    router = _persisted_router(db, ingest)
+    payload = _signed(_envelope(ARTIFACT_CUSTODY, {"v": 1}))
+
+    assert _route_outcome(router, payload).accepted
+    assert _replay_rows(db) == 1
+    replayed = _route_outcome(router, payload)
+    assert isinstance(replayed, InboundRefusal)
+    assert replayed.reason == REFUSE_ENVELOPE_UNAUTHENTICATED
+    assert len(ingest.calls) == 1
+
+
+def test_a_message_the_saturated_worker_refused_is_admitted_when_redelivered(tmp_path):
+    """Refused at submission, it was never acted on: its key is released, so
+    the broker's redelivery of the same bytes is not a replay."""
+    from ori.security.evidence.executor import EvidenceExecutorSaturatedError
+
+    db = tmp_path / "replay.db"
+
+    class _Saturating(_RecordingIngest):
+        saturated = True
+
+        async def accept_async(
+            self, artifact_type: str, artifact: object
+        ) -> IngestOutcome:
+            if self.saturated:
+                raise EvidenceExecutorSaturatedError("the worker is full")
+            return await super().accept_async(artifact_type, artifact)
+
+    ingest = _Saturating()
+    router = _persisted_router(db, ingest)
+    payload = _signed(_envelope(ARTIFACT_CUSTODY, {"v": 1}))
+
+    with pytest.raises(EvidenceExecutorSaturatedError):
+        asyncio.run(router.route(payload))
+    assert _replay_rows(db) == 0
+    ingest.saturated = False
+    assert asyncio.run(router.route(payload)).outcome.accepted
+    assert _replay_rows(db) == 1

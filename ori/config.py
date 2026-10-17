@@ -1141,14 +1141,19 @@ def config_env_placeholders(config_path: str) -> frozenset[str] | None:
 # ─── Section parsers ──────────────────────────────────────────────────────────
 
 
+_DEVICE_ID = re.compile(r"[A-Za-z0-9._-]{1,128}")
+
+
 def _parse_device(data: Any) -> DeviceConfig:
     if not isinstance(data, dict):
         raise ConfigValidationError("'device' section must be a mapping.")
 
     device_id = _require_str(data, "id", "device")
-    if " " in device_id:
+    if _DEVICE_ID.fullmatch(device_id) is None:
+        # runtime-config/v2's pattern, which gateway-api/v2 sizes every topic by.
         raise ConfigValidationError(
-            f"device.id must not contain spaces, got: '{device_id}'"
+            "device.id must be 1 to 128 characters from A-Z, a-z, 0-9, '.', "
+            f"'_' and '-', got: {device_id!r}"
         )
 
     deployment_type = str(data.get("deployment_type", "pi")).strip().lower()
@@ -1863,7 +1868,7 @@ def _parse_gateway(data: Any) -> GatewayConfig:
     try:
         max_clock_skew_ms = int(auth.get("max_clock_skew_ms", 300_000))
         replay_ttl_ms = int(auth.get("replay_ttl_ms", 300_000))
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise ConfigValidationError(
             "gateway.auth.max_clock_skew_ms and gateway.auth.replay_ttl_ms must be integers"
         ) from exc

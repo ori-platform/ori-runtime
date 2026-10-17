@@ -9,11 +9,19 @@ import asyncio
 import json
 import logging
 import math
+import threading
 import uuid
 from dataclasses import dataclass
 from typing import Any, Callable
 
 from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_url
+from ori.gateway.payload_bounds import (
+    REASONING_REQUEST,
+    REASONING_RESPONSE,
+    IngressBound,
+    fits,
+    routing_id,
+)
 from ori.network.events import OriEvent, ReasoningResult, history_as_of
 from ori.network.producer_time import NOT_REPORTED, UNKNOWN, read_producer_time
 from ori.security.gateway_messages import (
@@ -35,6 +43,7 @@ logger = logging.getLogger(__name__)
 REASONING_REQUEST_TOPIC_TEMPLATE = "ori/{device_id}/reasoning/request"
 REASONING_RESPONSE_TOPIC_TEMPLATE = "ori/{device_id}/reasoning/response"
 DEFAULT_GATEWAY_REASONING_TIMEOUT_MS = 10_000
+MAX_GATEWAY_REASONING_TIMEOUT_MS = 86_400_000
 MAX_CONTEXT_HISTORY_POINTS = 10
 _VALID_ACTION_TIERS = {"A", "B", "C", "D"}
 # The greatest receipt gateway-api/v2 admits: an integer a JSON double holds exactly.
@@ -102,15 +111,18 @@ class MqttGatewayReasoner:
         if not _PAHO_AVAILABLE or mqtt is None:
             raise RuntimeError("paho-mqtt is not installed")
         self._broker = parse_gateway_broker_url(broker_url, tls_config=tls_config)
-        self._device_id = _validate_topic_segment(
-            device_id,
-            "device_id",
-            strict_ascii=False,
+        if not routing_id(device_id):
+            raise ValueError("device_id is outside gateway-api/v2's routing form")
+        self._device_id = device_id
+        # Any integer runtime-config/v2 admits, kept to a wait the loop can
+        # schedule and the gateway can read: a day at most.
+        self._timeout_ms = max(
+            1, min(int(timeout_ms), MAX_GATEWAY_REASONING_TIMEOUT_MS)
         )
-        self._timeout_ms = max(1, int(timeout_ms))
         self._client_factory = client_factory or _default_client_factory
         self._request_id_factory = request_id_factory or (lambda: uuid.uuid4().hex)
         self._message_auth = message_auth
+        self._ingress = IngressBound(REASONING_RESPONSE)
 
     @property
     def request_topic(self) -> str:
@@ -145,12 +157,9 @@ class MqttGatewayReasoner:
         rule_result: Any,
         state_store: Any,
     ) -> GatewayReasoningRequest:
-        request_id = _validate_topic_segment(
-            str(self._request_id_factory() or ""),
-            "request_id",
-            allow_hyphen=True,
-            allow_underscore=True,
-        )
+        request_id = self._request_id_factory()
+        if not routing_id(request_id):
+            raise ValueError("request_id is outside gateway-api/v2's routing form")
         action_tier_hint = str(getattr(rule_result, "action_tier", "A") or "A")
         if action_tier_hint not in _VALID_ACTION_TIERS:
             action_tier_hint = "A"
@@ -182,6 +191,13 @@ class MqttGatewayReasoner:
         )
 
     async def _round_trip(self, request: GatewayReasoningRequest) -> dict[str, Any]:
+        body = request.to_json_bytes(self._message_auth)
+        if not fits(REASONING_REQUEST, body):
+            # Never published: the escalation is unavailable now, not after
+            # waiting out a timeout for an answer that cannot come.
+            raise GatewayReasoningError(
+                "gateway reasoning request exceeds its payload maximum"
+            )
         loop = asyncio.get_running_loop()
         connected = loop.create_future()
         response = loop.create_future()
@@ -209,9 +225,20 @@ class MqttGatewayReasoner:
             connected_client.subscribe(self.response_topic)
             loop.call_soon_threadsafe(_set_future_result, connected, True)
 
+        # Set on this client's network thread once the request is answered:
+        # a later answer, authentic or not, is read no further and records
+        # nothing (gateway-api/v2 Payload Volume).
+        answered = threading.Event()
+        # Held while an answer is checked against `answered` and recorded, and
+        # by the end of the round trip, so neither can slip between the other.
+        settling = threading.Lock()
+
         def _on_message(_client: Any, _userdata: Any, message: Any) -> None:
+            raw = getattr(message, "payload", b"")
+            if self._ingress.admit(raw) is not None:
+                return
             try:
-                payload = json.loads(getattr(message, "payload", b"").decode("utf-8"))
+                payload = json.loads(raw.decode("utf-8"))
             except Exception:
                 logger.warning(
                     "[gateway-reasoning] ignoring malformed response payload"
@@ -229,31 +256,47 @@ class MqttGatewayReasoner:
             ):
                 # Authenticated, verification binds the device; unauthenticated,
                 # the body must still name the device its topic does.
+                answered.set()
                 loop.call_soon_threadsafe(
                     _set_future_exception,
                     response,
                     GatewayReasoningError("gateway response names another device"),
                 )
                 return
+            claim = None
+            failure: GatewayMessageAuthError | None = None
             if self._message_auth is not None:
                 try:
-                    payload = self._message_auth.verify(
+                    claim = self._message_auth.authenticate(
                         payload,
                         message_type="reasoning_response",
                         expected_device_id=self._device_id,
                         expected_request_id=request.request_id,
                     )
                 except GatewayMessageAuthError as exc:
-                    logger.warning(
-                        "[gateway-reasoning] rejecting unauthenticated response: %s",
-                        exc,
-                    )
-                    loop.call_soon_threadsafe(
-                        _set_future_exception,
-                        response,
-                        GatewayReasoningError(f"gateway response auth failed: {exc}"),
-                    )
+                    failure = exc
+            with settling:
+                if answered.is_set():
                     return
+                if claim is not None:
+                    try:
+                        self._message_auth.commit(claim)  # type: ignore[union-attr]
+                    except GatewayMessageAuthError as exc:
+                        failure = exc
+                    else:
+                        payload = claim.payload
+                answered.set()
+            if failure is not None:
+                logger.warning(
+                    "[gateway-reasoning] rejecting unauthenticated response: %s",
+                    failure,
+                )
+                loop.call_soon_threadsafe(
+                    _set_future_exception,
+                    response,
+                    GatewayReasoningError(f"gateway response auth failed: {failure}"),
+                )
+                return
             loop.call_soon_threadsafe(_set_future_result, response, payload)
 
         client.on_connect = _on_connect
@@ -276,7 +319,7 @@ class MqttGatewayReasoner:
             publish_info = await asyncio.to_thread(
                 client.publish,
                 self.request_topic,
-                request.to_json_bytes(self._message_auth),
+                body,
                 1,
                 False,
             )
@@ -289,6 +332,10 @@ class MqttGatewayReasoner:
         except asyncio.TimeoutError as exc:
             raise GatewayReasoningError("gateway reasoning response timeout") from exc
         finally:
+            # Over, however it ended: an answer arriving while the client
+            # stops is for nothing pending.
+            with settling:
+                answered.set()
             try:
                 await asyncio.to_thread(client.loop_stop)
             except Exception:
@@ -454,36 +501,3 @@ def _default_client_factory(*, client_id: str) -> Any:
     except TypeError:
         kwargs.pop("callback_api_version", None)
         return mqtt.Client(**kwargs)
-
-
-def _validate_topic_segment(
-    value: str,
-    name: str,
-    *,
-    allow_hyphen: bool = False,
-    allow_underscore: bool = False,
-    strict_ascii: bool = True,
-) -> str:
-    raw = str(value or "")
-    value = raw.strip()
-    if not value:
-        raise ValueError(f"{name} must not be empty")
-    if value != raw:
-        raise ValueError(f"{name} must not contain leading or trailing whitespace")
-    if any(ch in value for ch in "/+#"):
-        raise ValueError(f"{name} must not contain MQTT separators or wildcards")
-    if not strict_ascii:
-        return value
-    for ch in value:
-        if ch.isascii() and ch.isalnum():
-            continue
-        if allow_hyphen and ch == "-":
-            continue
-        if allow_underscore and ch == "_":
-            continue
-        raise ValueError(
-            f"{name} must contain only ASCII letters, digits"
-            + (", hyphen" if allow_hyphen else "")
-            + (", or underscore" if allow_underscore else "")
-        )
-    return value

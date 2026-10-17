@@ -634,6 +634,25 @@ VECTOR_CONSUMERS = {
         "firmware/test_liveness_v2.py"
         "::test_the_builder_refuses_every_nonce_the_grammar_refuses",
     ),
+    # The `replies` cases the runtime produces (the encrypted export error and
+    # the node heartbeat), and the inbound acknowledgement of `envelopes`, are
+    # met by its own encoders at the bounds named, not reproduced byte for
+    # byte. The reasoning, enrichment and gateway heartbeat replies are the
+    # gateway's to build; the enrichment response size cases are skipped, as
+    # no runtime subscriber reads that topic.
+    ("gateway_api", "payload-size-v2"): (
+        "test_gateway_payload_bounds.py::test_a_size_case_reaches_its_verdict",
+        "test_gateway_payload_bounds.py::test_the_table_is_the_contract_table",
+        "test_gateway_payload_bounds.py"
+        "::test_export_pages_fill_as_the_contract_pages_them",
+        "test_gateway_payload_bounds.py::test_the_responder_pages_the_corpus_cases",
+        "test_gateway_payload_bounds.py"
+        "::test_an_evidence_envelope_at_its_bounds_is_judged_as_the_contract_judges_it",
+        "test_gateway_payload_bounds.py"
+        "::test_an_encrypted_export_error_fits_the_floor_at_its_bounds",
+        "test_gateway_payload_bounds.py"
+        "::test_a_runtime_heartbeat_with_no_triggers_fits_the_floor_at_its_bounds",
+    ),
 }
 
 #: Vendored vectors this runtime cannot exercise yet.
@@ -691,16 +710,6 @@ VECTOR_EXEMPTIONS = {
             "The runtime does not yet implement the payload-members rule this "
             "corpus pins. Vendored so the drift check covers the bytes it "
             "must match."
-        ),
-    },
-    ("gateway_api", "payload-size-v2"): {
-        "owner": "the runtime",
-        "status": "proof_pending",
-        "tracking": "ori-runtime#874",
-        "reason": (
-            "The runtime does not yet bound a payload's size before parsing, "
-            "nor build its required replies against the floor this corpus "
-            "pins. Vendored so the drift check covers the bytes it must match."
         ),
     },
     ("gateway_evidence_carriage", "return-path"): {

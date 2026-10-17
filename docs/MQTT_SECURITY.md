@@ -59,8 +59,10 @@ Use layered controls:
    envelopes are HMAC signed and replay-checked. Seen envelope keys are
    persisted to the state database by default
    (`gateway.auth.persistent_replay_cache: true`), so a power cycle — an
-   attacker-influenceable event on a physically accessible device — cannot
-   reopen the replay window.
+   attacker-influenceable event on a physically accessible device — does not
+   by itself reopen the replay window. Raising `max_clock_skew_ms`, or a clock
+   that steps back (live or across a start, as on a Pi with no clock battery),
+   can still reopen it for keys already pruned; see ori-runtime#879.
 2. **Payload encryption**: enable `gateway.encryption` so sensitive runtime
    export responses are AES-GCM encrypted before the broker sees them.
 3. **Broker authentication and ACLs**: require MQTT usernames/passwords and
@@ -75,6 +77,15 @@ authenticate the JSON message content end-to-end between runtime and gateway.
 AES-GCM encryption hides sensitive export response bodies from a broker that can
 observe routed messages. TLS encrypts the transport pipe. All are separate
 controls; TLS is not a substitute for HMAC or payload encryption.
+
+The runtime bounds every topic the gateway publishes to it in size and rate
+before it reads anything (`gateway-api/v2` Payload Size and Payload Volume), so
+the bound holds even when the gateway itself misbehaves. Because the rate is
+counted before the envelope is verified, any client that can publish on one of
+those topics spends the gateway's budget: junk on `ori/gateway/health` can
+crowd out real heartbeats and make the gateway read as offline. Only broker
+ACLs stop that. Grant publish on the runtime's inbound topics to the gateway's
+MQTT user alone.
 
 ## Runtime Config
 
@@ -100,7 +111,7 @@ gateway:
     shared_secret_env: GATEWAY_SHARED_SECRET
     previous_shared_secret_env: ""
     max_clock_skew_ms: 300000
-    replay_ttl_ms: 300000
+    replay_ttl_ms: 300000 # Minimum from receipt; also retained until the envelope is stale.
   encryption:
     enabled: true
   reasoning:

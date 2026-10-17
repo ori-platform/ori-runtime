@@ -240,6 +240,9 @@ class MqttFirmwareTelemetrySubscriber:
 
 
 def _log_background_failure(future: ConcurrentFuture[None]) -> None:
+    if future.cancelled():
+        # Cancelled at shutdown: nothing failed.
+        return
     try:
         future.result()
     except Exception:

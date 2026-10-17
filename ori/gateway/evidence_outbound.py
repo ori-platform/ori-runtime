@@ -24,14 +24,21 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import functools
 import hashlib
 import json
 import logging
 import re
+import threading
 from dataclasses import dataclass
 from typing import Any, Callable
 
 from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_url
+from ori.gateway.payload_bounds import (
+    EVIDENCE_OUTBOUND_ACK,
+    IN_FLIGHT_EXCEEDED,
+    IngressBound,
+)
 from ori.gateway.route_io import RouteIO, Slots
 from ori.security.evidence.bound import BoundOutboundQueue
 from ori.security.evidence.executor import EvidenceExecutorSaturatedError
@@ -48,6 +55,7 @@ from ori.security.evidence.ledger import (
 )
 from ori.security.evidence.registration import MAX_DOUBLINGS
 from ori.security.gateway_messages import (
+    AuthenticatedMessage,
     GatewayMessageAuthenticator,
     GatewayMessageAuthError,
 )
@@ -193,9 +201,13 @@ class EvidenceOutboundAckRouter:
         signed_at = (
             auth_block.get("signed_at_ms") if isinstance(auth_block, dict) else None
         )
+        # Authenticated now, recorded as seen only once it answers something
+        # this device sent: an acknowledgement for nothing held adds no state,
+        # replay record included (gateway-api/v2 Payload Volume).
+        claim: AuthenticatedMessage | None = None
         if self._message_auth is not None:
             try:
-                decoded = self._message_auth.verify(
+                claim = self._message_auth.authenticate(
                     decoded,
                     message_type=EVIDENCE_OUTBOUND_ACK_MESSAGE_TYPE,
                     expected_device_id=self._device_id,
@@ -203,6 +215,7 @@ class EvidenceOutboundAckRouter:
                 )
             except GatewayMessageAuthError as exc:
                 return AckRouted(ROUTED_REFUSED, f"envelope unauthenticated: {exc}")
+            decoded = claim.payload
         elif decoded.get("device_id") != self._device_id:
             return AckRouted(ROUTED_REFUSED, "acknowledgement names another device")
 
@@ -234,11 +247,21 @@ class EvidenceOutboundAckRouter:
         answered_at_ms = self._answered_at(signed_at, at_ms)
         if artifact_type == ARTIFACT_DELIVERY_ENVELOPE:
             return await self._apply_to_envelope(
-                digest, outcome, reason, at_ms, answered_at_ms
+                digest, outcome, reason, at_ms, answered_at_ms, claim
             )
         return await self._apply_to_artifact(
-            artifact_type, digest, outcome, reason, at_ms
+            artifact_type, digest, outcome, reason, at_ms, claim
         )
+
+    def _replayed(self, claim: AuthenticatedMessage | None) -> AckRouted | None:
+        """Record *claim* as seen; the refusal when it was already."""
+        if claim is None or self._message_auth is None:
+            return None
+        try:
+            self._message_auth.commit(claim)
+        except GatewayMessageAuthError as exc:
+            return AckRouted(ROUTED_REFUSED, f"envelope unauthenticated: {exc}")
+        return None
 
     def _answered_at(self, signed_at: Any, at_ms: int) -> int:
         """The courier's time for an answer, or the receive time in its place.
@@ -260,7 +283,13 @@ class EvidenceOutboundAckRouter:
         return at_ms
 
     async def _apply_to_envelope(
-        self, digest: str, outcome: str, reason: str, at_ms: int, answered_at_ms: int
+        self,
+        digest: str,
+        outcome: str,
+        reason: str,
+        at_ms: int,
+        answered_at_ms: int,
+        claim: AuthenticatedMessage | None = None,
     ) -> AckRouted:
         row = await self._outbox.find_envelope(digest)
         if row is None:
@@ -271,6 +300,19 @@ class EvidenceOutboundAckRouter:
             return AckRouted(
                 ROUTED_IGNORED, "unknown envelope", ARTIFACT_DELIVERY_ENVELOPE, digest
             )
+        # The courier can only answer for bytes it was given: an answer for an
+        # envelope never handed off adds nothing, its replay key included.
+        if int(row["attempts"]) == 0:
+            logger.warning(
+                "[evidence-outbound] acknowledgement names an envelope never "
+                "handed off; refused"
+            )
+            return AckRouted(
+                ROUTED_REFUSED, "never handed off", ARTIFACT_DELIVERY_ENVELOPE, digest
+            )
+        replayed = self._replayed(claim)
+        if replayed is not None:
+            return replayed
         local_seq = int(row["local_seq"])
         if outcome == ACK_QUEUED:
             # Custody is claimed only by the custody acknowledgement, which
@@ -304,7 +346,13 @@ class EvidenceOutboundAckRouter:
         return AckRouted(ROUTED_APPLIED, reason, ARTIFACT_DELIVERY_ENVELOPE, digest)
 
     async def _apply_to_artifact(
-        self, artifact_type: str, digest: str, outcome: str, reason: str, at_ms: int
+        self,
+        artifact_type: str,
+        digest: str,
+        outcome: str,
+        reason: str,
+        at_ms: int,
+        claim: AuthenticatedMessage | None = None,
     ) -> AckRouted:
         row = await self._outbox.find_artifact(digest)
         if row is None or str(row["artifact_type"]) != artifact_type:
@@ -323,6 +371,9 @@ class EvidenceOutboundAckRouter:
                 artifact_type,
             )
             return AckRouted(ROUTED_REFUSED, "never handed off", artifact_type, digest)
+        replayed = self._replayed(claim)
+        if replayed is not None:
+            return replayed
         if outcome == ACK_QUEUED:
             await self._outbox.retire_artifact(
                 digest, outcome=RETIRE_QUEUED, at_ms=at_ms
@@ -338,6 +389,43 @@ class EvidenceOutboundAckRouter:
         )
         await self._outbox.retire_artifact(digest, outcome=RETIRE_REFUSED, at_ms=at_ms)
         return AckRouted(ROUTED_APPLIED, reason, artifact_type, digest)
+
+
+class _Session:
+    """One broker session of the outbound route.
+
+    It owns its client, the events that end it or report its grant, and
+    whether it is up. Callbacks are bound to the session whose client they
+    belong to, so a client a close failed to stop reaches only its own closed
+    session, never the one that replaced it.
+    """
+
+    def __init__(self, client: Any) -> None:
+        self.client = client
+        self.lock = threading.Lock()
+        self.lost = asyncio.Event()
+        self.granted = asyncio.Event()
+        self.open = True
+        self.connected = False
+
+    def set_connected(self, connected: bool) -> bool:
+        """Report this session up or down, while it is open."""
+        with self.lock:
+            if not self.open:
+                return False
+            self.connected = connected
+            return True
+
+    def close(self) -> None:
+        """Closed with its claim to be up, in one step."""
+        with self.lock:
+            self.open = False
+            self.connected = False
+
+    @property
+    def carrying(self) -> bool:
+        """Granted, and so open: what may publish on it."""
+        return self.connected
 
 
 class MqttEvidenceOutboundPublisher:
@@ -370,17 +458,15 @@ class MqttEvidenceOutboundPublisher:
         self._client_factory = client_factory or _default_client_factory
         self._retry_interval_s = max(1.0, float(retry_interval_s))
         self._now = now
-        self._client: Any = None
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._connected = False
-        self._lost: asyncio.Event | None = None
-        self._granted: asyncio.Event | None = None
+        self._session: _Session | None = None
         self._wake: asyncio.Event | None = None
         self._drain_lock = asyncio.Lock()
         self._published = 0
         self._io = RouteIO("ori-evidence-out")
         # Taken in the client's callback thread, before anything is scheduled.
         self._ack_slots = Slots(ACK_IN_FLIGHT_BOUND)
+        self._ingress = IngressBound(EVIDENCE_OUTBOUND_ACK)
         self._acks_shed = 0
 
     @property
@@ -393,8 +479,9 @@ class MqttEvidenceOutboundPublisher:
 
     @property
     def connected(self) -> bool:
-        """Whether the broker has granted the acknowledgement subscription."""
-        return self._connected
+        """Whether the broker has granted the current session's subscription."""
+        session = self._session
+        return session is not None and session.connected
 
     def nudge(self) -> None:
         """Drain now rather than at the next interval. Safe from any thread."""
@@ -407,8 +494,6 @@ class MqttEvidenceOutboundPublisher:
     async def serve_until(self, shutdown_event: asyncio.Event) -> None:
         """Connect, subscribe, and carry until *shutdown_event* fires."""
         self._loop = asyncio.get_running_loop()
-        self._lost = asyncio.Event()
-        self._granted = asyncio.Event()
         self._wake = asyncio.Event()
         self._io.open()
         try:
@@ -425,7 +510,6 @@ class MqttEvidenceOutboundPublisher:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self._connected = False
                 logger.warning(
                     "[evidence-outbound] route down (%s); retrying in %.0fs",
                     exc,
@@ -441,19 +525,22 @@ class MqttEvidenceOutboundPublisher:
             except asyncio.TimeoutError:
                 delay = min(delay * 2, _RECONNECT_MAX_S)
 
-    async def _connect_and_serve(self, shutdown_event: asyncio.Event) -> None:
-        lost = self._lost
-        granted = self._granted
-        wake = self._wake
-        assert lost is not None and granted is not None and wake is not None
-        lost.clear()
-        granted.clear()
-        client = self._client_factory(client_id=f"ori-evidence-out-{self._device_id}")
-        self._client = client
-        client.on_connect = self._on_connect
-        client.on_subscribe = self._on_subscribe
-        client.on_disconnect = self._on_disconnect
+    def _begin_session(self, client: Any) -> _Session:
+        """A new session for *client*, its callbacks bound to it alone."""
+        session = _Session(client)
+        client.on_connect = functools.partial(self._on_connect, session)
+        client.on_subscribe = functools.partial(self._on_subscribe, session)
+        client.on_disconnect = functools.partial(self._on_disconnect, session)
         client.on_message = self._on_message
+        self._session = session
+        return session
+
+    async def _connect_and_serve(self, shutdown_event: asyncio.Event) -> None:
+        wake = self._wake
+        assert wake is not None
+        client = self._client_factory(client_id=f"ori-evidence-out-{self._device_id}")
+        session = self._begin_session(client)
+        lost, granted = session.lost, session.granted
         if self._broker.username:
             client.username_pw_set(self._broker.username, self._broker.password)
         apply_tls_context(client, self._broker)
@@ -492,7 +579,8 @@ class MqttEvidenceOutboundPublisher:
                 return 0
 
     async def _drain(self) -> int:
-        if not self._connected or self._client is None:
+        session = self._session
+        if session is None or not session.carrying:
             return 0
         at_ms = self._now()
         self._published = 0
@@ -554,11 +642,15 @@ class MqttEvidenceOutboundPublisher:
                 # A stop applied since the page was read holds this one too.
                 if not await self._outbox.awaiting_custody(1, only_seq=local_seq):
                     continue
+                # The attempt is recorded before the bytes leave, so an
+                # acknowledgement that overtakes this call still finds the
+                # envelope handed off; only its transport outcome follows.
+                await self._outbox.record_attempt(local_seq, at_ms=at_ms, failure=None)
                 sent = await self._publish(ARTIFACT_DELIVERY_ENVELOPE, wire)
-                await self._outbox.record_attempt(
-                    local_seq, at_ms=at_ms, failure=None if sent else "unreachable"
-                )
                 if not sent:
+                    await self._outbox.record_transport_failure(
+                        local_seq, failure="unreachable"
+                    )
                     return False
                 published += 1
                 self._published += 1
@@ -682,25 +774,26 @@ class MqttEvidenceOutboundPublisher:
             return 0
 
     async def _publish(self, artifact_type: str, wire: bytes) -> bool:
-        client = self._client
+        session = self._session
         # Checked before every artifact, not once per pass: the session can drop
         # between two publishes of one drain, and nothing is carried after it.
-        if client is None or not self._connected:
+        if session is None or not session.carrying:
             return False
         try:
             payload = carriage_payload(self._device_id, artifact_type, wire)
-            await self._io.run(client.publish, self.topic, payload, 1)
+            await self._io.run(session.client.publish, self.topic, payload, 1)
         except Exception:
             logger.warning("[evidence-outbound] failed to publish a %s", artifact_type)
             return False
         return True
 
     async def close(self) -> None:
-        client = self._client
-        self._client = None
-        self._connected = False
-        if client is None:
+        """Close the current session, then stop its client."""
+        session = self._session
+        if session is None or not session.open:
             return
+        session.close()
+        client = session.client
         try:
             await self._io.run(client.loop_stop)
         except Exception:
@@ -710,14 +803,20 @@ class MqttEvidenceOutboundPublisher:
         except Exception:
             logger.warning("[evidence-outbound] failed to disconnect cleanly")
 
-    # ── paho callbacks ────────────────────────────────────────────────────────
+    # ── paho callbacks, each bound to the session whose client it is ────────
 
     def _on_connect(
-        self, client: Any, _userdata: Any, _flags: Any, rc: Any, *_: Any
+        self,
+        session: _Session,
+        client: Any,
+        _userdata: Any,
+        _flags: Any,
+        rc: Any,
+        *_: Any,
     ) -> None:
         if _rc_value(rc) != 0:
             logger.warning("[evidence-outbound] MQTT connect failed rc=%s", rc)
-            self._signal(self._lost)
+            self._signal(session.lost)
             return
         result = client.subscribe(self.ack_topic, qos=1)
         code = result[0] if isinstance(result, tuple) else result
@@ -727,10 +826,16 @@ class MqttEvidenceOutboundPublisher:
                 self.ack_topic,
                 code,
             )
-            self._signal(self._lost)
+            self._signal(session.lost)
 
     def _on_subscribe(
-        self, _client: Any, _userdata: Any, _mid: Any, reason_codes: Any, *_: Any
+        self,
+        session: _Session,
+        _client: Any,
+        _userdata: Any,
+        _mid: Any,
+        reason_codes: Any,
+        *_: Any,
     ) -> None:
         codes = (
             reason_codes if isinstance(reason_codes, (list, tuple)) else [reason_codes]
@@ -742,10 +847,11 @@ class MqttEvidenceOutboundPublisher:
                 self.ack_topic,
                 refused or "no granted QoS",
             )
-            self._connected = False
-            self._signal(self._lost)
+            session.set_connected(False)
+            self._signal(session.lost)
             return
-        self._connected = True
+        if not session.set_connected(True):
+            return
         logger.info(
             "[evidence-outbound] carrying on %s via %s:%s (envelope auth=%s)",
             self.topic,
@@ -753,18 +859,20 @@ class MqttEvidenceOutboundPublisher:
             self._broker.port,
             "enabled" if self._router.envelope_authenticated else "disabled",
         )
-        self._signal(self._granted)
+        self._signal(session.granted)
 
-    def _on_disconnect(self, _client: Any, _userdata: Any, *args: Any) -> None:
-        self._connected = False
-        logger.warning("[evidence-outbound] disconnected from broker")
-        self._signal(self._lost)
-
-    def _signal(self, event: asyncio.Event | None) -> None:
-        loop = self._loop
-        if loop is None or event is None:
+    def _on_disconnect(
+        self, session: _Session, _client: Any, _userdata: Any, *args: Any
+    ) -> None:
+        if not session.set_connected(False):
             return
-        loop.call_soon_threadsafe(event.set)
+        logger.warning("[evidence-outbound] disconnected from broker")
+        self._signal(session.lost)
+
+    def _signal(self, event: asyncio.Event) -> None:
+        loop = self._loop
+        if loop is not None:
+            loop.call_soon_threadsafe(event.set)
 
     def _on_message(self, _client: Any, _userdata: Any, message: Any) -> None:
         loop = self._loop
@@ -773,19 +881,16 @@ class MqttEvidenceOutboundPublisher:
                 "[evidence-outbound] acknowledgement received before event loop ready"
             )
             return
+        payload = getattr(message, "payload", b"") or b""
+        if self._ingress.admit(payload) is not None:
+            # Dropped unread; the artifact stays retained, as at the bound below.
+            return
         if not self._ack_slots.try_take():
             # Dropped before anything is scheduled; the artifact stays retained
             # and its next attempt draws another acknowledgement.
             self._acks_shed += 1
-            if self._acks_shed == 1 or self._acks_shed % 1000 == 0:
-                logger.warning(
-                    "[evidence-outbound] %d acknowledgements in flight; %d dropped, "
-                    "their artifacts stay retained",
-                    ACK_IN_FLIGHT_BOUND,
-                    self._acks_shed,
-                )
+            self._ingress.refuse(IN_FLIGHT_EXCEEDED)
             return
-        payload = getattr(message, "payload", b"") or b""
         started = [False]
         try:
             future = asyncio.run_coroutine_threadsafe(
@@ -858,6 +963,9 @@ async def _wait_first(*events: asyncio.Event) -> None:
 
 
 def _log_future_failure(future: Any) -> None:
+    if future.cancelled():
+        # Cancelled at shutdown: nothing failed.
+        return
     try:
         future.result()
     except Exception:

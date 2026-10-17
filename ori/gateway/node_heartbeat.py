@@ -14,11 +14,18 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_url
+from ori.gateway.payload_bounds import (
+    ACTIVE_TRIGGERS_MAX,
+    RUNTIME_HEARTBEAT,
+    fits,
+    fitting_count,
+)
 from ori.security.gateway_messages import GatewayMessageAuthenticator
 from ori.utils.time_utils import now_ms
 
@@ -99,6 +106,7 @@ RUNTIME_HEARTBEAT_TOPIC_TEMPLATE = "ori/{device_id}/runtime/heartbeat"
 RUNTIME_HEARTBEAT_MESSAGE_TYPE = "runtime.heartbeat"
 DEFAULT_RUNTIME_HEARTBEAT_INTERVAL_S = 30.0
 MIN_RUNTIME_HEARTBEAT_INTERVAL_S = 1.0
+MAX_RUNTIME_HEARTBEAT_INTERVAL_S = 86_400.0
 
 
 class MqttRuntimeNodeHeartbeatPublisher:
@@ -122,8 +130,15 @@ class MqttRuntimeNodeHeartbeatPublisher:
         self._broker = parse_gateway_broker_url(broker_url, tls_config=tls_config)
         self._device_id = str(device_id)
         self._health_snapshot_provider = health_snapshot_provider
-        self._interval_seconds = max(
-            MIN_RUNTIME_HEARTBEAT_INTERVAL_S, float(interval_seconds)
+        interval = float(interval_seconds)
+        # Any number runtime-config/v2 admits, kept to an interval that ever
+        # fires again: infinity and NaN are the default, and nothing exceeds
+        # a day.
+        if not math.isfinite(interval):
+            interval = DEFAULT_RUNTIME_HEARTBEAT_INTERVAL_S
+        self._interval_seconds = min(
+            max(MIN_RUNTIME_HEARTBEAT_INTERVAL_S, interval),
+            MAX_RUNTIME_HEARTBEAT_INTERVAL_S,
         )
         self._authenticator = authenticator
         self._client_factory = client_factory or _default_client_factory
@@ -199,7 +214,7 @@ class MqttRuntimeNodeHeartbeatPublisher:
     async def _publish_once(self, client: Any) -> None:
         payload = await self._payload()
         try:
-            body = self._encode(payload)
+            body = self._fitted(payload)
         except Exception as exc:
             # A mapped heartbeat that cannot be signed or encoded is replaced,
             # not dropped: silence would read as offline rather than degraded.
@@ -217,6 +232,27 @@ class MqttRuntimeNodeHeartbeatPublisher:
         rc = getattr(info, "rc", 0)
         if rc != 0:
             raise RuntimeError(f"the broker client refused the publish (rc={rc})")
+
+    def _fitted(self, payload: dict[str, Any]) -> bytes:
+        """*payload* encoded with only the `active_triggers` its maximum holds.
+
+        Names are kept in the order the runtime holds them and no other member
+        is given up for them, so a consumer reads their number as a lower bound
+        (gateway-api/v2 Payload Size).
+        """
+        body = self._encode(payload)
+        if fits(RUNTIME_HEARTBEAT, body):
+            return body
+        triggers = payload["active_triggers"]
+
+        def with_first(count: int) -> bytes:
+            return self._encode({**payload, "active_triggers": triggers[:count]})
+
+        return with_first(
+            fitting_count(
+                len(triggers), lambda n: fits(RUNTIME_HEARTBEAT, with_first(n))
+            )
+        )
 
     def _encode(self, payload: dict[str, Any]) -> bytes:
         if self._authenticator is not None:
@@ -273,7 +309,7 @@ class MqttRuntimeNodeHeartbeatPublisher:
             "status": status,
             "last_seen_ms": current_ms,
             "gateway_seen_ms": 0,
-            "active_triggers": list(active_triggers),
+            "active_triggers": list(active_triggers[:ACTIVE_TRIGGERS_MAX]),
         }
 
         # degradation_reasons names which subsystem is degraded, so a site

@@ -144,6 +144,9 @@ class OutboundLedger(Protocol):
     ) -> None:
         raise NotImplementedError
 
+    def record_transport_failure(self, local_seq: int, *, failure: str) -> None:
+        raise NotImplementedError
+
     def apply_courier_answer(
         self, local_seq: int, *, answer: str, at_ms: int, answered_at_ms: int
     ) -> bool:
@@ -247,6 +250,11 @@ class BoundOutboundQueue:
     ) -> None:
         await self._executor.run_async(
             self._ledger.record_attempt, local_seq, at_ms=at_ms, failure=failure
+        )
+
+    async def record_transport_failure(self, local_seq: int, *, failure: str) -> None:
+        await self._executor.run_async(
+            self._ledger.record_transport_failure, local_seq, failure=failure
         )
 
     async def apply_courier_answer(

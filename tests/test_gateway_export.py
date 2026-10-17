@@ -74,6 +74,7 @@ def _reading(sensor_id="main-current", value=1.0, timestamp=1_000):
 
 async def test_health_export_returns_snapshot(store):
     response = await _responder(store).handle_request(_request("health"))
+    assert response is not None
 
     assert response.error is None
     assert response.complete is True
@@ -84,6 +85,7 @@ async def test_rejects_mismatched_device_id(store):
     response = await _responder(store).handle_request(
         _request("health", device_id="other-device")
     )
+    assert response is not None
 
     assert response.error == "device_id does not match this runtime"
     assert response.items == []
@@ -105,6 +107,7 @@ async def test_sensor_history_export_buckets_rows_and_paginates(store):
             params={"sensor_id": "main-current", "bucket_ms": 3_600_000},
         )
     )
+    assert response is not None
 
     assert response.error is None
     assert response.complete is False
@@ -124,6 +127,7 @@ async def test_sensor_history_export_buckets_rows_and_paginates(store):
             params={"sensor_id": "main-current", "bucket_ms": 3_600_000},
         )
     )
+    assert next_response is not None
     assert next_response.complete is True
     assert next_response.items[0]["avg_value"] == pytest.approx(8.0)
 
@@ -132,27 +136,57 @@ async def test_sensor_history_requires_bounds_and_sensor_id(store):
     response = await _responder(store).handle_request(
         _request("sensor_history", params={"sensor_id": "main-current"})
     )
+    assert response is not None
 
     assert response.error == "since_ms and until_ms are required for sensor_history"
     assert response.request_id == "req-001"
 
 
-async def test_export_rejects_request_id_with_mqtt_topic_separators(store):
-    response = await _responder(store).handle_request(
-        _request("health", request_id="bad/request")
+@pytest.mark.parametrize(
+    "request_id",
+    ["bad/request", "a+", "#", "", " req", "req.001 ", "r" * 129, "réq", 7, None],
+)
+async def test_a_request_id_outside_the_routing_form_is_not_answered(store, request_id):
+    responder = _responder(store)
+
+    assert (
+        await responder.handle_request(_request("health", request_id=request_id))
+        is None
     )
+    payload = json.dumps(_request("health", request_id=request_id)).encode()
+    assert await responder.handle_payload(payload) is None
 
-    assert response.request_id == "invalid"
-    assert response.error == "request_id must not contain MQTT separators or wildcards"
+
+@pytest.mark.parametrize("request_id", ["bad/request", "r" * 129, None])
+async def test_an_out_of_form_request_id_is_not_answered_even_as_an_auth_failure(
+    store, request_id
+):
+    """Refused before verification, so not answered `auth_failed` either."""
+    responder = _responder(
+        store,
+        message_auth=GatewayMessageAuthenticator(
+            GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        ),
+    )
+    payload = json.dumps(_request("health", request_id=request_id)).encode()
+
+    assert await responder.handle_payload(payload) is None
 
 
-async def test_malformed_json_payload_returns_error_response(store):
-    response = await _responder(store).handle_payload(b"{not-json")
+async def test_a_request_id_at_the_routing_bound_is_answered(store):
+    request_id = "A-z_0." + "9" * 122
+    response = await _responder(store).handle_request(
+        _request("health", request_id=request_id)
+    )
+    assert response is not None
 
-    assert response.request_id == "invalid"
-    assert response.export_type == "unknown"
-    assert response.error == "request payload must be JSON"
-    assert response.items == []
+    assert response is not None and response.error is None
+    assert response.request_id == request_id
+
+
+async def test_malformed_json_payload_is_not_answered(store):
+    assert await _responder(store).handle_payload(b"{not-json") is None
+    assert await _responder(store).handle_payload(b"[]") is None
 
 
 @pytest.mark.parametrize(
@@ -165,13 +199,8 @@ async def test_malformed_json_payload_returns_error_response(store):
     ],
     ids=["invalid UTF-8", "deep nesting", "5000-digit integer", "lone surrogate"],
 )
-async def test_hostile_json_payload_returns_error_response(store, payload):
-    response = await _responder(store).handle_payload(payload)
-
-    assert response.error == "request payload must be JSON"
-    assert response.items == []
-    # The refusal itself must be publishable.
-    assert response.to_json_bytes()
+async def test_hostile_json_payload_is_not_answered(store, payload):
+    assert await _responder(store).handle_payload(payload) is None
 
 
 _BIG = "1" + "0" * 30
@@ -200,6 +229,7 @@ async def test_an_out_of_range_integer_is_refused_with_its_own_reason(
     request = json.dumps(_request("sensor_history", params={"sensor_id": "s"}))
     payload = (request[:-1] + ", " + extra + "}").encode()
     response = await _responder(store).handle_payload(payload)
+    assert response is not None
 
     assert response.error
     assert field in response.error
@@ -219,6 +249,7 @@ async def test_export_responder_verifies_signed_request(store):
     signed = request_auth.sign(_request("health"), message_type="export_request")
 
     response = await responder.handle_payload(signed)
+    assert response is not None
 
     assert response.error is None
     assert response.items[0]["device_id"] == "dev-01"
@@ -233,6 +264,7 @@ async def test_export_responder_rejects_unsigned_request_when_auth_configured(st
     )
 
     response = await responder.handle_payload(_request("health"))
+    assert response is not None
 
     assert response.request_id == "req-001"
     assert response.export_type == "health"
@@ -286,6 +318,7 @@ async def test_action_log_export_uses_runtime_store_boundary(store):
     response = await _responder(store).handle_request(
         _request("action_log", since_ms=1_000, until_ms=3_000)
     )
+    assert response is not None
 
     assert response.error is None
     assert response.items[0]["action_name"] == "alert_whatsapp"
@@ -326,6 +359,7 @@ async def test_reasoning_log_export_uses_runtime_store_boundary(store):
             },
         )
     )
+    assert response is not None
 
     assert response.error is None
     assert response.items[0]["trigger_name"] == "grid_instability"
@@ -371,6 +405,7 @@ async def test_tier_c_decision_log_export_uses_runtime_store_boundary(store):
     response = await _responder(store).handle_request(
         _request("tier_c_decision_log", since_ms=4_000, until_ms=6_000)
     )
+    assert response is not None
 
     assert response.error is None
     assert response.items[0]["proposal_id"] == "AB12CD34"
@@ -550,6 +585,7 @@ async def test_health_export_response_remains_plaintext_when_encryption_configur
         message_auth=auth,
         message_encryptor=encryptor,
     ).handle_request(_request("health"))
+    assert response is not None
     payload = json.loads(
         response.to_json_bytes(message_auth=auth, message_encryptor=encryptor)
     )
@@ -643,3 +679,14 @@ async def test_mqtt_server_subscribes_to_device_request_topic(store):
     assert fake.loop_started is True
     assert fake.loop_stopped is True
     assert fake.disconnected is True
+
+
+@pytest.mark.parametrize("device_id", [1, 1.0, ["1"], True])
+async def test_a_device_id_that_is_not_text_is_never_coerced_to_match(store, device_id):
+    """`str(1)` is the runtime's `"1"`; the request still names no device."""
+    responder = _responder(store, device_id="1")
+    response = await responder.handle_request(_request("health", device_id=device_id))
+
+    assert response is not None
+    assert response.error == "device_id must be text"
+    assert response.items == []

@@ -30,6 +30,14 @@ from dataclasses import dataclass
 from typing import Any, Callable, cast
 
 from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_url
+from ori.gateway.payload_bounds import (
+    EVIDENCE_INBOUND,
+    IN_FLIGHT_EXCEEDED,
+    PAYLOAD_TOO_LARGE,
+    REDELIVERY_DUE,
+    IngressBound,
+    refill_seconds,
+)
 from ori.gateway.route_io import RouteIO, Slots
 from ori.security.evidence.bound import BoundIngestService
 from ori.security.evidence.canonical import canonical_json
@@ -37,6 +45,7 @@ from ori.security.evidence.executor import EvidenceExecutorSaturatedError
 from ori.security.evidence.ingest import REJECT_REASONS
 from ori.security.evidence.ingest_service import UNDECIDED, IngestOutcome
 from ori.security.gateway_messages import (
+    AuthenticatedMessage,
     GatewayMessageAuthenticator,
     GatewayMessageAuthError,
 )
@@ -88,6 +97,13 @@ REFUSE_UNKNOWN_ARTIFACT_TYPE = "unknown_artifact_type"
 REFUSE_MISSING_ARTIFACT = "missing_artifact"
 REFUSE_INGEST_UNAVAILABLE = "ingest_unavailable"
 REFUSE_UNADMISSIBLE = "unadmissible"
+
+
+#: An admitted message: its artifact type, artifact, where it goes, and its
+#: envelope, recorded as seen only once ingest is about to act on it.
+_Admitted = tuple[
+    str, dict[str, Any], BoundIngestService, "AuthenticatedMessage | None"
+]
 
 
 @dataclass(frozen=True)
@@ -167,7 +183,10 @@ class EvidenceInboundRouter:
         admitted = self._admit_or_refuse(payload)
         if isinstance(admitted, InboundRefusal):
             return Routed(admitted)
-        artifact_type, artifact, ingest = admitted
+        artifact_type, artifact, ingest, claim = admitted
+        replayed = self._committed(claim)
+        if replayed is not None:
+            return Routed(replayed)
         try:
             if artifact_type == ARTIFACT_CUSTODY:
                 outcome = ingest.accept_custody(artifact)
@@ -188,10 +207,17 @@ class EvidenceInboundRouter:
         admitted = self._admit_or_refuse(payload)
         if isinstance(admitted, InboundRefusal):
             return Routed(admitted)
-        artifact_type, artifact, ingest = admitted
+        artifact_type, artifact, ingest, claim = admitted
+        replayed = self._committed(claim)
+        if replayed is not None:
+            return Routed(replayed)
         try:
             outcome = await ingest.accept_async(_INGEST_KIND[artifact_type], artifact)
         except EvidenceExecutorSaturatedError:
+            # Refused at submission, before any work: unrecorded, so the
+            # broker's redelivery of these same bytes is not a replay.
+            if claim is not None and self._message_auth is not None:
+                self._message_auth.release(claim)
             raise
         except Exception:
             outcome = _failed(artifact_type)
@@ -199,12 +225,13 @@ class EvidenceInboundRouter:
 
     def _admit_or_refuse(
         self, payload: bytes | str | dict[str, Any]
-    ) -> InboundRefusal | tuple[str, dict[str, Any], BoundIngestService]:
+    ) -> InboundRefusal | _Admitted:
         """Admission, never raising: a message it cannot place is refused.
 
         A transport refusal, so no acknowledgement; the subscriber still
-        releases the message, and a redelivered identical envelope would be
-        refused as a replay anyway.
+        releases the message. Its envelope is not recorded as seen, since it
+        answers nothing (gateway-api/v2 Payload Volume), and a redelivered
+        identical one is refused again for the same reason.
         """
         try:
             return self._admit(payload)
@@ -214,23 +241,40 @@ class EvidenceInboundRouter:
                 REFUSE_UNADMISSIBLE, "the message could not be admitted"
             )
 
+    def _committed(self, claim: AuthenticatedMessage | None) -> InboundRefusal | None:
+        """Record *claim* as seen before ingest; the refusal when it was already."""
+        if claim is None or self._message_auth is None:
+            return None
+        try:
+            self._message_auth.commit(claim)
+        except GatewayMessageAuthError as exc:
+            return InboundRefusal(REFUSE_ENVELOPE_UNAUTHENTICATED, str(exc))
+        except Exception:
+            logger.exception("[evidence-inbound] recording an envelope failed")
+            return InboundRefusal(
+                REFUSE_UNADMISSIBLE, "the message could not be admitted"
+            )
+        return None
+
     def _admit(
         self, payload: bytes | str | dict[str, Any]
-    ) -> InboundRefusal | tuple[str, dict[str, Any], BoundIngestService]:
+    ) -> InboundRefusal | _Admitted:
         """The message's artifact and where it goes, or the transport refusal."""
         decoded = _decode(payload)
         if isinstance(decoded, InboundRefusal):
             return decoded
 
+        claim: AuthenticatedMessage | None = None
         if self._message_auth is not None:
             try:
-                decoded = self._message_auth.verify(
+                claim = self._message_auth.authenticate(
                     decoded,
                     message_type=EVIDENCE_INBOUND_MESSAGE_TYPE,
                     expected_device_id=self._device_id,
                 )
             except GatewayMessageAuthError as exc:
                 return InboundRefusal(REFUSE_ENVELOPE_UNAUTHENTICATED, str(exc))
+            decoded = claim.payload
 
         raw_type = decoded.get("artifact_type")
         artifact_type = raw_type if isinstance(raw_type, str) else ""
@@ -254,7 +298,7 @@ class EvidenceInboundRouter:
                 REFUSE_INGEST_UNAVAILABLE,
                 "evidence ingest is not available on this runtime",
             )
-        return artifact_type, artifact, self._ingest
+        return artifact_type, artifact, self._ingest, claim
 
     def _acknowledgement(
         self, artifact_type: str, artifact: dict[str, Any], outcome: IngestOutcome
@@ -340,6 +384,79 @@ def _decode(
     return parsed
 
 
+class _Session:
+    """One broker session of the inbound route, and everything it decides.
+
+    A session owns its client, the events that end it, whether it is up, and
+    what it owes for redelivery. Callbacks are bound to the session whose
+    client they belong to, so a client a close failed to stop can only ever
+    reach its own closed session: no state is shared between sessions for a
+    late callback, route or signal to reach.
+    """
+
+    def __init__(self, client: Any) -> None:
+        self.client = client
+        self.lock = threading.Lock()
+        self.lost = asyncio.Event()
+        self.redeliver = asyncio.Event()
+        self.open = True
+        self.connected = False
+        # What the session owes for redelivery, and the episode that will end
+        # it: accumulated, so a later rate drop never erases a failure the
+        # reconnect has still to back off from.
+        self.owed = False
+        self.owed_after_failure = False
+        self.owed_after_rate = False
+        self.redeliver_after_failure = False
+        self.redeliver_after_rate = False
+        #: A reconnect for redelivery is due; nothing more is routed meanwhile.
+        self.pending = False
+
+    def owe(self, *, failed: bool = False, rate: bool = False) -> bool:
+        """Mark a redelivery owed; True when this is the first of the episode."""
+        with self.lock:
+            first = not self.owed
+            self.owed = True
+            self.owed_after_failure = self.owed_after_failure or failed
+            self.owed_after_rate = self.owed_after_rate or rate
+            return first
+
+    def redeliver_owed(self, loop: asyncio.AbstractEventLoop) -> None:
+        """End this session for what it owes, if it owes anything."""
+        with self.lock:
+            if not self.owed:
+                return
+            self.owed = False
+            self.redeliver_after_failure = (
+                self.redeliver_after_failure or self.owed_after_failure
+            )
+            self.redeliver_after_rate = (
+                self.redeliver_after_rate or self.owed_after_rate
+            )
+            self.owed_after_failure = self.owed_after_rate = False
+            self.pending = True
+        loop.call_soon_threadsafe(self.redeliver.set)
+
+    def set_connected(self, connected: bool) -> bool:
+        """Report this session up or down, while it is open."""
+        with self.lock:
+            if not self.open:
+                return False
+            self.connected = connected
+            return True
+
+    def close(self) -> None:
+        """Closed with its claim to be up, in one step."""
+        with self.lock:
+            self.open = False
+            self.connected = False
+
+    def ended_for(self) -> tuple[bool, bool]:
+        """Why it ended for redelivery: after a failure, after the rate."""
+        with self.lock:
+            return self.redeliver_after_failure, self.redeliver_after_rate
+
+
 class MqttEvidenceInboundSubscriber:
     """Persistent MQTT subscription feeding the inbound evidence route.
 
@@ -348,6 +465,9 @@ class MqttEvidenceInboundSubscriber:
     store take every thread a shared executor has. Client calls run on this
     route's own thread. A message past the in-flight bound is left unacknowledged,
     and the broker redelivers it once the route reconnects.
+
+    Each connection is a `_Session` of its own; the slots, the rate and the
+    counts are the route's, across sessions.
     """
 
     def __init__(
@@ -365,21 +485,15 @@ class MqttEvidenceInboundSubscriber:
         self._router = router
         self._device_id = str(device_id)
         self._client_factory = client_factory or _default_client_factory
-        self._client: Any = None
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._connected = False
-        self._lost: asyncio.Event | None = None
+        self._session: _Session | None = None
         self._io = RouteIO("ori-evidence-in")
         # Taken in the client's callback thread, before anything is scheduled
         # on the event loop, so a flood allocates nothing past the bound.
         self._slots = Slots(INBOUND_IN_FLIGHT_BOUND)
+        self._ingress = IngressBound(EVIDENCE_INBOUND)
         self._shed = 0
         self._manual_ack = False
-        self._owed_lock = threading.Lock()
-        self._redelivery_owed = False
-        self._owed_after_failure = False
-        self._redeliver_after_failure = False
-        self._redeliver: asyncio.Event | None = None
 
     @property
     def topic(self) -> str:
@@ -394,6 +508,17 @@ class MqttEvidenceInboundSubscriber:
     def _in_flight(self) -> int:
         return self._slots.taken
 
+    @property
+    def connected(self) -> bool:
+        """Whether the broker has granted the current session's subscription.
+
+        Reported in runtime health. A route that is down is a delivery stall
+        rather than a runtime fault, and nothing else on the device can
+        observe it: evidence simply stops arriving.
+        """
+        session = self._session
+        return session is not None and session.connected
+
     async def serve_until(self, shutdown_event: asyncio.Event) -> None:
         """Connect, subscribe, and serve until *shutdown_event* fires.
 
@@ -403,8 +528,6 @@ class MqttEvidenceInboundSubscriber:
         gateway retried deliveries that could no longer land.
         """
         self._loop = asyncio.get_running_loop()
-        self._lost = asyncio.Event()
-        self._redeliver = asyncio.Event()
         delay = _RECONNECT_MIN_S
         self._io.open()
         try:
@@ -415,14 +538,17 @@ class MqttEvidenceInboundSubscriber:
     async def _serve(self, shutdown_event: asyncio.Event, delay: float) -> None:
         while not shutdown_event.is_set():
             redeliver = False
+            errored = False
+            session: _Session | None = None
             try:
-                redeliver = await self._connect_and_serve(shutdown_event)
-                if not (redeliver and self._redeliver_after_failure):
-                    delay = _RECONNECT_MIN_S
+                session = self._begin_session(
+                    self._client_factory(client_id=f"ori-evidence-in-{self._device_id}")
+                )
+                redeliver = await self._connect_and_serve(session, shutdown_event)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                self._connected = False
+                errored = True
                 logger.warning(
                     "[evidence-inbound] route down (%s); retrying in %.0fs",
                     exc,
@@ -430,9 +556,24 @@ class MqttEvidenceInboundSubscriber:
                 )
             finally:
                 await self.close()
+            # Read once the session is closed; nothing can reach it any more.
+            failed, rate = session.ended_for() if session else (False, False)
+            if not errored and not (redeliver and failed):
+                delay = _RECONNECT_MIN_S
             if shutdown_event.is_set():
                 return
-            if redeliver and not self._redeliver_after_failure:
+            if redeliver and not failed:
+                if rate:
+                    # Past the rate: back once a full burst is admitted again,
+                    # never after the doubling backoff of a failed route.
+                    try:
+                        await asyncio.wait_for(
+                            shutdown_event.wait(),
+                            timeout=refill_seconds(EVIDENCE_INBOUND),
+                        )
+                        return
+                    except asyncio.TimeoutError:
+                        pass
                 # Past the bound only: the broker holds what was left, and the
                 # route has room for it now.
                 continue
@@ -448,35 +589,27 @@ class MqttEvidenceInboundSubscriber:
             except asyncio.TimeoutError:
                 delay = min(delay * 2, _RECONNECT_MAX_S)
 
-    @property
-    def connected(self) -> bool:
-        """Whether the broker has granted this route's subscription.
-
-        Reported in runtime health. A route that is down is a delivery stall
-        rather than a runtime fault, and nothing else on the device can
-        observe it: evidence simply stops arriving.
-        """
-        return self._connected
-
-    async def _connect_and_serve(self, shutdown_event: asyncio.Event) -> bool:
-        """Serve one session; True when it ended to have the broker redeliver."""
-        lost = self._lost
-        redeliver = self._redeliver
-        assert lost is not None and redeliver is not None
-        lost.clear()
-        redeliver.clear()
-        client = self._client_factory(client_id=f"ori-evidence-in-{self._device_id}")
-        self._client = client
+    def _begin_session(self, client: Any) -> _Session:
+        """A new session for *client*, its callbacks bound to it alone."""
+        session = _Session(client)
         # Acknowledged once routed, never on arrival: a message the route had
         # no room for stays with the broker rather than being taken and lost.
         manual_ack_set = getattr(client, "manual_ack_set", None)
         self._manual_ack = callable(manual_ack_set)
         if callable(manual_ack_set):
             manual_ack_set(True)
-        client.on_connect = self._on_connect
-        client.on_subscribe = self._on_subscribe
-        client.on_disconnect = self._on_disconnect
-        client.on_message = self._on_message
+        client.on_connect = functools.partial(self._on_connect, session)
+        client.on_subscribe = functools.partial(self._on_subscribe, session)
+        client.on_disconnect = functools.partial(self._on_disconnect, session)
+        client.on_message = functools.partial(self._on_message, session)
+        self._session = session
+        return session
+
+    async def _connect_and_serve(
+        self, session: _Session, shutdown_event: asyncio.Event
+    ) -> bool:
+        """Serve one session; True when it ended to have the broker redeliver."""
+        client = session.client
         username = self._broker.username
         password = self._broker.password
         if username:
@@ -493,10 +626,10 @@ class MqttEvidenceInboundSubscriber:
         # subscription, or drop a session it had granted. Both must reconnect
         # rather than leave a task parked on a route that no longer carries
         # anything.
-        await _wait_first(shutdown_event, lost, redeliver)
+        await _wait_first(shutdown_event, session.lost, session.redeliver)
         if shutdown_event.is_set():
             return False
-        if redeliver.is_set() and not lost.is_set():
+        if session.redeliver.is_set() and not session.lost.is_set():
             logger.info(
                 "[evidence-inbound] reconnecting so the broker redelivers the "
                 "messages left unacknowledged"
@@ -505,12 +638,12 @@ class MqttEvidenceInboundSubscriber:
         raise ConnectionError("subscription lost")
 
     async def close(self) -> None:
-        """Stop the paho network loop and disconnect cleanly."""
-        client = self._client
-        self._client = None
-        self._connected = False
-        if client is None:
+        """Close the current session, then stop its client."""
+        session = self._session
+        if session is None or not session.open:
             return
+        session.close()
+        client = session.client
         try:
             await self._io.run(client.loop_stop)
         except Exception:
@@ -520,14 +653,20 @@ class MqttEvidenceInboundSubscriber:
         except Exception:
             logger.warning("[evidence-inbound] failed to disconnect cleanly")
 
-    # ── paho callbacks ────────────────────────────────────────────────────────
+    # ── paho callbacks, each bound to the session whose client it is ────────
 
     def _on_connect(
-        self, client: Any, _userdata: Any, _flags: Any, rc: Any, *_: Any
+        self,
+        session: _Session,
+        client: Any,
+        _userdata: Any,
+        _flags: Any,
+        rc: Any,
+        *_: Any,
     ) -> None:
         if _rc_value(rc) != 0:
             logger.warning("[evidence-inbound] MQTT connect failed rc=%s", rc)
-            self._signal_lost()
+            self._signal_lost(session)
             return
         # QoS 1: a dropped authority artifact is not recoverable by asking
         # again, since the runtime does not know it was sent.
@@ -543,12 +682,18 @@ class MqttEvidenceInboundSubscriber:
                 self.topic,
                 code,
             )
-            self._signal_lost()
+            self._signal_lost(session)
 
     def _on_subscribe(
-        self, _client: Any, _userdata: Any, _mid: Any, reason_codes: Any, *_: Any
+        self,
+        session: _Session,
+        _client: Any,
+        _userdata: Any,
+        _mid: Any,
+        reason_codes: Any,
+        *_: Any,
     ) -> None:
-        """Mark the route up only once the broker has granted the subscription.
+        """Mark the session up only once the broker has granted the subscription.
 
         A broker that authenticates the connection and then refuses the topic
         by ACL is the shape this catches. Without it the route reports healthy
@@ -564,10 +709,11 @@ class MqttEvidenceInboundSubscriber:
                 self.topic,
                 refused or "no granted QoS",
             )
-            self._connected = False
-            self._signal_lost()
+            session.set_connected(False)
+            self._signal_lost(session)
             return
-        self._connected = True
+        if not session.set_connected(True):
+            return
         logger.info(
             "[evidence-inbound] subscribed to %s via %s:%s (envelope auth=%s)",
             self.topic,
@@ -576,44 +722,66 @@ class MqttEvidenceInboundSubscriber:
             "enabled" if self._router.envelope_authenticated else "disabled",
         )
 
-    def _on_disconnect(self, _client: Any, _userdata: Any, *args: Any) -> None:
-        """Drop the route's claim to be up, and reconnect.
+    def _on_disconnect(
+        self, session: _Session, _client: Any, _userdata: Any, *args: Any
+    ) -> None:
+        """Drop the session's claim to be up, and reconnect.
 
         Without this `connected` stays true after the session is gone, which
         would report a working route while nothing could arrive.
         """
-        self._connected = False
-        logger.warning("[evidence-inbound] disconnected from broker")
-        self._signal_lost()
-
-    def _signal_lost(self) -> None:
-        """Wake the serve loop from a paho callback thread."""
-        loop = self._loop
-        lost = self._lost
-        if loop is None or lost is None:
+        if not session.set_connected(False):
             return
-        loop.call_soon_threadsafe(lost.set)
+        logger.warning("[evidence-inbound] disconnected from broker")
+        self._signal_lost(session)
 
-    def _on_message(self, client: Any, _userdata: Any, message: Any) -> None:
+    def _signal_lost(self, session: _Session) -> None:
+        """Wake the serve loop from a paho callback thread to end *session*."""
+        loop = self._loop
+        if loop is not None:
+            loop.call_soon_threadsafe(session.lost.set)
+
+    def _on_message(
+        self, session: _Session, client: Any, _userdata: Any, message: Any
+    ) -> None:
         loop = self._loop
         if loop is None:
             logger.warning(
                 "[evidence-inbound] message received before event loop ready"
             )
             return
+        payload = getattr(message, "payload", b"") or b""
+        if session.pending or not session.open:
+            # A reconnect is due, or this client's session is over: the broker
+            # brings this back unread. Still classified and counted.
+            if self._ingress.within_size(payload):
+                self._ingress.refuse(REDELIVERY_DUE)
+            else:
+                self._release(client, message)
+            return
+        refusal = self._ingress.admit(payload)
+        if refusal == PAYLOAD_TOO_LARGE:
+            # Released, never answered: a message refused for its size would
+            # be redelivered and refused without end.
+            self._release(client, message)
+            return
+        if refusal is not None:
+            # Left with the broker, which redelivers it once the rate has room.
+            self._leave_with_broker(session, loop, rate=True)
+            return
         if not self._slots.try_take():
             # Nothing is scheduled for it: the message stays with the broker
             # and comes back after the reconnect that follows the backlog.
             self._shed += 1
-            if self._owe_redelivery():
+            self._ingress.refuse(IN_FLIGHT_EXCEEDED)
+            if self._leave_with_broker(session, loop):
                 logger.warning(
                     "[evidence-inbound] %d messages in flight; further messages "
                     "are left with the broker until they clear",
                     INBOUND_IN_FLIGHT_BOUND,
                 )
             return
-        payload = getattr(message, "payload", b"") or b""
-        ticket = _Ticket()
+        ticket = _Ticket(session)
         try:
             future = asyncio.run_coroutine_threadsafe(
                 self._routed(
@@ -627,40 +795,53 @@ class MqttEvidenceInboundSubscriber:
             )
         except Exception:
             logger.warning("[evidence-inbound] could not schedule a message")
-            self._owe_redelivery(failed=True)
+            session.owe(failed=True)
             self._give_back()
             return
         future.add_done_callback(functools.partial(self._settled, ticket))
 
-    def _owe_redelivery(self, *, failed: bool = False) -> bool:
-        """Mark a redelivery owed; True when this is the first of the episode.
+    def _leave_with_broker(
+        self, session: _Session, loop: asyncio.AbstractEventLoop, *, rate: bool = False
+    ) -> bool:
+        """Owe the broker's redelivery of a message left unacknowledged.
 
-        *failed* when routing itself did not complete: the reconnect for it
-        then waits out the route's backoff, since redelivering at once would
-        only fail again.
+        Owed first, then settled against the slots: once none is taken the
+        reconnect is due now, since a slot released between the two found
+        nothing owed and will not come back to it. True when this opens the
+        episode.
         """
-        with self._owed_lock:
-            first = not self._redelivery_owed
-            self._redelivery_owed = True
-            self._owed_after_failure = self._owed_after_failure or failed
-            return first
+        first = session.owe(rate=rate)
+        if self._slots.taken == 0:
+            session.redeliver_owed(loop)
+        return first
+
+    def _release(self, client: Any, message: Any) -> None:
+        """Acknowledge *message* at the broker without routing it."""
+        mid = getattr(message, "mid", None)
+        if not self._manual_ack or mid is None:
+            return
+        try:
+            code = client.ack(mid, getattr(message, "qos", 0))
+        except Exception:
+            logger.warning("[evidence-inbound] failed to release a refused message")
+            return
+        if _rc_value(code) != 0:
+            logger.warning("[evidence-inbound] the client refused an ack rc=%s", code)
 
     def _give_back(self) -> None:
-        """Release a slot; once none is taken, reconnect for what is owed."""
+        """Release a slot; once none is taken, the current session reconnects
+        for what it owes. The slots are every session's; what is owed is the
+        session's own."""
         if self._slots.give_back() > 0:
             return
-        with self._owed_lock:
-            owed, self._redelivery_owed = self._redelivery_owed, False
-            failed, self._owed_after_failure = self._owed_after_failure, False
-        loop, redeliver = self._loop, self._redeliver
-        if owed and loop is not None and redeliver is not None:
-            self._redeliver_after_failure = failed
-            loop.call_soon_threadsafe(redeliver.set)
+        session, loop = self._session, self._loop
+        if session is not None and loop is not None:
+            session.redeliver_owed(loop)
 
     def _settled(self, ticket: _Ticket, future: Any) -> None:
         # A route cancelled before it started never reached its own release.
         if not ticket.started:
-            self._owe_redelivery(failed=True)
+            ticket.session.owe(failed=True)
             self._give_back()
         _log_future_failure(future)
 
@@ -669,11 +850,16 @@ class MqttEvidenceInboundSubscriber:
     ) -> None:
         ticket.started = True
         try:
-            await self._route(client, payload, mid, qos)
+            await self._route(ticket, client, payload, mid, qos)
         finally:
             self._give_back()
 
-    async def _route(self, client: Any, payload: bytes, mid: Any, qos: Any) -> None:
+    async def _route(
+        self, ticket: _Ticket, client: Any, payload: bytes, mid: Any, qos: Any
+    ) -> None:
+        # Owed to the session that admitted the message, even once it is over:
+        # its reconnect redelivered the message, and nothing reads a closed
+        # session's debt.
         acknowledged = False
         try:
             await self._route_admitted(payload)
@@ -681,7 +867,7 @@ class MqttEvidenceInboundSubscriber:
         except EvidenceExecutorSaturatedError:
             # Left with the broker like a message past the bound, and reported
             # once per episode rather than once per message.
-            if self._owe_redelivery(failed=True):
+            if ticket.session.owe(failed=True):
                 logger.warning(
                     "[evidence-inbound] the evidence worker is saturated; "
                     "messages are left with the broker until it clears"
@@ -691,7 +877,7 @@ class MqttEvidenceInboundSubscriber:
                 # Routing failed or was cancelled before the broker released
                 # the message: it is still the broker's, and comes back after
                 # the reconnect.
-                self._owe_redelivery(failed=True)
+                ticket.session.owe(failed=True)
 
     async def _acknowledge(self, client: Any, mid: Any, qos: Any) -> bool:
         """Release the message at the broker once it has been routed."""
@@ -712,8 +898,10 @@ class MqttEvidenceInboundSubscriber:
         _log_result(routed.outcome)
         if routed.acknowledgement is None:
             return
-        client = self._client
-        if client is None:
+        session = self._session
+        if session is None or not session.open:
+            # Answered only on an open session: a closed one's client may be
+            # one a close failed to stop.
             logger.warning(
                 "[evidence-inbound] no connection to acknowledge on; the courier "
                 "will redeliver"
@@ -721,7 +909,7 @@ class MqttEvidenceInboundSubscriber:
             return
         try:
             await self._io.run(
-                client.publish,
+                session.client.publish,
                 self._router.ack_topic,
                 json.dumps(routed.acknowledgement).encode(),
                 1,
@@ -733,11 +921,12 @@ class MqttEvidenceInboundSubscriber:
 
 
 class _Ticket:
-    """Whether one admitted message's route has started on the loop."""
+    """Whether one admitted message's route has started, and its session."""
 
-    __slots__ = ("started",)
+    __slots__ = ("session", "started")
 
-    def __init__(self) -> None:
+    def __init__(self, session: _Session) -> None:
+        self.session = session
         self.started = False
 
 
@@ -761,6 +950,9 @@ async def _wait_first(*events: asyncio.Event) -> None:
 
 
 def _log_future_failure(future: Any) -> None:
+    if future.cancelled():
+        # Cancelled at shutdown; its message stays the broker's.
+        return
     try:
         future.result()
     except Exception:

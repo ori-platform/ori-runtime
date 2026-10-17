@@ -11,7 +11,8 @@ Gateway messages have a different trust model from remote commands:
 This module therefore uses the same HMAC/canonical-JSON idea as remote
 commands, with a bounded TTL replay cache. The cache is in-memory by
 default; when a database path is supplied it also persists seen keys to
-SQLite so a runtime restart does not reopen the replay window. Restarts
+SQLite so a restart alone does not reopen the replay window (a raised
+skew or a clock that steps back still can: ori-runtime#879). Restarts
 are attacker-influenceable on physically accessible devices (pulling
 power is enough), so persistence is the hardened posture. Persistence
 failures degrade to in-memory protection with a WARNING — replay defense
@@ -20,6 +21,7 @@ must never become an availability outage.
 
 from __future__ import annotations
 
+import heapq
 import hmac
 import json
 import logging
@@ -49,6 +51,32 @@ ENCRYPTION_SALT = b"ori-runtime-gateway-mqtt-v1"
 DEFAULT_GATEWAY_AUTH_SKEW_MS = 300_000
 DEFAULT_GATEWAY_AUTH_REPLAY_TTL_MS = 300_000
 _MAX_REPLAY_ENTRIES = 4096
+#: A wall clock in milliseconds stays below this for about 285,000 years, so
+#: remembering a key any longer is the same as remembering it for ever.
+_LONGEST_MEANINGFUL_MS = 2**53
+
+
+def replay_window_ms(max_skew_ms: int) -> int:
+    """How long after receipt a replay of an envelope could still pass.
+
+    `_verify` accepts an envelope while the clock is within *max_skew_ms* of
+    its signing time, both ends inclusive, and it was received no earlier
+    than its signing time less the skew: so until twice the skew after
+    receipt, and a key pruned at expiry must outlive that by a millisecond.
+    Capped where a wall clock in milliseconds never reaches.
+    """
+    return min(2 * max(0, int(max_skew_ms)) + 1, _LONGEST_MEANINGFUL_MS)
+
+
+def replay_retention_ms(replay_ttl_ms: int, max_skew_ms: int) -> int:
+    """The longest any replay key is kept: the configured window from receipt,
+    or until its envelope is stale, whichever is later. What sizes a cache."""
+    return max(
+        min(max(1, int(replay_ttl_ms)), _LONGEST_MEANINGFUL_MS),
+        replay_window_ms(max_skew_ms),
+    )
+
+
 _AES_GCM_NONCE_BYTES = 12
 logger = logging.getLogger(__name__)
 
@@ -94,13 +122,28 @@ class GatewayMessageEncryptionConfig:
     shared_secret: str
 
 
+@dataclass(frozen=True)
+class AuthenticatedMessage:
+    """A message whose envelope verified, its replay key not yet recorded.
+
+    For a receiver that must add no state for a message that answers nothing
+    it holds (gateway-api/v2 Payload Volume): it correlates first, then calls
+    `GatewayMessageAuthenticator.commit`.
+    """
+
+    payload: dict[str, Any]
+    replay_key: str
+    at_ms: int
+    signed_at_ms: int
+
+
 class GatewayReplayCache:
     """TTL replay cache for short-lived gateway MQTT messages.
 
     In-memory by default. When *db_path* is supplied, seen keys are also
     persisted to a ``gateway_replay_cache`` table at that path and warmed
-    back on construction, so a runtime restart cannot be used to reopen
-    the replay window. The cache is thread-safe: ``verify()`` runs on
+    back on construction, so a restart alone cannot be used to reopen the
+    replay window. The cache is thread-safe: ``verify()`` runs on
     MQTT client callback threads.
     """
 
@@ -108,12 +151,26 @@ class GatewayReplayCache:
         self,
         *,
         ttl_ms: int = DEFAULT_GATEWAY_AUTH_REPLAY_TTL_MS,
+        max_skew_ms: int | None = None,
         max_entries: int = _MAX_REPLAY_ENTRIES,
         db_path: str | None = None,
     ) -> None:
-        self._ttl_ms = max(1, int(ttl_ms))
+        self._ttl_ms = min(max(1, int(ttl_ms)), _LONGEST_MEANINGFUL_MS)
+        # A key is kept *ttl_ms* from receipt, as it always was, and with the
+        # skew also until its envelope turns stale: one millisecond past its
+        # signing time plus the skew, whichever is later. Never shorter than
+        # before, so no envelope can be replayed more often than it could.
+        self._max_skew_ms = (
+            None
+            if max_skew_ms is None
+            else min(max(0, int(max_skew_ms)), _LONGEST_MEANINGFUL_MS)
+        )
         self._max_entries = max(1, int(max_entries))
         self._seen_until_ms: dict[str, int] = {}
+        # Expiry order, so pruning pops what has expired instead of scanning
+        # a cache the replay window may make large. An entry whose key was
+        # forgotten or re-seen is skipped when it surfaces.
+        self._expiries: list[tuple[int, str]] = []
         self._lock = threading.Lock()
         self._conn: sqlite3.Connection | None = None
         path = str(db_path or "").strip()
@@ -124,6 +181,12 @@ class GatewayReplayCache:
                 conn.execute(
                     "CREATE TABLE IF NOT EXISTS gateway_replay_cache ("
                     "key TEXT PRIMARY KEY, seen_until_ms INTEGER NOT NULL)"
+                )
+                # Expired rows are deleted on every write: by index, not by
+                # scanning a table the replay window may make large.
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS gateway_replay_cache_expiry "
+                    "ON gateway_replay_cache (seen_until_ms)"
                 )
                 conn.commit()
                 self._conn = conn
@@ -141,7 +204,13 @@ class GatewayReplayCache:
     def persistent(self) -> bool:
         return self._conn is not None
 
-    def mark_seen(self, key: str, *, now_ms_value: int | None = None) -> bool:
+    def mark_seen(
+        self,
+        key: str,
+        *,
+        now_ms_value: int | None = None,
+        signed_at_ms: int | None = None,
+    ) -> bool:
         """Return False when *key* is already present and unexpired."""
         current_ms = int(now_ms_value if now_ms_value is not None else now_ms())
         with self._lock:
@@ -150,10 +219,24 @@ class GatewayReplayCache:
                 return False
             if len(self._seen_until_ms) >= self._max_entries:
                 return False
-            expires_ms = current_ms + self._ttl_ms
+            expires_ms = self._expiry(current_ms, signed_at_ms)
             self._seen_until_ms[key] = expires_ms
+            heapq.heappush(self._expiries, (expires_ms, key))
             self._persist(key, expires_ms, current_ms)
             return True
+
+    def _expiry(self, current_ms: int, signed_at_ms: int | None) -> int:
+        """When a key recorded at *current_ms* may be forgotten."""
+        configured = current_ms + self._ttl_ms
+        if self._max_skew_ms is None or signed_at_ms is None:
+            return configured
+        # Bounded by the window, so nothing derived from a skew the contract
+        # admits leaves its integer range.
+        stale = min(
+            signed_at_ms + self._max_skew_ms + 1,
+            current_ms + replay_window_ms(self._max_skew_ms),
+        )
+        return max(configured, stale)
 
     def _warm_from_db(self) -> None:
         if self._conn is None:
@@ -166,8 +249,44 @@ class GatewayReplayCache:
             "ORDER BY seen_until_ms DESC LIMIT ?",
             (self._max_entries,),
         ).fetchall()
+        rewritten: list[tuple[int, str]] = []
         for key, seen_until_ms in rows:
-            self._seen_until_ms[str(key)] = int(seen_until_ms)
+            expires_ms = self._warm_expiry(str(key), int(seen_until_ms))
+            self._seen_until_ms[str(key)] = expires_ms
+            heapq.heappush(self._expiries, (expires_ms, str(key)))
+            if expires_ms != int(seen_until_ms):
+                rewritten.append((expires_ms, str(key)))
+        if rewritten:
+            # Stored as decided, so the next write's expiry delete and the next
+            # restart both read the same expiry as this process.
+            self._conn.executemany(
+                "UPDATE gateway_replay_cache SET seen_until_ms = ? WHERE key = ?",
+                rewritten,
+            )
+            self._conn.commit()
+
+    def _warm_expiry(self, key: str, stored_ms: int) -> int:
+        """A loaded key's expiry, decided again from its own signing time.
+
+        A previous release wrote its receipt plus a configured window, which
+        could end before the envelope turned stale. Every gateway key ends
+        with its signing time and signature, so the stored expiry is extended
+        to when that envelope turns stale, and never shortened. A signing time
+        past what a clock reaches leaves the stored value, which `mark_seen`
+        bounded.
+        """
+        if self._max_skew_ms is None:
+            return stored_ms
+        fields = key.split("\n")
+        try:
+            signed_at_ms = int(fields[-2])
+        except (IndexError, ValueError):
+            return stored_ms
+        # Only ever extended, never shortened: a clock that started behind
+        # cannot cut what the last run stored.
+        if abs(signed_at_ms) > _LONGEST_MEANINGFUL_MS:
+            return stored_ms
+        return max(stored_ms, signed_at_ms + self._max_skew_ms + 1)
 
     def _persist(self, key: str, expires_ms: int, current_ms: int) -> None:
         if self._conn is None:
@@ -192,13 +311,35 @@ class GatewayReplayCache:
             self._conn = None
 
     def _prune(self, current_ms: int) -> None:
-        expired = [
-            key
-            for key, expires_ms in self._seen_until_ms.items()
-            if expires_ms <= current_ms
-        ]
-        for key in expired:
+        expiries = self._expiries
+        while expiries and expiries[0][0] <= current_ms:
+            expires_ms, key = heapq.heappop(expiries)
+            if self._seen_until_ms.get(key) == expires_ms:
+                del self._seen_until_ms[key]
+        # Forgotten and re-seen keys leave entries behind; past twice the live
+        # keys, the heap is rebuilt from them, so it never outgrows the cache.
+        if len(expiries) > 2 * len(self._seen_until_ms) + 64:
+            self._expiries = [(e, k) for k, e in self._seen_until_ms.items()]
+            heapq.heapify(self._expiries)
+
+    def forget(self, key: str) -> None:
+        """Unrecord *key*: the message it names was never acted on."""
+        with self._lock:
             self._seen_until_ms.pop(key, None)
+            if self._conn is None:
+                return
+            try:
+                self._conn.execute(
+                    "DELETE FROM gateway_replay_cache WHERE key = ?", (key,)
+                )
+                self._conn.commit()
+            except sqlite3.Error:
+                logger.warning(
+                    "[gateway-auth] persistent replay cache delete failed; "
+                    "continuing with in-memory replay protection.",
+                    exc_info=True,
+                )
+                self._conn = None
 
 
 class GatewayMessageAuthenticator:
@@ -222,7 +363,8 @@ class GatewayMessageAuthenticator:
         self._previous_secret = previous_secret
         self._max_skew_ms = max(0, int(config.max_skew_ms))
         self._replay_cache = replay_cache or GatewayReplayCache(
-            ttl_ms=config.replay_ttl_ms
+            ttl_ms=config.replay_ttl_ms,
+            max_skew_ms=config.max_skew_ms,
         )
 
     @property
@@ -266,6 +408,30 @@ class GatewayMessageAuthenticator:
         Raises only `GatewayMessageAuthError` for anything a sender can put on
         the wire, so every caller's refusal path is the only path.
         """
+        message = self.authenticate(
+            payload,
+            message_type=message_type,
+            expected_device_id=expected_device_id,
+            expected_request_id=expected_request_id,
+            now_ms_value=now_ms_value,
+        )
+        self.commit(message)
+        return message.payload
+
+    def authenticate(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        message_type: str,
+        expected_device_id: str,
+        expected_request_id: str | None = None,
+        now_ms_value: int | None = None,
+    ) -> AuthenticatedMessage:
+        """Verify *payload*'s envelope without recording it as seen.
+
+        Nothing is accepted until `commit` records the replay key; a message
+        never committed may arrive again and verify again.
+        """
         try:
             return self._verify(
                 payload,
@@ -279,6 +445,20 @@ class GatewayMessageAuthenticator:
         except _UNVERIFIABLE as exc:
             raise GatewayMessageAuthError("unverifiable_payload") from exc
 
+    def commit(self, message: AuthenticatedMessage) -> None:
+        """Record *message* as seen; raises `replay_detected` if it was already."""
+        if not self._replay_cache.mark_seen(
+            message.replay_key,
+            now_ms_value=message.at_ms,
+            signed_at_ms=message.signed_at_ms,
+        ):
+            raise GatewayMessageAuthError("replay_detected")
+
+    def release(self, message: AuthenticatedMessage) -> None:
+        """Undo `commit` for a message the receiver then could not act on at
+        all, so its identical redelivery is not refused as a replay."""
+        self._replay_cache.forget(message.replay_key)
+
     def _verify(
         self,
         payload: Mapping[str, Any],
@@ -287,7 +467,7 @@ class GatewayMessageAuthenticator:
         expected_device_id: str,
         expected_request_id: str | None,
         now_ms_value: int | None,
-    ) -> dict[str, Any]:
+    ) -> AuthenticatedMessage:
         auth = payload.get(AUTH_FIELD)
         if not isinstance(auth, Mapping):
             raise GatewayMessageAuthError("missing_auth")
@@ -333,9 +513,9 @@ class GatewayMessageAuthenticator:
         replay_key = "\n".join(
             [message_type, device_id, request_id, str(signed_at_ms), signature]
         )
-        if not self._replay_cache.mark_seen(replay_key, now_ms_value=current_ms):
-            raise GatewayMessageAuthError("replay_detected")
-        return unsigned_payload
+        return AuthenticatedMessage(
+            unsigned_payload, replay_key, current_ms, signed_at_ms
+        )
 
     def verify_broadcast(
         self,
@@ -404,7 +584,9 @@ class GatewayMessageAuthenticator:
             )
 
         replay_key = "\n".join([message_type, str(signed_at_ms), signature])
-        if not self._replay_cache.mark_seen(replay_key, now_ms_value=current_ms):
+        if not self._replay_cache.mark_seen(
+            replay_key, now_ms_value=current_ms, signed_at_ms=signed_at_ms
+        ):
             raise GatewayMessageAuthError("replay_detected")
         return unsigned_payload
 

@@ -42,6 +42,7 @@ import logging
 from typing import Any, Callable
 
 from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_url
+from ori.gateway.payload_bounds import GATEWAY_HEALTH, IngressBound
 from ori.reasoning.capability_posture import CapabilityPostureTracker
 from ori.security.gateway_messages import (
     GatewayMessageAuthenticator,
@@ -98,6 +99,7 @@ class MqttGatewayHeartbeatSubscriber:
         self._client_factory = client_factory or _default_client_factory
         self._client: Any = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._ingress = IngressBound(GATEWAY_HEALTH)
 
     async def serve_until(self, shutdown_event: asyncio.Event) -> None:
         """Connect to the broker, subscribe, and serve until *shutdown_event* fires.
@@ -174,6 +176,8 @@ class MqttGatewayHeartbeatSubscriber:
             return
 
         payload_bytes: bytes = getattr(message, "payload", b"") or b""
+        if self._ingress.admit(payload_bytes) is not None:
+            return
         try:
             payload = json.loads(payload_bytes)
         except Exception:

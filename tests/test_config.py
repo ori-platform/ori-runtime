@@ -2837,12 +2837,35 @@ class TestLoadExample:
 
 
 class TestDeviceValidation:
-    def test_rejects_id_with_space(self, tmp_path):
+    @pytest.mark.parametrize(
+        "device_id",
+        [
+            "bad id",
+            "${OWNER_ID}",
+            "{device}",
+            "dev/01",
+            "dev+",
+            "dév-01",
+            "a" * 129,
+            '""',
+        ],
+        ids=[
+            "space",
+            "placeholder",
+            "braces",
+            "slash",
+            "wildcard",
+            "non-ascii",
+            "129",
+            "empty",
+        ],
+    )
+    def test_rejects_id_outside_the_routing_pattern(self, tmp_path, device_id):
         yaml_path = _write_yaml(
             tmp_path,
-            """
+            f"""
             device:
-              id: "bad id"
+              id: {device_id if device_id == '""' else repr(device_id)}
               name: Test
               location: Lagos
             sensors: []
@@ -2858,8 +2881,32 @@ class TestDeviceValidation:
               primary_alert_channel: sms
             """,
         )
-        with pytest.raises(ConfigValidationError, match="spaces"):
+        with pytest.raises(ConfigValidationError, match="device.id must be 1 to 128"):
             Config.load(yaml_path)
+
+    @pytest.mark.parametrize("device_id", ["a" * 128, "site-a.edge_01", "0"])
+    def test_accepts_id_inside_the_routing_pattern(self, tmp_path, device_id):
+        yaml_path = _write_yaml(
+            tmp_path,
+            f"""
+            device:
+              id: "{device_id}"
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: sms
+            """,
+        )
+        assert Config.load(yaml_path).device.id == device_id
 
     def test_rejects_missing_device_id(self, tmp_path):
         yaml_path = _write_yaml(

@@ -89,6 +89,7 @@ from ori.gateway.node_heartbeat import (
     DEGRADATION_REASON_FIRMWARE_LIVENESS,
     MqttRuntimeNodeHeartbeatPublisher,
 )
+from ori.gateway.payload_bounds import replay_capacity
 from ori.gateway.reasoning import MqttGatewayReasoner
 from ori.hal.base import (
     AdapterReadError,
@@ -229,6 +230,7 @@ from ori.security.gateway_messages import (
     GatewayMessageEncryptionConfig,
     GatewayMessageEncryptor,
     GatewayReplayCache,
+    replay_retention_ms,
 )
 from ori.security.offline_tokens import OfflineTierCTokenVerifier
 from ori.security.remote_commands.commands import RemoteCommand, RemoteCommandVerifier
@@ -1436,7 +1438,13 @@ class OriRuntime:
                 and _local_llm_requested(config.reasoning)
             ),
         )
-        gateway_reasoner = _build_gateway_reasoner(config)
+        # One replay cache for every gateway route; see _build_gateway_replay_cache.
+        try:
+            gateway_replay_cache = _build_gateway_replay_cache(config)
+        except Exception:
+            logger.exception("[runtime] gateway replay cache could not be built")
+            gateway_replay_cache = None
+        gateway_reasoner = _build_gateway_reasoner(config, gateway_replay_cache)
         elevator = IntelligenceElevator(
             local_llm=local_llm,
             gateway_reasoner=gateway_reasoner,
@@ -1786,12 +1794,16 @@ class OriRuntime:
         _warn_gateway_security_posture(config)
         _warn_sms_webhook_security_posture(config)
 
-        gateway_export_task = self._start_gateway_export_responder_if_enabled(config)
+        gateway_export_task = self._start_gateway_export_responder_if_enabled(
+            config, gateway_replay_cache
+        )
         if gateway_export_task is not None:
             self._background_tasks.append(gateway_export_task)
 
         hb_subscriber = (
-            _build_gateway_heartbeat_subscriber(config, posture_tracker)
+            _build_gateway_heartbeat_subscriber(
+                config, posture_tracker, gateway_replay_cache
+            )
             if posture_tracker is not None
             else None
         )
@@ -1804,7 +1816,7 @@ class OriRuntime:
             )
 
         evidence_inbound_subscriber = _build_evidence_inbound_subscriber(
-            config, evidence_attestor
+            config, evidence_attestor, gateway_replay_cache
         )
         self._evidence_inbound_subscriber = evidence_inbound_subscriber
         if evidence_inbound_subscriber is not None:
@@ -1831,7 +1843,7 @@ class OriRuntime:
             logger.info("[runtime] evidence anchor registration reconciler started")
 
         evidence_outbound_publisher = _build_evidence_outbound_publisher(
-            config, evidence_attestor
+            config, evidence_attestor, gateway_replay_cache
         )
         self._evidence_outbound_publisher = evidence_outbound_publisher
         if evidence_outbound_publisher is not None and evidence_attestor is not None:
@@ -1919,6 +1931,7 @@ class OriRuntime:
         node_heartbeat = _build_runtime_node_heartbeat_publisher(
             config,
             self._build_health_snapshot,
+            gateway_replay_cache,
         )
         if node_heartbeat is not None:
             self._runtime_node_heartbeat_publisher = node_heartbeat
@@ -2866,7 +2879,7 @@ class OriRuntime:
             return None
 
     def _start_gateway_export_responder_if_enabled(
-        self, config: Config
+        self, config: Config, replay_cache: GatewayReplayCache | None = None
     ) -> asyncio.Task[None] | None:
         if not bool(config.gateway.enabled):
             return None
@@ -2880,7 +2893,7 @@ class OriRuntime:
                 device_id=config.device.id,
                 state_store=self._state_store,
                 health_snapshot_provider=self._build_health_snapshot,
-                message_auth=_build_gateway_message_auth(config),
+                message_auth=_build_gateway_message_auth(config, replay_cache),
                 message_encryptor=_build_gateway_message_encryptor(config),
             )
             server = MqttGatewayExportServer(
@@ -6826,7 +6839,9 @@ def _build_local_llm(
     return local_llm
 
 
-def _build_gateway_reasoner(config: Config) -> MqttGatewayReasoner | None:
+def _build_gateway_reasoner(
+    config: Config, replay_cache: GatewayReplayCache | None = None
+) -> MqttGatewayReasoner | None:
     """Instantiate the MQTT Tier 3 gateway reasoner when configured."""
     if not bool(config.gateway.enabled):
         return None
@@ -6841,7 +6856,7 @@ def _build_gateway_reasoner(config: Config) -> MqttGatewayReasoner | None:
             device_id=config.device.id,
             timeout_ms=int(reasoning_cfg.get("timeout_ms", 10_000)),
             tls_config=getattr(config.gateway, "tls", {}),
-            message_auth=_build_gateway_message_auth(config),
+            message_auth=_build_gateway_message_auth(config, replay_cache),
         )
     except Exception:
         logger.exception("[runtime] invalid gateway reasoning configuration")
@@ -7051,8 +7066,46 @@ def _custody_key_registry(config: Config) -> CustodyKeyRegistry | None:
         raise ValueError(f"gateway.custody is misconfigured: {exc}") from exc
 
 
-def _build_gateway_message_auth(config: Config) -> GatewayMessageAuthenticator | None:
-    """Build optional HMAC auth for runtime-gateway MQTT envelopes."""
+def _build_gateway_replay_cache(config: Config) -> GatewayReplayCache | None:
+    """The one replay cache every gateway route shares, or None without auth.
+
+    One per runtime: its size covers every family, and every key names its
+    message type, so a cache per route would hold the same table six times.
+    """
+    raw_auth = getattr(config.gateway, "auth", {})
+    auth_cfg = raw_auth if isinstance(raw_auth, dict) else {}
+    if not bool(auth_cfg.get("enabled", False)):
+        return None
+    replay_ttl_ms = int(auth_cfg.get("replay_ttl_ms", 300_000))
+    skew_ms = int(auth_cfg.get("max_clock_skew_ms", 300_000))
+    retention_ms = replay_retention_ms(replay_ttl_ms, skew_ms)
+    persistent = is_truthy(auth_cfg.get("persistent_replay_cache", True))
+    replay_cache = GatewayReplayCache(
+        ttl_ms=replay_ttl_ms,
+        max_skew_ms=skew_ms,
+        # Every message the families admit in one retention window, up to a
+        # ceiling past which a full cache refuses messages as replays.
+        max_entries=replay_capacity(retention_ms),
+        # A restart is attacker-influenceable on a physically accessible
+        # device (pulling power is enough), so seen keys persist to the
+        # state database so a restart alone does not reopen the replay window.
+        db_path=str(getattr(config, "database_path", "") or "") if persistent else None,
+    )
+    if persistent and not replay_cache.persistent:
+        logger.warning(
+            "[runtime] gateway replay cache persistence unavailable; "
+            "replay protection is in-memory only until the next restart."
+        )
+    return replay_cache
+
+
+def _build_gateway_message_auth(
+    config: Config, replay_cache: GatewayReplayCache | None = None
+) -> GatewayMessageAuthenticator | None:
+    """Build optional HMAC auth for runtime-gateway MQTT envelopes.
+
+    *replay_cache* is the runtime's shared one; without it a cache is built.
+    """
     raw_auth = getattr(config.gateway, "auth", {})
     auth_cfg = raw_auth if isinstance(raw_auth, dict) else {}
     if not bool(auth_cfg.get("enabled", False)):
@@ -7074,20 +7127,8 @@ def _build_gateway_message_auth(config: Config) -> GatewayMessageAuthenticator |
             "is configured but empty; previous-secret verification disabled."
         )
     replay_ttl_ms = int(auth_cfg.get("replay_ttl_ms", 300_000))
-    replay_cache = None
-    if is_truthy(auth_cfg.get("persistent_replay_cache", True)):
-        # A restart is attacker-influenceable on a physically accessible
-        # device (pulling power is enough), so seen keys persist to the
-        # state database to keep the replay window closed across restarts.
-        replay_cache = GatewayReplayCache(
-            ttl_ms=replay_ttl_ms,
-            db_path=str(getattr(config, "database_path", "") or ""),
-        )
-        if not replay_cache.persistent:
-            logger.warning(
-                "[runtime] gateway replay cache persistence unavailable; "
-                "replay protection is in-memory only until the next restart."
-            )
+    if replay_cache is None:
+        replay_cache = _build_gateway_replay_cache(config)
     return GatewayMessageAuthenticator(
         GatewayMessageAuthConfig(
             shared_secret=secret,
@@ -7122,6 +7163,7 @@ def _build_gateway_message_encryptor(config: Config) -> GatewayMessageEncryptor 
 def _build_gateway_heartbeat_subscriber(
     config: Config,
     posture_tracker: CapabilityPostureTracker,
+    replay_cache: GatewayReplayCache | None = None,
 ) -> MqttGatewayHeartbeatSubscriber | None:
     """Instantiate the MQTT gateway heartbeat subscriber when configured."""
     if not bool(config.gateway.enabled):
@@ -7142,7 +7184,7 @@ def _build_gateway_heartbeat_subscriber(
             posture_tracker=posture_tracker,
             device_id=config.device.id,
             tls_config=getattr(config.gateway, "tls", {}),
-            authenticator=_build_gateway_message_auth(config),
+            authenticator=_build_gateway_message_auth(config, replay_cache),
         )
     except Exception:
         logger.exception("[runtime] invalid gateway heartbeat configuration")
@@ -7158,6 +7200,7 @@ def _build_gateway_heartbeat_subscriber(
 def _build_evidence_inbound_subscriber(
     config: Config,
     attestor: FirstPartyEvidenceAttestor | None,
+    replay_cache: GatewayReplayCache | None = None,
 ) -> MqttEvidenceInboundSubscriber | None:
     """Instantiate the inbound authority-artifact route when configured.
 
@@ -7197,7 +7240,7 @@ def _build_evidence_inbound_subscriber(
         router = EvidenceInboundRouter(
             device_id=config.device.id,
             ingest=ingest,
-            message_auth=_build_gateway_message_auth(config),
+            message_auth=_build_gateway_message_auth(config, replay_cache),
         )
         subscriber = MqttEvidenceInboundSubscriber(
             broker_url=config.gateway.broker_url,
@@ -7219,6 +7262,7 @@ def _build_evidence_inbound_subscriber(
 def _build_evidence_outbound_publisher(
     config: Config,
     attestor: FirstPartyEvidenceAttestor | None,
+    replay_cache: GatewayReplayCache | None = None,
 ) -> MqttEvidenceOutboundPublisher | None:
     """Instantiate the outbound carriage route when configured.
 
@@ -7248,7 +7292,7 @@ def _build_evidence_outbound_publisher(
         router = EvidenceOutboundAckRouter(
             device_id=config.device.id,
             outbox=outbox,
-            message_auth=_build_gateway_message_auth(config),
+            message_auth=_build_gateway_message_auth(config, replay_cache),
         )
         publisher = MqttEvidenceOutboundPublisher(
             broker_url=config.gateway.broker_url,
@@ -7601,6 +7645,7 @@ def _read_public_pem_file(path: str) -> bytes:
 def _build_runtime_node_heartbeat_publisher(
     config: Config,
     health_snapshot_provider: Callable[[], dict[str, Any] | Awaitable[dict[str, Any]]],
+    replay_cache: GatewayReplayCache | None = None,
 ) -> MqttRuntimeNodeHeartbeatPublisher | None:
     """Instantiate the runtime-to-gateway node heartbeat publisher when configured."""
     if not bool(config.gateway.enabled):
@@ -7627,7 +7672,7 @@ def _build_runtime_node_heartbeat_publisher(
             health_snapshot_provider=health_snapshot_provider,
             interval_seconds=float(heartbeat_cfg.get("interval_seconds", 30)),
             tls_config=getattr(config.gateway, "tls", {}),
-            authenticator=_build_gateway_message_auth(config),
+            authenticator=_build_gateway_message_auth(config, replay_cache),
         )
     except Exception:
         logger.exception("[runtime] invalid runtime node heartbeat configuration")

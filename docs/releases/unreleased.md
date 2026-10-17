@@ -88,6 +88,19 @@ release is cut.
   `ori state action-log`, which open the store read-only and never migrate
   it, refuse a store an earlier release wrote with `state_migration_required`
   and change nothing.
+- `device.id` must now match `^[A-Za-z0-9._-]{1,128}$`, runtime-config/v2's
+  pattern, which `gateway-api/v2` sizes every topic by. Before, only a space
+  was refused, so an id carrying any other character, such as `/`, `+`, a
+  non-ASCII letter, or an unexpanded `${...}` placeholder, loaded; it is now
+  refused at config load. Rename the device before upgrading; its evidence
+  identity and gateway topics follow the new id.
+- A gateway export request is now answered only when its `request_id` is 1
+  to 128 characters from `A-Z`, `a-z`, `0-9`, `.`, `_` and `-`. A request
+  that is not a JSON object, or names any other `request_id`, is refused
+  unanswered, where it was answered on `.../export/response/invalid`. An
+  export error's `error` is now fixed text of at most 128 characters, a
+  reason token and never the request's content or an exception's text, and its
+  `export_type` is `unknown` unless the runtime serves the one requested.
 
 ## Added
 
@@ -330,6 +343,55 @@ release is cut.
   `healthy`, until a gateway claims the `gateway-api/v2` heartbeat rules.
 
 ## Security
+
+- Every gateway-to-runtime MQTT family is bounded before anything is
+  parsed, decoded or verified (`gateway-api/v2` Payload Size and Payload
+  Volume). A payload over its topic's maximum is refused and changes no
+  state; past a runtime-owned rate per family, a message is dropped unread.
+  Before, 200 authenticated export requests in a burst made the runtime read
+  2,000,000 history rows. An oversized inbound evidence message is released
+  at the broker so it is not redelivered without end, and one past the rate
+  is left with the broker for redelivery. Refusals are logged by topic
+  family, reason and size class, never by contents or device, until
+  runtime-health/v4 names a field for them. As a producer, the runtime never
+  publishes a reasoning request over its maximum, fits each export page and
+  runtime heartbeat to its topic's maximum (ending an export with
+  `item_exceeds_payload_maximum` where one item cannot fit alone), and lists
+  at most 64 `active_triggers`.
+- The gateway export responder answers at most four requests at once; past
+  that, a request is dropped unread and counted. An outbound evidence
+  acknowledgement for an envelope the runtime sealed but never handed to the
+  broker is refused, where before it was applied: the runtime now records an
+  envelope's handoff before publishing it, so an answer that overtakes the
+  publish still applies. An acknowledgement that answers nothing this device
+  sent no longer records a
+  replay key, nor does an inbound evidence message refused before ingest; one
+  the evidence worker was too busy to take is not refused as a replay when
+  the broker redelivers it.
+- A gateway replay key is now kept for `gateway.auth.replay_ttl_ms` from
+  receipt, as before, and also until its envelope turns stale (one
+  millisecond past its signing time plus `gateway.auth.max_clock_skew_ms`),
+  whichever is later. Before, at the default of 300000, an envelope a gateway
+  signed with its clock running ahead could be replayed after its key
+  expired. Keys a previous release stored are extended the same way when this
+  release loads them, never shortened. A raised skew, or a clock that steps
+  back, can still reopen keys already pruned, as before: ori-runtime#879.
+- The runtime keeps one gateway replay cache, shared by every gateway route.
+  It holds every message the gateway families can admit in the longer of
+  `replay_ttl_ms` and twice the skew, up to 131072 entries (tens of
+  megabytes).
+  Before, each route held its own, each at most 4096, and a full cache
+  refused an authentic message as a replay; at the default window the
+  admitted rates exceed 4096. A window of about 51 minutes or longer, from
+  either setting, still reaches the ceiling at full gateway rates; a full
+  cache then refuses authentic messages as replays, for every family, since
+  one family's traffic fills it for all. Expired keys are pruned
+  in expiry order and, when persisted, by index rather than by a scan. The
+  evidence ledger finds an acknowledged envelope by index.
+- `gateway.reasoning.timeout_ms` is kept to a day at most, and a
+  `gateway.node_heartbeat.interval_seconds` that is not finite means the
+  default, also capped at a day, so every value the configuration admits
+  schedules a wait the runtime can run.
 
 - No validating pattern in the runtime accepts a trailing newline. A pattern
   ending in `$` also matches before a final newline, so thirteen validators

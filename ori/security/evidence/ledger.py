@@ -166,6 +166,12 @@ CREATE TABLE IF NOT EXISTS evidence_delivery_ledger (
 CREATE INDEX IF NOT EXISTS idx_evidence_ledger_undelivered
     ON evidence_delivery_ledger (receipt_state, local_seq);
 
+-- Found by the digest a courier acknowledgement or an authority disposition
+-- names, once per message: by index, not by scanning a ledger that is never
+-- pruned.
+CREATE INDEX IF NOT EXISTS idx_evidence_ledger_envelope_digest
+    ON evidence_delivery_ledger (envelope_digest);
+
 -- Locally observed delivery failures. Separate from the ledger because a
 -- failure is not an envelope: several attempts can fail for one row, and a
 -- failure to seal produces no row at all.
@@ -2586,6 +2592,21 @@ class EvidenceDeliveryLedger:
              WHERE local_seq = ?
             """,
             (int(at_ms), failure, int(local_seq)),
+        )
+
+    def record_transport_failure(self, local_seq: int, *, failure: str) -> None:
+        """Note that the attempt `record_attempt` counted did not leave.
+
+        The attempt is counted before the bytes go, so an answer that overtakes
+        the publish still finds the envelope handed off; this records only the
+        transport outcome, without counting the attempt again.
+        """
+        self._require_sealed(local_seq)
+        if failure not in FAILURE_REASONS or failure in COURIER_ANSWERS:
+            raise DeliveryLedgerError(f"{failure!r} is not a transport failure reason")
+        self._connection.execute(
+            "UPDATE evidence_delivery_ledger SET last_failure = ? WHERE local_seq = ?",
+            (failure, int(local_seq)),
         )
 
     def apply_courier_answer(

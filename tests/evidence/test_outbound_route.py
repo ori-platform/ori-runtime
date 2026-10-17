@@ -77,7 +77,7 @@ class Rig:
         )
         self.outbox = BoundOutboundQueue(self.executor, self.ledger)
 
-    def seal(self, action_log_id: int) -> dict[str, Any]:
+    def seal(self, action_log_id: int, *, handed_off: bool = False) -> dict[str, Any]:
         row = self.chain.append(
             event_id=attestation_event_id(DEVICE, action_log_id),
             event_type="SAFETY_ACTION_EXECUTED",
@@ -85,9 +85,15 @@ class Rig:
             payload={"kind": "runtime_action", "action_log_id": action_log_id},
             created_at_ms=1751500800040,
         )
-        return dict(
+        sealed = dict(
             self.executor.run(self.ledger.seal, row, sealed_at_ms=1751500800500)
         )
+        if handed_off:
+            # What the publisher records before the bytes leave.
+            self.executor.run(
+                self.ledger.record_attempt, sealed["local_seq"], at_ms=1, failure=None
+            )
+        return sealed
 
     def queue_checkpoint(self) -> dict[str, Any]:
         return dict(self.executor.run(self.ledger.issue_checkpoint, issued_at_ms=5))
@@ -242,19 +248,19 @@ async def test_a_queued_acknowledgement_retires_a_checkpoint_once(rig):
 
 
 async def test_a_queued_acknowledgement_never_marks_custody_on_an_envelope(rig):
-    sealed = rig.seal(1)
+    sealed = rig.seal(1, handed_off=True)
     routed = await _router(rig).handle_ack(
         _ack(ARTIFACT_DELIVERY_ENVELOPE, sealed["envelope_digest"])
     )
     assert routed.outcome == ROUTED_APPLIED
     after = rig.envelope(int(sealed["local_seq"]))
     assert after["custody_state"] == "none"
-    assert after["attempts"] == 0
+    assert after["attempts"] == 1  # the handoff alone; the answer adds none
     assert (await rig.outbox.awaiting_custody()) != []
 
 
 async def test_a_full_queue_defers_without_dropping(rig):
-    sealed = rig.seal(1)
+    sealed = rig.seal(1, handed_off=True)
     queued = rig.queue_checkpoint()
     rig.hand_off(queued["artifact_digest"])
     router = _router(rig)
@@ -267,7 +273,8 @@ async def test_a_full_queue_defers_without_dropping(rig):
         )
         assert routed.outcome == ROUTED_APPLIED and routed.reason == "queue_full"
     envelope = rig.envelope(int(sealed["local_seq"]))
-    assert envelope["attempts"] == 1 and envelope["courier_answer"] == "queue_full"
+    # The handoff, and the deferral the queue-full answer records.
+    assert envelope["attempts"] == 2 and envelope["courier_answer"] == "queue_full"
     assert envelope["custody_state"] == "none"
     artifact = rig.artifact(queued["artifact_digest"])
     assert artifact is not None
@@ -278,7 +285,7 @@ async def test_a_full_queue_defers_without_dropping(rig):
 
 @pytest.mark.parametrize("reason", ["malformed", "binding_mismatch"])
 async def test_a_refused_envelope_is_recorded_as_a_local_delivery_failure(rig, reason):
-    sealed = rig.seal(1)
+    sealed = rig.seal(1, handed_off=True)
     routed = await _router(rig).handle_ack(
         _ack(
             ARTIFACT_DELIVERY_ENVELOPE,
@@ -295,7 +302,7 @@ async def test_a_refused_envelope_is_recorded_as_a_local_delivery_failure(rig, r
 
 
 async def test_a_refusal_episode_is_recorded_once_while_retries_continue(rig):
-    sealed = rig.seal(1)
+    sealed = rig.seal(1, handed_off=True)
     local_seq = int(sealed["local_seq"])
     router = _router(rig)
 
@@ -312,7 +319,7 @@ async def test_a_refusal_episode_is_recorded_once_while_retries_continue(rig):
     await router.handle_ack(refusal(1787000003100))
     await router.handle_ack(refusal(1787000003200))
     assert len(rig.failures()) == 1
-    assert rig.envelope(local_seq)["attempts"] == 3
+    assert rig.envelope(local_seq)["attempts"] == 4  # the handoff and three retries
     assert (await rig.outbox.awaiting_custody()) != [], "still retained for retry"
 
     # A republish is not an answer, and its transport outcome is its own:
@@ -340,7 +347,7 @@ async def test_a_refusal_episode_is_recorded_once_while_retries_continue(rig):
 
 
 async def test_concurrent_refusals_open_one_episode(rig):
-    sealed = rig.seal(1)
+    sealed = rig.seal(1, handed_off=True)
     router = _router(rig)
     refusals = [
         _ack(
@@ -354,11 +361,11 @@ async def test_concurrent_refusals_open_one_episode(rig):
     ]
     await asyncio.gather(*(router.handle_ack(r) for r in refusals))
     assert len(rig.failures()) == 1
-    assert rig.envelope(int(sealed["local_seq"]))["attempts"] == 8
+    assert rig.envelope(int(sealed["local_seq"]))["attempts"] == 9  # handoff + 8
 
 
 async def test_a_publish_writes_the_transport_outcome_and_never_the_answer(rig):
-    sealed = rig.seal(1)
+    sealed = rig.seal(1, handed_off=True)
     local_seq = int(sealed["local_seq"])
     await _router(rig).handle_ack(
         _ack(
@@ -603,7 +610,8 @@ async def test_nothing_is_carried_once_the_broker_drops_the_session(rig):
         rig.seal(2)
         # The state `_on_disconnect` leaves before the serve loop tears the
         # client down: the session is gone but the handle still exists.
-        publisher._connected = False
+        assert publisher._session is not None
+        publisher._session.set_connected(False)
         assert await publisher.flush(1.0) == 0
         assert len(_carried(client)) == 1
     finally:
@@ -621,11 +629,11 @@ async def test_a_drain_in_flight_stops_when_the_session_drops(rig):
     def dropping(topic, payload, qos=0, retain=False):
         carry(topic, payload, qos, retain)
         # The broker drops the session as the first artifact goes out.
-        publisher._on_disconnect(client, None, 7)
+        assert client.on_disconnect is not None
+        client.on_disconnect(client, None, 7)
 
     client.publish = dropping  # type: ignore[method-assign]
-    publisher._client = client
-    publisher._connected = True
+    publisher._begin_session(client).set_connected(True)
     assert await publisher.drain() == 1
     assert len(_carried(client)) == 1
 
@@ -666,11 +674,7 @@ async def test_puback_retires_nothing_and_the_envelope_is_republished_after_back
             lambda: len(_carried(client)) == 2,
             what="len(_carried(client)) == 2",
         )
-        # The publish reaches the client before its attempt reaches the ledger.
-        await wait_until(
-            lambda: rig.envelope(int(sealed["local_seq"]))["attempts"] == 2,
-            what="the second attempt on the ledger",
-        )
+        # The attempt reaches the ledger before the bytes reach the client.
         assert rig.envelope(int(sealed["local_seq"]))["attempts"] == 2
         assert rig.envelope(int(sealed["local_seq"]))["custody_state"] == "none"
     finally:
@@ -713,11 +717,14 @@ async def test_a_publish_failure_is_recorded_and_the_drain_stops(rig):
     shutdown = asyncio.Event()
     task = asyncio.create_task(publisher.serve_until(shutdown))
     try:
+        # The attempt is recorded before the publish, its failure after it.
         await wait_until(
-            lambda: rig.envelope(int(first["local_seq"]))["attempts"] == 1,
-            what="rig.envelope(int(first['local_seq']))['attempts'] == 1",
+            lambda: (
+                rig.envelope(int(first["local_seq"]))["last_failure"] == "unreachable"
+            ),
+            what="the failed publish on the ledger",
         )
-        assert rig.envelope(int(first["local_seq"]))["last_failure"] == "unreachable"
+        assert rig.envelope(int(first["local_seq"]))["attempts"] == 1
         assert rig.envelope(2)["attempts"] == 0
         assert _carried(client) == []
     finally:
@@ -1036,7 +1043,8 @@ async def test_a_courier_answer_survives_the_publish_in_either_order(
 
     async def observed_publish_write(self, seq, *, at_ms, failure):
         if order == "answer-first" and failure is None:
-            # Slowed so the answer delivered during the publish lands first.
+            # Slowed so a write racing the answer would lose; the handoff
+            # is recorded before the publish, so the answer still applies.
             await asyncio.sleep(0.2)
         result = await original(self, seq, at_ms=at_ms, failure=failure)
         writes.append(seq)
@@ -1136,7 +1144,7 @@ def _answer(
 
 
 async def test_a_delayed_older_refusal_does_not_overturn_a_newer_queued(rig):
-    sealed = rig.seal(1)
+    sealed = rig.seal(1, handed_off=True)
     local_seq = int(sealed["local_seq"])
     router = _router(rig)
     digest = sealed["envelope_digest"]
@@ -1151,7 +1159,7 @@ async def test_a_delayed_older_refusal_does_not_overturn_a_newer_queued(rig):
 
 
 async def test_a_delayed_older_queued_does_not_end_a_newer_refusal(rig):
-    sealed = rig.seal(1)
+    sealed = rig.seal(1, handed_off=True)
     local_seq = int(sealed["local_seq"])
     router = _router(rig)
     digest = sealed["envelope_digest"]
@@ -1164,7 +1172,7 @@ async def test_a_delayed_older_queued_does_not_end_a_newer_refusal(rig):
 
 @pytest.mark.parametrize("first", ["older", "newer"])
 async def test_concurrent_answers_leave_the_newest_standing(rig, first):
-    sealed = rig.seal(1)
+    sealed = rig.seal(1, handed_off=True)
     local_seq = int(sealed["local_seq"])
     router = _router(rig)
     digest = sealed["envelope_digest"]
@@ -1217,7 +1225,7 @@ async def test_an_authenticated_time_that_is_not_an_integer_is_refused(rig, valu
 
 async def test_a_malformed_time_cannot_reorder_a_delayed_older_answer(rig):
     """The older answer cannot regain control through arrival order."""
-    sealed = rig.seal(1)
+    sealed = rig.seal(1, handed_off=True)
     local_seq = int(sealed["local_seq"])
     router = _router(rig)
     digest = sealed["envelope_digest"]
@@ -1234,7 +1242,7 @@ async def test_a_courier_time_past_the_integer_zone_is_not_stored(
 ):
     """Unauthenticated, the courier names its own time; past 64 bits the store
     raises from a route that never raises, so the receive time stands in."""
-    sealed = rig.seal(1)
+    sealed = rig.seal(1, handed_off=True)
     payload = _ack(
         ARTIFACT_DELIVERY_ENVELOPE,
         sealed["envelope_digest"],
@@ -1261,7 +1269,7 @@ async def test_an_unauthenticated_courier_time_is_never_the_ordering_time(
     rig, acknowledged_at_ms
 ):
     """Anything on the site network can send it, so receipt orders the answer."""
-    sealed = rig.seal(1)
+    sealed = rig.seal(1, handed_off=True)
     payload = _ack(
         ARTIFACT_DELIVERY_ENVELOPE,
         sealed["envelope_digest"],
@@ -1278,7 +1286,7 @@ async def test_an_unauthenticated_courier_time_is_never_the_ordering_time(
 
 
 async def test_an_authenticated_signing_time_inside_the_skew_orders_the_answer(rig):
-    sealed = rig.seal(1)
+    sealed = rig.seal(1, handed_off=True)
     signed_at = RECEIVED_AT + 1_000
     await _router(rig).handle_ack(
         _ack(
@@ -1316,7 +1324,7 @@ def test_a_signing_time_past_the_skew_or_the_zone_is_replaced_by_receipt(
 
 async def test_an_auth_block_on_an_unauthenticated_route_orders_nothing(rig):
     """With gateway auth off nothing was verified, whatever the message claims."""
-    sealed = rig.seal(1)
+    sealed = rig.seal(1, handed_off=True)
     payload = _ack(
         ARTIFACT_DELIVERY_ENVELOPE,
         sealed["envelope_digest"],
@@ -1348,3 +1356,133 @@ async def test_a_member_nested_past_the_recursion_limit_is_refused_outbound(
     routed = await _router(rig, authenticated=False).handle_ack(payload)
 
     assert routed.outcome == "refused"
+
+
+async def test_an_acknowledgement_for_nothing_sent_adds_no_replay_state(rig, tmp_path):
+    """gateway-api/v2 Payload Volume: authenticated, it is still recorded as
+    seen only once it answers something this device sent."""
+    import sqlite3
+
+    from ori.security.gateway_messages import GatewayReplayCache
+
+    db = tmp_path / "replay.db"
+
+    def rows() -> int:
+        with sqlite3.connect(db) as connection:
+            return connection.execute(
+                "SELECT COUNT(*) FROM gateway_replay_cache"
+            ).fetchone()[0]
+
+    router = EvidenceOutboundAckRouter(
+        device_id=DEVICE,
+        outbox=rig.outbox,
+        message_auth=GatewayMessageAuthenticator(
+            GatewayMessageAuthConfig(shared_secret=ENVELOPE_SECRET),
+            replay_cache=GatewayReplayCache(db_path=str(db)),
+        ),
+        now=lambda: 1787000004000,
+    )
+    unknown = "sha256:" + "b" * 64
+    for artifact_type in (ARTIFACT_DELIVERY_ENVELOPE, "checkpoint"):
+        routed = await router.handle_ack(_ack(artifact_type, unknown))
+        assert routed.outcome == ROUTED_IGNORED, routed
+    never_sent = rig.queue_checkpoint()
+    routed = await router.handle_ack(_ack("checkpoint", never_sent["artifact_digest"]))
+    assert routed.outcome == ROUTED_REFUSED and routed.reason == "never handed off"
+    assert rows() == 0
+    sealed = rig.seal(1)
+    before = rig.envelope(int(sealed["local_seq"]))
+    for outcome, reason in (("queued", ""), ("refused", "queue_full")):
+        routed = await router.handle_ack(
+            _ack(
+                ARTIFACT_DELIVERY_ENVELOPE,
+                sealed["envelope_digest"],
+                outcome=outcome,
+                reason=reason,
+            )
+        )
+        assert routed.outcome == ROUTED_REFUSED and routed.reason == "never handed off"
+    assert rig.envelope(int(sealed["local_seq"])) == before
+    assert rig.failures() == []
+    assert rows() == 0
+
+    rig.hand_off(never_sent["artifact_digest"])
+    applied = _ack("checkpoint", never_sent["artifact_digest"])
+    assert (await router.handle_ack(applied)).outcome == ROUTED_APPLIED
+    assert rows() == 1
+    replayed = await router.handle_ack(applied)
+    assert replayed.outcome == ROUTED_REFUSED
+    assert "replay_detected" in replayed.reason
+
+
+async def test_a_replayed_envelope_acknowledgement_is_refused(rig):
+    sealed = rig.seal(1, handed_off=True)
+    router = _router(rig)
+    ack = _ack(ARTIFACT_DELIVERY_ENVELOPE, sealed["envelope_digest"])
+
+    assert (await router.handle_ack(ack)).outcome == ROUTED_APPLIED
+    replayed = await router.handle_ack(ack)
+    assert replayed.outcome == ROUTED_REFUSED
+    assert "replay_detected" in replayed.reason
+
+
+async def test_a_signal_from_the_first_session_does_nothing_to_the_second(
+    rig, monkeypatch
+):
+    """Through `serve_until`: the first client's callbacks are bound to its own
+    session, so once replaced they can neither end nor claim the second."""
+    import ori.gateway.evidence_outbound as outbound
+
+    monkeypatch.setattr(outbound, "_RECONNECT_MIN_S", 0.01, raising=False)
+    clients = [_FakeClient(), _FakeClient()]
+    made: list[_FakeClient] = []
+
+    def factory(**_kwargs: Any) -> _FakeClient:
+        client = clients[len(made)]
+        made.append(client)
+        return client
+
+    publisher = _publisher(rig, clients[0])
+    publisher._client_factory = factory
+    shutdown = asyncio.Event()
+    task = asyncio.create_task(publisher.serve_until(shutdown))
+    try:
+        await wait_until(lambda: publisher.connected, what="the first session")
+        first = made[0]
+        assert first.on_disconnect is not None and first.on_subscribe is not None
+        first.on_disconnect(first, None, 7)
+        await wait_until(
+            lambda: len(made) == 2 and publisher.connected, what="the second session"
+        )
+        second = publisher._session
+        assert second is not None and second.client is made[1]
+        # The first client, left running, speaks again.
+        assert first.on_connect is not None
+        first.on_disconnect(first, None, 7)
+        first.on_subscribe(first, None, 1, [0x80], None)
+        first.on_connect(first, None, None, 5)
+        await asyncio.sleep(0)
+        assert publisher.connected
+        assert not second.lost.is_set()
+    finally:
+        await _stop(shutdown, task)
+
+
+@pytest.mark.parametrize("route", ["inbound", "outbound"])
+async def test_a_grant_racing_the_close_never_reports_the_route_up(rig, route):
+    """A grant the broker sent before `close()`, delivered after it."""
+    if route == "outbound":
+        client: Any = _FakeClient()
+        owner: Any = _publisher(rig, client)
+    else:
+        from tests.evidence.test_inbound_route import _FakeClient as InboundClient
+        from tests.evidence.test_inbound_route import _subscriber as inbound_subscriber
+
+        client = InboundClient()
+        owner = inbound_subscriber(client)
+    owner._loop = asyncio.get_running_loop()
+    owner._begin_session(client)
+
+    await owner.close()
+    client.on_subscribe(client, None, 1, [1], None)
+    assert owner.connected is False
