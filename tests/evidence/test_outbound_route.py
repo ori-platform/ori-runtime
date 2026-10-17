@@ -1431,9 +1431,9 @@ async def test_a_signal_from_the_first_session_does_nothing_to_the_second(
 ):
     """Through `serve_until`: the first client's callbacks are bound to its own
     session, so once replaced they can neither end nor claim the second."""
-    import ori.gateway.evidence_outbound as outbound
-
-    monkeypatch.setattr(outbound, "_RECONNECT_MIN_S", 0.01, raising=False)
+    monkeypatch.setattr(
+        "ori.gateway.evidence_outbound._RECONNECT_MIN_S", 0.01, raising=False
+    )
     clients = [_FakeClient(), _FakeClient()]
     made: list[_FakeClient] = []
 

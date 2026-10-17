@@ -21,7 +21,6 @@ from typing import Any
 
 import pytest
 
-import ori.gateway.reasoning as gateway_reasoning
 from ori.gateway.evidence_inbound import (
     ARTIFACT_CUSTODY,
     EvidenceInboundRouter,
@@ -557,8 +556,8 @@ class _ReasoningClient:
 
 @pytest.fixture
 def _paho(monkeypatch):
-    monkeypatch.setattr(gateway_reasoning, "_PAHO_AVAILABLE", True)
-    monkeypatch.setattr(gateway_reasoning, "mqtt", object())
+    monkeypatch.setattr("ori.gateway.reasoning._PAHO_AVAILABLE", True)
+    monkeypatch.setattr("ori.gateway.reasoning.mqtt", object())
 
 
 @pytest.mark.usefixtures("_paho")
@@ -1361,7 +1360,7 @@ async def test_a_rate_drop_redelivers_after_the_refill_not_the_failure_backoff(
 ):
     """Through `_serve`: every round waits the refill time; the failure backoff
     never starts."""
-    import ori.gateway.evidence_inbound as inbound
+    from ori.gateway.evidence_inbound import _RECONNECT_MIN_S
 
     subscriber, _ = _inbound()
     subscriber._loop = asyncio.get_running_loop()
@@ -1390,8 +1389,8 @@ async def test_a_rate_drop_redelivers_after_the_refill_not_the_failure_backoff(
 
     subscriber._connect_and_serve = session_ending_for_rate  # type: ignore[method-assign]
     subscriber.close = closed  # type: ignore[method-assign]
-    monkeypatch.setattr(inbound.asyncio, "wait_for", recorded)
-    await subscriber._serve(shutdown, inbound._RECONNECT_MIN_S)
+    monkeypatch.setattr(asyncio, "wait_for", recorded)
+    await subscriber._serve(shutdown, _RECONNECT_MIN_S)
     assert waits == [refill_seconds(EVIDENCE_INBOUND)] * 8
 
 
@@ -1500,7 +1499,6 @@ async def test_a_route_outliving_its_session_never_touches_the_next_one(
 ):
     """Through `serve_until`: a route still running when the broker drops the
     session finishes in the next one, its late failure owed to its own."""
-    import ori.gateway.evidence_inbound as inbound
     from ori.security.evidence.executor import EvidenceExecutorSaturatedError
     from tests.evidence.test_inbound_route import _FakeClient
 
@@ -1517,8 +1515,10 @@ async def test_a_route_outliving_its_session_never_touches_the_next_one(
             self.acked.append(mid)
             return 0 if self.live else 4  # paho's MQTT_ERR_NO_CONN
 
-    monkeypatch.setattr(inbound, "_RECONNECT_MIN_S", 0.05)
-    monkeypatch.setattr(inbound, "_log_result", lambda _outcome: None)
+    monkeypatch.setattr("ori.gateway.evidence_inbound._RECONNECT_MIN_S", 0.05)
+    monkeypatch.setattr(
+        "ori.gateway.evidence_inbound._log_result", lambda _outcome: None
+    )
     held = asyncio.Event()
     subscriber, routed = _inbound(
         hold=held,
@@ -1577,7 +1577,6 @@ async def test_a_callback_paused_across_a_reconnect_owes_only_its_own_session(
     """Through `serve_until`: a message callback paused inside rate admission
     while its session is replaced, its failed close leaving the client running,
     resumes owing the session it was bound to. The replacement stays up."""
-    import ori.gateway.evidence_inbound as inbound
     from tests.evidence.test_inbound_route import _FakeClient
 
     entered, release = threading.Event(), threading.Event()
@@ -1605,7 +1604,7 @@ async def test_a_callback_paused_across_a_reconnect_owes_only_its_own_session(
         clients.append(_Client())
         return clients[-1]
 
-    monkeypatch.setattr(inbound, "_RECONNECT_MIN_S", 0.02)
+    monkeypatch.setattr("ori.gateway.evidence_inbound._RECONNECT_MIN_S", 0.02)
     subscriber, routed = _inbound()
     subscriber._client_factory = factory
     subscriber._ingress = _PausedBound()  # type: ignore[assignment]
@@ -1835,13 +1834,12 @@ def test_a_key_a_previous_release_stored_lives_until_its_envelope_is_stale(
     its own signing time, kept through a second restart."""
     import sqlite3
 
-    import ori.security.gateway_messages as messages
     from ori.config import GatewayConfig
     from ori.runtime import _build_gateway_message_auth
     from ori.security.gateway_messages import GatewayReplayCache
 
     clock = [1_000_000_000]
-    monkeypatch.setattr(messages, "now_ms", lambda: clock[0])
+    monkeypatch.setattr("ori.security.gateway_messages.now_ms", lambda: clock[0])
     skew, received = 300_000, 1_000_000_000
     db = tmp_path / "state.db"
     signer = GatewayMessageAuthenticator(GatewayMessageAuthConfig(shared_secret=SECRET))
@@ -2103,9 +2101,8 @@ def test_every_gateway_route_built_by_the_runtime_shares_one_replay_cache():
     """Read from `Runtime.start` itself: every route builder is handed the
     one cache, so the table is held once per process, not once per route."""
     import ast
+    import importlib
     import inspect
-
-    import ori.runtime as runtime
 
     builders = {
         "_build_gateway_reasoner",
@@ -2115,7 +2112,7 @@ def test_every_gateway_route_built_by_the_runtime_shares_one_replay_cache():
         "_build_evidence_outbound_publisher",
         "_build_runtime_node_heartbeat_publisher",
     }
-    tree = ast.parse(inspect.getsource(runtime))
+    tree = ast.parse(inspect.getsource(importlib.import_module("ori.runtime")))
     (start,) = [
         node
         for node in ast.walk(tree)
