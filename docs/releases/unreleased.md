@@ -388,6 +388,26 @@ release is cut.
   one family's traffic fills it for all. Expired keys are pruned
   in expiry order and, when persisted, by index rather than by a scan. The
   evidence ledger finds an acknowledged envelope by index.
+- The gateway export responder no longer answers a request whose envelope
+  fails verification. Before, with `gateway.auth.enabled: true`, it published
+  a signed `auth_failed` error on the response topic the request named, so
+  anything on the site network could have the runtime sign replies for it.
+  The inbound evidence route already refused such a message silently.
+- An inbound evidence message redelivered while its original is still being
+  routed is left with the broker, rather than refused as a replay and
+  released. Once the original settles, the reconnect brings it back: it is
+  admitted if the original was refused for a saturated evidence worker, and
+  refused as a replay otherwise. Before, the copy was refused as a replay at
+  once, so when the original was then refused for a saturated worker, nothing
+  was left to admit, and recovery depended on the courier sending the
+  artifact again.
+- A persisted gateway replay key is written to SQLite on a worker thread,
+  and awaited before the message is acted on, on the inbound evidence route,
+  outbound acknowledgements and export requests. Before, each authenticated
+  message cost one SQLite commit on the event loop. An inbound route
+  cancelled while its key is written, as every route is at shutdown, has the
+  write undone once it lands, so the broker's redelivery after a restart is
+  not refused as a replay.
 - `gateway.reasoning.timeout_ms` is kept to a day at most, and a
   `gateway.node_heartbeat.interval_seconds` that is not finite means the
   default, also capped at a day, so every value the configuration admits

@@ -97,6 +97,9 @@ REFUSE_UNKNOWN_ARTIFACT_TYPE = "unknown_artifact_type"
 REFUSE_MISSING_ARTIFACT = "missing_artifact"
 REFUSE_INGEST_UNAVAILABLE = "ingest_unavailable"
 REFUSE_UNADMISSIBLE = "unadmissible"
+REFUSE_IN_FLIGHT = "in_flight"
+
+_ALREADY_HELD = object()
 
 
 #: An admitted message: its artifact type, artifact, where it goes, and its
@@ -126,6 +129,14 @@ class InboundRefusal:
         return False
 
 
+class EvidenceInFlightError(Exception):
+    """Another copy of this message is still being routed.
+
+    Left with the broker, neither recorded nor refused: once the original
+    settles, the broker's redelivery is admitted or refused as a replay.
+    """
+
+
 class EvidenceInboundRouter:
     """Authenticates one inbound message and hands its artifact to ingest."""
 
@@ -151,6 +162,10 @@ class EvidenceInboundRouter:
         self._device_id = str(device_id)
         self._ingest = ingest
         self._message_auth = message_auth
+        # Replay keys whose route has not settled, whichever session admitted
+        # them: a copy of one is not yet a replay.
+        self._in_flight: set[str] = set()
+        self._in_flight_lock = threading.Lock()
 
     @property
     def topic(self) -> str:
@@ -184,44 +199,115 @@ class EvidenceInboundRouter:
         if isinstance(admitted, InboundRefusal):
             return Routed(admitted)
         artifact_type, artifact, ingest, claim = admitted
-        replayed = self._committed(claim)
-        if replayed is not None:
-            return Routed(replayed)
+        held = self._hold(claim)
+        if held is _ALREADY_HELD:
+            return Routed(
+                InboundRefusal(REFUSE_IN_FLIGHT, "another copy is still being routed")
+            )
         try:
-            if artifact_type == ARTIFACT_CUSTODY:
-                outcome = ingest.accept_custody(artifact)
-            elif artifact_type == ARTIFACT_RECEIPT:
-                outcome = ingest.accept_receipt(artifact)
-            else:
-                outcome = ingest.accept_epoch_confirmation(artifact)
-        except Exception:
-            outcome = _failed(artifact_type)
+            replayed = self._committed(claim)
+            if replayed is not None:
+                return Routed(replayed)
+            try:
+                if artifact_type == ARTIFACT_CUSTODY:
+                    outcome = ingest.accept_custody(artifact)
+                elif artifact_type == ARTIFACT_RECEIPT:
+                    outcome = ingest.accept_receipt(artifact)
+                else:
+                    outcome = ingest.accept_epoch_confirmation(artifact)
+            except Exception:
+                outcome = _failed(artifact_type)
+        finally:
+            self._unhold(held)
         return Routed(outcome, self._acknowledgement(artifact_type, artifact, outcome))
 
     async def route(self, payload: bytes | str | dict[str, Any]) -> Routed:
         """:meth:`handle_payload`, awaiting the evidence worker on the event loop.
 
         A saturated evidence worker is raised, so the subscriber leaves the
-        message with the broker; any other failure leaves it undecided.
+        message with the broker; so is a copy of a message still being routed.
+        Any other failure leaves it undecided.
         """
         admitted = self._admit_or_refuse(payload)
         if isinstance(admitted, InboundRefusal):
             return Routed(admitted)
         artifact_type, artifact, ingest, claim = admitted
-        replayed = self._committed(claim)
-        if replayed is not None:
-            return Routed(replayed)
+        # Held before the commit is awaited, so a copy arriving meanwhile is
+        # left with the broker rather than refused as a replay.
+        held = self._hold(claim)
+        if held is _ALREADY_HELD:
+            raise EvidenceInFlightError("another copy is still being routed")
+        unhold = functools.partial(self._unhold, held)
+        # Released by the last write to touch the key, so no copy ever finds
+        # the key recorded while nothing holds it.
+        owns_hold = True
         try:
-            outcome = await ingest.accept_async(_INGEST_KIND[artifact_type], artifact)
-        except EvidenceExecutorSaturatedError:
-            # Refused at submission, before any work: unrecorded, so the
-            # broker's redelivery of these same bytes is not a replay.
-            if claim is not None and self._message_auth is not None:
-                self._message_auth.release(claim)
-            raise
-        except Exception:
-            outcome = _failed(artifact_type)
+            if claim is not None and self._persists(claim):
+                write = _KeyWrite(cast(Any, self._message_auth), claim, unhold)
+                try:
+                    await _run_to_completion(write.commit)
+                except asyncio.CancelledError:
+                    owns_hold = False
+                    write.abandon()
+                    raise
+                except GatewayMessageAuthError as exc:
+                    return Routed(
+                        InboundRefusal(REFUSE_ENVELOPE_UNAUTHENTICATED, str(exc))
+                    )
+                except Exception:
+                    logger.exception("[evidence-inbound] recording an envelope failed")
+                    return Routed(
+                        InboundRefusal(
+                            REFUSE_UNADMISSIBLE, "the message could not be admitted"
+                        )
+                    )
+            else:
+                replayed = self._committed(claim)
+                if replayed is not None:
+                    return Routed(replayed)
+            try:
+                outcome = await ingest.accept_async(
+                    _INGEST_KIND[artifact_type], artifact
+                )
+            except EvidenceExecutorSaturatedError:
+                # Refused at submission, before any work: unrecorded, so the
+                # broker's redelivery of these same bytes is not a replay. The
+                # release runs to completion even if this route is cancelled,
+                # and the key is unheld only once it has.
+                if claim is not None and self._persists(claim):
+                    owns_hold = False
+                    await _run_to_completion(
+                        _KeyWrite(cast(Any, self._message_auth), claim, unhold).release
+                    )
+                elif claim is not None and self._message_auth is not None:
+                    self._message_auth.release(claim)
+                raise
+            except Exception:
+                outcome = _failed(artifact_type)
+        finally:
+            if owns_hold:
+                unhold()
         return Routed(outcome, self._acknowledgement(artifact_type, artifact, outcome))
+
+    def _persists(self, claim: AuthenticatedMessage) -> bool:
+        return (
+            self._message_auth is not None and self._message_auth.persists_replay_keys
+        )
+
+    def _hold(self, claim: AuthenticatedMessage | None) -> str | object | None:
+        """Mark *claim*'s replay key as in flight; `_ALREADY_HELD` if it was."""
+        if claim is None or self._message_auth is None:
+            return None
+        with self._in_flight_lock:
+            if claim.replay_key in self._in_flight:
+                return _ALREADY_HELD
+            self._in_flight.add(claim.replay_key)
+        return claim.replay_key
+
+    def _unhold(self, held: str | object | None) -> None:
+        if isinstance(held, str):
+            with self._in_flight_lock:
+                self._in_flight.discard(held)
 
     def _admit_or_refuse(
         self, payload: bytes | str | dict[str, Any]
@@ -861,6 +947,7 @@ class MqttEvidenceInboundSubscriber:
         # its reconnect redelivered the message, and nothing reads a closed
         # session's debt.
         acknowledged = False
+        left = False
         try:
             await self._route_admitted(payload)
             acknowledged = await self._acknowledge(client, mid, qos)
@@ -872,8 +959,17 @@ class MqttEvidenceInboundSubscriber:
                     "[evidence-inbound] the evidence worker is saturated; "
                     "messages are left with the broker until it clears"
                 )
+        except EvidenceInFlightError:
+            # Not a failure: redelivered once the original's slot is back, and
+            # by then admitted, or refused as the replay it then is.
+            left = True
+            if ticket.session.owe():
+                logger.info(
+                    "[evidence-inbound] a copy of a message still being routed "
+                    "is left with the broker until the original settles"
+                )
         finally:
-            if not acknowledged and self._manual_ack and mid is not None:
+            if not acknowledged and not left and self._manual_ack and mid is not None:
                 # Routing failed or was cancelled before the broker released
                 # the message: it is still the broker's, and comes back after
                 # the reconnect.
@@ -918,6 +1014,92 @@ class MqttEvidenceInboundSubscriber:
             # The courier retires an artifact only on an acknowledgement, so a
             # lost one costs a redelivery rather than the evidence.
             logger.warning("[evidence-inbound] failed to publish acknowledgement")
+
+
+async def _run_to_completion(fn: Callable[[], None]) -> None:
+    """Run *fn* on a worker thread; it runs whatever happens to the caller.
+
+    A replay-key write once requested always runs: `to_thread` would let a
+    cancellation, the route's or the cancel-all at shutdown, drop the work
+    while it still waits for a worker, leaving a key recorded with nothing
+    acted on, or held with nothing left to release it. Shutting the executor
+    down still runs what it has queued.
+    """
+    work = asyncio.get_running_loop().run_in_executor(None, fn)
+    # Retrieved even when no caller is left to, so it is never logged unread.
+    work.add_done_callback(lambda done: done.cancelled() or done.exception())
+    await asyncio.shield(work)
+
+
+class _KeyWrite:
+    """One replay-key write on a worker thread, and what becomes of it.
+
+    Every write it makes, the undo included, runs on a worker, never on the
+    event loop. The thread doing the write decides its outcome, not the route
+    awaiting it: a route cancelled before the write lands, as every task is at
+    shutdown, abandons it, and the write is then undone where it ran. Either
+    way the key is unheld only after its last write, so a copy arriving in
+    between is left with the broker, not refused as a replay.
+    """
+
+    def __init__(
+        self,
+        auth: GatewayMessageAuthenticator,
+        claim: AuthenticatedMessage,
+        unhold: Callable[[], None],
+    ) -> None:
+        self._auth = auth
+        self._claim = claim
+        self._unhold = unhold
+        self._lock = threading.Lock()
+        self._done = False
+        self._committed = False
+        self._abandoned = False
+
+    def commit(self) -> None:
+        """Record the key, on the worker thread."""
+        try:
+            self._auth.commit(self._claim)
+        except BaseException:
+            self._settle(committed=False)
+            raise
+        self._settle(committed=True)
+
+    def release(self) -> None:
+        """Unrecord the key, then unhold it, on the worker thread."""
+        try:
+            self._auth.release(self._claim)
+        finally:
+            self._unhold()
+
+    def abandon(self) -> None:
+        """The route is gone: undo the write once it has landed, then unhold.
+
+        Called on the event loop, so an undo due now is handed to a worker as
+        well; the key stays held until it has run.
+        """
+        with self._lock:
+            self._abandoned = True
+            done, committed = self._done, self._committed
+        if done:
+            undo = asyncio.get_running_loop().run_in_executor(
+                None, self._undo, committed
+            )
+            undo.add_done_callback(lambda ran: ran.cancelled() or ran.exception())
+
+    def _settle(self, *, committed: bool) -> None:
+        with self._lock:
+            self._done, self._committed = True, committed
+            abandoned = self._abandoned
+        if abandoned:
+            self._undo(committed)
+
+    def _undo(self, committed: bool) -> None:
+        try:
+            if committed:
+                self._auth.release(self._claim)
+        finally:
+            self._unhold()
 
 
 class _Ticket:

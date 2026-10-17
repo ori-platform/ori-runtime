@@ -306,6 +306,9 @@ async def test_an_export_error_never_echoes_what_the_gateway_sent(tmp_path):
             "device_id": LONG_ID,
             "auth": {"signature": wide},
         }
+        # Unauthenticated, it is not answered at all.
+        assert await responder.handle_payload(json.dumps(request).encode()) is None
+        request = _auth().sign(request, message_type="export_request")
         response = await responder.handle_payload(json.dumps(request).encode())
         assert response is not None and response.export_type == "unknown"
         assert response.error is not None and wide not in response.error
@@ -680,7 +683,8 @@ async def test_an_outbound_acknowledgement_past_its_bounds_is_dropped_unread():
 async def test_a_non_text_export_type_is_answered_as_unknown(
     tmp_path, export_type, signed
 ):
-    """Never hashed, never str()-ed: answered with an error, unsigned or signed."""
+    """Never hashed, never str()-ed: answered with an error once it verifies,
+    and not answered at all unsigned."""
     responder, store = await _responder(tmp_path)
     try:
         request: dict[str, Any] = {
@@ -691,6 +695,9 @@ async def test_a_non_text_export_type_is_answered_as_unknown(
         if signed:
             request = _auth().sign(request, message_type="export_request")
         response = await responder.handle_payload(json.dumps(request).encode())
+        if not signed:
+            assert response is None
+            return
         assert response is not None
         assert response.export_type == "unknown"
         assert response.error
@@ -1472,6 +1479,132 @@ async def test_a_session_freed_of_its_slots_by_an_older_sessions_route_reconnect
 
     await wait_until(current.redeliver.is_set, what="the current session to reconnect")
     assert not old_session.redeliver.is_set()
+
+
+async def test_a_copy_still_being_routed_is_left_and_redelivered_once_it_settles(
+    monkeypatch,
+):
+    """Not acknowledged, owed without a failure, and the reconnect for it waits
+    until the original's slot is back."""
+    from ori.gateway.evidence_inbound import EvidenceInFlightError
+
+    monkeypatch.setattr(
+        "ori.gateway.evidence_inbound._log_result", lambda _outcome: None
+    )
+    subscriber, _ = _inbound()
+    held = asyncio.Event()
+
+    async def route(payload: bytes) -> Any:
+        if payload == b'{"copy":1}':
+            raise EvidenceInFlightError("another copy is still being routed")
+        await held.wait()
+        return SimpleNamespace(outcome=None, acknowledgement=None)
+
+    subscriber._router.route = route  # type: ignore[method-assign]
+    subscriber._loop = asyncio.get_running_loop()
+    client = _AckingClient()
+    session = subscriber._begin_session(client)
+
+    client.on_message(client, None, _message(b'{"original":1}', 1))
+    await wait_until(lambda: subscriber._in_flight == 1, what="the original route")
+    routed_copy = asyncio.Event()
+    original_route = route
+
+    async def counted(payload: bytes) -> Any:
+        try:
+            return await original_route(payload)
+        finally:
+            if payload == b'{"copy":1}':
+                routed_copy.set()
+
+    subscriber._router.route = counted  # type: ignore[method-assign]
+    client.on_message(client, None, _message(b'{"copy":1}', 2))
+    await asyncio.wait_for(routed_copy.wait(), 5)
+    await wait_until(lambda: session.owed, what="the copy to be left with the broker")
+
+    assert client.acked == []
+    assert not session.redeliver.is_set(), "reconnected before the original settled"
+    held.set()
+    await wait_until(session.redeliver.is_set, what="the redelivery reconnect")
+    assert client.acked == [1]
+    # A plain redelivery: neither the failure backoff nor the rate refill.
+    assert session.ended_for() == (False, False)
+
+
+async def test_a_copy_arriving_in_the_next_session_is_left_until_the_original_settles(
+    monkeypatch, tmp_path
+):
+    """The real router, two sessions: the original routes in the first, the
+    broker's copy arrives in the second, is left unacknowledged, and the
+    second session reconnects for it only once the original settled."""
+    import sqlite3
+
+    from ori.security.evidence.bound import BoundIngestService
+    from ori.security.evidence.ingest_service import IngestOutcome as Outcome
+    from ori.security.gateway_messages import GatewayReplayCache
+
+    monkeypatch.setattr(
+        "ori.gateway.evidence_inbound._log_result", lambda _outcome: None
+    )
+    held = asyncio.Event()
+
+    class _Held(BoundIngestService):
+        def __init__(self) -> None:
+            super().__init__(None, None)  # type: ignore[arg-type]
+
+        async def accept_async(self, artifact_type: str, artifact: object) -> Any:
+            await held.wait()
+            return Outcome(artifact="custody", state="accepted")
+
+    db = tmp_path / "replay.db"
+    auth = GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(shared_secret="gateway-secret"),
+        replay_cache=GatewayReplayCache(db_path=str(db)),
+    )
+    router = EvidenceInboundRouter(
+        device_id="dev-01", ingest=_Held(), message_auth=auth
+    )
+    subscriber = MqttEvidenceInboundSubscriber(
+        broker_url="mqtt://localhost",
+        router=router,
+        device_id="dev-01",
+        client_factory=lambda **_: _AckingClient(),
+    )
+    subscriber._loop = asyncio.get_running_loop()
+    payload = json.dumps(
+        GatewayMessageAuthenticator(
+            GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        ).sign(
+            {
+                "device_id": "dev-01",
+                "artifact_type": ARTIFACT_CUSTODY,
+                "artifact": {"v": 1},
+            },
+            message_type="evidence_inbound",
+        )
+    ).encode()
+    first_client, next_client = _AckingClient(), _AckingClient()
+    subscriber._begin_session(first_client)
+    first_client.on_message(first_client, None, _message(payload, 1))
+
+    def rows() -> int:
+        with sqlite3.connect(db) as connection:
+            return connection.execute(
+                "SELECT COUNT(*) FROM gateway_replay_cache"
+            ).fetchone()[0]
+
+    await wait_until(lambda: rows() == 1, what="the original's key recorded")
+    await subscriber.close()
+    current = subscriber._begin_session(next_client)
+
+    next_client.on_message(next_client, None, _message(payload, 7))
+    await wait_until(lambda: current.owed, what="the copy left with the broker")
+    assert next_client.acked == [] and not current.redeliver.is_set()
+
+    held.set()
+    await wait_until(current.redeliver.is_set, what="the reconnect for the copy")
+    assert next_client.acked == []
+    assert current.ended_for() == (False, False)
 
 
 async def test_a_route_cancelled_before_it_starts_owes_only_its_own_session():

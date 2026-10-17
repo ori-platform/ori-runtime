@@ -255,20 +255,68 @@ async def test_export_responder_verifies_signed_request(store):
     assert response.items[0]["device_id"] == "dev-01"
 
 
-async def test_export_responder_rejects_unsigned_request_when_auth_configured(store):
+def _unauthenticated_requests() -> dict[str, dict]:
+    def signed(secret: str = "gateway-secret", **overrides) -> dict:
+        return GatewayMessageAuthenticator(
+            GatewayMessageAuthConfig(shared_secret=secret)
+        ).sign(_request("sensor_history", **overrides), message_type="export_request")
+
+    tampered = signed()
+    tampered["limit"] = 1000
+    wrong_type = GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(shared_secret="gateway-secret")
+    ).sign(_request("sensor_history"), message_type="export_response")
+    return {
+        "unsigned": _request("sensor_history"),
+        "other secret": signed("another-secret"),
+        "tampered": tampered,
+        "other device": signed(device_id="dev-02"),
+        "other message type": wrong_type,
+        "stale": GatewayMessageAuthenticator(
+            GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        ).sign(
+            _request("sensor_history"),
+            message_type="export_request",
+            signed_at_ms=1,
+        ),
+    }
+
+
+@pytest.mark.parametrize("name", sorted(_unauthenticated_requests()))
+async def test_an_unauthenticated_export_request_is_not_answered(store, name):
+    """A signed answer to it would make the runtime a signing oracle for
+    anything on the site network, so nothing is published and nothing read."""
     responder = _responder(
         store,
         message_auth=GatewayMessageAuthenticator(
             GatewayMessageAuthConfig(shared_secret="gateway-secret")
         ),
     )
+    payload = json.dumps(_unauthenticated_requests()[name]).encode()
 
-    response = await responder.handle_payload(_request("health"))
-    assert response is not None
+    with patch.object(
+        responder, "handle_request", side_effect=AssertionError("served")
+    ):
+        assert await responder.handle_payload(payload) is None
 
-    assert response.request_id == "req-001"
-    assert response.export_type == "health"
-    assert response.error == "auth_failed: missing_auth"
+
+async def test_a_replayed_export_request_is_not_answered(store):
+    request_auth = GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(shared_secret="gateway-secret")
+    )
+    responder = _responder(
+        store,
+        message_auth=GatewayMessageAuthenticator(
+            GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        ),
+    )
+    signed = json.dumps(
+        request_auth.sign(_request("health"), message_type="export_request")
+    ).encode()
+
+    first = await responder.handle_payload(signed)
+    assert first is not None and first.error is None
+    assert await responder.handle_payload(signed) is None
 
 
 async def test_pagination_keeps_next_token_at_source_limit_boundary(store):
@@ -690,3 +738,35 @@ async def test_a_device_id_that_is_not_text_is_never_coerced_to_match(store, dev
     assert response is not None
     assert response.error == "device_id must be text"
     assert response.items == []
+
+
+async def test_a_verified_export_request_writes_its_replay_key_off_the_event_loop(
+    store, tmp_path, monkeypatch
+):
+    import threading
+
+    from ori.security.gateway_messages import GatewayReplayCache
+
+    writes: list[int] = []
+    persist = GatewayReplayCache._persist
+
+    def recorded(self, *args, **kwargs):
+        writes.append(threading.get_ident())
+        return persist(self, *args, **kwargs)
+
+    monkeypatch.setattr(GatewayReplayCache, "_persist", recorded)
+    responder = _responder(
+        store,
+        message_auth=GatewayMessageAuthenticator(
+            GatewayMessageAuthConfig(shared_secret="gateway-secret"),
+            replay_cache=GatewayReplayCache(db_path=str(tmp_path / "replay.db")),
+        ),
+    )
+    signed = GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(shared_secret="gateway-secret")
+    ).sign(_request("health"), message_type="export_request")
+
+    response = await responder.handle_payload(json.dumps(signed).encode())
+
+    assert response is not None and response.error is None
+    assert writes and threading.get_ident() not in writes

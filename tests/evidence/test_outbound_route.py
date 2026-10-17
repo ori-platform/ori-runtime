@@ -1486,3 +1486,36 @@ async def test_a_grant_racing_the_close_never_reports_the_route_up(rig, route):
     await owner.close()
     client.on_subscribe(client, None, 1, [1], None)
     assert owner.connected is False
+
+
+async def test_an_acknowledgement_writes_its_replay_key_off_the_event_loop(
+    rig, tmp_path, monkeypatch
+):
+    import threading
+
+    from ori.security.gateway_messages import GatewayReplayCache
+
+    writes: list[int] = []
+    persist = GatewayReplayCache._persist
+
+    def recorded(self, *args, **kwargs):
+        writes.append(threading.get_ident())
+        return persist(self, *args, **kwargs)
+
+    monkeypatch.setattr(GatewayReplayCache, "_persist", recorded)
+    router = EvidenceOutboundAckRouter(
+        device_id=DEVICE,
+        outbox=rig.outbox,
+        message_auth=GatewayMessageAuthenticator(
+            GatewayMessageAuthConfig(shared_secret=ENVELOPE_SECRET),
+            replay_cache=GatewayReplayCache(db_path=str(tmp_path / "replay.db")),
+        ),
+        now=lambda: 1787000004000,
+    )
+    sealed = rig.seal(1, handed_off=True)
+    routed = await router.handle_ack(
+        _ack(ARTIFACT_DELIVERY_ENVELOPE, sealed["envelope_digest"])
+    )
+
+    assert routed.outcome == ROUTED_APPLIED
+    assert writes and threading.get_ident() not in writes

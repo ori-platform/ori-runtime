@@ -21,6 +21,7 @@ must never become an availability outage.
 
 from __future__ import annotations
 
+import asyncio
 import heapq
 import hmac
 import json
@@ -144,7 +145,8 @@ class GatewayReplayCache:
     persisted to a ``gateway_replay_cache`` table at that path and warmed
     back on construction, so a restart alone cannot be used to reopen the
     replay window. The cache is thread-safe: ``verify()`` runs on
-    MQTT client callback threads.
+    MQTT client callback threads, and receivers on the event loop commit
+    through ``commit_async``, which writes on a worker thread.
     """
 
     def __init__(
@@ -368,6 +370,11 @@ class GatewayMessageAuthenticator:
         )
 
     @property
+    def persists_replay_keys(self) -> bool:
+        """Whether recording a replay key is an SQLite write."""
+        return self._replay_cache.persistent
+
+    @property
     def max_skew_ms(self) -> int:
         """How far a signing time may sit from the receiver's clock."""
         return self._max_skew_ms
@@ -458,6 +465,35 @@ class GatewayMessageAuthenticator:
         """Undo `commit` for a message the receiver then could not act on at
         all, so its identical redelivery is not refused as a replay."""
         self._replay_cache.forget(message.replay_key)
+
+    async def verify_async(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        message_type: str,
+        expected_device_id: str,
+        expected_request_id: str | None = None,
+    ) -> dict[str, Any]:
+        """`verify` for a receiver on the event loop."""
+        message = self.authenticate(
+            payload,
+            message_type=message_type,
+            expected_device_id=expected_device_id,
+            expected_request_id=expected_request_id,
+        )
+        await self.commit_async(message)
+        return message.payload
+
+    async def commit_async(self, message: AuthenticatedMessage) -> None:
+        """`commit` for a receiver on the event loop.
+
+        A persisted key is committed to SQLite on a worker thread and awaited,
+        so the message is still recorded durably before it is acted on.
+        """
+        if self.persists_replay_keys:
+            await asyncio.to_thread(self.commit, message)
+        else:
+            self.commit(message)
 
     def _verify(
         self,

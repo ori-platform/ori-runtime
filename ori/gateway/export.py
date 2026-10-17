@@ -154,7 +154,9 @@ class GatewayExportResponder:
 
         A request whose `request_id` is not JSON text in gateway-api/v2's
         routing form names no response topic that can be relied on, so it is
-        not answered, as an oversized payload is not.
+        not answered, as an oversized payload is not. Nor is one whose
+        envelope does not verify, as the inbound evidence route does not
+        answer one.
         """
         request = self._decode_payload(payload)
         if request is None or not routing_id(request.get("request_id")):
@@ -162,25 +164,22 @@ class GatewayExportResponder:
         request_id = str(request["request_id"])
         if self._message_auth is not None:
             try:
-                request = self._message_auth.verify(
+                request = await self._message_auth.verify_async(
                     request,
                     message_type="export_request",
                     expected_device_id=self._device_id,
                     expected_request_id=request_id,
                 )
             except GatewayMessageAuthError as exc:
-                return self._error_response(
-                    request_id=request_id,
-                    export_type=_echoed_export_type(request),
-                    error=f"auth_failed: {exc}",
+                # Not answered: a signed reply to an unauthenticated request
+                # would hand anything on the site network a signing oracle.
+                logger.warning(
+                    "[gateway-export] unauthenticated request dropped: %s", exc
                 )
+                return None
             except Exception:
                 logger.exception("[gateway-export] verifying a request failed")
-                return self._error_response(
-                    request_id=request_id,
-                    export_type=_echoed_export_type(request),
-                    error="internal_error",
-                )
+                return None
         return await self.handle_request(request)
 
     async def handle_request(self, request: dict[str, Any]) -> ExportResponse | None:
