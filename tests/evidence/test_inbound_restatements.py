@@ -401,12 +401,14 @@ def test_a_failure_inside_ingest_is_released_rather_than_held_for_a_replay():
     assert client.published == []
 
 
-def test_a_saturated_evidence_worker_leaves_the_message_with_the_broker():
-    """Nothing was attempted, so the broker keeps it for the reconnect."""
+def test_a_saturated_evidence_worker_releases_the_message_unacknowledged():
+    """Undecided, as a store fault is: released at the broker, since its
+    identical redelivery would be refused as a replay, and never acknowledged,
+    so the courier redelivers it in a newly signed envelope."""
     client, subscriber = _deliver_on_the_wire(
         _RaisingIngest(EvidenceExecutorSaturatedError("the worker is full"))
     )
-    assert client.acked == []
+    assert client.acked == [7]
     assert client.published == []
 
 

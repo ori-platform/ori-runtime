@@ -371,9 +371,7 @@ release is cut.
   envelope's handoff before publishing it, so an answer that overtakes the
   publish still applies. An acknowledgement that answers nothing this device
   sent no longer records a
-  replay key, nor does an inbound evidence message refused before ingest; one
-  the evidence worker was too busy to take is not refused as a replay when
-  the broker redelivers it.
+  replay key, nor does an inbound evidence message refused before ingest.
 - A gateway replay key is now kept for `gateway.auth.replay_ttl_ms` from
   receipt, as before, and also until its envelope turns stale (one
   millisecond past its signing time plus `gateway.auth.max_clock_skew_ms`),
@@ -394,6 +392,25 @@ release is cut.
   one family's traffic fills it for all. Expired keys are pruned
   in expiry order and, when persisted, by index rather than by a scan. The
   evidence ledger finds an acknowledged envelope by index.
+- The gateway export responder no longer answers a request whose envelope
+  fails verification. Before, with `gateway.auth.enabled: true`, it published
+  a signed `auth_failed` error on the response topic the request named, so
+  anything on the site network could have the runtime sign replies for it.
+  The inbound evidence route already refused such a message silently.
+- An inbound evidence message the evidence worker is too busy to take is
+  left undecided, as a store fault is: it is released at the broker with no
+  acknowledgement, and its replay key stays recorded, since receivers do not
+  relax replay protection to accommodate redelivery (`gateway-api/v2`). The
+  courier redelivers it in a newly signed envelope, which is admitted. Before,
+  it was left with the broker, whose redelivery of the identical bytes replay
+  protection refused.
+- A persisted gateway replay key is written to SQLite on a worker thread,
+  and awaited before the message is acted on, on the inbound evidence route,
+  outbound acknowledgements and export requests. Before, each authenticated
+  message cost one SQLite commit on the event loop. A recorded key is never
+  unrecorded: a route cancelled once its key is written, as every route is at
+  shutdown, leaves it recorded, and the courier's newly signed redelivery is
+  admitted.
 - `gateway.reasoning.timeout_ms` is kept to a day at most, and a
   `gateway.node_heartbeat.interval_seconds` that is not finite means the
   default, also capped at a day, so every value the configuration admits

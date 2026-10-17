@@ -306,6 +306,9 @@ async def test_an_export_error_never_echoes_what_the_gateway_sent(tmp_path):
             "device_id": LONG_ID,
             "auth": {"signature": wide},
         }
+        # Unauthenticated, it is not answered at all.
+        assert await responder.handle_payload(json.dumps(request).encode()) is None
+        request = _auth().sign(request, message_type="export_request")
         response = await responder.handle_payload(json.dumps(request).encode())
         assert response is not None and response.export_type == "unknown"
         assert response.error is not None and wide not in response.error
@@ -680,7 +683,8 @@ async def test_an_outbound_acknowledgement_past_its_bounds_is_dropped_unread():
 async def test_a_non_text_export_type_is_answered_as_unknown(
     tmp_path, export_type, signed
 ):
-    """Never hashed, never str()-ed: answered with an error, unsigned or signed."""
+    """Never hashed, never str()-ed: answered with an error once it verifies,
+    and not answered at all unsigned."""
     responder, store = await _responder(tmp_path)
     try:
         request: dict[str, Any] = {
@@ -691,6 +695,9 @@ async def test_a_non_text_export_type_is_answered_as_unknown(
         if signed:
             request = _auth().sign(request, message_type="export_request")
         response = await responder.handle_payload(json.dumps(request).encode())
+        if not signed:
+            assert response is None
+            return
         assert response is not None
         assert response.export_type == "unknown"
         assert response.error
@@ -872,22 +879,13 @@ def test_the_replay_cache_prunes_in_expiry_order_without_scanning():
     cache = GatewayReplayCache(ttl_ms=100, max_entries=10)
     assert cache.mark_seen("a", now_ms_value=0)
     assert cache.mark_seen("b", now_ms_value=50)
-    cache.forget("a")
-    assert cache.mark_seen("a", now_ms_value=60)  # re-seen after a forget
-    assert not cache.mark_seen("a", now_ms_value=99)  # its old expiry is stale
+    assert not cache.mark_seen("a", now_ms_value=99)
+    assert cache.mark_seen("a", now_ms_value=100)  # expired at 100
     assert not cache.mark_seen("b", now_ms_value=149)
     assert cache.mark_seen("b", now_ms_value=150)  # expired at 150
-    assert not cache.mark_seen("a", now_ms_value=159)
-    assert cache.mark_seen("a", now_ms_value=160)
     # Every live key has one heap entry still to come; expired ones are gone.
     assert sorted(cache._seen_until_ms) == ["a", "b"]
-    assert all(
-        expires > 160
-        for expires, _ in cache._expiries
-        if cache._seen_until_ms.get(_) == expires
-    )
-    # Expired entries leave the heap, not just the cache: nothing scans.
-    assert len(cache._expiries) == 2
+    assert sorted(cache._expiries) == [(200, "a"), (250, "b")]
     assert cache.mark_seen("c", now_ms_value=10_000)
     assert len(cache._expiries) == 1 and list(cache._seen_until_ms) == ["c"]
 
@@ -1984,12 +1982,10 @@ def test_a_loaded_key_with_no_signing_time_keeps_its_stored_expiry(tmp_path):
 def test_the_expiry_heap_never_outgrows_the_live_keys():
     from ori.security.gateway_messages import GatewayReplayCache
 
-    cache = GatewayReplayCache(ttl_ms=10**9, max_entries=10)
+    cache = GatewayReplayCache(ttl_ms=10, max_entries=100)
     for index in range(20_000):
         assert cache.mark_seen(f"k{index}", now_ms_value=index)
-        cache.forget(f"k{index}")
-    assert len(cache._seen_until_ms) == 0
-    assert len(cache._expiries) <= 2 * len(cache._seen_until_ms) + 65
+        assert len(cache._expiries) == len(cache._seen_until_ms) <= 10
 
 
 @pytest.mark.parametrize("broadcast", [False, True])
