@@ -1291,8 +1291,8 @@ def test_a_copy_of_a_message_still_being_routed_is_left_not_refused(tmp_path, or
         assert _replay_rows(db) == rows == 1
         ingest.release.set()
         if original == "saturated":
-            with pytest.raises(EvidenceExecutorSaturatedError):
-                await first
+            await asyncio.wait([first])
+            assert isinstance(first.exception(), EvidenceExecutorSaturatedError)
             assert _replay_rows(db) == 0
             # The broker's redelivery, after the reconnect, is admitted.
             assert (await router.route(payload)).outcome.accepted
@@ -1458,8 +1458,8 @@ def test_a_copy_arriving_before_a_cancelled_write_lands_is_left_not_refused(
         route = asyncio.create_task(router.route(payload))
         await asyncio.to_thread(entered.wait, 5)
         route.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await route
+        await asyncio.wait([route])
+        assert route.cancelled()
         with pytest.raises(EvidenceInFlightError):
             await router.route(payload)
         release.set()
@@ -1508,8 +1508,8 @@ def test_a_route_cancelled_after_its_write_landed_undoes_it(tmp_path, monkeypatc
         await asyncio.to_thread(landed.wait, 5)
         assert _replay_rows(db) == 1
         route.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await route
+        await asyncio.wait([route])
+        assert route.cancelled()
         proceed.set()
         await asyncio.to_thread(undone.wait, 5)
         assert forgotten_on and threading.get_ident() not in forgotten_on, (
@@ -1573,10 +1573,10 @@ def test_a_key_write_still_queued_for_a_worker_runs_when_its_route_is_cancelled(
         for _ in range(5):
             await asyncio.sleep(0)
         route.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await route
+        await asyncio.wait([route])
+        assert route.cancelled()
         free.set()
-        await blocker
+        assert await blocker is None
         await loop.run_in_executor(None, lambda: None)  # the queue has drained
         assert _replay_rows(db) == 0
         assert not router._in_flight, "a key is held with nothing left to release it"
