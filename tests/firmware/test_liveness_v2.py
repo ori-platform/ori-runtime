@@ -435,10 +435,11 @@ async def test_no_failure_is_ever_answered_with_v1(
         device_id=DEVICE, boot_id=41, capability_hash=HASH
     )
     if raised is None:
-        await call
+        published = await call
+        assert json.loads(published)["liveness"]["v"] == 2
     else:
         with pytest.raises(raised):
-            await call
+            _ = await call
     assert publisher.sent == sent and 1 not in publisher.sent
     assert len(table) == entries
 
