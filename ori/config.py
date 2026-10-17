@@ -1777,15 +1777,16 @@ def _parse_gateway(data: Any) -> GatewayConfig:
             f"between 1 and {DEFAULT_MAX_INTERVAL_S:.0f} seconds, the maximum "
             "the retry backoff is allowed to reach"
         )
-    # firmware-commands/v2 Publication during rollout: the v 1 + v 2 liveness
-    # pair is opt-in, because devices must accept v 2, and keep command
-    # capacity from liveness, before the runtime doubles its liveness traffic.
-    publish_liveness_v2 = firmware_commands.get("publish_liveness_v2", False)
-    if not isinstance(publish_liveness_v2, bool):
+    # firmware-commands/v2, Which `v` the runtime publishes: liveness goes at
+    # v 2 alone to every device declaring the signing domains, so the switch
+    # that chose v 1 or the pair is gone. Refused rather than ignored, since a
+    # deployment that set it to keep v 1 would otherwise change unannounced.
+    if "publish_liveness_v2" in firmware_commands:
         raise ConfigValidationError(
-            "gateway.firmware_commands.publish_liveness_v2 must be true or false"
+            "gateway.firmware_commands.publish_liveness_v2 is retired: the runtime "
+            "publishes liveness at v 2 alone to every device that declares "
+            "runtime_key_domains (firmware-commands/v2). Remove the key."
         )
-    firmware_commands["publish_liveness_v2"] = publish_liveness_v2
     firmware_commands["qos"] = command_qos
     firmware_commands["publish_timeout_s"] = publish_timeout_s
     firmware_commands["confirmation_retry_interval_s"] = confirmation_retry_interval_s

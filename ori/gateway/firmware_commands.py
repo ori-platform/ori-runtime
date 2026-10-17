@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 import math
 import os
@@ -37,7 +38,6 @@ from ori.security.firmware.commands import (
 from ori.security.firmware.liveness import (
     FirmwareLivenessSigner,
     FirmwareLivenessSupervisor,
-    LivenessPair,
     SupervisedDevice,
 )
 from ori.security.firmware.reading_age import LivenessTable
@@ -239,12 +239,8 @@ class FirmwareCommandService:
         provisioner_key_bytes: bytes,
         liveness_supervisor: FirmwareLivenessSupervisor,
         liveness_table: LivenessTable | None,
-        publish_liveness_v2: bool = False,
     ) -> None:
         self._store = store
-        # Off until the supervised devices accept v 2 and keep command capacity
-        # from liveness: each interval then publishes v 1 alone.
-        self._publish_liveness_v2 = publish_liveness_v2 is True
         self._publisher = publisher
         self._signer = FirmwareCommandSigner(store, runtime_command_key_bytes)
         # Required, and never defaulted. Supervision is established on the
@@ -366,7 +362,7 @@ class FirmwareCommandService:
         device_id: str,
         boot_id: int,
         capability_hash: str,
-    ) -> LivenessPair:
+    ) -> bytes:
         """Sign and publish one interval's liveness for a supervised device.
 
         This is the application-facing API, and the publisher's raw
@@ -376,39 +372,22 @@ class FirmwareCommandService:
         the device, and nothing is published. Calling the transport
         directly bypasses that, so application code must not.
 
-        firmware-commands/v2 Publication during rollout, when
-        ``publish_liveness_v2`` is on: ``v`` 1 first, then ``v`` 2, and a
-        ``v`` 2 failure never suppresses ``v`` 1. A ``v`` 1 publish failure is
-        raised once ``v`` 2 has been attempted. Off, ``v`` 1 alone.
+        firmware-commands/v2, Which ``v`` the runtime publishes: one message
+        at ``v`` 2, and a failure to sign or publish it is raised with nothing
+        sent in its place.
         """
-        if not self._publish_liveness_v2:
-            v1 = await self._liveness.sign_liveness(
-                device_id=device_id, boot_id=boot_id, capability_hash=capability_hash
-            )
-            await self._publisher.publish_runtime_liveness(device_id, v1)
-            return LivenessPair(v1=v1, v2=None, v2_error="v 2 publication is off")
-        pair = await self._liveness.sign_liveness_pair(
-            device_id=device_id,
-            boot_id=boot_id,
-            capability_hash=capability_hash,
+        message = await self._liveness.sign_liveness(
+            device_id=device_id, boot_id=boot_id, capability_hash=capability_hash
         )
-        v1_error: Exception | None = None
-        try:
-            await self._publisher.publish_runtime_liveness(device_id, pair.v1)
-        except Exception as exc:
-            v1_error = exc
-        if pair.v2 is not None:
-            try:
-                await self._publisher.publish_runtime_liveness(device_id, pair.v2)
-            except Exception:
-                logger.warning(
-                    "[firmware-liveness] v 2 liveness publish failed for %s",
-                    device_id,
-                    exc_info=True,
-                )
-        if v1_error is not None:
-            raise v1_error
-        return pair
+        # Held here, at the one door every liveness publication goes through:
+        # whatever produced the message, no `v` 1 leaves this runtime.
+        if json.loads(message)["liveness"].get("v") != 2:
+            # A defect, not a supervision refusal, so it is counted failed.
+            raise RuntimeError(
+                f"{device_id}: refusing to publish liveness that is not at v 2"
+            )
+        await self._publisher.publish_runtime_liveness(device_id, message)
+        return message
 
     async def _require_approved_device(self, device_id: str) -> dict[str, Any]:
         row = await self._store.get_firmware_device(device_id)

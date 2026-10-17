@@ -217,11 +217,15 @@ async def test_signed_message_verifies_and_wraps_the_exact_bytes() -> None:
         device_id=DEVICE, boot_id=41, capability_hash=HASH
     )
     obj = json.loads(message)
-    assert obj["liveness"]["runtime_seq"] == 1
+    assert obj["liveness"]["runtime_seq"] == 1 and obj["liveness"]["v"] == 2
     assert obj["signature"].startswith("ed25519:")
 
     signed = build_liveness_bytes(
-        boot_id=41, capability_hash=HASH, device_id=DEVICE, runtime_seq=1
+        boot_id=41,
+        capability_hash=HASH,
+        device_id=DEVICE,
+        runtime_seq=1,
+        nonce=obj["liveness"]["nonce"],
     )
     assert signed in message  # the signature covers exactly these bytes
     Ed25519PublicKey.from_public_bytes(signer.public_key_bytes()).verify(

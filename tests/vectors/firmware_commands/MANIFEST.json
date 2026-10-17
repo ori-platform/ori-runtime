@@ -1,7 +1,7 @@
 {
   "source_repository": "ori-platform/ori-specs",
   "source_path": "firmware-commands",
-  "source_commit": "4880b99a015fc063186bae1473d779a13d4a44b5",
+  "source_commit": "02c49dbb0a97a83ad23068db8c7fda50563a43ee",
   "contract_version": "v2",
   "note": "Vendored copies of the normative vectors. The runtime must produce and accept the bytes they describe, so they are its conformance fixtures. Digests detect a local edit; the source commit is the provenance trail.",
   "files": {

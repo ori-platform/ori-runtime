@@ -50,8 +50,8 @@ from ori.security.firmware.signing_domains import (
 
 __all__ = [
     "FirmwareLivenessError",
+    "FirmwareLivenessNonceError",
     "FirmwareLivenessSigner",
-    "LivenessPair",
     "FirmwareLivenessSupervisor",
     "SupervisedDevice",
     "build_liveness_bytes",
@@ -108,6 +108,14 @@ assert LIVENESS_PUBLISH_INTERVAL_S <= MAX_LIVENESS_PUBLISH_INTERVAL_S, (
 
 class FirmwareLivenessError(ValueError):
     """A liveness message that must not be signed."""
+
+
+class FirmwareLivenessNonceError(RuntimeError):
+    """No fresh nonce could be drawn: the interval goes without a message.
+
+    Not a refusal. The runtime still owes the device this interval's
+    liveness and failed to produce it, as it would failing to sign or publish.
+    """
 
 
 class SigningDomainsUndeclaredError(FirmwareLivenessError):
@@ -263,15 +271,6 @@ class FirmwareLivenessSupervisor:
         )
 
 
-@dataclass(frozen=True)
-class LivenessPair:
-    """One interval's publication: ``v`` 1 always, ``v`` 2 when it could be signed."""
-
-    v1: bytes
-    v2: bytes | None
-    v2_error: str = ""
-
-
 class FirmwareLivenessSigner:
     """Signs liveness messages with the runtime command key and allocates
     strictly increasing, durable per-device sequence numbers.
@@ -343,11 +342,11 @@ class FirmwareLivenessSigner:
         for _ in range(_NONCE_ATTEMPTS):
             raw = self._nonce_source()
             if not isinstance(raw, bytes) or len(raw) != 16:
-                raise FirmwareLivenessError("nonce source must return 16 bytes")
+                raise FirmwareLivenessNonceError("nonce source must return 16 bytes")
             nonce = raw.hex()
             if self._table is None or not self._table.holds(nonce):
                 return nonce
-        raise FirmwareLivenessError(
+        raise FirmwareLivenessNonceError(
             f"nonce source collided with the live table {_NONCE_ATTEMPTS} times"
         )
 
@@ -456,51 +455,21 @@ class FirmwareLivenessSigner:
         boot_id: int,
         capability_hash: str,
     ) -> bytes:
-        """Allocate a sequence and sign one ``v`` 1 liveness message.
+        """Allocate a sequence and sign this interval's liveness, at ``v`` 2.
 
-        Refuses when the device is not currently supervised.
+        firmware-commands/v2, Which ``v`` the runtime publishes: the only
+        message of the interval, never ``v`` 1, and nothing in its place when
+        it cannot be produced. Refuses when the device is not supervised or
+        does not declare the signing domains.
         """
         self._require_supervised(
             device_id=device_id, boot_id=boot_id, capability_hash=capability_hash
         )
         await self._require_declared(device_id)
         runtime_seq = await self._allocate(device_id, capability_hash)
-        liveness = build_liveness_bytes(
+        return self.sign_liveness_v2_bytes(
+            device_id=device_id,
             boot_id=boot_id,
             capability_hash=capability_hash,
-            device_id=device_id,
             runtime_seq=runtime_seq,
         )
-        return self.sign_liveness_bytes(liveness)
-
-    async def sign_liveness_pair(
-        self,
-        *,
-        device_id: str,
-        boot_id: int,
-        capability_hash: str,
-    ) -> LivenessPair:
-        """Sign one interval's ``v`` 1 message at N, then its ``v`` 2 message at N+1.
-
-        firmware-commands/v2 Publication during rollout. A ``v`` 2 failure,
-        whether allocating, generating or signing, never suppresses ``v`` 1.
-        """
-        v1 = await self.sign_liveness(
-            device_id=device_id, boot_id=boot_id, capability_hash=capability_hash
-        )
-        try:
-            runtime_seq = await self._allocate(device_id, capability_hash)
-            v2 = self.sign_liveness_v2_bytes(
-                device_id=device_id,
-                boot_id=boot_id,
-                capability_hash=capability_hash,
-                runtime_seq=runtime_seq,
-            )
-        except Exception as exc:
-            logger.warning(
-                "[firmware-liveness] v 2 liveness for %s not signed; v 1 stands: %s",
-                device_id,
-                exc,
-            )
-            return LivenessPair(v1=v1, v2=None, v2_error=f"{type(exc).__name__}: {exc}")
-        return LivenessPair(v1=v1, v2=v2)

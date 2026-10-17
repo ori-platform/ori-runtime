@@ -487,9 +487,6 @@ EGRESS_CALLEES = frozenset(
         "sign_command",
         "sign_command_bytes",
         "sign_liveness",
-        # Signs one interval's liveness pair; it allocates runtime_seq and
-        # signs liveness only, never a command.
-        "sign_liveness_pair",
         "sleep",
         "sock_of",
         "str",
@@ -499,8 +496,9 @@ EGRESS_CALLEES = frozenset(
         "username_pw_set",
         # Logging only.
         "warning",
-        # A frozen record of what one interval signed; it publishes nothing.
-        "LivenessPair",
+        # Parses a signed liveness message to refuse one not at v 2 before it
+        # is published; it publishes nothing.
+        "loads",
         # The signing-domain preimage and the manifest declaration check:
         # pure functions of their bytes, publishing nothing.
         "command_preimage",

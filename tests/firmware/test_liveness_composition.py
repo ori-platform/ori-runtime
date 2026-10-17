@@ -350,12 +350,12 @@ async def test_service_signs_only_after_the_shared_supervisor_is_populated(
     # Telemetry arrives on the subscriber; the service can now sign.
     await subscriber._ingest_telemetry(_telemetry_message("telemetry_single_reading"))
     device = shared.supervised_devices()[0]
-    pair = await service.publish_runtime_liveness(
+    message = await service.publish_runtime_liveness(
         device_id=device.device_id,
         boot_id=device.boot_id,
         capability_hash=device.capability_hash,
     )
-    assert b'"v":1}' in pair.v1 and pair.v2 is None
+    assert b'"v":2}' in message
     assert fake.published == [(f"ori/fw/{SEALED_DEVICE}/runtime", 1, False)]
 
     await publisher.close()
@@ -515,7 +515,6 @@ async def test_the_gate_matches_nonces_against_the_table_the_signer_records_in(
         lambda **_: _FakeClient(),
     )
     cfg = _command_cfg()
-    cfg.gateway.firmware_commands["publish_liveness_v2"] = True
     tracker = _firmware_reading_age(cfg)
     assert tracker is not None
     _supervisor, subscriber, pair, _scheduler = _build_firmware_liveness_stack(
@@ -525,7 +524,6 @@ async def test_the_gate_matches_nonces_against_the_table_the_signer_records_in(
     assert tracker.table is not None
     assert subscriber.telemetry_gate.reading_age is tracker
     assert pair[1]._liveness.table is tracker.table
-    assert pair[1]._publish_liveness_v2 is True
 
     await pair[0].connect()
     await _provision(store)
@@ -536,7 +534,8 @@ async def test_the_gate_matches_nonces_against_the_table_the_signer_records_in(
         boot_id=device.boot_id,
         capability_hash=device.capability_hash,
     )
-    assert published.v2 is not None and len(tracker.table) == 1
+    nonce = json.loads(published)["liveness"]["nonce"]
+    assert tracker.table.holds(nonce) and len(tracker.table) == 1
     await pair[0].close()
 
 

@@ -63,13 +63,19 @@ release is cut.
   is refused `signature_verification_failed` where it was refused for the
   field. An envelope whose `v` is not the integer 1 or 2 is refused
   `unsupported_version`, which was `invalid_envelope`.
-- `gateway.firmware_commands.publish_liveness_v2` is new and defaults to
-  `false`, so liveness is published as before, at `v` 1 alone. Set it to
-  `true` only once every supervised device accepts liveness at `v` 2 and keeps
-  command capacity from liveness: the runtime then publishes `v` 1 and `v` 2
-  every interval. The reference firmware still holds inbound messages in one
-  four-deep queue shared with commands, dropping what arrives when it is full.
-  Any value other than `true` or `false` is refused at config load.
+- Liveness is published at `v` 2 alone (`firmware-commands/v2`, Which `v`
+  the runtime publishes): one message per interval to every supervised device
+  whose manifest declares `runtime_key_domains`, never at `v` 1. Before, it
+  was published at `v` 1. A device that does not declare the domains is sent
+  none, as before. An interval whose nonce, signature or publish fails sends
+  nothing in its place. A device on firmware that accepts liveness only at
+  `v` 1 stops being supervised by this runtime, including one that declares
+  the domains: `ori-edge-firmware` builds after `a2c528f` and before `ee35e34`
+  declare them and accept only `v` 1. The runtime cannot tell, since a refused
+  liveness message answers nothing, so reflash such a device. Current
+  reference firmware accepts `v` 2 and keeps it out of command capacity. Any
+  `gateway.firmware_commands.publish_liveness_v2` key is refused at config
+  load: remove it.
 - A LoRaWAN, Zigbee or MQTT perception reading's `timestamp` is now when the
   value reached the runtime. Before, it was a time copied from the payload,
   such as a network server's `received_at`, a coordinator's `last_seen` or a
@@ -135,7 +141,7 @@ release is cut.
   (`firmware-telemetry/v2`, `firmware-commands/v2`). An envelope may carry
   `liveness_nonce`, the nonce of the last `v` 2 liveness message the device
   accepted before the measurement began. The runtime signs that nonce into
-  each interval's `v` 2 liveness message, when `publish_liveness_v2` is on,
+  each interval's liveness message
   and records, in memory only, when it began signing it, on a clock that counts suspended time. A reading whose
   nonce this process signed for the same device, boot and manifest within an
   hour was polled no more than `now - signing start` ago. Health's new
