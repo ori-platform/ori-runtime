@@ -300,6 +300,28 @@ async def test_an_unauthenticated_export_request_is_not_answered(store, name):
         assert await responder.handle_payload(payload) is None
 
 
+async def test_a_fault_inside_verification_is_not_answered_either(store):
+    """Not verified, for whatever reason: no `internal_error` reply, signed or
+    not, and nothing served."""
+    auth = GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(shared_secret="gateway-secret")
+    )
+    responder = _responder(store, message_auth=auth)
+    signed = json.dumps(
+        GatewayMessageAuthenticator(
+            GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        ).sign(_request("health"), message_type="export_request")
+    ).encode()
+
+    with (
+        patch.object(
+            auth, "verify_async", side_effect=RuntimeError("cache unreadable")
+        ),
+        patch.object(responder, "handle_request", side_effect=AssertionError("served")),
+    ):
+        assert await responder.handle_payload(signed) is None
+
+
 async def test_a_replayed_export_request_is_not_answered(store):
     request_auth = GatewayMessageAuthenticator(
         GatewayMessageAuthConfig(shared_secret="gateway-secret")
