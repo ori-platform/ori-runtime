@@ -350,6 +350,14 @@ release is cut.
 
 ## Security
 
+- With `gateway.auth.enabled: true`, a gateway reasoning response whose
+  envelope fails verification, or that replays one already received, is
+  dropped and logged. The Tier 3 request goes on waiting for an authentic
+  answer until `gateway.reasoning.timeout_ms`. Before, it ended the request as
+  failed, so any broker client that knew a request ID could force the runtime
+  off gateway reasoning (gateway-api/v2 Reasoning Auth Envelope: verification
+  precedes every side effect).
+
 - Every gateway-to-runtime MQTT family is bounded before anything is
   parsed, decoded or verified (`gateway-api/v2` Payload Size and Payload
   Volume). A payload over its topic's maximum is refused and changes no

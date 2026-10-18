@@ -232,6 +232,22 @@ class MqttGatewayReasoner:
         # Held while an answer is checked against `answered` and recorded, and
         # by the end of the round trip, so neither can slip between the other.
         settling = threading.Lock()
+        # Unanswered responses dropped this round trip: the first is logged at
+        # once, the rest summed when it ends, so a flood across a long wait
+        # writes two lines, not one per message.
+        dropped = {"unverified": 0, "replayed": 0}
+
+        def _drop(kind: str, exc: GatewayMessageAuthError) -> None:
+            with settling:
+                dropped[kind] += 1
+                first = dropped[kind] == 1
+            if first:
+                logger.warning(
+                    "[gateway-reasoning] dropped %s response for %s: %s",
+                    "an unverified" if kind == "unverified" else "a replayed",
+                    request.request_id,
+                    exc,
+                )
 
         def _on_message(_client: Any, _userdata: Any, message: Any) -> None:
             raw = getattr(message, "payload", b"")
@@ -264,7 +280,6 @@ class MqttGatewayReasoner:
                 )
                 return
             claim = None
-            failure: GatewayMessageAuthError | None = None
             if self._message_auth is not None:
                 try:
                     claim = self._message_auth.authenticate(
@@ -274,7 +289,12 @@ class MqttGatewayReasoner:
                         expected_request_id=request.request_id,
                     )
                 except GatewayMessageAuthError as exc:
-                    failure = exc
+                    # Verification precedes every side effect (gateway-api/v2
+                    # Reasoning Auth Envelope): an unverified answer ends
+                    # nothing, and the request waits for an authentic one.
+                    _drop("unverified", exc)
+                    return
+            replay: GatewayMessageAuthError | None = None
             with settling:
                 if answered.is_set():
                     return
@@ -282,20 +302,14 @@ class MqttGatewayReasoner:
                     try:
                         self._message_auth.commit(claim)  # type: ignore[union-attr]
                     except GatewayMessageAuthError as exc:
-                        failure = exc
+                        # A replay is no answer either.
+                        replay = exc
                     else:
                         payload = claim.payload
-                answered.set()
-            if failure is not None:
-                logger.warning(
-                    "[gateway-reasoning] rejecting unauthenticated response: %s",
-                    failure,
-                )
-                loop.call_soon_threadsafe(
-                    _set_future_exception,
-                    response,
-                    GatewayReasoningError(f"gateway response auth failed: {failure}"),
-                )
+                if replay is None:
+                    answered.set()
+            if replay is not None:
+                _drop("replayed", replay)
                 return
             loop.call_soon_threadsafe(_set_future_result, response, payload)
 
@@ -336,6 +350,15 @@ class MqttGatewayReasoner:
             # stops is for nothing pending.
             with settling:
                 answered.set()
+                summary = dict(dropped)
+            for kind, count in summary.items():
+                if count > 1:
+                    logger.warning(
+                        "[gateway-reasoning] dropped %d %s responses for %s in all",
+                        count,
+                        kind,
+                        request.request_id,
+                    )
             try:
                 await asyncio.to_thread(client.loop_stop)
             except Exception:
