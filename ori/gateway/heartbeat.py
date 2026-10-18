@@ -40,6 +40,14 @@ import asyncio
 import logging
 from typing import Any, Callable
 
+from ori.gateway.mqtt_retry import (
+    RECONNECT_MAX_S,
+    RECONNECT_MIN_S,
+    MqttSession,
+    ensure_mqtt_success,
+    wait_before_retry,
+    wait_for_session,
+)
 from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_url
 from ori.gateway.payload_bounds import GATEWAY_HEALTH, IngressBound
 from ori.reasoning.capability_posture import CapabilityPostureTracker
@@ -114,37 +122,56 @@ class MqttGatewayHeartbeatSubscriber:
         so the runtime can manage both servers with the same lifecycle pattern.
         """
         self._loop = asyncio.get_running_loop()
-        client = self._client_factory(client_id=f"ori-hb-{self._device_id}")
-        self._client = client
-        client.on_connect = self._on_connect
-        client.on_message = self._on_message
-        try:
-            username = self._broker.username
-            password = self._broker.password
-            if username:
-                client.username_pw_set(username, password)
-            apply_tls_context(client, self._broker)
-            await asyncio.to_thread(
-                client.connect,
-                self._broker.host,
-                int(self._broker.port),
-                60,
-            )
-            await asyncio.to_thread(client.loop_start)
-            logger.info(
-                "[gateway-heartbeat] subscribed to %s via %s:%s (auth=%s)",
-                GATEWAY_HEALTH_TOPIC,
-                self._broker.host,
-                self._broker.port,
-                "enabled" if self._authenticator is not None else "disabled",
-            )
-            await shutdown_event.wait()
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("[gateway-heartbeat] MQTT subscriber stopped unexpectedly")
-        finally:
-            await self.close()
+        delay = RECONNECT_MIN_S
+        while True:
+            session = MqttSession(self._loop)
+            try:
+                client = self._client_factory(client_id=f"ori-hb-{self._device_id}")
+                self._client = client
+                session.bind(
+                    client, on_connect=self._on_connect, on_message=self._on_message
+                )
+                username = self._broker.username
+                password = self._broker.password
+                if username:
+                    client.username_pw_set(username, password)
+                apply_tls_context(client, self._broker)
+                ensure_mqtt_success(
+                    await asyncio.to_thread(
+                        client.connect, self._broker.host, int(self._broker.port), 60
+                    ),
+                    "connect",
+                )
+                ensure_mqtt_success(
+                    await asyncio.to_thread(client.loop_start), "loop_start"
+                )
+                logger.info(
+                    "[gateway-heartbeat] subscribed to %s via %s:%s (auth=%s)",
+                    GATEWAY_HEALTH_TOPIC,
+                    self._broker.host,
+                    self._broker.port,
+                    "enabled" if self._authenticator is not None else "disabled",
+                )
+                if await wait_for_session(shutdown_event, session.lost) == "lost":
+                    logger.warning(
+                        "[gateway-heartbeat] MQTT session lost; reconnecting"
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "[gateway-heartbeat] MQTT session failed; reconnecting"
+                )
+            finally:
+                session.retire()
+                await self.close()
+            if shutdown_event.is_set():
+                return
+            if session.ever_connected:
+                delay = RECONNECT_MIN_S
+            if not await wait_before_retry(shutdown_event, delay):
+                return
+            delay = min(delay * 2, RECONNECT_MAX_S)
 
     async def close(self) -> None:
         """Stop the paho network loop and disconnect cleanly."""
