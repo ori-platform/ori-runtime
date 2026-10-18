@@ -30,6 +30,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
 from ori.actions.alert_delivery import AlertSendReceipt, OutboundAlert
+from ori.reasoning.approval_bounds import MAX_PROPOSAL_LIFETIME_S
 from ori.security.remote_commands.commands import (
     RemoteCommand,
     RemoteCommandVerifier,
@@ -48,6 +49,23 @@ from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
+#: An approval reply is a scoped YES/NO and a proposal ID; three SMS segments
+#: is generous. Longer is refused, never truncated, since a cut reply could
+#: read as a different answer.
+MAX_APPROVAL_MESSAGE_CHARS = 480
+#: Unread replies kept per sender: a listener reads the earliest it has not
+#: consumed since it began, so only the newest can still answer.
+MAX_UNCONSUMED_PER_SENDER = 16
+#: No listener waits longer than one proposal's lifetime, so a reply older
+#: than that, with a margin, can never be read.
+INBOUND_RETENTION_MS = (MAX_PROPOSAL_LIFETIME_S + 600) * 1000
+#: Per allowlisted sender: an operator answering several proposals a minute.
+SENDER_RATE_PER_MINUTE = 10.0
+SENDER_BURST = 5
+#: Across every allowlisted sender: a backstop for the store, not a share.
+ALLOWLISTED_RATE_PER_MINUTE = 30.0
+ALLOWLISTED_BURST = 10
+
 _DELIVERED_REPORT_STATUSES = frozenset({"delivered", "success"})
 _TERMINAL_FAILURE_REPORT_STATUSES = frozenset({"failed", "rejected", "undelivered"})
 
@@ -58,6 +76,99 @@ try:
 except Exception:
     _serial_module = None
     _PYSERIAL_AVAILABLE = False
+
+
+class _Bucket:
+    """A token bucket on the monotonic clock."""
+
+    __slots__ = ("_burst", "_last", "_per_second", "_tokens")
+
+    def __init__(self, per_minute: float, burst: int, now: float) -> None:
+        self._per_second = per_minute / 60.0
+        self._burst = float(burst)
+        self._tokens = float(burst)
+        self._last = now
+
+    def has_token(self, now: float) -> bool:
+        """Refill to *now*, then whether a token is there; takes none."""
+        self._tokens = min(
+            self._burst, self._tokens + max(0.0, now - self._last) * self._per_second
+        )
+        self._last = now
+        return self._tokens >= 1.0
+
+    def spend(self) -> None:
+        self._tokens -= 1.0
+
+
+class _ApprovalIngress:
+    """Who may leave an approval reply, and how fast.
+
+    The allowlist is decided first, so a refused sender costs a set lookup and
+    holds no state. Each allowlisted sender then has its own bucket, and one
+    bucket over all of them backs the store; the allowlist is fixed, so so is
+    the state. Every refusal is counted by reason.
+    """
+
+    def __init__(
+        self,
+        allowed: frozenset[str],
+        *,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._allowed = allowed
+        self._clock = clock
+        now = clock()
+        self._senders = {
+            sender: _Bucket(SENDER_RATE_PER_MINUTE, SENDER_BURST, now)
+            for sender in allowed
+        }
+        self._all = _Bucket(ALLOWLISTED_RATE_PER_MINUTE, ALLOWLISTED_BURST, now)
+        self.refusals: dict[str, int] = {
+            "unlisted_sender": 0,
+            "message_too_long": 0,
+            "sender_rate_exceeded": 0,
+            "allowlisted_rate_exceeded": 0,
+        }
+        self._logged_at: dict[str, float] = {}
+        self._unlogged: dict[str, int] = dict.fromkeys(self.refusals, 0)
+
+    def take_log_line(self, reason: str) -> int:
+        """How many *reason* refusals to report now, or 0 to stay quiet.
+
+        At most one line a minute per reason, carrying the count since the
+        last, so a flood cannot push earlier lines out of a rotating log.
+        """
+        self._unlogged[reason] += 1
+        now = self._clock()
+        if now - self._logged_at.get(reason, float("-inf")) < 60.0:
+            return 0
+        self._logged_at[reason] = now
+        count, self._unlogged[reason] = self._unlogged[reason], 0
+        return count
+
+    def refusal(self, from_number: str, message: str) -> str | None:
+        """None when the reply may be stored; otherwise why it is refused."""
+        if from_number not in self._allowed:
+            reason = "unlisted_sender"
+        elif len(message) > MAX_APPROVAL_MESSAGE_CHARS:
+            reason = "message_too_long"
+        else:
+            now = self._clock()
+            sender = self._senders[from_number]
+            # Both are checked before either is spent, so a reply refused by
+            # one bucket costs nothing from the other: an operator retrying
+            # while the shared bucket is empty keeps their own allowance.
+            if not sender.has_token(now):
+                reason = "sender_rate_exceeded"
+            elif not self._all.has_token(now):
+                reason = "allowlisted_rate_exceeded"
+            else:
+                sender.spend()
+                self._all.spend()
+                return None
+        self.refusals[reason] += 1
+        return reason
 
 
 class SMSAction:
@@ -134,9 +245,11 @@ class SMSAction:
         self._remote_command_handler = remote_command_handler
         self._remote_command_incident_handler = remote_command_incident_handler
         self._poll_interval_seconds = max(1, int(poll_interval_seconds))
+        # Empty admits nobody: no configured contact means no approver.
         self._allowed_senders: frozenset[str] = (
             frozenset(allowed_senders) if allowed_senders else frozenset()
         )
+        self._approval_ingress = _ApprovalIngress(self._allowed_senders)
         self._ip_ready = bool(self._api_key)
 
         raw_gsm_cfg = sms_cfg.get("gsm")
@@ -520,6 +633,14 @@ class SMSAction:
         )
         return None
 
+    @property
+    def approval_refusals(self) -> dict[str, int]:
+        """Approval replies refused before storage, by reason.
+
+        Logged only: runtime-health names no field for them yet.
+        """
+        return dict(self._approval_ingress.refusals)
+
     async def ingest_incoming_webhook(self, payload: dict[str, Any]) -> bool:
         """Apply one authenticated Africa's Talking callback in StateStore.
 
@@ -598,19 +719,28 @@ class SMSAction:
                     )
                 return True
 
-            if self._allowed_senders and from_number not in self._allowed_senders:
-                logger.warning(
-                    "SMSAction.ingest_incoming_webhook: rejected approval message "
-                    "from unlisted sender from_number=%r — not in operator_contact "
-                    "or secondary_contact",
-                    from_number,
-                )
+            refusal = self._approval_ingress.refusal(from_number, message)
+            if refusal is not None:
+                count = self._approval_ingress.take_log_line(refusal)
+                if count:
+                    # The sender is named only once it is a configured contact.
+                    logger.warning(
+                        "SMSAction.ingest_incoming_webhook: %d approval "
+                        "message(s) refused (%s) since the last report%s",
+                        count,
+                        refusal,
+                        f", latest from {from_number!r}"
+                        if refusal != "unlisted_sender"
+                        else "",
+                    )
                 return False
 
             await self._state_store.store_incoming_message(
                 channel="sms",
                 from_number=from_number,
                 message=message,
+                keep_unconsumed=MAX_UNCONSUMED_PER_SENDER,
+                retain_ms=INBOUND_RETENTION_MS,
             )
             return True
         except Exception:

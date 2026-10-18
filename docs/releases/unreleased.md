@@ -364,6 +364,37 @@ release is cut.
   acknowledgements and inbound transport refusals. Before, each wrote one
   warning per message, so anything that could publish on a topic could fill
   the log at that topic's ingress rate.
+- Inbound SMS approval replies are bounded at the runtime, whatever the bridge
+  in front of it does (`docs/SMS_WEBHOOK_SECURITY.md`).
+  - **Allowlist:** with neither `actions.operator_contact` nor
+    `actions.secondary_contact` set, no reply is accepted from anyone. Before,
+    an empty allowlist admitted every sender, and their replies were stored
+    and never read, so a flood filled the store. An unlisted sender's plain
+    reply is refused before it is stored. A command-shaped message still goes
+    through remote-command verification first, as before, under that policy's
+    own throttle: it records the attempt, may send the sender a rejection SMS,
+    and past the rejection limit records an incident and alerts the operator.
+  - **Rate:** each configured number may leave 10 replies a minute, and all of
+    them together 30. A refused sender spends none of that. Before, one limit
+    of 20 requests a minute per peer address was shared by every sender
+    through the bridge's one address. That limit is now 600 a minute, a CPU
+    backstop only. A flood from many senders through one bridge can still
+    reach it and refuse the operator's reply, until the bridge limits senders
+    (ori-gateway#138).
+  - **Storage:** a reply over 480 characters is refused. Each number keeps
+    its 16 newest unread replies. Replies older than the longest approval
+    window plus ten minutes are removed.
+  - **Hardened posture:** staging, production, or
+    `security.enforce_production_posture: true`, with SMS or WhatsApp enabled,
+    refuses to start unless `operator_contact` is a phone number. Before, it
+    only warned, and every Tier C proposal fell to its safe default with no
+    operator asked.
+  - **Refusal counts** are logged by reason, at most one line a minute per
+    reason. runtime-health names no field for them yet.
+- An SMS webhook nonce is kept until the request's signing time plus
+  `max_skew_seconds`, not only for `replay_ttl_seconds` from receipt. Before,
+  a request signed ahead of the receiver's clock could be replayed after its
+  nonce expired. Both settings are now capped at 2^53 ms.
 
 - Every gateway-to-runtime MQTT family is bounded before anything is
   parsed, decoded or verified (`gateway-api/v2` Payload Size and Payload

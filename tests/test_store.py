@@ -1531,6 +1531,65 @@ class TestReasoningLog:
 
 
 class TestInboundMessages:
+    @staticmethod
+    def _rows(store, channel: str = "sms") -> list[tuple[str, str, int | None]]:
+        assert store._conn is not None
+        return [
+            (row["from_number"], row["message"], row["consumed_at"])
+            for row in store._conn.execute(
+                "SELECT from_number, message, consumed_at FROM inbound_messages "
+                "WHERE channel = ? ORDER BY received_at, id",
+                (channel,),
+            )
+        ]
+
+    async def test_only_a_senders_newest_unread_replies_are_kept(self, store):
+        for index in range(6):
+            await store.store_incoming_message(
+                channel="sms",
+                from_number="+1",
+                message=f"m{index}",
+                received_at_ms=1_000 + index,
+                keep_unconsumed=3,
+            )
+        await store.store_incoming_message(
+            channel="sms",
+            from_number="+2",
+            message="other",
+            received_at_ms=2_000,
+            keep_unconsumed=3,
+        )
+        assert self._rows(store) == [
+            ("+1", "m3", None),
+            ("+1", "m4", None),
+            ("+1", "m5", None),
+            ("+2", "other", None),
+        ]
+        # The listener still reads the earliest kept since it began.
+        assert (
+            await store.consume_incoming_message(
+                channel="sms", from_number="+1", since_ms=0
+            )
+            == "m3"
+        )
+
+    async def test_a_reply_older_than_any_listener_waits_is_removed(self, store):
+        await store.store_incoming_message(
+            channel="sms", from_number="+1", message="old", received_at_ms=1_000
+        )
+        await store.store_incoming_message(
+            channel="console", from_number="+1", message="kept", received_at_ms=1_000
+        )
+        await store.store_incoming_message(
+            channel="sms",
+            from_number="+2",
+            message="new",
+            received_at_ms=1_000 + 5_000,
+            retain_ms=4_999,
+        )
+        assert self._rows(store) == [("+2", "new", None)]
+        assert self._rows(store, "console") == [("+1", "kept", None)]
+
     async def test_store_and_consume_message(self, store):
         await store.store_incoming_message(
             channel="sms",

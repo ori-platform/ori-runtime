@@ -494,7 +494,7 @@ async def test_sms_command_handler_audits_when_verifier_disabled(store, fixed_no
 
 
 async def test_sms_approval_yes_no_is_not_treated_as_remote_command(store):
-    action = SMSAction(state_store=store, config={})
+    action = SMSAction(state_store=store, config={}, allowed_senders={"+2348012345678"})
 
     ok = await action.ingest_incoming_webhook({"from": "+2348012345678", "text": "YES"})
 

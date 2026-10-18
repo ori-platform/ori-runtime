@@ -329,6 +329,9 @@ CREATE TABLE IF NOT EXISTS inbound_messages (
 CREATE INDEX IF NOT EXISTS idx_inbound_lookup
     ON inbound_messages (channel, from_number, received_at, consumed_at);
 
+CREATE INDEX IF NOT EXISTS idx_inbound_age
+    ON inbound_messages (channel, received_at);
+
 CREATE TABLE IF NOT EXISTS webhook_replay_log (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     source         TEXT    NOT NULL DEFAULT '',
@@ -4706,13 +4709,26 @@ class StateStore:
         from_number: str,
         message: str,
         received_at_ms: int | None = None,
+        *,
+        keep_unconsumed: int | None = None,
+        retain_ms: int | None = None,
     ) -> None:
+        """Store one inbound message, bounding what the channel keeps.
+
+        With *keep_unconsumed*, only that many of the sender's newest unread
+        messages are kept; a listener reads the earliest it has not consumed
+        since it began, so the newest replies are the ones that can still
+        answer. With *retain_ms*, the channel's messages received longer ago
+        than that are removed: no listener waits longer, so none can read them.
+        """
         await self._run_write(
             self._store_incoming_message_sync,
             channel,
             from_number,
             message,
             received_at_ms if received_at_ms is not None else now_ms(),
+            keep_unconsumed,
+            retain_ms,
         )
 
     def _store_incoming_message_sync(
@@ -4721,6 +4737,8 @@ class StateStore:
         from_number: str,
         message: str,
         received_at_ms: int,
+        keep_unconsumed: int | None = None,
+        retain_ms: int | None = None,
     ) -> None:
         assert self._conn is not None
         self._conn.execute(
@@ -4731,6 +4749,24 @@ class StateStore:
             """,
             (channel, from_number, message, received_at_ms),
         )
+        if keep_unconsumed is not None:
+            self._conn.execute(
+                """
+                DELETE FROM inbound_messages
+                WHERE id IN (
+                    SELECT id FROM inbound_messages
+                    WHERE channel = ? AND from_number = ? AND consumed_at IS NULL
+                    ORDER BY received_at DESC, id DESC
+                    LIMIT -1 OFFSET ?
+                )
+                """,
+                (channel, from_number, max(1, int(keep_unconsumed))),
+            )
+        if retain_ms is not None:
+            self._conn.execute(
+                "DELETE FROM inbound_messages WHERE channel = ? AND received_at < ?",
+                (channel, received_at_ms - max(0, int(retain_ms))),
+            )
         self._conn.commit()
 
     async def consume_incoming_message(

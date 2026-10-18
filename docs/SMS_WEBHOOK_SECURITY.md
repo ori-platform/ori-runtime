@@ -20,14 +20,39 @@ influence approval or command handling:
 - Token authentication uses headers only; query-string token fallback is not
   supported.
 - Optional HMAC verification signs the raw HTTP body before payload parsing.
-- HMAC verification includes timestamp skew and nonce replay protection.
+- HMAC verification includes timestamp skew and nonce replay protection. A
+  nonce is kept for `replay_ttl_seconds` from receipt, and also until its
+  signing time plus the skew, whichever is later, since a request is accepted
+  until then.
 - Optional `allowed_source_cidrs` rejects disallowed peer IPs before auth,
   signature verification, or body parsing.
 - Request bodies are capped at 64KB.
 - Plain Tier C approval replies are accepted only from configured operator
-  numbers (`operator_contact` and `secondary_contact`).
+  numbers (`operator_contact` and `secondary_contact`). With neither
+  configured, no reply is accepted from anyone. A staging or production
+  deployment, or one with `security.enforce_production_posture: true`, refuses
+  to start with SMS or WhatsApp enabled and no `operator_contact`.
+- A reply from any other number is refused before anything is stored. An
+  accepted reply is at most 480 characters, refused rather than cut. Each
+  configured number may leave 10 replies a minute (a burst of 5), and all of
+  them together 30 a minute (a burst of 10). A refused sender spends none of
+  that, so a sender outside the allowlist cannot use up an operator's turn; a
+  spoofed configured number can, since the sender field is only as strong as
+  the carrier (see below). Each number keeps at
+  most 16 unread replies, the newest, and a reply older than the longest
+  approval window plus ten minutes is removed, since no listener can read it.
+- Before anything is read, each peer address is limited to 600 requests a
+  minute. That protects the process's CPU, not the approval path: through a
+  signing bridge every request arrives from one address, so this limit cannot
+  tell an operator from a stranger. Per-sender limiting at the bridge
+  (ori-gateway#138) is what keeps a flood from many senders off it.
 - Structured remote commands use the separate `RemoteCommandVerifier`, including
-  HMAC, replay protection, sender allowlisting, and command policy checks.
+  HMAC, replay protection, sender allowlisting, and command policy checks. They
+  are verified before the approval allowlist, so a command-shaped message from
+  any number is recorded as an attempt, may be answered with a rejection SMS,
+  which spends SMS credit, and past the rejection limit records an incident and
+  alerts the operator. The remote-command throttle bounds that; the approval
+  limits below do not.
 
 ## What Runtime Code Cannot Prove
 

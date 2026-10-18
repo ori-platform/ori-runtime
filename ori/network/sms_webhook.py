@@ -21,7 +21,11 @@ _MAX_HEADER_BYTES = 64 * 1024
 _MAX_BODY_BYTES = 64 * 1024
 _CHUNK_BYTES = 4096
 _RATE_WINDOW_SECONDS: float = 60.0
-_RATE_MAX_REQUESTS: int = 20
+# Per peer address, before anything is read: a CPU backstop, not an approval
+# budget. Every message arrives from the bridge's one address, so a limit here
+# cannot tell an operator from a stranger; SMSAction limits each allowlisted
+# sender after its allowlist, and the bridge limits senders (ori-gateway#138).
+_RATE_MAX_REQUESTS: int = 600
 
 
 @dataclass

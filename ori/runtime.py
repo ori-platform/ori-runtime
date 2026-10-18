@@ -7854,7 +7854,7 @@ def _build_sms_allowed_senders(config: Config) -> set[str]:
     """Return the normalized set of phone numbers permitted to send inbound SMS.
 
     Built from ``actions.operator_contact`` and ``actions.secondary_contact``.
-    An empty set means no allowlist is enforced (open to any sender).
+    An empty set admits no approval reply from anyone.
     """
     senders: set[str] = set()
     for raw in (config.actions.operator_contact, config.actions.secondary_contact):
