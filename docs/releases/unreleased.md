@@ -381,6 +381,20 @@ release is cut.
   already refused one. A guard over all of `ori/` requires the hook at every
   JSON decode, or an exemption that says why a repeat is harmless there.
 
+- With `gateway.auth.enabled: true`, a gateway reasoning response whose
+  envelope fails verification, or that replays one already received, is
+  dropped and logged. The Tier 3 request goes on waiting for an authentic
+  answer until `gateway.reasoning.timeout_ms`. Before, it ended the request as
+  failed, so any broker client that knew a request ID could force the runtime
+  off gateway reasoning (gateway-api/v2 Reasoning Auth Envelope: verification
+  precedes every side effect). Dropped responses are logged once per kind
+  when the first arrives, and summed when the request ends.
+- Gateway-facing receivers log a refused message at most once a minute per
+  reason, with the count since the last line: unverified gateway heartbeats,
+  unauthenticated export requests, refused outbound evidence
+  acknowledgements and inbound transport refusals. Before, each wrote one
+  warning per message, so anything that could publish on a topic could fill
+  the log at that topic's ingress rate.
 - Inbound SMS approval replies are bounded at the runtime, whatever the bridge
   in front of it does (`docs/SMS_WEBHOOK_SECURITY.md`).
   - **Allowlist:** with neither `actions.operator_contact` nor

@@ -52,6 +52,7 @@ from ori.security.payload_members import (
     PayloadMemberError,
     admitted_text,
 )
+from ori.utils.coalesced_log import CoalescedWarning
 from ori.utils.time_utils import now_ms
 
 try:
@@ -104,6 +105,7 @@ class MqttGatewayHeartbeatSubscriber:
         self._client: Any = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ingress = IngressBound(GATEWAY_HEALTH)
+        self._refusal_log = CoalescedWarning(logger)
 
     async def serve_until(self, shutdown_event: asyncio.Event) -> None:
         """Connect to the broker, subscribe, and serve until *shutdown_event* fires.
@@ -195,7 +197,9 @@ class MqttGatewayHeartbeatSubscriber:
                     payload, message_type=_HEARTBEAT_MESSAGE_TYPE
                 )
             except GatewayMessageAuthError as exc:
-                logger.warning("[gateway-heartbeat] rejected heartbeat: %s", exc)
+                self._refusal_log.warn(
+                    "unauthenticated", "[gateway-heartbeat] rejected heartbeat: %s", exc
+                )
                 return
 
         # Freshness is the receive time: a gateway's own clock, ahead by any

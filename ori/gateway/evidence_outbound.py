@@ -65,6 +65,7 @@ from ori.security.payload_members import (
     admitted_text,
 )
 from ori.security.payload_members import REASONS as MEMBER_REASONS
+from ori.utils.coalesced_log import CoalescedWarning
 from ori.utils.time_utils import now_ms
 
 try:
@@ -474,6 +475,7 @@ class MqttEvidenceOutboundPublisher:
         self._ack_slots = Slots(ACK_IN_FLIGHT_BOUND)
         self._ingress = IngressBound(EVIDENCE_OUTBOUND_ACK)
         self._acks_shed = 0
+        self._refusal_log = CoalescedWarning(logger)
 
     @property
     def topic(self) -> str:
@@ -935,8 +937,10 @@ class MqttEvidenceOutboundPublisher:
         if routed.outcome == ROUTED_REFUSED and routed.reason in MEMBER_REASONS:
             self._ingress.refuse(routed.reason)
         elif routed.outcome == ROUTED_REFUSED:
-            logger.warning(
-                "[evidence-outbound] acknowledgement refused: %s", routed.reason
+            self._refusal_log.warn(
+                "refused",
+                "[evidence-outbound] acknowledgement refused: %s",
+                routed.reason,
             )
         elif routed.reason:
             logger.warning(

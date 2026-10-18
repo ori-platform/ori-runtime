@@ -55,6 +55,7 @@ from ori.security.payload_members import (
     admitted_text,
 )
 from ori.security.payload_members import REASONS as MEMBER_REASONS
+from ori.utils.coalesced_log import CoalescedWarning
 from ori.utils.time_utils import now_ms
 
 try:
@@ -540,6 +541,7 @@ class MqttEvidenceInboundSubscriber:
         self._ingress = IngressBound(EVIDENCE_INBOUND)
         self._shed = 0
         self._manual_ack = False
+        self._refusal_log = CoalescedWarning(logger)
 
     @property
     def topic(self) -> str:
@@ -938,6 +940,14 @@ class MqttEvidenceInboundSubscriber:
             and routed.outcome.reason in MEMBER_REASONS
         ):
             self._ingress.refuse(routed.outcome.reason)
+        elif isinstance(routed.outcome, InboundRefusal):
+            # A transport refusal is the sender's to repeat, so it is summed.
+            self._refusal_log.warn(
+                routed.outcome.reason,
+                "[evidence-inbound] message refused before ingest: %s (%s)",
+                routed.outcome.reason,
+                routed.outcome.detail,
+            )
         else:
             _log_result(routed.outcome)
         if routed.acknowledgement is None:

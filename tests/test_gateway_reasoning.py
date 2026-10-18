@@ -288,33 +288,100 @@ async def test_mqtt_gateway_reasoner_signs_request_and_verifies_response():
     assert "auth" in fake.published[0][1]
 
 
-async def test_mqtt_gateway_reasoner_rejects_unsigned_response_when_auth_configured():
-    fake = _FakeClient(
-        response_builder=lambda req: {
-            "request_id": req["request_id"],
-            "device_id": req["device_id"],
-            "text": "Unsigned response",
-            "model": "gateway",
-            "tokens_used": 1,
-            "latency_ms": 1,
-            "confidence": 0.1,
-            "action_tier": "A",
-            "proposed_action": None,
-        }
-    )
-    reasoner = MqttGatewayReasoner(
+def _response(req: dict, text: str) -> dict:
+    return {
+        "request_id": req["request_id"],
+        "device_id": req["device_id"],
+        "text": text,
+        "model": "gateway",
+        "tokens_used": 1,
+        "latency_ms": 1,
+        "confidence": 0.1,
+        "action_tier": "A",
+        "proposed_action": None,
+    }
+
+
+class _ManyAnswersClient(_FakeClient):
+    """Delivers every answer *answers* builds for the request, in order."""
+
+    def __init__(self, answers):
+        super().__init__(response_builder=None)
+        self._answers = answers
+
+    def publish(self, topic, payload, qos=0, retain=False):
+        decoded = json.loads(payload.decode("utf-8"))
+        self.published.append((topic, decoded, qos, retain))
+        assert self.on_message is not None
+        for answer in self._answers(decoded):
+            self.on_message(self, None, _Message(answer))
+
+
+def _signed_by(secret: str, answer: dict) -> dict:
+    return GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(shared_secret=secret)
+    ).sign(answer, message_type="reasoning_response")
+
+
+def _authenticated_reasoner(client, *, timeout_ms: int = 1000):
+    return MqttGatewayReasoner(
         broker_url="mqtt://broker.local",
         device_id="site-a",
-        timeout_ms=1000,
-        client_factory=lambda **_: fake,
-        request_id_factory=lambda: "req-unsigned",
+        timeout_ms=timeout_ms,
+        client_factory=lambda **_: client,
+        request_id_factory=lambda: "req-1",
         message_auth=GatewayMessageAuthenticator(
             GatewayMessageAuthConfig(shared_secret="gateway-secret")
         ),
     )
 
-    with pytest.raises(GatewayReasoningError, match="auth failed: missing_auth"):
-        await reasoner.reason("Prompt", event=_event(), rule_result=_rule("A"))
+
+async def test_an_unverified_response_ends_nothing_and_the_authentic_one_lands():
+    """gateway-api/v2 Reasoning Auth Envelope: verification precedes every side
+    effect, so a forged answer neither fails the request nor takes its place."""
+
+    def answers(req: dict) -> list[dict]:
+        tampered = _signed_by("gateway-secret", _response(req, "authentic"))
+        tampered["text"] = "tampered"
+        other_request = _signed_by(
+            "gateway-secret", {**_response(req, "elsewhere"), "request_id": "req-2"}
+        )
+        return [
+            _response(req, "unsigned"),
+            _signed_by("another-secret", _response(req, "forged")),
+            tampered,
+            other_request,
+            _signed_by("gateway-secret", _response(req, "authentic")),
+        ]
+
+    result = await _authenticated_reasoner(_ManyAnswersClient(answers)).reason(
+        "Prompt", event=_event(), rule_result=_rule("A")
+    )
+    assert result.text == "authentic"
+
+
+async def test_a_replayed_response_is_no_answer():
+    captured: list[dict] = []
+
+    def answers(req: dict) -> list[dict]:
+        if not captured:
+            captured.append(_signed_by("gateway-secret", _response(req, "first")))
+            return captured
+        return [captured[0], _signed_by("gateway-secret", _response(req, "second"))]
+
+    client = _ManyAnswersClient(answers)
+    reasoner = _authenticated_reasoner(client)
+    first = await reasoner.reason("Prompt", event=_event(), rule_result=_rule("A"))
+    second = await reasoner.reason("Prompt", event=_event(), rule_result=_rule("A"))
+    assert (first.text, second.text) == ("first", "second")
+
+
+async def test_only_unverified_responses_leave_the_request_to_time_out():
+    client = _ManyAnswersClient(lambda req: [_response(req, "unsigned")])
+    with pytest.raises(GatewayReasoningError, match="response timeout"):
+        await _authenticated_reasoner(client, timeout_ms=50).reason(
+            "Prompt", event=_event(), rule_result=_rule("A")
+        )
 
 
 async def test_mqtt_gateway_reasoner_times_out_and_closes_client():
@@ -564,3 +631,117 @@ async def test_a_conforming_response_field_is_accepted(change, model):
     result = await reasoner.reason("Prompt", event=_event(), rule_result=_rule("A"))
 
     assert result.model == model
+
+
+async def test_a_flood_of_unverified_responses_is_logged_twice_per_kind_not_per_message(
+    caplog,
+):
+    """A request can wait up to a day; one line per dropped answer would let
+    any broker client write the log at the ingress rate for that whole time."""
+    client = _ManyAnswersClient(
+        lambda req: (
+            [_response(req, "unsigned")] * 15
+            + [_signed_by("gateway-secret", _response(req, "authentic"))]
+        )
+    )
+    with caplog.at_level("WARNING", logger="ori.gateway.reasoning"):
+        result = await _authenticated_reasoner(client).reason(
+            "Prompt", event=_event(), rule_result=_rule("A")
+        )
+    assert result.text == "authentic"
+    dropped = [r.getMessage() for r in caplog.records if "dropped" in r.getMessage()]
+    assert len(dropped) == 2
+    assert "dropped 15 unverified responses" in dropped[1]
+
+
+async def test_one_dropped_response_is_one_line(caplog):
+    client = _ManyAnswersClient(
+        lambda req: [
+            _response(req, "unsigned"),
+            _signed_by("gateway-secret", _response(req, "authentic")),
+        ]
+    )
+    with caplog.at_level("WARNING", logger="ori.gateway.reasoning"):
+        await _authenticated_reasoner(client).reason(
+            "Prompt", event=_event(), rule_result=_rule("A")
+        )
+    assert [r.getMessage() for r in caplog.records if "dropped" in r.getMessage()] == [
+        "[gateway-reasoning] dropped an unverified response for req-1: missing_auth"
+    ]
+
+
+async def test_a_flood_of_replays_is_summed_too(caplog):
+    captured: list[dict] = []
+
+    def answers(req: dict) -> list[dict]:
+        if not captured:
+            captured.append(_signed_by("gateway-secret", _response(req, "first")))
+            return list(captured)
+        return [captured[0]] * 4 + [
+            _signed_by("gateway-secret", _response(req, "second"))
+        ]
+
+    reasoner = _authenticated_reasoner(_ManyAnswersClient(answers))
+    await reasoner.reason("Prompt", event=_event(), rule_result=_rule("A"))
+    with caplog.at_level("WARNING", logger="ori.gateway.reasoning"):
+        result = await reasoner.reason("Prompt", event=_event(), rule_result=_rule("A"))
+    assert result.text == "second"
+    dropped = [r.getMessage() for r in caplog.records if "dropped" in r.getMessage()]
+    assert len(dropped) == 2 and "dropped 4 replayed responses" in dropped[1]
+
+
+async def test_a_response_after_the_answer_is_not_read(caplog):
+    client = _ManyAnswersClient(
+        lambda req: (
+            [_signed_by("gateway-secret", _response(req, "authentic"))]
+            + [_response(req, "unsigned")] * 5
+        )
+    )
+    with caplog.at_level("WARNING", logger="ori.gateway.reasoning"):
+        result = await _authenticated_reasoner(client).reason(
+            "Prompt", event=_event(), rule_result=_rule("A")
+        )
+    assert result.text == "authentic"
+    assert not [r for r in caplog.records if "dropped" in r.getMessage()]
+
+
+class _RawAnswersClient(_FakeClient):
+    """Delivers each payload *answers* builds, bytes as they are."""
+
+    def __init__(self, answers):
+        super().__init__(response_builder=None)
+        self._answers = answers
+
+    def publish(self, topic, payload, qos=0, retain=False):
+        decoded = json.loads(payload.decode("utf-8"))
+        self.published.append((topic, decoded, qos, retain))
+        assert self.on_message is not None
+        for answer in self._answers(decoded):
+            message = _Message({})
+            message.payload = (
+                answer if isinstance(answer, bytes) else (json.dumps(answer).encode())
+            )
+            self.on_message(self, None, message)
+
+
+async def test_a_flood_of_malformed_responses_is_counted_not_logged_each(caplog):
+    """Malformed and non-object responses are refused under the Payload Member
+    Rule and counted in the family's ingress record, never one line each;
+    after the answer, none is even decoded."""
+    flood = [b"not json"] * 4 + [b"[1]"] * 4
+    client = _RawAnswersClient(
+        lambda req: (
+            flood + [_signed_by("gateway-secret", _response(req, "authentic"))] + flood
+        )
+    )
+    reasoner = _authenticated_reasoner(client)
+    with caplog.at_level("WARNING"):
+        result = await reasoner.reason("Prompt", event=_event(), rule_result=_rule("A"))
+    assert result.text == "authentic"
+    assert not [r for r in caplog.records if r.name == "ori.gateway.reasoning"]
+    # At most one line a second per reason, two reasons here.
+    ingress = [r for r in caplog.records if r.name == "ori.gateway.payload_bounds"]
+    assert len(ingress) <= 2
+    refusals = reasoner._ingress.refusals()
+    assert refusals.get("malformed_json") == 4
+    assert refusals.get("not_an_object") == 4
