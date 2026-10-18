@@ -669,6 +669,56 @@ else
   bad "apply records the claimed version and the next check passes" "claim ${claimed}, exit ${code}: ${out}"
 fi
 
+# A release-asset listing/fetching corpus is not a runtime corpus: this
+# runtime holds local profile documents by digest. The exception must be exact,
+# so every other new firmware-telemetry/v2 vector still stops the check.
+box="$(new_fixture profile-publication-exclusion)"
+vendor "${box}"
+profile_set="${box}/specs/firmware-telemetry"
+profile_dest="${box}/consumer/tests/vectors/firmware_telemetry"
+original_pin="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_commit"])' \
+  "${profile_dest}/MANIFEST.json")"
+printf '{"contract":"publication","v":2}\n' \
+  > "${profile_set}/profile-publication-vectors-v2.json"
+git -C "${box}/specs" add -A >/dev/null
+git -C "${box}/specs" commit -qm "vectors: release asset publication"
+out="$(check "${box}")"; code=$?
+if [ "${code}" -eq 0 ] && [ ! -f "${profile_dest}/profile-publication-vectors-v2.json" ] \
+   && [ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_commit"])' \
+     "${profile_dest}/MANIFEST.json")" = "${original_pin}" ]; then
+  ok "an unconsumed publication corpus neither drifts nor moves the pin"
+else
+  bad "an unconsumed publication corpus neither drifts nor moves the pin" \
+    "exit ${code}: ${out}"
+fi
+printf '{"contract":"publication","v":2,"changed":true}\n' \
+  > "${profile_set}/profile-publication-vectors-v2.json"
+printf '{"contract":"runtime-consumed","v":2}\n' \
+  > "${profile_set}/new-runtime-vectors-v2.json"
+git -C "${box}/specs" add -A >/dev/null
+git -C "${box}/specs" commit -qm "vectors: new runtime corpus"
+out="$(check "${box}")"; code=$?
+if [ "${code}" -ne 0 ] \
+   && grep -q "NEW      firmware-telemetry/new-runtime-vectors-v2.json" <<< "${out}" \
+   && ! grep -q "profile-publication-vectors-v2.json" <<< "${out}"; then
+  ok "another new v2 corpus still fails drift despite the exclusion"
+else
+  bad "another new v2 corpus still fails drift despite the exclusion" \
+    "exit ${code}: ${out}"
+fi
+vendor "${box}"
+out="$(check "${box}")"; code=$?
+if [ "${code}" -eq 0 ] \
+   && [ -f "${profile_dest}/new-runtime-vectors-v2.json" ] \
+   && [ ! -f "${profile_dest}/profile-publication-vectors-v2.json" ] \
+   && python3 -c 'import json,sys; f=json.load(open(sys.argv[1]))["files"]; sys.exit(0 if "new-runtime-vectors-v2.json" in f and "profile-publication-vectors-v2.json" not in f else 1)' \
+      "${profile_dest}/MANIFEST.json"; then
+  ok "apply vendors and pins the new runtime corpus but not publication"
+else
+  bad "apply vendors and pins the new runtime corpus but not publication" \
+    "exit ${code}: ${out}"
+fi
+
 echo
 printf '%d passed, %d failed\n' "${PASS}" "${FAIL}"
 [ "${FAIL}" -eq 0 ]
