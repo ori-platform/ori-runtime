@@ -235,33 +235,35 @@ class MqttGatewayReasoner:
         # Unanswered responses dropped this round trip: the first of each kind
         # is logged at once, the rest summed when it ends, so a flood across a
         # long wait writes at most two lines per kind, not one per message.
-        dropped = {"unverified": 0, "replayed": 0}
+        dropped = {"malformed": 0, "unverified": 0, "replayed": 0}
 
-        def _drop(kind: str, exc: GatewayMessageAuthError) -> None:
+        def _drop(kind: str, detail: object) -> None:
             with settling:
                 dropped[kind] += 1
                 first = dropped[kind] == 1
             if first:
                 logger.warning(
-                    "[gateway-reasoning] dropped %s response for %s: %s",
-                    "an unverified" if kind == "unverified" else "a replayed",
+                    "[gateway-reasoning] dropped %s %s response for %s: %s",
+                    "an" if kind == "unverified" else "a",
+                    kind,
                     request.request_id,
-                    exc,
+                    detail,
                 )
 
         def _on_message(_client: Any, _userdata: Any, message: Any) -> None:
             raw = getattr(message, "payload", b"")
             if self._ingress.admit(raw) is not None:
                 return
+            if answered.is_set():
+                # Answered already: not even decoded, authentic or not.
+                return
             try:
                 payload = json.loads(raw.decode("utf-8"))
             except Exception:
-                logger.warning(
-                    "[gateway-reasoning] ignoring malformed response payload"
-                )
+                _drop("malformed", "not JSON")
                 return
             if not isinstance(payload, dict):
-                logger.warning("[gateway-reasoning] ignoring non-object response")
+                _drop("malformed", "not a JSON object")
                 return
             # Compared as it arrived: str() of a value nested past the
             # recursion limit raises on this paho thread.

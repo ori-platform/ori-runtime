@@ -635,3 +635,44 @@ async def test_a_response_after_the_answer_is_not_read(caplog):
         )
     assert result.text == "authentic"
     assert not [r for r in caplog.records if "dropped" in r.getMessage()]
+
+
+class _RawAnswersClient(_FakeClient):
+    """Delivers each payload *answers* builds, bytes as they are."""
+
+    def __init__(self, answers):
+        super().__init__(response_builder=None)
+        self._answers = answers
+
+    def publish(self, topic, payload, qos=0, retain=False):
+        decoded = json.loads(payload.decode("utf-8"))
+        self.published.append((topic, decoded, qos, retain))
+        assert self.on_message is not None
+        for answer in self._answers(decoded):
+            message = _Message({})
+            message.payload = (
+                answer if isinstance(answer, bytes) else (json.dumps(answer).encode())
+            )
+            self.on_message(self, None, message)
+
+
+async def test_a_flood_of_malformed_responses_is_summed(caplog):
+    """Malformed and non-object responses are dropped like unverified ones:
+    the first logged, the rest summed when the request ends; after the
+    answer, none is even decoded."""
+    flood = [b"not json"] * 4 + [b"[1]"] * 4
+    client = _RawAnswersClient(
+        lambda req: (
+            flood + [_signed_by("gateway-secret", _response(req, "authentic"))] + flood
+        )
+    )
+    with caplog.at_level("WARNING", logger="ori.gateway.reasoning"):
+        result = await _authenticated_reasoner(client).reason(
+            "Prompt", event=_event(), rule_result=_rule("A")
+        )
+    assert result.text == "authentic"
+    dropped = [r.getMessage() for r in caplog.records if "dropped" in r.getMessage()]
+    assert dropped == [
+        "[gateway-reasoning] dropped a malformed response for req-1: not JSON",
+        "[gateway-reasoning] dropped 8 malformed responses for req-1 in all",
+    ]
