@@ -253,12 +253,13 @@ class EvidenceOutboundAckRouter:
             artifact_type, digest, outcome, reason, at_ms, claim
         )
 
-    def _replayed(self, claim: AuthenticatedMessage | None) -> AckRouted | None:
-        """Record *claim* as seen; the refusal when it was already."""
+    async def _replayed(self, claim: AuthenticatedMessage | None) -> AckRouted | None:
+        """Record *claim* as seen, off the event loop; the refusal when it was
+        already."""
         if claim is None or self._message_auth is None:
             return None
         try:
-            self._message_auth.commit(claim)
+            await self._message_auth.commit_async(claim)
         except GatewayMessageAuthError as exc:
             return AckRouted(ROUTED_REFUSED, f"envelope unauthenticated: {exc}")
         return None
@@ -310,7 +311,7 @@ class EvidenceOutboundAckRouter:
             return AckRouted(
                 ROUTED_REFUSED, "never handed off", ARTIFACT_DELIVERY_ENVELOPE, digest
             )
-        replayed = self._replayed(claim)
+        replayed = await self._replayed(claim)
         if replayed is not None:
             return replayed
         local_seq = int(row["local_seq"])
@@ -371,7 +372,7 @@ class EvidenceOutboundAckRouter:
                 artifact_type,
             )
             return AckRouted(ROUTED_REFUSED, "never handed off", artifact_type, digest)
-        replayed = self._replayed(claim)
+        replayed = await self._replayed(claim)
         if replayed is not None:
             return replayed
         if outcome == ACK_QUEUED:

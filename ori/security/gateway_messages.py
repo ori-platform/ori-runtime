@@ -21,6 +21,7 @@ must never become an availability outage.
 
 from __future__ import annotations
 
+import asyncio
 import heapq
 import hmac
 import json
@@ -144,7 +145,8 @@ class GatewayReplayCache:
     persisted to a ``gateway_replay_cache`` table at that path and warmed
     back on construction, so a restart alone cannot be used to reopen the
     replay window. The cache is thread-safe: ``verify()`` runs on
-    MQTT client callback threads.
+    MQTT client callback threads, and receivers on the event loop commit
+    through ``commit_async``, which writes on a worker thread.
     """
 
     def __init__(
@@ -168,8 +170,8 @@ class GatewayReplayCache:
         self._max_entries = max(1, int(max_entries))
         self._seen_until_ms: dict[str, int] = {}
         # Expiry order, so pruning pops what has expired instead of scanning
-        # a cache the replay window may make large. An entry whose key was
-        # forgotten or re-seen is skipped when it surfaces.
+        # a cache the replay window may make large. A key is never unrecorded
+        # or re-seen while live, so each live key has exactly one entry.
         self._expiries: list[tuple[int, str]] = []
         self._lock = threading.Lock()
         self._conn: sqlite3.Connection | None = None
@@ -316,30 +318,6 @@ class GatewayReplayCache:
             expires_ms, key = heapq.heappop(expiries)
             if self._seen_until_ms.get(key) == expires_ms:
                 del self._seen_until_ms[key]
-        # Forgotten and re-seen keys leave entries behind; past twice the live
-        # keys, the heap is rebuilt from them, so it never outgrows the cache.
-        if len(expiries) > 2 * len(self._seen_until_ms) + 64:
-            self._expiries = [(e, k) for k, e in self._seen_until_ms.items()]
-            heapq.heapify(self._expiries)
-
-    def forget(self, key: str) -> None:
-        """Unrecord *key*: the message it names was never acted on."""
-        with self._lock:
-            self._seen_until_ms.pop(key, None)
-            if self._conn is None:
-                return
-            try:
-                self._conn.execute(
-                    "DELETE FROM gateway_replay_cache WHERE key = ?", (key,)
-                )
-                self._conn.commit()
-            except sqlite3.Error:
-                logger.warning(
-                    "[gateway-auth] persistent replay cache delete failed; "
-                    "continuing with in-memory replay protection.",
-                    exc_info=True,
-                )
-                self._conn = None
 
 
 class GatewayMessageAuthenticator:
@@ -366,6 +344,11 @@ class GatewayMessageAuthenticator:
             ttl_ms=config.replay_ttl_ms,
             max_skew_ms=config.max_skew_ms,
         )
+
+    @property
+    def persists_replay_keys(self) -> bool:
+        """Whether recording a replay key is an SQLite write."""
+        return self._replay_cache.persistent
 
     @property
     def max_skew_ms(self) -> int:
@@ -454,10 +437,34 @@ class GatewayMessageAuthenticator:
         ):
             raise GatewayMessageAuthError("replay_detected")
 
-    def release(self, message: AuthenticatedMessage) -> None:
-        """Undo `commit` for a message the receiver then could not act on at
-        all, so its identical redelivery is not refused as a replay."""
-        self._replay_cache.forget(message.replay_key)
+    async def verify_async(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        message_type: str,
+        expected_device_id: str,
+        expected_request_id: str | None = None,
+    ) -> dict[str, Any]:
+        """`verify` for a receiver on the event loop."""
+        message = self.authenticate(
+            payload,
+            message_type=message_type,
+            expected_device_id=expected_device_id,
+            expected_request_id=expected_request_id,
+        )
+        await self.commit_async(message)
+        return message.payload
+
+    async def commit_async(self, message: AuthenticatedMessage) -> None:
+        """`commit` for a receiver on the event loop.
+
+        A persisted key is committed to SQLite on a worker thread and awaited,
+        so the message is still recorded durably before it is acted on.
+        """
+        if self.persists_replay_keys:
+            await asyncio.to_thread(self.commit, message)
+        else:
+            self.commit(message)
 
     def _verify(
         self,
