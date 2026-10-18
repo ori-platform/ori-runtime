@@ -275,6 +275,7 @@ from ori.telemetry.http_export import HttpTelemetryExporter
 from ori.utils.bool_utils import is_truthy
 from ori.utils.net_utils import is_loopback_host
 from ori.utils.path_utils import path_is_relative_to, shown
+from ori.utils.strict_json import unique_members
 from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
@@ -5179,7 +5180,10 @@ class OriRuntime:
             return
 
         try:
-            parsed_payload = json.loads(raw_payload)
+            parsed_payload = json.loads(
+                raw_payload,
+                object_pairs_hook=unique_members(),
+            )
             if not isinstance(parsed_payload, dict):
                 raise ValueError("cached raw payload is not a JSON object")
             verify_signed_payload(

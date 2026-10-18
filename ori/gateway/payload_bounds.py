@@ -18,6 +18,8 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
+from ori.security.payload_members import REASONS as MEMBER_REASONS
+
 logger = logging.getLogger(__name__)
 
 GATEWAY_HEALTH = "ori/gateway/health"
@@ -68,7 +70,14 @@ RATE_EXCEEDED = "rate_exceeded"
 IN_FLIGHT_EXCEEDED = "in_flight_exceeded"
 #: Left with the broker unread because a reconnect that redelivers it is due.
 REDELIVERY_DUE = "redelivery_due"
-REFUSAL_REASONS = (PAYLOAD_TOO_LARGE, RATE_EXCEEDED, IN_FLIGHT_EXCEEDED, REDELIVERY_DUE)
+#: The Payload Member Rule's reasons are recorded here too, the same way.
+REFUSAL_REASONS = (
+    PAYLOAD_TOO_LARGE,
+    RATE_EXCEEDED,
+    IN_FLIGHT_EXCEEDED,
+    REDELIVERY_DUE,
+    *MEMBER_REASONS,
+)
 
 #: Seconds between two WARNING lines for one family and reason; refusals in
 #: between are counted into the next line, so a flood cannot grow the log.
@@ -221,8 +230,9 @@ class IngressBound:
         return True
 
     def refuse(self, reason: str) -> None:
-        """Count and log a drop the route decided after size and rate."""
-        if reason not in (IN_FLIGHT_EXCEEDED, REDELIVERY_DUE):
+        """Count and log a drop the route decided after size and rate,
+        including a refusal under the Payload Member Rule."""
+        if reason not in (IN_FLIGHT_EXCEEDED, REDELIVERY_DUE, *MEMBER_REASONS):
             raise ValueError(f"{reason!r} is not a route's own refusal")
         self._refuse(reason, -1)
 

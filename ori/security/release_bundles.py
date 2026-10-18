@@ -21,6 +21,7 @@ from pathlib import Path, PurePosixPath
 from typing import IO, Any, Callable, Generator, NoReturn
 
 from ori.security.ed25519_keys import admit_public_key, refused_public_key_clause
+from ori.utils.strict_json import unique_members
 
 SIGNATURE_SCHEMA = "ori.runtime_release_bundle_signature.v1"
 MANIFEST_SCHEMA = "ori.runtime_release_bundle_manifest.v1"
@@ -686,18 +687,12 @@ def _load_strict_json(path: Path, *, label: str, code: str) -> Any:
             f"cannot read {label}",
         ) from exc
 
-    def strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for key, value in pairs:
-            if key in result:
-                _fail(code, f"duplicate JSON key {key!r}")
-            result[key] = value
-        return result
-
     try:
         return json.loads(
             raw,
-            object_pairs_hook=strict_object,
+            object_pairs_hook=unique_members(
+                lambda name: ReleaseBundleError(code, f"duplicate JSON key {name!r}")
+            ),
             parse_constant=lambda value: _fail(
                 code, f"non-finite JSON value {value!r}"
             ),

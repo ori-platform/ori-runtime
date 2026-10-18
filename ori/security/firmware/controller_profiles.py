@@ -32,6 +32,7 @@ from ori.security.firmware.telemetry import (
     is_fleet_identifier,
 )
 from ori.utils.platform import runtime_platform
+from ori.utils.strict_json import unique_members
 
 logger = logging.getLogger(__name__)
 
@@ -132,15 +133,6 @@ def _is_printable_text(value: Any) -> bool:
     )
 
 
-def _refuse_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    out: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in out:
-            raise ValueError(f"duplicate key {key!r}")
-        out[key] = value
-    return out
-
-
 def load_profile_document(data: object) -> ProfileDocument:
     """Parse held bytes into a document, refusing anything but canonical bytes.
 
@@ -155,7 +147,12 @@ def load_profile_document(data: object) -> ProfileDocument:
     raw = bytes(data)
     try:
         text = raw.decode("utf-8", errors="strict")
-        parsed = json.loads(text, object_pairs_hook=_refuse_duplicate_keys)
+        parsed = json.loads(
+            text,
+            object_pairs_hook=unique_members(
+                lambda name: ValueError(f"duplicate key {name!r}")
+            ),
+        )
     except (UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise FirmwareVerificationError(ERR_NON_CANONICAL_DOCUMENT, str(exc)) from exc
     try:

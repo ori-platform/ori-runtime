@@ -25,6 +25,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 
 from ori.security.ed25519_keys import admit_public_key
+from ori.utils.strict_json import unique_members
 from ori.utils.time_utils import now_ms
 
 __all__ = [
@@ -680,16 +681,13 @@ class FirmwareMqttProvisioningService:
 
 
 def _strict_object(raw: bytes) -> dict[str, Any]:
-    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for key, value in pairs:
-            if key in result:
-                raise FirmwareMqttProvisioningError("duplicate JSON field")
-            result[key] = value
-        return result
-
     try:
-        value = json.loads(raw, object_pairs_hook=reject_duplicates)
+        value = json.loads(
+            raw,
+            object_pairs_hook=unique_members(
+                lambda _name: FirmwareMqttProvisioningError("duplicate JSON field")
+            ),
+        )
     except FirmwareMqttProvisioningError:
         raise
     except (ValueError, RecursionError) as exc:

@@ -28,6 +28,11 @@ from ori.security.gateway_messages import (
     GatewayMessageAuthenticator,
     GatewayMessageAuthError,
 )
+from ori.security.payload_members import (
+    REASONING_RESPONSE_MEMBERS,
+    PayloadMemberError,
+    admitted_text,
+)
 from ori.utils.time_utils import now_ms
 
 try:
@@ -237,15 +242,11 @@ class MqttGatewayReasoner:
             raw = getattr(message, "payload", b"")
             if self._ingress.admit(raw) is not None:
                 return
+            # gateway-api/v2 Payload Member Rule, before any member is read.
             try:
-                payload = json.loads(raw.decode("utf-8"))
-            except Exception:
-                logger.warning(
-                    "[gateway-reasoning] ignoring malformed response payload"
-                )
-                return
-            if not isinstance(payload, dict):
-                logger.warning("[gateway-reasoning] ignoring non-object response")
+                payload = admitted_text(raw, defined=REASONING_RESPONSE_MEMBERS)
+            except PayloadMemberError as exc:
+                self._ingress.refuse(exc.reason)
                 return
             # Compared as it arrived: str() of a value nested past the
             # recursion limit raises on this paho thread.

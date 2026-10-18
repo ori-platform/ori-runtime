@@ -203,6 +203,17 @@ async def test_hostile_json_payload_is_not_answered(store, payload):
     assert await _responder(store).handle_payload(payload) is None
 
 
+@pytest.mark.parametrize("literal", ["Infinity", "-Infinity", "NaN"])
+async def test_a_non_finite_literal_is_not_json_and_is_not_answered(store, literal):
+    """gateway-api/v2 Payload Member Rule: `NaN` and `Infinity` are not JSON
+    values, so the request is refused before any member is read."""
+    payload = (
+        '{"request_id": "req-1", "export_type": "sensor_history", '
+        f'"device_id": "dev-01", "since_ms": {literal}, "until_ms": 2}}'
+    ).encode()
+    assert await _responder(store).handle_payload(payload) is None
+
+
 _BIG = "1" + "0" * 30
 
 
@@ -212,8 +223,8 @@ _BIG = "1" + "0" * 30
         (f'"since_ms": 1, "until_ms": {_BIG}', "until_ms"),
         (f'"since_ms": {_BIG}, "until_ms": {_BIG}', "since_ms"),
         (f'"since_ms": 1, "until_ms": 2, "page_token": {_BIG}', "page_token"),
-        ('"since_ms": 1, "until_ms": 2, "limit": Infinity', "limit"),
-        ('"since_ms": -Infinity, "until_ms": 2', "since_ms"),
+        ('"since_ms": 1, "until_ms": 2, "limit": 1e400', "limit"),
+        ('"since_ms": -1e400, "until_ms": 2', "since_ms"),
     ],
     ids=[
         "until past int64",
@@ -226,7 +237,11 @@ _BIG = "1" + "0" * 30
 async def test_an_out_of_range_integer_is_refused_with_its_own_reason(
     store, extra, field
 ):
-    request = json.dumps(_request("sensor_history", params={"sensor_id": "s"}))
+    base = _request("sensor_history", params={"sensor_id": "s"})
+    # Appended, so the base must not carry the member too: a repeated member
+    # is refused unanswered under the Payload Member Rule.
+    base.pop(field, None)
+    request = json.dumps(base)
     payload = (request[:-1] + ", " + extra + "}").encode()
     response = await _responder(store).handle_payload(payload)
     assert response is not None

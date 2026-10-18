@@ -365,13 +365,8 @@ def test_mqtt_gateway_reasoner_fails_lazily_when_paho_missing(monkeypatch):
 @pytest.mark.parametrize(
     "field, value",
     [
-        ("tokens_used", float("nan")),
-        ("tokens_used", float("inf")),
-        ("latency_ms", float("-inf")),
         ("tokens_used", "many"),
         ("latency_ms", [1]),
-        ("confidence", float("nan")),
-        ("confidence", float("inf")),
         ("confidence", "sure"),
         ("confidence", True),
         ("tokens_used", 3.9),
@@ -423,6 +418,79 @@ async def test_a_response_field_with_no_value_is_the_gateways_error(field, value
         GatewayReasoningError, match="malformed|not finite|invalid|not text"
     ):
         await reasoner.reason("Prompt", event=_event(), rule_result=_rule("A"))
+
+
+@pytest.mark.parametrize(
+    "field, literal",
+    [
+        ("tokens_used", "NaN"),
+        ("tokens_used", "Infinity"),
+        ("latency_ms", "-Infinity"),
+        ("confidence", "NaN"),
+    ],
+)
+async def test_a_non_finite_literal_is_not_an_answer(field, literal):
+    """gateway-api/v2 Payload Member Rule: `NaN` and `Infinity` are not JSON,
+    so the response is refused before any member is read and the request
+    waits, ending in its own timeout."""
+    reasoner = _literal_reasoner(field, literal)
+    with pytest.raises(GatewayReasoningError, match="response timeout"):
+        await reasoner.reason("Prompt", event=_event(), rule_result=_rule("A"))
+
+
+@pytest.mark.parametrize(
+    "field, literal, error",
+    [
+        ("confidence", "1e400", "confidence is not finite"),
+        ("confidence", "-1e400", "confidence is not finite"),
+        ("confidence", "9" * 5000, "confidence is not finite"),
+        ("tokens_used", "1e400", "field is malformed"),
+        ("latency_ms", "9" * 5000, "field is malformed"),
+    ],
+)
+async def test_an_admitted_value_out_of_range_is_the_gateways_error(
+    field, literal, error
+):
+    """`1e400` is JSON, so the rule admits it; it and an integer too long to
+    convert read as infinite, and the response's own checks refuse them."""
+    reasoner = _literal_reasoner(field, literal)
+    with pytest.raises(GatewayReasoningError, match=error):
+        await reasoner.reason("Prompt", event=_event(), rule_result=_rule("A"))
+
+
+def _literal_reasoner(field: str, literal: str) -> MqttGatewayReasoner:
+    """A reasoner whose gateway answers with *field* written as *literal*."""
+
+    class _RawClient(_FakeClient):
+        def publish(self, topic, payload, qos=0, retain=False):
+            decoded = json.loads(payload.decode("utf-8"))
+            self.published.append((topic, decoded, qos, retain))
+            body = json.dumps(
+                {
+                    "request_id": decoded["request_id"],
+                    "device_id": decoded["device_id"],
+                    "text": "Gateway response.",
+                    "model": "gateway",
+                    "tokens_used": 10,
+                    "latency_ms": 50,
+                    "confidence": 0.5,
+                    "action_tier": "A",
+                    "proposed_action": None,
+                    field: "__LITERAL__",
+                }
+            ).replace('"__LITERAL__"', literal)
+            message = _Message({})
+            message.payload = body.encode()
+            assert self.on_message is not None
+            self.on_message(self, None, message)
+
+    return MqttGatewayReasoner(
+        broker_url="mqtt://broker.local",
+        device_id="site-a",
+        timeout_ms=50,
+        client_factory=lambda **_: _RawClient(),
+        request_id_factory=lambda: "req-literal",
+    )
 
 
 @pytest.mark.parametrize("device_id", ["other-device", [], None])

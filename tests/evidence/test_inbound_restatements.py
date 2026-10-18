@@ -300,12 +300,10 @@ def test_an_artifact_with_no_canonical_form_is_refused_without_escaping(sealed):
     [
         (ARTIFACT_CUSTODY, "local_seq", 2**63),
         (ARTIFACT_RECEIPT, "to_seq", 2**63),
-        (ARTIFACT_CUSTODY, "device_id", "\ud800"),
     ],
     ids=[
         "custody-seq-past-sqlite",
         "receipt-seq-past-sqlite",
-        "custody-surrogate",
     ],
 )
 def test_a_value_no_store_or_canonical_form_holds_is_malformed(
@@ -517,10 +515,17 @@ def _hostile_envelope(base: dict[str, Any], shape: str) -> bytes:
     return json.dumps(message).encode()
 
 
-HOSTILE = ["non_ascii_signature", "surrogate", "non_finite"]
+#: Each shape and the transport reason it is refused for: the surrogate and
+#: the non-finite number before any member is read, under gateway-api/v2's
+#: Payload Member Rule; the signature by the envelope check.
+HOSTILE = {
+    "non_ascii_signature": REFUSE_ENVELOPE_UNAUTHENTICATED,
+    "surrogate": "invalid_unicode",
+    "non_finite": "malformed_json",
+}
 
 
-@pytest.mark.parametrize("shape", HOSTILE)
+@pytest.mark.parametrize("shape", sorted(HOSTILE))
 @pytest.mark.parametrize("entry", ["handle_payload", "route"])
 def test_a_hostile_envelope_is_refused_by_the_transport_and_changes_nothing(
     sealed, shape, entry
@@ -538,7 +543,7 @@ def test_a_hostile_envelope_is_refused_by_the_transport_and_changes_nothing(
         routed = asyncio.run(asyncio.to_thread(router.handle_payload, payload))
 
     assert isinstance(routed.outcome, InboundRefusal)
-    assert routed.outcome.reason == REFUSE_ENVELOPE_UNAUTHENTICATED
+    assert routed.outcome.reason == HOSTILE[shape]
     assert routed.acknowledgement is None
     assert _row(attestor) == held
     assert attestor.application_storage_fault is False

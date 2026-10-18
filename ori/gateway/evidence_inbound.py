@@ -49,6 +49,12 @@ from ori.security.gateway_messages import (
     GatewayMessageAuthenticator,
     GatewayMessageAuthError,
 )
+from ori.security.payload_members import (
+    EVIDENCE_INBOUND_MEMBERS,
+    PayloadMemberError,
+    admitted_text,
+)
+from ori.security.payload_members import REASONS as MEMBER_REASONS
 from ori.utils.time_utils import now_ms
 
 try:
@@ -90,7 +96,6 @@ _INGEST_KIND = {
 }
 
 #: Transport vocabulary, kept disjoint from the contract's rejection reasons.
-REFUSE_UNPARSEABLE = "unparseable"
 REFUSE_NOT_AN_OBJECT = "not_an_object"
 REFUSE_ENVELOPE_UNAUTHENTICATED = "envelope_unauthenticated"
 REFUSE_UNKNOWN_ARTIFACT_TYPE = "unknown_artifact_type"
@@ -208,7 +213,16 @@ class EvidenceInboundRouter:
         store fault, with no acknowledgement, and the courier redelivers it in
         a newly signed envelope.
         """
-        admitted = self._admit_or_refuse(payload)
+        # A megabyte scanned under the Payload Member Rule is CPU work that
+        # would otherwise hold the event loop Tier D runs on.
+        try:
+            decoded = await asyncio.to_thread(_decode, payload)
+        except Exception:
+            logger.exception("[evidence-inbound] admitting a message failed")
+            return Routed(
+                InboundRefusal(REFUSE_UNADMISSIBLE, "the message could not be admitted")
+            )
+        admitted = self._admit_or_refuse(payload, decoded)
         if isinstance(admitted, InboundRefusal):
             return Routed(admitted)
         artifact_type, artifact, ingest, claim = admitted
@@ -224,7 +238,9 @@ class EvidenceInboundRouter:
         return Routed(outcome, self._acknowledgement(artifact_type, artifact, outcome))
 
     def _admit_or_refuse(
-        self, payload: bytes | str | dict[str, Any]
+        self,
+        payload: bytes | str | dict[str, Any],
+        decoded: dict[str, Any] | InboundRefusal | None = None,
     ) -> InboundRefusal | _Admitted:
         """Admission, never raising: a message it cannot place is refused.
 
@@ -234,7 +250,7 @@ class EvidenceInboundRouter:
         identical one is refused again for the same reason.
         """
         try:
-            return self._admit(payload)
+            return self._admit(payload, decoded)
         except Exception:
             logger.exception("[evidence-inbound] admitting a message failed")
             return InboundRefusal(
@@ -274,10 +290,16 @@ class EvidenceInboundRouter:
         return None
 
     def _admit(
-        self, payload: bytes | str | dict[str, Any]
+        self,
+        payload: bytes | str | dict[str, Any],
+        decoded: dict[str, Any] | InboundRefusal | None = None,
     ) -> InboundRefusal | _Admitted:
-        """The message's artifact and where it goes, or the transport refusal."""
-        decoded = _decode(payload)
+        """The message's artifact and where it goes, or the transport refusal.
+
+        *decoded* is `_decode(payload)` when the caller has already run it.
+        """
+        if decoded is None:
+            decoded = _decode(payload)
         if isinstance(decoded, InboundRefusal):
             return decoded
 
@@ -400,15 +422,12 @@ def _decode(
 ) -> dict[str, Any] | InboundRefusal:
     if isinstance(payload, dict):
         return dict(payload)
+    # gateway-api/v2 Payload Member Rule, before any member is read or the
+    # envelope verified: one reading of the bytes, or none.
     try:
-        parsed = json.loads(payload)
-    except Exception as exc:
-        return InboundRefusal(REFUSE_UNPARSEABLE, f"payload is not JSON: {exc}")
-    if not isinstance(parsed, dict):
-        return InboundRefusal(
-            REFUSE_NOT_AN_OBJECT, f"payload decoded to {type(parsed).__name__}"
-        )
-    return parsed
+        return admitted_text(payload, defined=EVIDENCE_INBOUND_MEMBERS)
+    except PayloadMemberError as exc:
+        return InboundRefusal(exc.reason, "refused under the Payload Member Rule")
 
 
 class _Session:
@@ -914,7 +933,13 @@ class MqttEvidenceInboundSubscriber:
 
     async def _route_admitted(self, payload: bytes) -> None:
         routed = await self._router.route(payload)
-        _log_result(routed.outcome)
+        if (
+            isinstance(routed.outcome, InboundRefusal)
+            and routed.outcome.reason in MEMBER_REASONS
+        ):
+            self._ingress.refuse(routed.outcome.reason)
+        else:
+            _log_result(routed.outcome)
         if routed.acknowledgement is None:
             return
         session = self._session

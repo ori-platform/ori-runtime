@@ -19,6 +19,7 @@ from typing import Any, Final
 
 from ori.reasoning.action_registry import ACTION_REGISTRY, ActionCapability, capability
 from ori.reasoning.dispatch_plan import commissioned_outcome
+from ori.utils.strict_json import unique_members
 
 # ── Decision states ───────────────────────────────────────────────────────────
 # The closed set. A proposal is in exactly one; every transition is forward.
@@ -142,19 +143,15 @@ def sha256_digest(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
-def _refuse_duplicate_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    seen: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in seen:
-            raise MalformedSnapshotError(f"member {key!r} is named twice")
-        seen[key] = value
-    return seen
-
-
 def parse_snapshot_text(text: str) -> dict[str, Any]:
     """Decode snapshot JSON, refusing a member named twice at any depth."""
     try:
-        decoded = json.loads(text, object_pairs_hook=_refuse_duplicate_members)
+        decoded = json.loads(
+            text,
+            object_pairs_hook=unique_members(
+                lambda name: MalformedSnapshotError(f"member {name!r} is named twice")
+            ),
+        )
     except MalformedSnapshotError:
         raise
     except (ValueError, RecursionError) as exc:

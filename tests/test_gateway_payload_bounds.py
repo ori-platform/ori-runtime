@@ -27,7 +27,10 @@ from ori.gateway.evidence_inbound import (
     MqttEvidenceInboundSubscriber,
     _Ticket,
 )
-from ori.gateway.evidence_outbound import MqttEvidenceOutboundPublisher
+from ori.gateway.evidence_outbound import (
+    EvidenceOutboundAckRouter,
+    MqttEvidenceOutboundPublisher,
+)
 from ori.gateway.export import (
     ITEM_EXCEEDS_PAYLOAD_MAXIMUM,
     ExportResponse,
@@ -73,6 +76,7 @@ from ori.security.gateway_messages import (
     GatewayMessageEncryptionConfig,
     GatewayMessageEncryptor,
 )
+from ori.security.payload_members import DUPLICATE_MEMBER
 from ori.state.store import StateStore
 from tests.waiting import quiesce, wait_until
 
@@ -2175,3 +2179,94 @@ def test_a_route_builder_uses_the_replay_cache_it_is_given(monkeypatch):
     second = _build_gateway_message_auth(config, shared)
     assert first is not None and second is not None
     assert first._replay_cache is shared and second._replay_cache is shared
+
+
+# ── Payload Member Rule refusals are recorded with their reason ────────────
+
+_REPEATED = b'{"request_id":"r","request_id":"r"}'
+
+
+async def test_a_refused_heartbeat_is_recorded_with_its_reason():
+    tracker = _Tracker()
+    subscriber = MqttGatewayHeartbeatSubscriber(
+        broker_url="mqtt://localhost",
+        posture_tracker=tracker,  # type: ignore[arg-type]
+        device_id="dev-01",
+        client_factory=lambda **_: None,
+    )
+    subscriber._loop = asyncio.get_running_loop()
+    subscriber._on_message(None, None, SimpleNamespace(payload=_REPEATED))
+    await quiesce(what="the work the message scheduled")
+    assert tracker.recorded == []
+    assert subscriber._ingress.refusals()[DUPLICATE_MEMBER] == 1
+
+
+async def test_a_refused_export_request_is_recorded_with_its_reason():
+    responder = GatewayExportResponder(
+        device_id="dev-01", state_store=None, health_snapshot_provider=dict
+    )
+    server = MqttGatewayExportServer(
+        broker_url="mqtt://localhost",
+        responder=responder,
+        client_factory=lambda **_: None,
+    )
+    server._loop = asyncio.get_running_loop()
+    published: list[str] = []
+
+    class _Client:
+        def publish(self, topic: str, payload: bytes, qos: int = 0) -> None:
+            published.append(topic)
+
+    message = SimpleNamespace(payload=_REPEATED)
+    await asyncio.to_thread(server._on_message, _Client(), None, message)
+    await wait_until(lambda: server._slots.taken == 0, what="the request to settle")
+    assert published == []
+    assert server._ingress.refusals()[DUPLICATE_MEMBER] == 1
+
+
+@pytest.mark.usefixtures("_paho")
+async def test_a_refused_reasoning_response_is_recorded_with_its_reason():
+    def answer(request: dict[str, Any]) -> bytes:
+        return (
+            json.dumps(
+                {"request_id": request["request_id"], "action_tier": "A", "text": ""}
+            ).encode()[:-1]
+            + b',"text":"again"}'
+        )
+
+    reasoner = MqttGatewayReasoner(
+        broker_url="mqtt://localhost",
+        device_id="dev-01",
+        timeout_ms=100,
+        client_factory=lambda **_: _ReasoningClient(answer),
+    )
+    with pytest.raises(GatewayReasoningError, match="timeout"):
+        await reasoner.reason("prompt")
+    assert reasoner._ingress.refusals()[DUPLICATE_MEMBER] == 1
+
+
+async def test_a_refused_outbound_acknowledgement_is_recorded_with_its_reason():
+    router = EvidenceOutboundAckRouter(
+        device_id="dev-01",
+        outbox=None,  # type: ignore[arg-type]
+        message_auth=_auth(),
+    )
+    publisher = MqttEvidenceOutboundPublisher(
+        broker_url="mqtt://localhost",
+        router=router,
+        device_id="dev-01",
+        outbox=None,  # type: ignore[arg-type]
+        client_factory=lambda **_: None,
+    )
+    await publisher._apply_ack(_REPEATED)
+    assert publisher._ingress.refusals()[DUPLICATE_MEMBER] == 1
+
+
+async def test_a_refused_inbound_message_is_recorded_with_its_reason():
+    subscriber, _ = _inbound()
+    subscriber._router = EvidenceInboundRouter(
+        device_id="dev-01", ingest=None, message_auth=_auth()
+    )
+    subscriber._loop = asyncio.get_running_loop()
+    await subscriber._route_admitted(_REPEATED)
+    assert subscriber._ingress.refusals()[DUPLICATE_MEMBER] == 1

@@ -43,6 +43,7 @@ from ori.runtime_health_socket import (
 from ori.security.evidence.registration import RegistrationStatus, is_digest
 from ori.utils.path_utils import shown
 from ori.utils.platform import os_name, runtime_platform
+from ori.utils.strict_json import unique_members
 
 logger = logging.getLogger(__name__)
 
@@ -190,18 +191,15 @@ class PeerCredentials:
 def parse_request(raw: bytes) -> dict[str, Any]:
     """One JSON object, with no member named twice."""
 
-    def refuse_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        value: dict[str, Any] = {}
-        for key, item in pairs:
-            if key in value:
-                raise OperatorRequestError(
+    try:
+        value = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=unique_members(
+                lambda _name: OperatorRequestError(
                     "invalid_arguments", "a request member is named twice"
                 )
-            value[key] = item
-        return value
-
-    try:
-        value = json.loads(raw.decode("utf-8"), object_pairs_hook=refuse_duplicates)
+            ),
+        )
     except (ValueError, RecursionError) as exc:
         # ValueError covers invalid UTF-8, malformed JSON and an integer past
         # the conversion limit; RecursionError, nesting past the recursion limit.

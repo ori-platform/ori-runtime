@@ -31,6 +31,7 @@ from typing import Any
 from ori.security.evidence.canonical import canonical_json
 from ori.security.evidence.device_key import EvidenceDeviceKey
 from ori.security.evidence.store import EvidenceConnection
+from ori.utils.strict_json import unique_members
 
 SCHEMA_VERSION = "ori.evidence.v2"
 GENESIS_PREIMAGE = b"ori.evidence.genesis.v2"
@@ -404,7 +405,10 @@ class EvidenceChain:
                     f"seq {seq}: signature does not verify under the device key"
                 )
             try:
-                envelope = json.loads(signed_bytes)
+                envelope = json.loads(
+                    signed_bytes,
+                    object_pairs_hook=unique_members(),
+                )
             except ValueError:
                 # A row whose stored bytes will not parse cannot be evaluated
                 # against the remaining rules, and raising would abandon the

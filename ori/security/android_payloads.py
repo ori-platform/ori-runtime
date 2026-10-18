@@ -38,6 +38,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from ori.security.ed25519_keys import admit_public_key
 from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
 from ori.security.release_bundles import ReleaseKey
+from ori.utils.strict_json import unique_members
 
 SIGNATURE_SCHEMA = "ori.android_runtime_payload_signature.v1"
 SIGNATURE_DOMAIN = SIGNATURE_SCHEMA.encode("ascii") + b"\0"
@@ -524,14 +525,6 @@ def _strict_json(raw: bytes, *, stage: str, reason: str) -> Any:
     if len(raw) > _MAX_DOCUMENT_BYTES:
         _refuse(stage, reason, "document exceeds the size ceiling")
 
-    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
-        document: dict[str, Any] = {}
-        for name, value in items:
-            if name in document:
-                _refuse(stage, reason, f"duplicate key {name!r}")
-            document[name] = value
-        return document
-
     def constant(name: str) -> NoReturn:
         _refuse(stage, reason, f"non-finite value {name}")
 
@@ -549,7 +542,11 @@ def _strict_json(raw: bytes, *, stage: str, reason: str) -> Any:
     try:
         return json.loads(
             text,
-            object_pairs_hook=pairs,
+            object_pairs_hook=unique_members(
+                lambda name: AndroidPayloadError(
+                    stage, reason, f"duplicate key {name!r}"
+                )
+            ),
             parse_constant=constant,
             parse_int=bounded_integer,
         )

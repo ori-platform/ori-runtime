@@ -69,6 +69,7 @@ from ori.security.firmware.commands import build_provisioning_approval_bytes
 from ori.security.firmware.telemetry import FirmwareVerificationError
 from ori.security.published_test_keys import is_published_seed
 from ori.utils.path_utils import shown
+from ori.utils.strict_json import unique_members
 
 # The shared corpus that ties these bytes to the edge firmware's C verifier;
 # the same bytes its provisioning tests accept.
@@ -240,7 +241,10 @@ async def _open_store(db_path: str) -> Any:
 
 def _load_manifest_message(path: str) -> dict[str, Any]:
     try:
-        message = json.loads(Path(path).read_text(encoding="utf-8"))
+        message = json.loads(
+            Path(path).read_text(encoding="utf-8"),
+            object_pairs_hook=unique_members(),
+        )
     except (OSError, json.JSONDecodeError) as exc:
         raise ProvisionerError(
             f"cannot read manifest message {shown(path)}: {exc}"

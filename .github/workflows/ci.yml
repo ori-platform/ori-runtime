@@ -469,6 +469,7 @@ jobs:
           tests/test_dispatch_never_waits_on_delivery.py
           tests/test_dispatch_plan.py
           tests/test_firmware_command_action_boundary.py
+          tests/test_gateway_payload_members.py
           tests/test_history_frontier.py
           tests/test_i2c_adapter.py
           tests/test_poll_interval.py

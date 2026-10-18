@@ -19,6 +19,7 @@ from ori.hal.inverter_profiles import (
 )
 from ori.hal.inverter_vendor_targets import list_vendor_targets
 from ori.utils.path_utils import shown
+from ori.utils.strict_json import unique_members
 
 # Pre-release draft schema. No installer/customer evidence has been captured
 # against this contract yet, so breaking changes may still refine v1. Once the
@@ -152,7 +153,10 @@ def _read_evidence_bundle(path: Path) -> dict[str, Any]:
             f"unable to read evidence file {shown(path)}: {exc}"
         ) from exc
     try:
-        data = json.loads(raw)
+        data = json.loads(
+            raw,
+            object_pairs_hook=unique_members(),
+        )
     except json.JSONDecodeError as exc:
         raise InverterProfileError(
             f"invalid JSON evidence file {shown(path)}: {exc.msg}"

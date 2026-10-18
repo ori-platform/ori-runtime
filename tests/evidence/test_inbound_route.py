@@ -32,7 +32,6 @@ from ori.gateway.evidence_inbound import (
     REFUSE_MISSING_ARTIFACT,
     REFUSE_NOT_AN_OBJECT,
     REFUSE_UNKNOWN_ARTIFACT_TYPE,
-    REFUSE_UNPARSEABLE,
     EvidenceInboundRouter,
     InboundRefusal,
     MqttEvidenceInboundSubscriber,
@@ -135,7 +134,7 @@ def _mac(artifact: dict, secret: str) -> dict:
 @pytest.mark.parametrize(
     "payload, expected",
     [
-        (b"not json at all", REFUSE_UNPARSEABLE),
+        (b"not json at all", "malformed_json"),
         (b"[1, 2, 3]", REFUSE_NOT_AN_OBJECT),
         (b'"a string"', REFUSE_NOT_AN_OBJECT),
     ],

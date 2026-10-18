@@ -35,6 +35,11 @@ from ori.security.gateway_messages import (
     GatewayMessageAuthError,
     GatewayMessageEncryptor,
 )
+from ori.security.payload_members import (
+    EXPORT_REQUEST_MEMBERS,
+    PayloadMemberError,
+    admitted_text,
+)
 
 try:
     import paho.mqtt.client as mqtt
@@ -135,6 +140,9 @@ class GatewayExportResponder:
         self._health_snapshot_provider = health_snapshot_provider
         self._message_auth = message_auth
         self._message_encryptor = message_encryptor
+        #: Records a request refused under the Payload Member Rule; the
+        #: subscriber sets its family's ingress counter here.
+        self.refusal_recorder: Callable[[str], None] | None = None
 
     @property
     def request_topic(self) -> str:
@@ -377,17 +385,14 @@ class GatewayExportResponder:
         """The request object, or None for a payload that is not one."""
         if isinstance(payload, dict):
             return payload
+        # gateway-api/v2 Payload Member Rule, before any member is read: a
+        # refused request is not answered, since none of it can be relied on.
         try:
-            if isinstance(payload, bytes):
-                text = payload.decode("utf-8")
-            else:
-                text = str(payload)
-            decoded = json.loads(text)
-            # A lone surrogate decodes but cannot be echoed into a response.
-            json.dumps(decoded, ensure_ascii=False).encode("utf-8")
-        except (ValueError, RecursionError):
+            return admitted_text(payload, defined=EXPORT_REQUEST_MEMBERS)
+        except PayloadMemberError as exc:
+            if self.refusal_recorder is not None:
+                self.refusal_recorder(exc.reason)
             return None
-        return decoded if isinstance(decoded, dict) else None
 
     def _error_response(
         self,
@@ -426,6 +431,7 @@ class MqttGatewayExportServer:
         self._client: Any = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._ingress = IngressBound(EXPORT_REQUEST)
+        responder.refusal_recorder = self._ingress.refuse
         # Taken in the client's callback thread before anything is scheduled,
         # and held until the response is published or has failed.
         self._slots = Slots(EXPORT_IN_FLIGHT_BOUND)

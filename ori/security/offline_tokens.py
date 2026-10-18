@@ -21,6 +21,7 @@ from ori.security.ed25519_keys import admit_public_key, refused_public_key_claus
 from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
 from ori.skills.sandbox import SkillSecurityError
 from ori.skills.signing import canonical_signed_payload, verify_signed_payload
+from ori.utils.strict_json import unique_members
 from ori.utils.time_utils import now_ms
 
 #: The v2 signature domain: these bytes, a NUL, then the canonical payload.
@@ -63,15 +64,6 @@ class DuplicateMemberError(ValueError):
     """A JSON object naming a member twice, at any depth."""
 
 
-def _refuse_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    seen: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in seen:
-            raise DuplicateMemberError(key)
-        seen[key] = value
-    return seen
-
-
 def decode_token_text(raw: str) -> dict[str, Any] | None:
     """The token's payload object, or None when there is nothing to judge.
 
@@ -91,7 +83,10 @@ def decode_token_text(raw: str) -> dict[str, Any] | None:
     except Exception:
         payload_txt = text
     try:
-        decoded = json.loads(payload_txt, object_pairs_hook=_refuse_duplicates)
+        decoded = json.loads(
+            payload_txt,
+            object_pairs_hook=unique_members(lambda name: DuplicateMemberError(name)),
+        )
     except DuplicateMemberError:
         raise
     except (ValueError, RecursionError):

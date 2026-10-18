@@ -488,7 +488,24 @@ def test_paho_unavailable_raises():
             )
 
 
-@pytest.mark.parametrize("raw", [b"Infinity", b"-Infinity", b"1e400"])
+@pytest.mark.parametrize("raw", [b"Infinity", b"-Infinity"])
+async def test_a_non_finite_literal_heartbeat_is_refused_and_records_nothing(
+    monkeypatch, raw
+):
+    """gateway-api/v2 Payload Member Rule: not JSON, so nothing is read."""
+    tracker = _fakeposturetracker()
+    sub = _subscriber(tracker)
+    sub._loop = asyncio.get_running_loop()
+
+    sub._on_message(
+        None, None, _message(b'{"status": "healthy", "timestamp_ms": ' + raw + b"}")
+    )
+    await asyncio.sleep(0)
+
+    assert tracker.recorded == []
+
+
+@pytest.mark.parametrize("raw", [b"1e400", b"-1e400", b"9" * 5000])
 async def test_a_timestamp_int_cannot_hold_falls_back_to_now(monkeypatch, raw):
     """int() raises OverflowError for these; raised on paho's thread it would
     stop the heartbeat route silently."""
@@ -531,8 +548,11 @@ async def test_a_status_nested_past_the_recursion_limit_is_not_read(monkeypatch)
     nested: object = "x"
     for _ in range(200_000):
         nested = [nested]
+    # Past the rule's own depth bound, so the parser that follows admission is
+    # stood in for: this guards what the heartbeat reads, not the parse.
     monkeypatch.setattr(
-        heartbeat_module.json, "loads", lambda _payload: {"status": nested}
+        "ori.security.payload_members.json.loads",
+        lambda *_args, **_kwargs: {"status": nested},
     )
     monkeypatch.setattr(heartbeat_module, "now_ms", lambda: 5_000)
     tracker = _fakeposturetracker()

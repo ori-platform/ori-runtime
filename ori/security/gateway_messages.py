@@ -39,6 +39,11 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
+from ori.security.payload_members import (
+    EXPORT_RESPONSE_MEMBERS,
+    PayloadMemberError,
+    admitted_object,
+)
 from ori.utils.path_utils import shown
 from ori.utils.time_utils import now_ms
 
@@ -745,11 +750,16 @@ class GatewayMessageEncryptor:
                 ciphertext,
                 _encryption_aad(metadata, message_type=message_type),
             )
-            decoded = json.loads(plaintext.decode("utf-8"))
         except Exception as exc:
             raise GatewayMessageEncryptionError("decryption_failed") from exc
-        if not isinstance(decoded, dict):
-            raise GatewayMessageEncryptionError("invalid_plaintext")
+        # The plaintext is a JSON text in its own right, admitted under the
+        # Payload Member Rule before any member of it is read.
+        try:
+            decoded = admitted_object(plaintext, defined=EXPORT_RESPONSE_MEMBERS)
+        except PayloadMemberError as exc:
+            raise GatewayMessageEncryptionError(
+                f"invalid_plaintext: {exc.reason}"
+            ) from exc
         if _encryption_metadata(decoded) != metadata:
             raise GatewayMessageEncryptionError("metadata_mismatch")
         return decoded

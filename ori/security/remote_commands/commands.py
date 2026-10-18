@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any, Mapping
 
+from ori.utils.strict_json import unique_members
 from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
@@ -361,7 +362,10 @@ def extract_remote_command_payload(
         return None
 
     try:
-        decoded = json.loads(body)
+        decoded = json.loads(
+            body,
+            object_pairs_hook=unique_members(),
+        )
     except (ValueError, RecursionError):
         # Not JSON, an integer past the conversion limit, or nesting past the
         # recursion limit: not a command.

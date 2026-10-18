@@ -640,6 +640,22 @@ VECTOR_CONSUMERS = {
     # byte. The reasoning, enrichment and gateway heartbeat replies are the
     # gateway's to build; the enrichment response size cases are skipped, as
     # no runtime subscriber reads that topic.
+    # Every case goes through the scanner, and each topic the runtime reads
+    # through its own entry point; the decrypted plaintext through decrypt.
+    ("gateway_api", "payload-members-v2"): (
+        "test_gateway_payload_members.py::test_every_case_reaches_its_verdict",
+        "test_gateway_payload_members.py::test_the_runtimes_member_sets_are_the_contracts",
+        "test_gateway_payload_members.py"
+        "::test_the_inbound_route_refuses_each_case_for_its_reason",
+        "test_gateway_payload_members.py"
+        "::test_the_ack_route_refuses_each_case_for_its_reason",
+        "test_gateway_payload_members.py"
+        "::test_the_export_responder_reads_no_refused_request",
+        "test_gateway_payload_members.py"
+        "::test_the_heartbeat_subscriber_reads_no_refused_heartbeat",
+        "test_gateway_payload_members.py"
+        "::test_a_decrypted_plaintext_is_admitted_under_the_rule",
+    ),
     ("gateway_api", "payload-size-v2"): (
         "test_gateway_payload_bounds.py::test_a_size_case_reaches_its_verdict",
         "test_gateway_payload_bounds.py::test_the_table_is_the_contract_table",
@@ -711,16 +727,6 @@ VECTOR_EXEMPTIONS = {
             "authorisation -- it holds only the digest as a reference -- so "
             "there is no resolution here to drive. Vendored so the drift check "
             "covers the bytes the authority must match."
-        ),
-    },
-    ("gateway_api", "payload-members-v2"): {
-        "owner": "the runtime",
-        "status": "proof_pending",
-        "tracking": "ori-runtime#866",
-        "reason": (
-            "The runtime does not yet implement the payload-members rule this "
-            "corpus pins. Vendored so the drift check covers the bytes it "
-            "must match."
         ),
     },
     ("gateway_evidence_carriage", "return-path"): {

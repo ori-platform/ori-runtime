@@ -59,6 +59,12 @@ from ori.security.gateway_messages import (
     GatewayMessageAuthenticator,
     GatewayMessageAuthError,
 )
+from ori.security.payload_members import (
+    EVIDENCE_OUTBOUND_ACK_MEMBERS,
+    PayloadMemberError,
+    admitted_text,
+)
+from ori.security.payload_members import REASONS as MEMBER_REASONS
 from ori.utils.time_utils import now_ms
 
 try:
@@ -188,12 +194,11 @@ class EvidenceOutboundAckRouter:
         if isinstance(payload, dict):
             decoded: Any = dict(payload)
         else:
+            # gateway-api/v2 Payload Member Rule, before any member is read.
             try:
-                decoded = json.loads(payload)
-            except Exception as exc:
-                return AckRouted(ROUTED_REFUSED, f"payload is not JSON: {exc}")
-        if not isinstance(decoded, dict):
-            return AckRouted(ROUTED_REFUSED, "payload is not an object")
+                decoded = admitted_text(payload, defined=EVIDENCE_OUTBOUND_ACK_MEMBERS)
+            except PayloadMemberError as exc:
+                return AckRouted(ROUTED_REFUSED, exc.reason)
 
         # The courier's own time for this answer, which orders it against the
         # answers before it: the authenticated signing time, and only that.
@@ -927,7 +932,9 @@ class MqttEvidenceOutboundPublisher:
 
     async def _apply_ack(self, payload: bytes) -> None:
         routed = await self._router.handle_ack(payload)
-        if routed.outcome == ROUTED_REFUSED:
+        if routed.outcome == ROUTED_REFUSED and routed.reason in MEMBER_REASONS:
+            self._ingress.refuse(routed.reason)
+        elif routed.outcome == ROUTED_REFUSED:
             logger.warning(
                 "[evidence-outbound] acknowledgement refused: %s", routed.reason
             )

@@ -29,6 +29,7 @@ from ori.security.firmware.mqtt_provisioning import (
 )
 from ori.security.firmware.mqtt_workflow import FirmwareMqttProvisioningWorkflow
 from ori.utils.platform import os_name, runtime_platform
+from ori.utils.strict_json import unique_members
 from ori.utils.time_utils import now_ms
 
 _CONTRACT = "ori.runtime.firmware-mqtt-operator"
@@ -566,19 +567,15 @@ class FirmwareMqttOperatorServer:
 
 
 def _strict_request(raw: bytes) -> dict[str, Any]:
-    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        value: dict[str, Any] = {}
-        for key, item in pairs:
-            if key in value:
-                raise FirmwareMqttOperatorError(
-                    "invalid_request",
-                    "duplicate JSON field",
-                )
-            value[key] = item
-        return value
-
     try:
-        value = json.loads(raw, object_pairs_hook=reject_duplicates)
+        value = json.loads(
+            raw,
+            object_pairs_hook=unique_members(
+                lambda _name: FirmwareMqttOperatorError(
+                    "invalid_request", "duplicate JSON field"
+                )
+            ),
+        )
     except FirmwareMqttOperatorError:
         raise
     except (ValueError, RecursionError) as exc:

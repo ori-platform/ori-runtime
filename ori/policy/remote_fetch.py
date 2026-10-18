@@ -15,6 +15,7 @@ from typing import Any
 from ori.policy.device_policy import DevicePolicy
 from ori.skills.sandbox import SkillSecurityError
 from ori.skills.signing import verify_signed_payload
+from ori.utils.strict_json import unique_members
 
 
 class RemotePolicyFetchError(Exception):
@@ -211,7 +212,10 @@ def _decode_json_body(body: bytes) -> tuple[str, dict[str, Any]]:
         ) from exc
 
     try:
-        payload = json.loads(raw_payload)
+        payload = json.loads(
+            raw_payload,
+            object_pairs_hook=unique_members(),
+        )
     except Exception as exc:
         raise RemotePolicyFetchError(
             "invalid_payload",

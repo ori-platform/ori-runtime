@@ -37,7 +37,6 @@ payloads is required before enabling auth — see DECISIONS.md 2026-06-10.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import Any, Callable
 
@@ -47,6 +46,11 @@ from ori.reasoning.capability_posture import CapabilityPostureTracker
 from ori.security.gateway_messages import (
     GatewayMessageAuthenticator,
     GatewayMessageAuthError,
+)
+from ori.security.payload_members import (
+    GATEWAY_HEALTH_MEMBERS,
+    PayloadMemberError,
+    admitted_text,
 )
 from ori.utils.time_utils import now_ms
 
@@ -178,13 +182,11 @@ class MqttGatewayHeartbeatSubscriber:
         payload_bytes: bytes = getattr(message, "payload", b"") or b""
         if self._ingress.admit(payload_bytes) is not None:
             return
+        # gateway-api/v2 Payload Member Rule, before any member is read.
         try:
-            payload = json.loads(payload_bytes)
-        except Exception:
-            logger.debug("[gateway-heartbeat] ignoring non-JSON payload")
-            return
-        if not isinstance(payload, dict):
-            logger.debug("[gateway-heartbeat] ignoring non-object payload")
+            payload = admitted_text(payload_bytes, defined=GATEWAY_HEALTH_MEMBERS)
+        except PayloadMemberError as exc:
+            self._ingress.refuse(exc.reason)
             return
 
         if self._authenticator is not None:

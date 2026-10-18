@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from ori.utils.strict_json import unique_members
+
 # The refusals the endpoint repeats for as long as this credential is presented,
 # as the (status, detail) pairs the contract states them in. The enumeration
 # belongs to the receiver; the vendored fixture under
@@ -221,18 +223,6 @@ def _integer_token(literal: str) -> int | float:
     return -0.0 if literal == "-0" else int(literal)
 
 
-def _unique_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    # Which occurrence of a repeated name a parser keeps is the library's choice,
-    # not the contract's, and a body reading `accepted_events` as 0 in one
-    # producer and 1 in another disagrees about whether readings were stored.
-    members: dict[str, Any] = {}
-    for name, value in pairs:
-        if name in members:
-            raise ValueError("repeated member name")
-        members[name] = value
-    return members
-
-
 def _carries_lone_surrogate(value: object) -> bool:
     """Whether any string or key decoded to an unpaired surrogate code point."""
     pending: list[object] = [value]
@@ -270,7 +260,13 @@ def _parse_strict_json(body: bytes) -> object | None:
             parse_constant=_refuse_constant,
             parse_float=_finite_float,
             parse_int=_integer_token,
-            object_pairs_hook=_unique_members,
+            # Which occurrence of a repeated name a parser keeps is the library's
+            # choice, not the contract's, and a body reading `accepted_events` as
+            # 0 in one producer and 1 in another disagrees about whether
+            # readings were stored.
+            object_pairs_hook=unique_members(
+                lambda _name: ValueError("repeated member name")
+            ),
         )
     except (ValueError, RecursionError):
         return None

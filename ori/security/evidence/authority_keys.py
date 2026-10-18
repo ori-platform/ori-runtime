@@ -39,6 +39,7 @@ from typing import Any, Mapping
 
 from ori.security.ed25519_keys import key_identity, refused_public_key_clause
 from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
+from ori.utils.strict_json import unique_members
 
 PURPOSE_RECEIPT = "evidence_authority_receipt"
 PURPOSE_EPOCH = "evidence_authority_epoch"
@@ -127,13 +128,6 @@ def verifying_purposes(registry: Mapping[tuple[str, str], Any]) -> frozenset[str
 def derive_key_id(public_key: bytes) -> str:
     """`sha256:` and the lowercase hex SHA-256 of the 32 raw public-key bytes."""
     return "sha256:" + hashlib.sha256(public_key).hexdigest()
-
-
-def _reject_repeated_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    names = [name for name, _ in pairs]
-    if len(set(names)) != len(names):
-        raise AuthorityKeyError(RULE_MEMBERS, "a JSON object repeats a member name")
-    return dict(pairs)
 
 
 def _require_exact_fields(obj: dict[str, Any], expected: set[str], label: str) -> None:
@@ -278,7 +272,14 @@ def parse_authority_key_registry_text(
 ) -> dict[tuple[str, str], AuthorityKey]:
     """Decode registry JSON strictly, refusing repeated member names, and hold it to the contract."""
     try:
-        document = json.loads(text, object_pairs_hook=_reject_repeated_members)
+        document = json.loads(
+            text,
+            object_pairs_hook=unique_members(
+                lambda _name: AuthorityKeyError(
+                    RULE_MEMBERS, "a JSON object repeats a member name"
+                )
+            ),
+        )
     except AuthorityKeyError:
         raise
     except (ValueError, RecursionError) as exc:

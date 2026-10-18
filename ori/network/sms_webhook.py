@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from ori.security.webhook_signatures import WebhookSignatureVerifier
 from ori.utils.path_utils import shown
+from ori.utils.strict_json import unique_members
 
 logger = logging.getLogger(__name__)
 
@@ -248,7 +249,10 @@ class SMSWebhookServer:
         text = body.decode("utf-8", errors="replace")
         if "application/json" in ctype:
             try:
-                parsed = json.loads(text or "{}")
+                parsed = json.loads(
+                    text or "{}",
+                    object_pairs_hook=unique_members(),
+                )
             except (ValueError, RecursionError):
                 return {}
             if isinstance(parsed, dict):

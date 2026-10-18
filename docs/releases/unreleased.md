@@ -350,6 +350,37 @@ release is cut.
 
 ## Security
 
+- Every gateway payload the runtime receives is admitted under gateway-api/v2's
+  Payload Member Rule before any member is read or its envelope verified:
+  gateway heartbeats, reasoning responses, export requests, outbound evidence
+  acknowledgements and inbound evidence. `GatewayMessageEncryptor.decrypt`
+  admits its plaintext under the same rule. A payload is refused, unanswered
+  and changing nothing, when it:
+  - is not valid UTF-8 (`invalid_unicode`), or holds a lone surrogate escape;
+  - is not one JSON value (`malformed_json`), `NaN` and `Infinity` included;
+  - nests deeper than 32 (`nesting_too_deep`);
+  - carries anything after its value (`trailing_data`);
+  - repeats a member (`duplicate_member`);
+  - holds two names, or a name and a member the contract defines, that differ
+    only in case or by the closed fold (`case_variant_member`);
+  - is not an object (`not_an_object`).
+
+  Before, the runtime kept the last of two repeated members, and accepted
+  `NaN`, a byte order mark and members that differed only in case, so a gateway
+  and the runtime could read one signed payload two ways. The inbound route's
+  `unparseable` refusal is now one of these reasons. Each refusal is counted
+  and logged with its reason through the family's ingress record, at most one
+  line a second per reason. The scan is linear in the payload whatever its
+  shape, and inbound evidence is scanned off the event loop.
+- Every runtime reader of signed, authenticated or operator-supplied JSON
+  refuses a repeated member through one shared hook
+  (`ori/utils/strict_json.py`): device-signed firmware telemetry, remote
+  commands, the SMS webhook body, fetched and cached device policy, the
+  shipped safety profile set, the evidence chain's signed envelopes, and
+  operator-supplied manifest and evidence files, alongside the readers that
+  already refused one. A guard over all of `ori/` requires the hook at every
+  JSON decode, or an exemption that says why a repeat is harmless there.
+
 - Inbound SMS approval replies are bounded at the runtime, whatever the bridge
   in front of it does (`docs/SMS_WEBHOOK_SECURITY.md`).
   - **Allowlist:** with neither `actions.operator_contact` nor

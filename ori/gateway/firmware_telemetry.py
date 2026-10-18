@@ -26,6 +26,7 @@ from ori.network.events import OriEvent
 from ori.security.firmware.ingest import FirmwareTelemetryGate
 from ori.security.firmware.liveness import FirmwareLivenessSupervisor
 from ori.state.store import StateStore
+from ori.utils.strict_json import unique_members
 
 # Annotated Any so the fallback assignment needs no ignore, which would be
 # reported unused in whichever environment does not match it.
@@ -173,7 +174,10 @@ class MqttFirmwareTelemetrySubscriber:
 
         payload_bytes: bytes = getattr(message, "payload", b"") or b""
         try:
-            payload = json.loads(payload_bytes)
+            payload = json.loads(
+                payload_bytes,
+                object_pairs_hook=unique_members(),
+            )
         except Exception:
             logger.debug("[firmware-telemetry] ignoring non-JSON payload")
             return

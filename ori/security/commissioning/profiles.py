@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ori.utils.strict_json import unique_members
+
 PROFILE_ID = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+\.v[1-9][0-9]*\Z")
 PROFILE_KEYS = frozenset({"v", "id", "status", "observes", "condition", "outcome"})
 OBSERVES_KEYS = frozenset({"quantity", "unit"})
@@ -197,7 +199,10 @@ def load_shipped_profile_set(path: Path = SHIPPED_PATH) -> ProfileSet:
             f"malformed_profile: the shipped set is unreadable ({exc})"
         ) from exc
     try:
-        document = json.loads(payload)
+        document = json.loads(
+            payload,
+            object_pairs_hook=unique_members(),
+        )
     except ValueError as exc:
         raise ProfileSetError("malformed_profile: the shipped set is not JSON") from exc
     _bad(
