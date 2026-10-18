@@ -251,7 +251,7 @@ pytest tests/ -v -m "not hardware"
 | `Environment variable not set: ${...}`                                                  | Set required vars in `.env` and export `ORI_AUTOLOAD_DOTENV=true`, or replace `${VAR}` with literal values in `ori.yaml` |
 | `Failed to create llama_context`                                                        | Reinstall llama-cpp-python: `pip install --no-cache-dir --force-reinstall llama-cpp-python`                              |
 | `ori-runtime: command not found`                                                        | Install entrypoint: `pip install -e .`, or use `python -m ori.runtime`                                                   |
-| `operator_contact is not configured — Tier C approval requests will not reach operator` | This is a **warning**, not an error. Set `actions.operator_contact` in `ori.yaml` if you need Tier C approvals           |
+| `operator_contact is not configured — Tier C approval requests will not reach operator` | A **warning** in development. Staging, production and `enforce_production_posture: true` refuse to start without it when SMS or WhatsApp is enabled. Set `actions.operator_contact` to a phone number |
 
 ---
 

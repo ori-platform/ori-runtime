@@ -316,3 +316,34 @@ async def test_handle_client_accepts_signed_hmac_webhook():
     sms_action.ingest_incoming_webhook.assert_awaited_once_with(
         {"from": "+2348000000000", "text": "YES-AB12CD34"}
     )
+
+
+@pytest.mark.asyncio
+async def test_the_per_peer_limit_is_a_cpu_backstop_not_an_approval_budget(
+    monkeypatch,
+):
+    """Through `_handle_client`: every request from a bridge shares one
+    address, so this limit sits far above any sender's and is the only one
+    answered 429 before anything is read."""
+    from ori.network import sms_webhook
+
+    clock = [1_000.0]
+    monkeypatch.setattr(sms_webhook.time, "monotonic", lambda: clock[0])
+    sms_action = AsyncMock()
+    sms_action.ingest_incoming_webhook.return_value = True
+    server = SMSWebhookServer(sms_action=sms_action, token="secret-token")
+    server._read_request = AsyncMock(return_value=None)
+
+    async def answer(peer: str) -> str:
+        writer = _fakewriter(peername=(peer, 12345))
+        await server._handle_client(asyncio.StreamReader(), writer)
+        return writer.buffer.decode("utf-8", errors="replace")
+
+    for _ in range(600):
+        assert "429" not in await answer("10.0.0.1")
+    refused = await answer("10.0.0.1")
+    assert "429 Too Many Requests" in refused
+    assert server._read_request.await_count == 600, "refused before reading"
+    assert "429" not in await answer("10.0.0.2"), "another peer has its own window"
+    clock[0] += 60.001
+    assert "429" not in await answer("10.0.0.1")

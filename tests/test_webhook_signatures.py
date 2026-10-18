@@ -163,3 +163,48 @@ def test_webhook_replay_cache_accepts_new_nonce_after_expiry() -> None:
 
     assert cache.mark_seen("nonce-1", now_ms_value=1_000) is True
     assert cache.mark_seen("nonce-2", now_ms_value=1_011) is True
+
+
+@pytest.mark.parametrize("persisted", [False, True])
+@pytest.mark.asyncio
+async def test_a_webhook_signed_ahead_is_refused_until_it_is_stale(
+    tmp_path, persisted
+) -> None:
+    """A request is accepted until its signing time plus the skew, so its
+    nonce is kept that long, whatever the configured TTL."""
+    skew, ttl, received = 300_000, 300_000, 1_000_000
+    signed_at = received + skew
+    body = b"from=%2B2348000000000&text=YES-AB12CD34"
+    headers = {
+        "x-ori-webhook-signature": sign_webhook_body(
+            body, shared_secret="secret", signed_at_ms=signed_at, nonce="n1"
+        ),
+        "x-ori-webhook-timestamp": str(signed_at),
+        "x-ori-webhook-nonce": "n1",
+    }
+    verifier = WebhookSignatureVerifier(
+        WebhookSignatureConfig(
+            mode="hmac_required",
+            shared_secret="secret",
+            max_skew_ms=skew,
+            replay_ttl_ms=ttl,
+        )
+    )
+    store = StateStore(str(tmp_path / "webhook.db")) if persisted else None
+    if store is not None:
+        await store.open()
+    try:
+
+        async def at(now: int) -> str:
+            result = await verifier.verify(
+                headers=headers, body=body, state_store=store, now_ms_value=now
+            )
+            return result.reason
+
+        assert await at(received) == "accepted"
+        for later in (received + 1, received + ttl, received + 2 * skew):
+            assert await at(later) == "replay_detected", later
+        assert await at(received + 2 * skew + 1) == "stale_timestamp"
+    finally:
+        if store is not None:
+            await store.close()

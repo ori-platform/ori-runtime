@@ -2308,6 +2308,7 @@ class TestLoadExample:
             gateway: {}
             actions:
               primary_alert_channel: sms
+              operator_contact: "+2348000000001"
               sms:
                 enabled: true
                 transport: ip
@@ -2347,6 +2348,7 @@ class TestLoadExample:
             gateway: {}
             actions:
               primary_alert_channel: sms
+              operator_contact: "+2348000000001"
               sms:
                 enabled: true
                 transport: ip
@@ -2383,6 +2385,7 @@ class TestLoadExample:
             gateway: {}
             actions:
               primary_alert_channel: sms
+              operator_contact: "+2348000000001"
               sms:
                 enabled: true
                 transport: ip
@@ -2593,9 +2596,23 @@ class TestLoadExample:
 
         assert cfg.state.encryption.marker_file == str(marker)
 
+    @pytest.mark.parametrize(
+        "contact_line",
+        [
+            'operator_contact: "+2348000000001"',
+            'operator_contact: ""',
+            "operator_contact: '${ORI_TEST_NEVER_SET_CONTACT}'",
+            'operator_contact: "changeme"',
+            'operator_contact: "$OWNER_PHONE"',
+            "",
+        ],
+        ids=["set", "empty", "uninterpolated", "not-a-number", "unbraced", "absent"],
+    )
     def test_production_posture_accepts_hardened_site_config(
-        self, tmp_path, monkeypatch
+        self, tmp_path, monkeypatch, contact_line
     ):
+        """Hardened, it starts only with an operator to propose Tier C to: SMS
+        is enabled, and without operator_contact no proposal reaches anyone."""
         private_key, public_key_b64 = _ed25519_keypair()
         monkeypatch.setenv("ORI_CONFIG_TRUST_ANCHOR_PUBLIC_KEY_B64", public_key_b64)
         encrypted_dir = tmp_path / "encrypted"
@@ -2629,6 +2646,7 @@ class TestLoadExample:
                 enabled: true
             actions:
               primary_alert_channel: sms
+              {contact_line}
               sms:
                 enabled: true
                 transport: ip
@@ -2666,6 +2684,12 @@ class TestLoadExample:
             ),
         )
 
+        if "+234" not in contact_line:
+            with pytest.raises(
+                ConfigValidationError, match="requires actions.operator_contact"
+            ):
+                Config.load(yaml_path)
+            return
         cfg = Config.load(yaml_path)
 
         assert cfg.device.deployment_profile == "production"
@@ -6581,3 +6605,29 @@ def test_secondary_contact_number_names_the_real_setting(tmp_path):
     )
     with pytest.raises(ConfigValidationError, match="actions.secondary_contact"):
         Config.load(path)
+
+
+@pytest.mark.parametrize("channel", ["sms", "whatsapp"])
+def test_hardened_posture_needs_an_operator_for_either_approval_channel(channel):
+    """Either channel can carry a Tier C proposal to operator_contact."""
+    from types import SimpleNamespace
+
+    from ori.config import ActionChannelConfig, _validate_production_security_posture
+
+    actions = (
+        ActionChannelConfig(primary_alert_channel="sms", sms={"enabled": True})
+        if channel == "sms"
+        else ActionChannelConfig(
+            primary_alert_channel="whatsapp", whatsapp={"enabled": True}
+        )
+    )
+    with pytest.raises(ConfigValidationError, match=f"when {channel} is enabled"):
+        _validate_production_security_posture(
+            device=SimpleNamespace(deployment_profile="production"),  # type: ignore[arg-type]
+            gateway=SimpleNamespace(),  # type: ignore[arg-type]
+            actions=actions,
+            security={"skills": {"require_signed": True}},
+            state=SimpleNamespace(),  # type: ignore[arg-type]
+            database_path="ori_state.db",
+            config_signature_verified=True,
+        )

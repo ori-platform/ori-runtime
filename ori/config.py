@@ -2806,6 +2806,29 @@ def _validate_production_security_posture(
             "production posture requires security.skills.require_signed: true"
         )
 
+    # A Tier C proposal goes to operator_contact over SMS or WhatsApp. Without
+    # one, every proposal falls to its safe default with no operator ever
+    # asked, which a hardened deployment must not do quietly.
+    approval_channels = [
+        name
+        for name in ("sms", "whatsapp")
+        if isinstance(getattr(actions, name, None), dict)
+        and is_truthy(getattr(actions, name).get("enabled", False))
+    ]
+    contact = str(actions.operator_contact or "")
+    # Normalised as the approval allowlist normalises it: a placeholder or
+    # any value with no number in it admits nobody.
+    dialable = "".join(ch for ch in contact if ch.isdigit() or ch == "+")
+    if approval_channels and (
+        "${" in contact or not any(ch.isdigit() for ch in dialable)
+    ):
+        raise ConfigValidationError(
+            "production posture requires actions.operator_contact, a phone "
+            f"number, when {' or '.join(approval_channels)} is enabled: without "
+            "it no Tier C proposal reaches an operator and no Tier D failure "
+            "is reported to one"
+        )
+
     remote = security.get("remote_commands") or {}
     if isinstance(remote, dict) and is_truthy(remote.get("enabled", False)):
         if is_truthy(remote.get("allow_unlisted_senders", False)):

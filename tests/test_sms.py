@@ -15,7 +15,17 @@ from unittest.mock import AsyncMock
 import pytest
 
 from ori.actions.alert_delivery import AlertIntent, OutboundAlert
-from ori.actions.sms import SMSAction
+from ori.actions.sms import (
+    ALLOWLISTED_BURST,
+    ALLOWLISTED_RATE_PER_MINUTE,
+    INBOUND_RETENTION_MS,
+    MAX_APPROVAL_MESSAGE_CHARS,
+    MAX_UNCONSUMED_PER_SENDER,
+    SENDER_BURST,
+    SENDER_RATE_PER_MINUTE,
+    SMSAction,
+    _ApprovalIngress,
+)
 from tests.waiting import latency_bounds_apply
 
 # ── AT SDK stub ───────────────────────────────────────────────────────────────
@@ -280,7 +290,7 @@ async def test_listen_for_response_does_not_block(monkeypatch):
 async def test_ingest_incoming_webhook_persists_message(monkeypatch):
     monkeypatch.delenv("AT_API_KEY", raising=False)
     store = types.SimpleNamespace(store_incoming_message=AsyncMock(return_value=None))
-    action = SMSAction(state_store=store)
+    action = SMSAction(state_store=store, allowed_senders={"+2348000000000"})
 
     ok = await action.ingest_incoming_webhook(
         {"from": "+234 800 000 0000", "text": " YES "}
@@ -292,6 +302,10 @@ async def test_ingest_incoming_webhook_persists_message(monkeypatch):
     assert kwargs["channel"] == "sms"
     assert kwargs["from_number"] == "+2348000000000"
     assert kwargs["message"] == "YES"
+    # Stored under the bounds: the sender's newest unread replies, and nothing
+    # older than any listener can wait.
+    assert kwargs["keep_unconsumed"] == MAX_UNCONSUMED_PER_SENDER
+    assert kwargs["retain_ms"] == INBOUND_RETENTION_MS
 
 
 @pytest.mark.asyncio
@@ -482,3 +496,185 @@ async def test_send_unknown_transport_fails_closed(monkeypatch):
     )
     ok = await action.send("Alert", "+2348000000000")
     assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_an_empty_allowlist_admits_no_approval_reply(monkeypatch):
+    """No configured contact means no approver, not every sender."""
+    monkeypatch.delenv("AT_API_KEY", raising=False)
+    store = types.SimpleNamespace(store_incoming_message=AsyncMock(return_value=None))
+    action = SMSAction(state_store=store, allowed_senders=set())
+
+    for index in range(50):
+        assert not await action.ingest_incoming_webhook(
+            {"from": f"+2348000000{index:03d}", "text": "YES-prop-1"}
+        )
+    assert not store.store_incoming_message.called
+    assert action.approval_refusals["unlisted_sender"] == 50
+
+
+@pytest.mark.asyncio
+async def test_an_overlong_approval_reply_is_refused_not_truncated(monkeypatch):
+    monkeypatch.delenv("AT_API_KEY", raising=False)
+    store = types.SimpleNamespace(store_incoming_message=AsyncMock(return_value=None))
+    action = SMSAction(state_store=store, allowed_senders={"+2348000000000"})
+    limit = MAX_APPROVAL_MESSAGE_CHARS
+
+    assert await action.ingest_incoming_webhook(
+        {"from": "+2348000000000", "text": "Y" * limit}
+    )
+    assert not await action.ingest_incoming_webhook(
+        {"from": "+2348000000000", "text": "Y" * (limit + 1)}
+    )
+    assert store.store_incoming_message.await_count == 1
+    assert action.approval_refusals["message_too_long"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_strangers_flood_spends_none_of_an_operators_budget(monkeypatch):
+    """Refused senders consume no bucket, so the operator's reply still lands."""
+    monkeypatch.delenv("AT_API_KEY", raising=False)
+    store = types.SimpleNamespace(store_incoming_message=AsyncMock(return_value=None))
+    action = SMSAction(state_store=store, allowed_senders={"+2348000000000"})
+
+    for index in range(500):
+        await action.ingest_incoming_webhook(
+            {"from": f"+2349000000{index:03d}", "text": "YES-prop-1"}
+        )
+    assert await action.ingest_incoming_webhook(
+        {"from": "+2348000000000", "text": "YES-prop-1"}
+    )
+    assert store.store_incoming_message.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_each_allowlisted_sender_has_its_own_rate(monkeypatch):
+    monkeypatch.delenv("AT_API_KEY", raising=False)
+    store = types.SimpleNamespace(store_incoming_message=AsyncMock(return_value=None))
+    operator, secondary = "+2348000000000", "+2348000000001"
+    action = SMSAction(state_store=store, allowed_senders={operator, secondary})
+    clock = [0.0]
+    action._approval_ingress = _ApprovalIngress(
+        frozenset({operator, secondary}), clock=lambda: clock[0]
+    )
+
+    accepted = [
+        await action.ingest_incoming_webhook({"from": operator, "text": "YES-a"})
+        for _ in range(SENDER_BURST + 2)
+    ]
+    assert accepted.count(True) == SENDER_BURST
+    assert action.approval_refusals["sender_rate_exceeded"] == 2
+    # The secondary contact's bucket is untouched by the operator's.
+    assert await action.ingest_incoming_webhook({"from": secondary, "text": "YES-b"})
+    # Refilled at the sender's rate.
+    clock[0] += 60.0 / SENDER_RATE_PER_MINUTE
+    assert await action.ingest_incoming_webhook({"from": operator, "text": "YES-c"})
+
+
+@pytest.mark.asyncio
+async def test_all_allowlisted_senders_share_one_backstop(monkeypatch):
+    monkeypatch.delenv("AT_API_KEY", raising=False)
+    store = types.SimpleNamespace(store_incoming_message=AsyncMock(return_value=None))
+    senders = {f"+23480000001{index:02d}" for index in range(5)}
+    action = SMSAction(state_store=store, allowed_senders=senders)
+    action._approval_ingress = _ApprovalIngress(frozenset(senders), clock=lambda: 0.0)
+
+    for sender in sorted(senders):
+        for _ in range(SENDER_BURST):
+            await action.ingest_incoming_webhook({"from": sender, "text": "YES-a"})
+    assert store.store_incoming_message.await_count == ALLOWLISTED_BURST
+    assert action.approval_refusals["allowlisted_rate_exceeded"] == (
+        5 * SENDER_BURST - ALLOWLISTED_BURST
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_reply_a_listener_can_still_read_survives_and_an_older_one_goes(
+    tmp_path, monkeypatch
+):
+    """A listener reads only replies received after it starts and waits at most
+    one proposal lifetime: a reply that old is kept, one past retention goes."""
+    from ori.reasoning.approval_bounds import MAX_PROPOSAL_LIFETIME_S
+    from ori.state.store import StateStore
+    from ori.utils.time_utils import now_ms
+
+    monkeypatch.delenv("AT_API_KEY", raising=False)
+    store = StateStore(str(tmp_path / "state.db"))
+    await store.open()
+    try:
+        operator = "+2348000000000"
+        now = now_ms()
+        await store.store_incoming_message(
+            "sms",
+            operator,
+            "within",
+            received_at_ms=now - MAX_PROPOSAL_LIFETIME_S * 1000,
+        )
+        await store.store_incoming_message(
+            "sms", operator, "past", received_at_ms=now - INBOUND_RETENTION_MS - 1000
+        )
+        action = SMSAction(state_store=store, allowed_senders={operator})
+        assert await action.ingest_incoming_webhook({"from": operator, "text": "new"})
+
+        assert store._conn is not None
+        kept = [
+            row["message"]
+            for row in store._conn.execute(
+                "SELECT message FROM inbound_messages ORDER BY received_at"
+            )
+        ]
+        assert kept == ["within", "new"]
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_a_flood_of_refusals_is_reported_a_line_a_minute(monkeypatch, caplog):
+    monkeypatch.delenv("AT_API_KEY", raising=False)
+    store = types.SimpleNamespace(store_incoming_message=AsyncMock(return_value=None))
+    action = SMSAction(state_store=store, allowed_senders={"+2348000000000"})
+    clock = [0.0]
+    action._approval_ingress = _ApprovalIngress(
+        frozenset({"+2348000000000"}), clock=lambda: clock[0]
+    )
+    with caplog.at_level("WARNING", logger="ori.actions.sms"):
+        for index in range(300):
+            await action.ingest_incoming_webhook(
+                {"from": f"+2349000000{index:03d}", "text": "YES-a"}
+            )
+        clock[0] = 61.0
+        await action.ingest_incoming_webhook({"from": "+2349111111111", "text": "x"})
+    lines = [r.getMessage() for r in caplog.records if "refused" in r.getMessage()]
+    assert len(lines) == 2
+    assert "1 approval" in lines[0] and "300 approval" in lines[1]
+    assert action.approval_refusals["unlisted_sender"] == 301
+
+
+@pytest.mark.asyncio
+async def test_a_reply_refused_by_the_shared_bucket_costs_the_sender_nothing(
+    monkeypatch,
+):
+    """An operator retrying while the shared bucket is empty keeps their own
+    allowance, so their approval lands once the shared bucket refills."""
+    monkeypatch.delenv("AT_API_KEY", raising=False)
+    store = types.SimpleNamespace(store_incoming_message=AsyncMock(return_value=None))
+    operator, others = "+2348000000000", ["+2348000000001", "+2348000000002"]
+    allowed = frozenset([operator, *others])
+    action = SMSAction(state_store=store, allowed_senders=set(allowed))
+    clock = [0.0]
+    action._approval_ingress = _ApprovalIngress(allowed, clock=lambda: clock[0])
+
+    for other in others:
+        for _ in range(SENDER_BURST):
+            assert await action.ingest_incoming_webhook({"from": other, "text": "x"})
+    assert store.store_incoming_message.await_count == ALLOWLISTED_BURST
+
+    for _ in range(SENDER_BURST * 2):
+        assert not await action.ingest_incoming_webhook(
+            {"from": operator, "text": "YES-a"}
+        )
+    assert action.approval_refusals["allowlisted_rate_exceeded"] == SENDER_BURST * 2
+    assert action.approval_refusals["sender_rate_exceeded"] == 0
+
+    clock[0] += 60.0 / ALLOWLISTED_RATE_PER_MINUTE  # one shared token back
+    assert await action.ingest_incoming_webhook({"from": operator, "text": "YES-a"})

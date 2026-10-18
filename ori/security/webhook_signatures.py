@@ -24,6 +24,9 @@ DEFAULT_WEBHOOK_REPLAY_TTL_MS = 300_000
 _MAX_MEMORY_REPLAY_ENTRIES = 4096
 
 
+_LONGEST_MEANINGFUL_MS = 2**53
+
+
 class WebhookSignatureError(ValueError):
     """Raised when a webhook HTTP envelope fails signature verification."""
 
@@ -62,14 +65,22 @@ class WebhookReplayCache:
         self._max_entries = max(1, int(max_entries))
         self._seen_until_ms: dict[str, int] = {}
 
-    def mark_seen(self, key: str, *, now_ms_value: int | None = None) -> bool:
+    def mark_seen(
+        self,
+        key: str,
+        *,
+        now_ms_value: int | None = None,
+        expires_ms: int | None = None,
+    ) -> bool:
         current_ms = int(now_ms_value if now_ms_value is not None else now_ms())
         self._prune(current_ms)
         if key in self._seen_until_ms:
             return False
         if len(self._seen_until_ms) >= self._max_entries:
             return False
-        self._seen_until_ms[key] = current_ms + self._ttl_ms
+        self._seen_until_ms[key] = (
+            current_ms + self._ttl_ms if expires_ms is None else int(expires_ms)
+        )
         return True
 
     def _prune(self, current_ms: int) -> None:
@@ -107,8 +118,12 @@ class WebhookSignatureVerifier:
         self._signature_header = _normalize_header(config.signature_header)
         self._timestamp_header = _normalize_header(config.timestamp_header)
         self._nonce_header = _normalize_header(config.nonce_header)
-        self._max_skew_ms = max(0, int(config.max_skew_ms))
-        self._replay_ttl_ms = max(1, int(config.replay_ttl_ms))
+        # Bounded so every expiry derived from them stays an integer SQLite
+        # stores; no meaningful window is longer.
+        self._max_skew_ms = min(max(0, int(config.max_skew_ms)), _LONGEST_MEANINGFUL_MS)
+        self._replay_ttl_ms = min(
+            max(1, int(config.replay_ttl_ms)), _LONGEST_MEANINGFUL_MS
+        )
         self._require_nonce = bool(config.require_nonce)
         self._replay_cache = replay_cache or WebhookReplayCache(
             ttl_ms=self._replay_ttl_ms
@@ -175,7 +190,14 @@ class WebhookSignatureVerifier:
 
         if nonce:
             replay_key = f"{source}\n{nonce}"
-            expires_at_ms = current_ms + self._replay_ttl_ms
+            # Kept as long as the request could still pass the timestamp check:
+            # it is accepted until its signing time plus the skew, inclusive,
+            # so a nonce that expired sooner could be replayed. Never shorter
+            # than the configured TTL from receipt.
+            expires_at_ms = max(
+                current_ms + self._replay_ttl_ms,
+                signed_at_ms + self._max_skew_ms + 1,
+            )
             if state_store is not None and hasattr(state_store, "record_webhook_nonce"):
                 recorded = await state_store.record_webhook_nonce(
                     source=source,
@@ -185,7 +207,9 @@ class WebhookSignatureVerifier:
                 )
                 if not recorded:
                     return WebhookVerificationResult(False, "replay_detected")
-            elif not self._replay_cache.mark_seen(replay_key, now_ms_value=current_ms):
+            elif not self._replay_cache.mark_seen(
+                replay_key, now_ms_value=current_ms, expires_ms=expires_at_ms
+            ):
                 return WebhookVerificationResult(False, "replay_detected")
 
         return WebhookVerificationResult(
