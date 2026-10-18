@@ -85,7 +85,7 @@ def decode_token_text(raw: str) -> dict[str, Any] | None:
     try:
         decoded = json.loads(
             payload_txt,
-            object_pairs_hook=unique_members(lambda name: DuplicateMemberError(name)),
+            object_pairs_hook=unique_members(DuplicateMemberError),
         )
     except DuplicateMemberError:
         raise

@@ -18,7 +18,11 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from ori.gateway.evidence_inbound import EvidenceInboundRouter, InboundRefusal
+from ori.gateway.evidence_inbound import (
+    EvidenceInboundRouter,
+    InboundRefusal,
+    _decode,
+)
 from ori.gateway.evidence_outbound import ROUTED_REFUSED, EvidenceOutboundAckRouter
 from ori.gateway.export import GatewayExportResponder
 from ori.gateway.heartbeat import MqttGatewayHeartbeatSubscriber
@@ -321,18 +325,16 @@ async def test_the_inbound_route_scans_off_the_event_loop():
     where it happens."""
     import threading
 
-    import ori.gateway.evidence_inbound as inbound
-
     loop_thread = threading.current_thread()
     seen: list[threading.Thread] = []
-    real = inbound._decode
+    real = _decode
 
     def recorded(payload):
         seen.append(threading.current_thread())
         return real(payload)
 
     router = EvidenceInboundRouter(device_id="site-a-edge-01", ingest=None)
-    with patch.object(inbound, "_decode", recorded):
+    with patch("ori.gateway.evidence_inbound._decode", recorded):
         routed = await router.route(b'{"a":1,"a":2}')
     assert isinstance(routed.outcome, InboundRefusal)
     assert routed.outcome.reason == DUPLICATE_MEMBER
