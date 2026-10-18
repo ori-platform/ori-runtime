@@ -1218,30 +1218,81 @@ def test_an_admitted_message_is_recorded_once_and_its_replay_refused(tmp_path):
     assert len(ingest.calls) == 1
 
 
-def test_a_message_the_saturated_worker_refused_is_admitted_when_redelivered(tmp_path):
-    """Refused at submission, it was never acted on: its key is released, so
-    the broker's redelivery of the same bytes is not a replay."""
-    from ori.security.evidence.executor import EvidenceExecutorSaturatedError
+class _Saturating(_RecordingIngest):
+    saturated = True
 
+    async def accept_async(self, artifact_type: str, artifact: object) -> IngestOutcome:
+        from ori.security.evidence.executor import EvidenceExecutorSaturatedError
+
+        if self.saturated:
+            raise EvidenceExecutorSaturatedError("the worker is full")
+        return await super().accept_async(artifact_type, artifact)
+
+
+def test_a_message_the_saturated_worker_refused_keeps_its_key_and_a_new_envelope_lands(
+    tmp_path,
+):
+    """gateway-api/v2: receivers do not relax replay protection to accommodate
+    redelivery. Left undecided with no acknowledgement, like a store fault: its
+    key stays recorded, so the identical bytes are refused as a replay, and the
+    courier's redelivery in a newly signed envelope is admitted."""
     db = tmp_path / "replay.db"
-
-    class _Saturating(_RecordingIngest):
-        saturated = True
-
-        async def accept_async(
-            self, artifact_type: str, artifact: object
-        ) -> IngestOutcome:
-            if self.saturated:
-                raise EvidenceExecutorSaturatedError("the worker is full")
-            return await super().accept_async(artifact_type, artifact)
-
     ingest = _Saturating()
     router = _persisted_router(db, ingest)
+    envelope = _envelope(ARTIFACT_CUSTODY, {"v": 1})
+    payload = _signed(envelope)
+
+    saturated = asyncio.run(router.route(payload))
+    assert isinstance(saturated.outcome, IngestOutcome)
+    assert not saturated.outcome.decided and saturated.acknowledgement is None
+    assert _replay_rows(db) == 1
+
+    ingest.saturated = False
+    replayed = asyncio.run(router.route(payload)).outcome
+    assert isinstance(replayed, InboundRefusal)
+    assert replayed.reason == REFUSE_ENVELOPE_UNAUTHENTICATED
+    resigned = json.dumps(
+        _authenticator().sign(
+            envelope,
+            message_type=EVIDENCE_INBOUND_MESSAGE_TYPE,
+            signed_at_ms=json.loads(payload)["auth"]["signed_at_ms"] + 1,
+        )
+    ).encode()
+    assert asyncio.run(router.route(resigned)).outcome.accepted
+    assert _replay_rows(db) == 2
+
+
+def test_the_authenticator_cannot_unrecord_a_replay_key():
+    """Never unrecorded is a property of the surface, not of every caller."""
+    from ori.security.gateway_messages import GatewayReplayCache
+
+    assert not hasattr(GatewayMessageAuthenticator, "release")
+    assert not hasattr(GatewayReplayCache, "forget")
+
+
+def test_the_route_writes_replay_keys_off_the_event_loop(tmp_path, monkeypatch):
+    """Each commit is an SQLite commit: on a worker thread, and awaited before
+    the message is acted on."""
+    import threading
+
+    from ori.security.gateway_messages import GatewayReplayCache
+
+    writes: list[int] = []
+    persist = GatewayReplayCache._persist
+
+    def recorded_persist(self, *args, **kwargs):
+        writes.append(threading.get_ident())
+        return persist(self, *args, **kwargs)
+
+    monkeypatch.setattr(GatewayReplayCache, "_persist", recorded_persist)
+    ingest = _RecordingIngest()
+    router = _persisted_router(tmp_path / "replay.db", ingest)
     payload = _signed(_envelope(ARTIFACT_CUSTODY, {"v": 1}))
 
-    with pytest.raises(EvidenceExecutorSaturatedError):
-        asyncio.run(router.route(payload))
-    assert _replay_rows(db) == 0
-    ingest.saturated = False
-    assert asyncio.run(router.route(payload)).outcome.accepted
-    assert _replay_rows(db) == 1
+    async def scenario() -> int:
+        assert (await router.route(payload)).outcome.accepted
+        return threading.get_ident()
+
+    loop_thread = asyncio.run(scenario())
+    assert len(writes) == 1 and loop_thread not in writes
+    assert len(ingest.calls) == 1, "recorded before it was acted on, then acted on"

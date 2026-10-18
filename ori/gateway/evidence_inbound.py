@@ -201,24 +201,24 @@ class EvidenceInboundRouter:
     async def route(self, payload: bytes | str | dict[str, Any]) -> Routed:
         """:meth:`handle_payload`, awaiting the evidence worker on the event loop.
 
-        A saturated evidence worker is raised, so the subscriber leaves the
-        message with the broker; any other failure leaves it undecided.
+        A persisted replay key is written on a worker thread and awaited before
+        ingest. A recorded key is never unrecorded (gateway-api/v2: receivers
+        do not relax replay protection to accommodate redelivery): an attempt
+        the evidence worker was too busy to take is left undecided, like a
+        store fault, with no acknowledgement, and the courier redelivers it in
+        a newly signed envelope.
         """
         admitted = self._admit_or_refuse(payload)
         if isinstance(admitted, InboundRefusal):
             return Routed(admitted)
         artifact_type, artifact, ingest, claim = admitted
-        replayed = self._committed(claim)
+        replayed = await self._committed_async(claim)
         if replayed is not None:
             return Routed(replayed)
         try:
             outcome = await ingest.accept_async(_INGEST_KIND[artifact_type], artifact)
         except EvidenceExecutorSaturatedError:
-            # Refused at submission, before any work: unrecorded, so the
-            # broker's redelivery of these same bytes is not a replay.
-            if claim is not None and self._message_auth is not None:
-                self._message_auth.release(claim)
-            raise
+            outcome = _saturated(artifact_type)
         except Exception:
             outcome = _failed(artifact_type)
         return Routed(outcome, self._acknowledgement(artifact_type, artifact, outcome))
@@ -247,6 +247,23 @@ class EvidenceInboundRouter:
             return None
         try:
             self._message_auth.commit(claim)
+        except GatewayMessageAuthError as exc:
+            return InboundRefusal(REFUSE_ENVELOPE_UNAUTHENTICATED, str(exc))
+        except Exception:
+            logger.exception("[evidence-inbound] recording an envelope failed")
+            return InboundRefusal(
+                REFUSE_UNADMISSIBLE, "the message could not be admitted"
+            )
+        return None
+
+    async def _committed_async(
+        self, claim: AuthenticatedMessage | None
+    ) -> InboundRefusal | None:
+        """`_committed`, its write off the event loop."""
+        if claim is None or self._message_auth is None:
+            return None
+        try:
+            await self._message_auth.commit_async(claim)
         except GatewayMessageAuthError as exc:
             return InboundRefusal(REFUSE_ENVELOPE_UNAUTHENTICATED, str(exc))
         except Exception:
@@ -356,6 +373,16 @@ class EvidenceInboundRouter:
             # delivers the artifact again.
             logger.exception("[evidence-inbound] signing an acknowledgement failed")
             return None
+
+
+def _saturated(artifact_type: str) -> IngestOutcome:
+    """Refused at submission by a full evidence worker: undecided, as a store
+    fault is, so the courier redelivers it in a newly signed envelope."""
+    return IngestOutcome(
+        artifact=artifact_type,
+        state=UNDECIDED,
+        detail="the evidence worker is saturated",
+    )
 
 
 def _failed(artifact_type: str) -> IngestOutcome:
@@ -864,14 +891,6 @@ class MqttEvidenceInboundSubscriber:
         try:
             await self._route_admitted(payload)
             acknowledged = await self._acknowledge(client, mid, qos)
-        except EvidenceExecutorSaturatedError:
-            # Left with the broker like a message past the bound, and reported
-            # once per episode rather than once per message.
-            if ticket.session.owe(failed=True):
-                logger.warning(
-                    "[evidence-inbound] the evidence worker is saturated; "
-                    "messages are left with the broker until it clears"
-                )
         finally:
             if not acknowledged and self._manual_ack and mid is not None:
                 # Routing failed or was cancelled before the broker released
