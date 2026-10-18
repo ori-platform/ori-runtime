@@ -232,9 +232,9 @@ class MqttGatewayReasoner:
         # Held while an answer is checked against `answered` and recorded, and
         # by the end of the round trip, so neither can slip between the other.
         settling = threading.Lock()
-        # Unanswered responses dropped this round trip: the first is logged at
-        # once, the rest summed when it ends, so a flood across a long wait
-        # writes two lines, not one per message.
+        # Unanswered responses dropped this round trip: the first of each kind
+        # is logged at once, the rest summed when it ends, so a flood across a
+        # long wait writes at most two lines per kind, not one per message.
         dropped = {"unverified": 0, "replayed": 0}
 
         def _drop(kind: str, exc: GatewayMessageAuthError) -> None:
@@ -278,6 +278,9 @@ class MqttGatewayReasoner:
                     response,
                     GatewayReasoningError("gateway response names another device"),
                 )
+                return
+            if answered.is_set():
+                # Answered already: read no further, authentic or not.
                 return
             claim = None
             if self._message_auth is not None:

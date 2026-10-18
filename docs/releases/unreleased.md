@@ -356,7 +356,14 @@ release is cut.
   answer until `gateway.reasoning.timeout_ms`. Before, it ended the request as
   failed, so any broker client that knew a request ID could force the runtime
   off gateway reasoning (gateway-api/v2 Reasoning Auth Envelope: verification
-  precedes every side effect).
+  precedes every side effect). Dropped responses are logged once per kind
+  when the first arrives, and summed when the request ends.
+- Gateway-facing receivers log a refused message at most once a minute per
+  reason, with the count since the last line: unverified gateway heartbeats,
+  unauthenticated export requests, refused outbound evidence
+  acknowledgements and inbound transport refusals. Before, each wrote one
+  warning per message, so anything that could publish on a topic could fill
+  the log at that topic's ingress rate.
 
 - Every gateway-to-runtime MQTT family is bounded before anything is
   parsed, decoded or verified (`gateway-api/v2` Payload Size and Payload

@@ -35,6 +35,7 @@ from ori.security.gateway_messages import (
     GatewayMessageAuthError,
     GatewayMessageEncryptor,
 )
+from ori.utils.coalesced_log import CoalescedWarning
 
 try:
     import paho.mqtt.client as mqtt
@@ -135,6 +136,7 @@ class GatewayExportResponder:
         self._health_snapshot_provider = health_snapshot_provider
         self._message_auth = message_auth
         self._message_encryptor = message_encryptor
+        self._refusal_log = CoalescedWarning(logger)
 
     @property
     def request_topic(self) -> str:
@@ -173,8 +175,10 @@ class GatewayExportResponder:
             except GatewayMessageAuthError as exc:
                 # Not answered: a signed reply to an unauthenticated request
                 # would hand anything on the site network a signing oracle.
-                logger.warning(
-                    "[gateway-export] unauthenticated request dropped: %s", exc
+                self._refusal_log.warn(
+                    "unauthenticated",
+                    "[gateway-export] unauthenticated request dropped: %s",
+                    exc,
                 )
                 return None
             except Exception:

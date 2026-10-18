@@ -59,6 +59,7 @@ from ori.security.gateway_messages import (
     GatewayMessageAuthenticator,
     GatewayMessageAuthError,
 )
+from ori.utils.coalesced_log import CoalescedWarning
 from ori.utils.time_utils import now_ms
 
 try:
@@ -469,6 +470,7 @@ class MqttEvidenceOutboundPublisher:
         self._ack_slots = Slots(ACK_IN_FLIGHT_BOUND)
         self._ingress = IngressBound(EVIDENCE_OUTBOUND_ACK)
         self._acks_shed = 0
+        self._refusal_log = CoalescedWarning(logger)
 
     @property
     def topic(self) -> str:
@@ -928,8 +930,10 @@ class MqttEvidenceOutboundPublisher:
     async def _apply_ack(self, payload: bytes) -> None:
         routed = await self._router.handle_ack(payload)
         if routed.outcome == ROUTED_REFUSED:
-            logger.warning(
-                "[evidence-outbound] acknowledgement refused: %s", routed.reason
+            self._refusal_log.warn(
+                "refused",
+                "[evidence-outbound] acknowledgement refused: %s",
+                routed.reason,
             )
         elif routed.reason:
             logger.warning(

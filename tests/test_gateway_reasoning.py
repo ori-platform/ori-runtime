@@ -565,7 +565,7 @@ async def test_a_conforming_response_field_is_accepted(change, model):
     assert result.model == model
 
 
-async def test_a_flood_of_unverified_responses_is_logged_twice_not_per_message(
+async def test_a_flood_of_unverified_responses_is_logged_twice_per_kind_not_per_message(
     caplog,
 ):
     """A request can wait up to a day; one line per dropped answer would let
@@ -584,3 +584,54 @@ async def test_a_flood_of_unverified_responses_is_logged_twice_not_per_message(
     dropped = [r.getMessage() for r in caplog.records if "dropped" in r.getMessage()]
     assert len(dropped) == 2
     assert "dropped 15 unverified responses" in dropped[1]
+
+
+async def test_one_dropped_response_is_one_line(caplog):
+    client = _ManyAnswersClient(
+        lambda req: [
+            _response(req, "unsigned"),
+            _signed_by("gateway-secret", _response(req, "authentic")),
+        ]
+    )
+    with caplog.at_level("WARNING", logger="ori.gateway.reasoning"):
+        await _authenticated_reasoner(client).reason(
+            "Prompt", event=_event(), rule_result=_rule("A")
+        )
+    assert [r.getMessage() for r in caplog.records if "dropped" in r.getMessage()] == [
+        "[gateway-reasoning] dropped an unverified response for req-1: missing_auth"
+    ]
+
+
+async def test_a_flood_of_replays_is_summed_too(caplog):
+    captured: list[dict] = []
+
+    def answers(req: dict) -> list[dict]:
+        if not captured:
+            captured.append(_signed_by("gateway-secret", _response(req, "first")))
+            return list(captured)
+        return [captured[0]] * 4 + [
+            _signed_by("gateway-secret", _response(req, "second"))
+        ]
+
+    reasoner = _authenticated_reasoner(_ManyAnswersClient(answers))
+    await reasoner.reason("Prompt", event=_event(), rule_result=_rule("A"))
+    with caplog.at_level("WARNING", logger="ori.gateway.reasoning"):
+        result = await reasoner.reason("Prompt", event=_event(), rule_result=_rule("A"))
+    assert result.text == "second"
+    dropped = [r.getMessage() for r in caplog.records if "dropped" in r.getMessage()]
+    assert len(dropped) == 2 and "dropped 4 replayed responses" in dropped[1]
+
+
+async def test_a_response_after_the_answer_is_not_read(caplog):
+    client = _ManyAnswersClient(
+        lambda req: (
+            [_signed_by("gateway-secret", _response(req, "authentic"))]
+            + [_response(req, "unsigned")] * 5
+        )
+    )
+    with caplog.at_level("WARNING", logger="ori.gateway.reasoning"):
+        result = await _authenticated_reasoner(client).reason(
+            "Prompt", event=_event(), rule_result=_rule("A")
+        )
+    assert result.text == "authentic"
+    assert not [r for r in caplog.records if "dropped" in r.getMessage()]
