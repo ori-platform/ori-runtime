@@ -45,15 +45,6 @@ RECORD_KINDS = frozenset(
 )
 
 
-# Every row _action_record_members can read as another kind or link than it
-# stores, once a coalesced row stored as a dispatch is reclassified (the
-# statement before the pass that uses this). Any other row stores `dispatch`
-# with no link and an action other than `coalesced`, and is read exactly so.
-_ACTION_RECORD_CANDIDATES = (
-    "record_kind IS NOT 'dispatch' OR contributed_to IS NOT NULL"
-)
-
-
 def _action_record_members(row: Mapping[str, Any] | sqlite3.Row) -> dict[str, Any]:
     """What a stored action row records, as gateway-api/v2's export row checks require.
 
@@ -132,36 +123,3 @@ def _check_action_record_shape(
             "a contributor record performs nothing, holds no licence, is never "
             "attested and names the holder it joined"
         )
-
-
-# Where duplicated keys already stop the unique index from being built, these
-# hold every later insert and key update to a key no other row carries.
-_RECORD_KEY_UNIQUE_TRIGGER_NAMES = (
-    "trg_action_log_record_key_unique_insert",
-    "trg_action_log_record_key_unique_update",
-)
-
-
-_RECORD_KEY_UNIQUE_TRIGGERS = (
-    """
-    CREATE TRIGGER IF NOT EXISTS trg_action_log_record_key_unique_insert
-    BEFORE INSERT ON action_log
-    WHEN NEW.record_key <> ''
-         AND EXISTS (SELECT 1 FROM action_log WHERE record_key = NEW.record_key)
-    BEGIN
-        SELECT RAISE(ABORT, 'action_log.record_key is already in use');
-    END
-    """,
-    """
-    CREATE TRIGGER IF NOT EXISTS trg_action_log_record_key_unique_update
-    BEFORE UPDATE OF record_key ON action_log
-    WHEN NEW.record_key <> ''
-         AND EXISTS (
-             SELECT 1 FROM action_log
-             WHERE record_key = NEW.record_key AND id <> OLD.id
-         )
-    BEGIN
-        SELECT RAISE(ABORT, 'action_log.record_key is already in use');
-    END
-    """,
-)

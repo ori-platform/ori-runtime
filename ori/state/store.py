@@ -26,12 +26,12 @@ from ori.state._history import (
 )
 from ori.state._measurement import MeasurementStore
 from ori.state._migrations import (
+    EVIDENCE_REFERENCE_DDL,
     HistoryReceiptMigrationRequiredError,
     _table_columns,
 )
 from ori.state._reasoning import ReasoningStore
 from ori.state._remote_commands import RemoteCommandStore
-from ori.state._schema import EVIDENCE_REFERENCE_DDL
 from ori.state._skill_state import SkillStateStore
 from ori.state._tier_c import (
     _TIER_C_DECISION_STATES,

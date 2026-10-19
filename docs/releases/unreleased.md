@@ -218,7 +218,7 @@ release is cut.
   `StateStore` from one class per domain (history, action log, Tier C,
   remote commands, alert outbox, firmware, commissioning, device policy,
   reasoning, measurement and skill state), each in a private module under
-  `ori/state/`, with the DDL in `_schema.py`. The methods moved unchanged:
+  `ori/state/`, with the DDL in `_migrations.py`. The methods moved unchanged:
   the schema, the migrations and every behaviour are the same, and
   `ori.state.store` still exports every name imported from it. A new test
   holds every module under `ori/` to 2,500 lines, and the five already over

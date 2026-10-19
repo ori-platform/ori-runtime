@@ -17,7 +17,7 @@ from ori.network.events import (
 )
 from ori.network.producer_time import read_producer_time
 from ori.state._core import StoreCore
-from ori.state._schema import _HISTORY_RECEIPT_COLUMNS
+from ori.state._migrations import _HISTORY_RECEIPT_COLUMNS
 from ori.state.deferred_writer import DeferredWriter
 from ori.utils.time_utils import now_ms
 
