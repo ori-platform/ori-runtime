@@ -478,7 +478,9 @@ ori/
 │   │
 │   └── state/
 │       ├── __init__.py
-│       └── store.py
+│       ├── store.py           ← StateStore, composed from one class per domain
+│       ├── _schema.py         ← the DDL
+│       └── _*.py              ← one module per domain: history, tier_c, firmware, ...
 │
 ├── skills/
 │   ├── template/
@@ -983,7 +985,7 @@ The dispatcher is called after every reasoning result. It MUST:
    is counted lost and reported, never waited for. A process that dies before
    a row lands leaves that act out of the action log — see `docs/DISPATCH_PLAN.md`.
 
-**SQLite tables (add to store.py):**
+**SQLite tables (add to `ori/state/_schema.py`):**
 
 ```sql
 -- In addition to existing tables from V1.0:

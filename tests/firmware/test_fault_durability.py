@@ -442,7 +442,7 @@ def test_a_failed_epoch_rebuild_leaves_the_old_table_whole(
     try:
         schema = conn.execute(schema_sql).fetchall()
         monkeypatch.setattr(
-            "ori.state.store._FIRMWARE_FAULT_EVENTS_DDL", "CREATE TABLE broken ("
+            "ori.state._migrations._FIRMWARE_FAULT_EVENTS_DDL", "CREATE TABLE broken ("
         )
         with pytest.raises(sqlite3.OperationalError):
             StateStore._key_firmware_fault_events_by_epoch(conn)

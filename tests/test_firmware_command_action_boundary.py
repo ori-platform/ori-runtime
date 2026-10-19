@@ -136,6 +136,7 @@ from tests.commissioning.signing import (
     sign_envelope,
 )
 from tests.conftest import _mark_startup_complete
+from tests.store_layout import state_store_classes, state_store_modules
 from tests.waiting import drained, latency_bounds_apply, settle
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -327,7 +328,7 @@ ACTION_PATH = (
 DEFINING_MODULES = (
     "ori/gateway/firmware_commands.py",
     "ori/security/firmware/commands.py",
-    "ori/state/store.py",
+    *state_store_modules(),
     "ori/security/evidence/ledger.py",
     "ori/security/evidence/bound.py",
     "ori/security/evidence/ingest_service.py",
@@ -1047,7 +1048,9 @@ def _evidence_reader_methods() -> list[tuple[str, str | None, str]]:
     module = _module_name(ROOT / relative)
     by_table = {
         (module, owner, name)
-        for name in _table_methods(relative, owner, EVIDENCE_TABLE, keep=frozenset())
+        for name in _table_methods(
+            ((relative, owner),), EVIDENCE_TABLE, keep=frozenset()
+        )
     }
     return sorted({*_reaching(EVIDENCE_SOURCES, EVIDENCE_QUERY), *by_table}, key=str)
 
@@ -1120,18 +1123,27 @@ def _outbox_methods() -> list[str]:
     The store's open path is left real, and the gate query itself has its own
     recorder that tells a read after execution from one before it.
     """
-    found = _table_methods("ori/state/store.py", "StateStore", OUTBOX_TABLE)
+    found = _table_methods(state_store_classes(), OUTBOX_TABLE)
     return sorted(found - OUTBOX_OPEN_METHODS - {GATE_QUERY})
 
 
 def _table_methods(
-    relative: str, owner: str, table: str, *, keep: frozenset[str] = OUTBOX_OPEN_METHODS
+    classes: tuple[tuple[str, str], ...],
+    table: str,
+    *,
+    keep: frozenset[str] = OUTBOX_OPEN_METHODS,
 ) -> set[str]:
-    """Methods of *owner* whose SQL names *table*, or that call one, to a fixpoint.
+    """Methods of *classes* whose SQL names *table*, or that call one, to a fixpoint.
 
-    Methods in *keep* are neither included nor followed.
+    *classes* is (path, class name) pairs taken as one class. Methods in *keep*
+    are neither included nor followed.
     """
-    methods = _class_methods(relative, owner)
+    methods: dict[str, ast.AST] = {}
+    for relative, owner in classes:
+        own = _class_methods(relative, owner)
+        assert not own.keys() & methods.keys(), (relative, owner)
+        methods.update(own)
+    assert methods, classes
     found = {
         name
         for name, method in methods.items()

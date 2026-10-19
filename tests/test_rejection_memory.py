@@ -12,6 +12,7 @@ from ori.network.events import OriEvent, ReasoningResult, SensorReading
 from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext
 from ori.state.store import StateStore
+from tests.store_layout import freeze_store_clock
 from tests.waiting import drained
 
 
@@ -243,7 +244,7 @@ class TestRejectionMemory:
             expiry_days=1,
         )
         now = _ms()
-        monkeypatch.setattr("ori.state.store.now_ms", lambda: now + (3 * 86_400_000))
+        freeze_store_clock(monkeypatch, lambda: now + (3 * 86_400_000))
 
         llm = AsyncMock()
         llm.reason.return_value = ReasoningResult(

@@ -35,6 +35,7 @@ from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.reasoning.elevator import SkillContext
 from ori.skills.loader import SkillLoader, SkillValidationError
 from ori.state.store import StateStore
+from tests.store_layout import freeze_store_clock, state_store_modules
 from tests.test_action_dispatcher import FakeSkill, _result
 from tests.waiting import drained
 
@@ -75,7 +76,7 @@ async def _append_at(
     store: StateStore, monkeypatch, received_at: int, reading: SensorReading
 ) -> None:
     """Insert with the store's clock pinned, so the receipt is chosen by the test."""
-    monkeypatch.setattr("ori.state.store.now_ms", lambda: received_at)
+    freeze_store_clock(monkeypatch, lambda: received_at)
     await store.append_history(_event(reading))
 
 
@@ -97,7 +98,7 @@ async def test_a_far_future_producer_timestamp_never_becomes_current(
     assert latest[0].timestamp == NOW, "the producer time is kept raw on the row"
     assert isinstance(latest[0], StoredReading) and latest[0].received_at_ms == NOW + 4
 
-    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW + 5)
+    freeze_store_clock(monkeypatch, lambda: NOW + 5)
     await _append_at(store, monkeypatch, NOW + 5, _reading(7.0, sensor_id="other"))
     snapshot = await store.get_latest_readings_snapshot(
         exclude_sensor_id="other", since_ms=NOW, max_entries=10
@@ -195,7 +196,7 @@ async def test_within_the_last_hours_is_an_age_bounded_on_both_clocks(
     store, monkeypatch
 ):
     """A row is inside a window only if it was both received and measured inside it."""
-    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW)
+    freeze_store_clock(monkeypatch, lambda: NOW)
     inside = _reading(10.0, timestamp=NOW - HOUR)
     late_flush = _reading(
         100.0, timestamp=NOW - 30 * HOUR
@@ -205,7 +206,7 @@ async def test_within_the_last_hours_is_an_age_bounded_on_both_clocks(
     await _append_at(
         store, monkeypatch, NOW - 30 * HOUR, _reading(1000.0, timestamp=NOW)
     )
-    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW)
+    freeze_store_clock(monkeypatch, lambda: NOW)
 
     assert await store.avg_last_hours("s1", 24) == pytest.approx(10.0)
 
@@ -214,7 +215,7 @@ async def test_within_the_last_hours_is_an_age_bounded_on_both_clocks(
 async def test_the_receipt_is_assigned_by_the_store_and_never_by_the_reading(
     store, monkeypatch
 ):
-    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW)
+    freeze_store_clock(monkeypatch, lambda: NOW)
     smuggled = StoredReading(
         sensor_id="s1",
         sensor_type="current",
@@ -264,7 +265,7 @@ async def test_compaction_retires_a_poisoned_row_by_receipt_and_never_halts(
         store, monkeypatch, NOW - 49 * HOUR, _reading(5.0, timestamp=FAR_FUTURE)
     )
     await _append_at(store, monkeypatch, NOW, _reading(6.0))
-    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW)
+    freeze_store_clock(monkeypatch, lambda: NOW)
 
     await store.compact_history()
     await (
@@ -304,14 +305,14 @@ async def test_compaction_merges_a_bucket_that_gains_samples_across_runs(
         store, monkeypatch, NOW - 47 * HOUR, _reading(30.0, timestamp=measured + 1_000)
     )
 
-    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW)
+    freeze_store_clock(monkeypatch, lambda: NOW)
     await store.compact_history()
     first = store._conn.execute(
         "SELECT avg_value, sample_count FROM sensor_history_basis_5min"
     ).fetchone()
     assert (first["avg_value"], first["sample_count"]) == (10.0, 1)
 
-    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW + 4 * HOUR)
+    freeze_store_clock(monkeypatch, lambda: NOW + 4 * HOUR)
     await store.compact_history()
     merged = store._conn.execute(
         "SELECT avg_value, sample_count, max_received_at_ms FROM sensor_history_basis_5min"
@@ -362,7 +363,7 @@ async def _enqueue(store: StateStore, alert_id: str, original_ts: int) -> None:
 async def test_alert_retry_order_is_arrival_and_the_summary_carries_the_queue_receipt(
     store, monkeypatch
 ):
-    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW)
+    freeze_store_clock(monkeypatch, lambda: NOW)
     await _enqueue(store, "first", FAR_FUTURE)
     await _enqueue(store, "second", 1)
 
@@ -420,7 +421,7 @@ async def test_opening_an_unreceipted_store_rebuilds_history_and_logs_what_it_di
 ):
     path = tmp_path / "old.db"
     _old_store(path)
-    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW)
+    freeze_store_clock(monkeypatch, lambda: NOW)
 
     state = StateStore(str(path), allow_history_rebuild=True)
     with caplog.at_level(logging.WARNING, logger="ori.state.store"):
@@ -462,7 +463,7 @@ async def test_a_failed_rebuild_leaves_the_old_tables_and_their_rows(
 ):
     path = tmp_path / "old.db"
     _old_store(path)
-    from ori.state import store as store_module
+    from ori.state import _migrations as store_module
 
     real = store_module._history_rebuild_statements
     monkeypatch.setattr(
@@ -728,7 +729,7 @@ async def test_a_legacy_outbox_row_is_resent_with_the_queue_receipt_in_its_slot(
     store = StateStore(str(tmp_path / "legacy.db"))
     await store.open()
     try:
-        monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW)
+        freeze_store_clock(monkeypatch, lambda: NOW)
         await store.enqueue_alert(
             alert_id="legacy",
             channel="sms",
@@ -981,7 +982,8 @@ CLASSIFIED_CLAUSES: dict[tuple[str, str], str] = {
 }
 
 _LIMIT = (
-    "This inventory reads SQL string literals inside functions of ori/state/store.py "
+    "This inventory reads SQL string literals inside functions of the state store's "
+    "modules "
     "that name a producer-time table, flattened to one line with aliases stripped, and "
     "flags a producer-time column where it meets ORDER BY, MAX/MIN, a comparison against "
     "a bound or a subquery, BETWEEN, or bucketing arithmetic. It does not see a "
@@ -1021,9 +1023,10 @@ def _decision_clauses(source: str) -> dict[tuple[str, str], str]:
 
 
 def _store_decision_clauses() -> dict[tuple[str, str], str]:
-    return _decision_clauses(
-        (ROOT / "ori" / "state" / "store.py").read_text(encoding="utf-8")
-    )
+    found: dict[tuple[str, str], str] = {}
+    for rel in state_store_modules():
+        found.update(_decision_clauses((ROOT / rel).read_text(encoding="utf-8")))
+    return found
 
 
 def _planted(body: str) -> str:

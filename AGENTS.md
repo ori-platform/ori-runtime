@@ -784,7 +784,7 @@ these rules can compromise the runtime that controls physical hardware.
 | Change how actions are routed by tier | `ori/reasoning/action_dispatcher.py` |
 | Add a new action type                 | `ori/actions/`                       |
 | Change skill loading and validation   | `ori/skills/loader.py`               |
-| Change what gets persisted to SQLite  | `ori/state/store.py`                 |
+| Change what gets persisted to SQLite  | `ori/state/` (one module per domain) |
 | Change device configuration format    | `ori/config.py` + `ori.yaml.example` |
 | Change the main event loop            | `ori/runtime.py`                     |
 | Add a bundled skill                   | `skills/`                            |

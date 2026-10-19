@@ -6,13 +6,13 @@ import os
 import sqlite3
 import time
 from datetime import datetime, timedelta
-from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from ori.network.events import ActionResult, OriEvent, ReasoningResult, SensorReading
 from ori.state.store import StateStore
+from tests.store_layout import freeze_store_clock, store_clock_at
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -205,7 +205,7 @@ class TestCompactionGuard:
     ):
         """A row written while the clock ran ahead no longer stops retention."""
         future_ts = _ms() + 10_000_000
-        monkeypatch.setattr("ori.state.store.now_ms", lambda: future_ts)
+        freeze_store_clock(monkeypatch, lambda: future_ts)
         await store.append_history(_event(_reading(timestamp=future_ts)))
         monkeypatch.undo()
 
@@ -1321,7 +1321,7 @@ class TestReasoningLog:
         result.tier = tier
         result.action_tier = action_tier
         result.text = text
-        with patch("ori.state.store.now_ms", return_value=timestamp):
+        with store_clock_at(timestamp):
             await store.log_reasoning(
                 result=result,
                 trigger_name=trigger_name,

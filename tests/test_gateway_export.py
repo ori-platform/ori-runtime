@@ -22,6 +22,7 @@ from ori.security.gateway_messages import (
     GatewayMessageEncryptor,
 )
 from ori.state.store import StateStore
+from tests.store_layout import store_clock_at
 
 
 @pytest.fixture
@@ -424,7 +425,7 @@ async def test_reasoning_log_export_uses_runtime_store_boundary(store):
         reasoning_status="complete",
         correlation_id="corr-tier-b-1",
     )
-    with patch("ori.state.store.now_ms", return_value=2_000):
+    with store_clock_at(2_000):
         await store.log_reasoning(
             result=result,
             trigger_name="grid_instability",

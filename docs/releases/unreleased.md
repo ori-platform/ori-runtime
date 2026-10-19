@@ -214,6 +214,15 @@ release is cut.
   installer's health gate fail on a critical snapshot, so both now fail on a
   lost decision record, which they passed before, and no longer fail on
   liveness over capacity or failing ticks alone.
+- The state store is split by domain. `ori/state/store.py` composes
+  `StateStore` from one class per domain (history, action log, Tier C,
+  remote commands, alert outbox, firmware, commissioning, device policy,
+  reasoning, measurement and skill state), each in a private module under
+  `ori/state/`, with the DDL in `_schema.py`. The methods moved unchanged:
+  the schema, the migrations and every behaviour are the same, and
+  `ori.state.store` still exports every name imported from it. A new test
+  holds every module under `ori/` to 2,500 lines, and the five already over
+  it, `ori/runtime.py` among them, to their current size.
 
 ## Fixed
 

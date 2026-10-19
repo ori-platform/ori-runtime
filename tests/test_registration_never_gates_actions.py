@@ -491,13 +491,13 @@ _SCOPED_READERS: dict[str, set[str]] = {
         "_issue_shutdown_checkpoint",
         "<import>",
     },
-    "state/store.py": {
+    "state/_commissioning.py": {
         "get_evidence_commissioning_reference",
         "_get_evidence_commissioning_reference_sync",
         "record_evidence_commissioning_reference",
         "_record_evidence_commissioning_reference_sync",
-        "<assign:EVIDENCE_REFERENCE_DDL>",
     },
+    "state/_schema.py": {"<assign:EVIDENCE_REFERENCE_DDL>"},
     "operator_socket.py": {
         "<assign:COMMISSION_RESULT_FIELDS>",
         "<assign:COMMISSION_STATUSES>",

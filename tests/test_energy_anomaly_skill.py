@@ -9,6 +9,7 @@ from ori.network.events import OriEvent, ReasoningResult, SensorReading, StoredR
 from ori.reasoning.rule_engine import RuleEngine
 from ori.skills.hooks_api import HookContext
 from ori.skills.loader import SkillLoader
+from tests.store_layout import freeze_store_clock
 
 
 class _Store:
@@ -629,7 +630,7 @@ async def test_the_events_own_row_counts_though_the_store_stamped_it_later(
     sensor_id = "load-current-01"
     base = 1_710_000_000_000
     clock = {"now": base}
-    monkeypatch.setattr("ori.state.store.now_ms", lambda: clock["now"])
+    freeze_store_clock(monkeypatch, lambda: clock["now"])
     try:
         for index in range(5):
             clock["now"] = base + index * 60_000

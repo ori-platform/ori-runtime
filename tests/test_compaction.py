@@ -4,6 +4,7 @@
 import pytest
 
 from ori.state.store import StateStore
+from tests.store_layout import freeze_store_clock
 
 NOW_MS = 2_000_000_000_000  # Fixed point in time
 
@@ -21,7 +22,7 @@ async def store(tmp_path):
 
 @pytest.mark.asyncio
 async def test_compaction_pyramid(store, monkeypatch):
-    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW_MS)
+    freeze_store_clock(monkeypatch, lambda: NOW_MS)
 
     def _insert_raw(ts: int, value: float):
         # Received when measured: the receipt is what retention is decided on.
@@ -170,7 +171,7 @@ async def test_a_producer_clock_in_the_future_is_not_a_receipt(store):
 
 @pytest.mark.asyncio
 async def test_unified_read_paths(store, monkeypatch):
-    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW_MS)
+    freeze_store_clock(monkeypatch, lambda: NOW_MS)
 
     # Insert raw
     store._conn.execute(
@@ -197,7 +198,7 @@ async def test_unified_read_paths(store, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_compaction_uses_weighted_average_for_hourly(store, monkeypatch):
-    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW_MS)
+    freeze_store_clock(monkeypatch, lambda: NOW_MS)
     bucket = NOW_MS - 86400_000 * 40
     hour_bucket = (bucket // 3_600_000) * 3_600_000
     store._conn.execute(
@@ -222,7 +223,7 @@ async def test_compaction_uses_weighted_average_for_hourly(store, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_compaction_uses_weighted_average_for_daily(store, monkeypatch):
-    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW_MS)
+    freeze_store_clock(monkeypatch, lambda: NOW_MS)
     bucket = NOW_MS - 86400_000 * 400
     day_bucket = (bucket // 86_400_000) * 86_400_000
     store._conn.execute(
@@ -284,7 +285,7 @@ async def test_a_kept_future_receipt_is_reported_on_change_and_daily(store, capl
 @pytest.mark.asyncio
 async def test_a_future_receipt_is_left_out_of_an_hours_average(store, monkeypatch):
     """Its age is unknown, so it is not inside any window measured from now."""
-    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW_MS)
+    freeze_store_clock(monkeypatch, lambda: NOW_MS)
     _insert_receipt(store, timestamp=NOW_MS - 60_000, received_at_ms=NOW_MS - 60_000)
     store._conn.execute(
         "UPDATE sensor_history SET value = 10.0 WHERE received_at_ms = ?",
@@ -301,7 +302,7 @@ async def test_a_future_receipt_is_left_out_of_an_hours_average(store, monkeypat
 @pytest.mark.asyncio
 async def test_a_future_receipt_is_not_a_fresh_latest_reading(store, monkeypatch):
     """The sensor's latest arrival carries a receipt the clock has not reached."""
-    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW_MS)
+    freeze_store_clock(monkeypatch, lambda: NOW_MS)
     _insert_receipt(
         store, timestamp=NOW_MS - 60_000, received_at_ms=NOW_MS + 86_400_000
     )
@@ -321,7 +322,7 @@ async def test_a_future_bucket_is_left_out_of_an_hours_average(
     store, monkeypatch, table
 ):
     """The age bound applies to every tier the window reads, not only raw."""
-    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW_MS)
+    freeze_store_clock(monkeypatch, lambda: NOW_MS)
     _insert_receipt(store, timestamp=NOW_MS - 60_000, received_at_ms=NOW_MS - 60_000)
     store._conn.execute("UPDATE sensor_history SET value = 10.0")
     store._conn.execute(
@@ -347,7 +348,7 @@ async def test_the_hours_average_tolerates_a_receipt_just_ahead(
     from ori.state.store import RECEIPT_READ_TOLERANCE_MS
 
     assert RECEIPT_READ_TOLERANCE_MS == 60_000
-    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW_MS)
+    freeze_store_clock(monkeypatch, lambda: NOW_MS)
     _insert_receipt(store, timestamp=NOW_MS - 60_000, received_at_ms=NOW_MS - 60_000)
     store._conn.execute("UPDATE sensor_history SET value = 10.0")
     _insert_receipt(store, timestamp=NOW_MS - 30_000, received_at_ms=NOW_MS + ahead_ms)
@@ -367,7 +368,7 @@ async def test_the_latest_snapshot_tolerates_a_receipt_just_ahead(
     store, monkeypatch, ahead_ms, counted
 ):
     """A small backward clock step must not make a live sensor vanish."""
-    monkeypatch.setattr("ori.state.store.now_ms", lambda: NOW_MS)
+    freeze_store_clock(monkeypatch, lambda: NOW_MS)
     _insert_receipt(store, timestamp=NOW_MS - 30_000, received_at_ms=NOW_MS + ahead_ms)
 
     snapshot = await store.get_latest_readings_snapshot(

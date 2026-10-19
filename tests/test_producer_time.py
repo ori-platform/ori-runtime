@@ -973,7 +973,7 @@ def test_a_table_another_opener_migrated_first_is_left_as_it_is(
             return columns - {"producer_time"}
         return columns
 
-    monkeypatch.setattr("ori.state.store._table_columns", first_look_is_stale)
+    monkeypatch.setattr("ori.state._migrations._table_columns", first_look_is_stale)
     StateStore._add_history_producer_time(conn)
     assert stale == {"sensor_history"}
     conn.close()

@@ -108,19 +108,22 @@ EXEMPT: dict[tuple[str, str], tuple[int, str]] = {
         1,
         _OWN_ROWS,
     ),
-    ("state/store.py", "_stored_reading"): (1, _OWN_ROWS),
-    ("state/store.py", "StateStore._get_actions_needing_attestation_sync"): (
+    ("state/_history.py", "_stored_reading"): (1, _OWN_ROWS),
+    ("state/_actions.py", "ActionLogStore._get_actions_needing_attestation_sync"): (
         1,
         _OWN_ROWS,
     ),
-    ("state/store.py", "StateStore._decode_tier_c_decision_row"): (3, _OWN_ROWS),
-    ("state/store.py", "StateStore._get_retryable_alerts_sync"): (1, _OWN_ROWS),
-    ("state/store.py", "StateStore._list_firmware_device_manifests_sync"): (
+    ("state/_tier_c.py", "TierCStore._decode_tier_c_decision_row"): (3, _OWN_ROWS),
+    ("state/_alerts.py", "AlertOutboxStore._get_retryable_alerts_sync"): (1, _OWN_ROWS),
+    ("state/_firmware.py", "FirmwareStore._list_firmware_device_manifests_sync"): (
         1,
         _OWN_ROWS,
     ),
-    ("state/store.py", "StateStore._get_firmware_device_sync"): (2, _OWN_ROWS),
-    ("state/store.py", "StateStore._retain_commissioned_binding_sync"): (
+    ("state/_firmware.py", "FirmwareStore._get_firmware_device_sync"): (2, _OWN_ROWS),
+    (
+        "state/_commissioning.py",
+        "CommissioningStore._retain_commissioned_binding_sync",
+    ): (
         1,
         _OWN_ROWS,
     ),
