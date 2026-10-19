@@ -23,12 +23,6 @@ from ori.security.firmware.liveness import FirmwareLivenessSupervisor
 from tests.waiting import settle, wait_until
 
 SURFACES = ("node", "export", "gateway_heartbeat", "firmware_telemetry")
-MODULES = {
-    "node": node_module,
-    "export": export_module,
-    "gateway_heartbeat": heartbeat_module,
-    "firmware_telemetry": firmware_module,
-}
 
 
 class _Client:
@@ -163,7 +157,7 @@ def _ready(surface: str, client: _Client) -> bool:
 async def test_a_refused_first_connection_recovers_without_restart(
     monkeypatch: pytest.MonkeyPatch, surface: str, failure: str
 ) -> None:
-    monkeypatch.setattr(MODULES[surface], "RECONNECT_MIN_S", 0.01)
+    monkeypatch.setattr(retry_module, "RECONNECT_MIN_S", 0.01)
     first, second = _Client(failure), _Client()
     service = _service(surface, [first, second])
     shutdown = asyncio.Event()
@@ -186,7 +180,7 @@ async def test_a_refused_first_connection_recovers_without_restart(
 async def test_delayed_connack_recovers_after_refusal_and_drop(
     monkeypatch: pytest.MonkeyPatch, surface: str
 ) -> None:
-    monkeypatch.setattr(MODULES[surface], "RECONNECT_MIN_S", 0.01)
+    monkeypatch.setattr(retry_module, "RECONNECT_MIN_S", 0.01)
     first = _Client("raise")
     second, third = _DeferredConnectClient(), _DeferredConnectClient()
     service = _service(surface, [first, second, third])
@@ -232,7 +226,7 @@ async def test_delayed_connack_recovers_after_refusal_and_drop(
 async def test_a_dropped_session_uses_a_fresh_client(
     monkeypatch: pytest.MonkeyPatch, surface: str
 ) -> None:
-    monkeypatch.setattr(MODULES[surface], "RECONNECT_MIN_S", 0.01)
+    monkeypatch.setattr(retry_module, "RECONNECT_MIN_S", 0.01)
     first, second = _Client(), _Client()
     service = _service(surface, [first, second])
     if surface != "node":
@@ -275,7 +269,7 @@ async def test_a_dropped_session_uses_a_fresh_client(
 async def test_a_restored_subscriber_handles_a_message(
     monkeypatch: pytest.MonkeyPatch, surface: str
 ) -> None:
-    monkeypatch.setattr(MODULES[surface], "RECONNECT_MIN_S", 0.01)
+    monkeypatch.setattr(retry_module, "RECONNECT_MIN_S", 0.01)
     first, second = _Client("raise"), _Client()
     service = _service(surface, [first, second])
     shutdown = asyncio.Event()
@@ -325,7 +319,7 @@ async def test_a_restored_subscriber_handles_a_message(
 async def test_shutdown_interrupts_the_reconnect_wait(
     monkeypatch: pytest.MonkeyPatch, surface: str
 ) -> None:
-    monkeypatch.setattr(MODULES[surface], "RECONNECT_MIN_S", 60.0)
+    monkeypatch.setattr(retry_module, "RECONNECT_MIN_S", 60.0)
     first = _Client("raise")
     remaining = [first, _Client()]
     service = _service(surface, remaining)
@@ -345,7 +339,7 @@ async def test_shutdown_interrupts_the_reconnect_wait(
 async def test_cancellation_interrupts_the_reconnect_wait(
     monkeypatch: pytest.MonkeyPatch, surface: str
 ) -> None:
-    monkeypatch.setattr(MODULES[surface], "RECONNECT_MIN_S", 60.0)
+    monkeypatch.setattr(retry_module, "RECONNECT_MIN_S", 60.0)
     first = _Client("raise")
     remaining = [first, _Client()]
     service = _service(surface, remaining)
@@ -389,3 +383,74 @@ def test_reconnect_delay_has_jitter_and_a_ceiling(
     monkeypatch.setattr(retry_module.random, "uniform", lambda _a, _b: 1.2)
     assert retry_module.retry_delay(5.0) == 6.0
     assert retry_module.retry_delay(300.0) == retry_module.RECONNECT_MAX_S
+
+
+async def test_backoff_doubles_to_the_ceiling_and_restarts_after_a_connected_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shutdown = asyncio.Event()
+    delays: list[float] = []
+    # Seven refusals, one session that connects and then drops, one refusal.
+    script = ["refuse"] * 7 + ["connect", "refuse"]
+
+    async def record(_shutdown: asyncio.Event, base_delay_s: float) -> bool:
+        delays.append(base_delay_s)
+        if len(delays) == len(script):
+            shutdown.set()
+            return False
+        return True
+
+    async def connect(session: retry_module.MqttSession) -> Any:
+        step = script[len(delays)]
+        client = _Client()
+        session.bind(client)
+        if step == "refuse":
+            raise ConnectionRefusedError("broker unavailable")
+        client.on_connect(client, None, None, 0)
+        client.on_disconnect(client, None, 0)
+        return client
+
+    async def close() -> None:
+        pass
+
+    monkeypatch.setattr(retry_module, "wait_before_retry", record)
+    await asyncio.wait_for(
+        retry_module.serve_with_reconnect(
+            shutdown,
+            connect=connect,
+            close=close,
+            log=retry_module.logging.getLogger("test"),
+            service="test",
+        ),
+        5,
+    )
+    assert delays == [5.0, 10.0, 20.0, 40.0, 80.0, 160.0, 300.0, 5.0, 10.0]
+
+
+async def test_each_session_is_retired_and_closed_however_it_ends() -> None:
+    shutdown = asyncio.Event()
+    sessions: list[retry_module.MqttSession] = []
+    closed = 0
+
+    async def connect(session: retry_module.MqttSession) -> Any:
+        sessions.append(session)
+        shutdown.set()
+        raise ConnectionRefusedError("broker unavailable")
+
+    async def close() -> None:
+        nonlocal closed
+        closed += 1
+
+    await retry_module.serve_with_reconnect(
+        shutdown,
+        connect=connect,
+        close=close,
+        log=retry_module.logging.getLogger("test"),
+        service="test",
+    )
+    assert closed == 1
+    stale = _Client()
+    sessions[0].bind(stale)
+    stale.on_disconnect(stale, None, 0)
+    await asyncio.sleep(0)
+    assert not sessions[0].lost.is_set()

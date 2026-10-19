@@ -20,14 +20,13 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from ori.gateway.mqtt_retry import (
-    RECONNECT_MAX_S,
-    RECONNECT_MIN_S,
     MqttSession,
-    ensure_mqtt_success,
-    wait_before_retry,
+    SessionEnd,
+    serve_with_reconnect,
+    start_mqtt_client,
     wait_for_session,
 )
-from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_url
+from ori.gateway.mqtt_security import parse_gateway_broker_url
 from ori.gateway.payload_bounds import (
     ACTIVE_TRIGGERS_MAX,
     RUNTIME_HEARTBEAT,
@@ -158,66 +157,41 @@ class MqttRuntimeNodeHeartbeatPublisher:
 
     async def serve_until(self, shutdown_event: asyncio.Event) -> None:
         """Connect to MQTT and publish node heartbeat until shutdown."""
-        delay = RECONNECT_MIN_S
-        loop = asyncio.get_running_loop()
+        await serve_with_reconnect(
+            shutdown_event,
+            connect=self._connect,
+            close=self.close,
+            log=logger,
+            service="runtime-heartbeat",
+            run=self._publish_until_ended,
+        )
+
+    async def _connect(self, session: MqttSession) -> Any:
+        client = self._client_factory(client_id=f"ori-node-hb-{self._device_id}")
+        self._client = client
+        session.bind(client)
+        await start_mqtt_client(client, self._broker)
+        logger.info(
+            "[runtime-heartbeat] publishing %s via %s:%s every %.1fs (auth=%s)",
+            self.topic,
+            self._broker.host,
+            self._broker.port,
+            self._interval_seconds,
+            "enabled" if self._authenticator is not None else "disabled",
+        )
+        return client
+
+    async def _publish_until_ended(
+        self, client: Any, shutdown: asyncio.Event, lost: asyncio.Event
+    ) -> SessionEnd:
+        await self._tick(client)
         while True:
-            session = MqttSession(loop)
-            try:
-                client = self._client_factory(
-                    client_id=f"ori-node-hb-{self._device_id}"
-                )
-                self._client = client
-                session.bind(client)
-                username = self._broker.username
-                password = self._broker.password
-                if username:
-                    client.username_pw_set(username, password)
-                apply_tls_context(client, self._broker)
-                ensure_mqtt_success(
-                    await asyncio.to_thread(
-                        client.connect, self._broker.host, int(self._broker.port), 60
-                    ),
-                    "connect",
-                )
-                ensure_mqtt_success(
-                    await asyncio.to_thread(client.loop_start), "loop_start"
-                )
-                logger.info(
-                    "[runtime-heartbeat] publishing %s via %s:%s every %.1fs (auth=%s)",
-                    self.topic,
-                    self._broker.host,
-                    self._broker.port,
-                    self._interval_seconds,
-                    "enabled" if self._authenticator is not None else "disabled",
-                )
-                await self._tick(client)
-                while True:
-                    outcome = await wait_for_session(
-                        shutdown_event, session.lost, timeout=self._interval_seconds
-                    )
-                    if outcome != "timeout":
-                        break
-                    await self._tick(client)
-                if outcome == "lost":
-                    logger.warning(
-                        "[runtime-heartbeat] MQTT session lost; reconnecting"
-                    )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception(
-                    "[runtime-heartbeat] MQTT session failed; reconnecting"
-                )
-            finally:
-                session.retire()
-                await self.close()
-            if shutdown_event.is_set():
-                return
-            if session.ever_connected:
-                delay = RECONNECT_MIN_S
-            if not await wait_before_retry(shutdown_event, delay):
-                return
-            delay = min(delay * 2, RECONNECT_MAX_S)
+            outcome = await wait_for_session(
+                shutdown, lost, timeout=self._interval_seconds
+            )
+            if outcome != "timeout":
+                return outcome
+            await self._tick(client)
 
     async def close(self) -> None:
         """Stop the paho loop and disconnect cleanly."""
