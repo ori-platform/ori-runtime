@@ -29,7 +29,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APPLY="${ORI_VECTORS_APPLY:-0}"
 CLEANUP=""
 
-# "<path in ori-specs>:<path in this repo>[:<contract version>]"
+# "<path in ori-specs>:<path in this repo>[:<contract version>[:<excluded file>]]"
 #
 # A vector directory in ori-specs can hold more than one version of its
 # contract: a file named `<stem>-v<N>.json` belongs to version N, and a file
@@ -81,10 +81,11 @@ SETS=(
   # Both verifiers here, OpenSSL behind the Python admission and dalek's
   # verify behind the Android one, are held to its corpus.
   "ed25519-verification:tests/vectors/ed25519_verification:v1"
-  # firmware-telemetry/v2 fault events. The v1 fault vectors are the firmware
-  # repository's and live in tests/fixtures; this set is the contract's own
-  # corpus, so it is drift-checked against ori-specs like the others.
-  "firmware-telemetry:tests/vectors/firmware_telemetry:v2"
+  # This runtime holds local controller profiles by digest, not by fetching
+  # or listing release assets. Publication vectors apply only to the latter
+  # receivers (firmware-telemetry/v2, Publication). Keep drift detection for
+  # every other v2 corpus, including future additions.
+  "firmware-telemetry:tests/vectors/firmware_telemetry:v2:profile-publication-vectors-v2.json"
   # firmware-commands/v2 runtime liveness at v 2. The runtime signs these
   # messages, so the corpus holds its signer to the device's bytes. The v1
   # liveness corpus is pinned by digest in tests/fixtures.
@@ -193,10 +194,11 @@ PY
 SELECT_NAMES_PY='
 import re, sys
 claimed = int(sys.argv[1][1:]) if sys.argv[1] else 0
+excluded = sys.argv[2]
 token = re.compile(r"^(.*)-v([1-9][0-9]*)\.json$")
 best = {}
 for name in sys.stdin.read().split("\n"):
-    if not name.endswith(".json") or name == "MANIFEST.json":
+    if not name.endswith(".json") or name in ("MANIFEST.json", excluded):
         continue
     m = token.match(name)
     stem, version = (m.group(1), int(m.group(2))) if m else (name[:-5], 0)
@@ -208,7 +210,7 @@ for _, name in sorted(best.values(), key=lambda pair: pair[1]):
     print(name)
 '
 select_names() {  # the names arrive on stdin, so the script cannot be a heredoc
-  python3 -c "${SELECT_NAMES_PY}" "$1"
+  python3 -c "${SELECT_NAMES_PY}" "$1" "$2"
 }
 
 selected() {  # selected <name>: is this vendored name in the current selection
@@ -217,7 +219,7 @@ selected() {  # selected <name>: is this vendored name in the current selection
 }
 
 for entry in "${SETS[@]}"; do
-  IFS=: read -r src_rel dest_rel version <<< "${entry}"
+  IFS=: read -r src_rel dest_rel version excluded <<< "${entry}"
   if [ -n "${version}" ] && ! [[ "${version}" =~ ^v[1-9][0-9]*$ ]]; then
     echo "SETS entry '${entry}': the claimed version must be 'v<N>' or absent" >&2
     exit 1
@@ -228,7 +230,7 @@ for entry in "${SETS[@]}"; do
   test -d "${SRC}" || { echo "no vectors at ${SRC}" >&2; exit 1; }
   mkdir -p "${DEST}"
   # "|a.json|b.json|", so `selected` is one substring match.
-  SELECTED="|$(ls "${SRC}" | select_names "${version}" | tr '\n' '|')"
+  SELECTED="|$(ls "${SRC}" | select_names "${version}" "${excluded}" | tr '\n' '|')"
 
   drift=0
   for file in "${SRC}"/*.json; do
@@ -312,7 +314,7 @@ for entry in "${SETS[@]}"; do
     # The same selection, applied to the pinned tree: a version the pinned
     # commit had not yet opened is simply absent there.
     PIN_SELECTED="|$(git -C "${SPECS}" ls-tree --name-only "${PINNED}:${label}" 2>/dev/null \
-      | select_names "${version}" | tr '\n' '|')"
+      | select_names "${version}" "${excluded}" | tr '\n' '|')"
     while IFS= read -r -d '' name; do
       case "${name}" in *.json) ;; *) continue ;; esac
       case "${PIN_SELECTED}" in *"|${name}|"*) ;; *) continue ;; esac
