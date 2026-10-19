@@ -34,6 +34,10 @@ EVIDENCE_OUTBOUND = "ori/{device_id}/evidence/outbound"
 EVIDENCE_OUTBOUND_ACK = "ori/{device_id}/evidence/outbound/ack"
 EVIDENCE_INBOUND = "ori/{device_id}/evidence/inbound"
 EVIDENCE_INBOUND_ACK = "ori/{device_id}/evidence/inbound/ack"
+LAN_PROPOSAL = "ori/{device_id}/lan/proposal"
+LAN_REPLY = "ori/{device_id}/lan/reply"
+LAN_DISCLOSURE_REQUEST = "ori/{device_id}/lan/disclosure/request"
+LAN_DISCLOSURE_RESPONSE = "ori/{device_id}/lan/disclosure/response/{request_id}"
 
 #: The Payload Size table: a topic family's maximum in bytes, as delivered.
 PAYLOAD_MAXIMA: dict[str, int] = {
@@ -49,6 +53,10 @@ PAYLOAD_MAXIMA: dict[str, int] = {
     EVIDENCE_OUTBOUND_ACK: 16384,
     EVIDENCE_INBOUND: 1114112,
     EVIDENCE_INBOUND_ACK: 16384,
+    LAN_PROPOSAL: 16384,
+    LAN_REPLY: 16384,
+    LAN_DISCLOSURE_REQUEST: 16384,
+    LAN_DISCLOSURE_RESPONSE: 16384,
 }
 
 #: The lowest maximum a deployment may configure, which every required reply fits.

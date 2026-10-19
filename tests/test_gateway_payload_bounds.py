@@ -52,6 +52,8 @@ from ori.gateway.payload_bounds import (
     GATEWAY_HEALTH,
     IN_FLIGHT_EXCEEDED,
     INGRESS_RATES,
+    LAN_DISCLOSURE_REQUEST,
+    LAN_REPLY,
     PAYLOAD_FLOOR,
     PAYLOAD_MAXIMA,
     PAYLOAD_TOO_LARGE,
@@ -135,7 +137,7 @@ def test_every_case_is_the_bytes_its_construction_gives():
 
 
 #: Gateway-to-runtime families with no runtime subscriber, so nothing to bound.
-_NOT_SUBSCRIBED = {ENRICHMENT_RESPONSE}
+_NOT_SUBSCRIBED = {ENRICHMENT_RESPONSE, LAN_REPLY, LAN_DISCLOSURE_REQUEST}
 
 
 @pytest.mark.parametrize(
@@ -148,7 +150,7 @@ def test_a_size_case_reaches_its_verdict(case):
     if case["direction"] == "runtime_to_gateway":
         verdict = "admitted" if fits(case["topic"], body) else PAYLOAD_TOO_LARGE
     elif case["topic"] in _NOT_SUBSCRIBED:
-        pytest.skip("the runtime subscribes to no Tier C enrichment response")
+        pytest.skip("the runtime does not subscribe to this family")
     else:
         verdict = IngressBound(case["topic"], clock=_Clock()).admit(body) or "admitted"
     assert verdict == case["verdict"]
@@ -171,9 +173,10 @@ def test_the_configured_cases_have_no_setting_to_apply_to():
     maximum in force and no configured value exists to apply or refuse."""
     configured = [c for c in CORPUS["cases"] if c["configured_maximum"] is not None]
     assert configured
-    assert set(INGRESS_RATES) | {ENRICHMENT_RESPONSE} == {
+    assert set(INGRESS_RATES) | _NOT_SUBSCRIBED == {
         c["topic"] for c in CORPUS["cases"] if c["direction"] == "gateway_to_runtime"
     }
+    assert not set(INGRESS_RATES) & _NOT_SUBSCRIBED
 
 
 @pytest.mark.parametrize(
