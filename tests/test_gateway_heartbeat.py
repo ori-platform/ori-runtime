@@ -96,6 +96,7 @@ class _FakeClient:
     def __init__(self):
         self.on_connect = None
         self.on_message = None
+        self.on_subscribe: Any = None
         self.subscribed: list[str] = []
         self.connected: tuple | None = None
         self.loop_started = False
@@ -114,8 +115,11 @@ class _FakeClient:
         if self.on_connect is not None:
             self.on_connect(self, None, None, self._connect_rc)
 
-    def subscribe(self, topic):
+    def subscribe(self, topic, qos=0):
         self.subscribed.append(topic)
+        if self.on_subscribe is not None:
+            self.on_subscribe(self, None, 1, [qos], None)
+        return (0, 1)
 
     def loop_start(self):
         self.loop_started = True
@@ -371,24 +375,61 @@ async def test_auth_enabled_rejects_stale_heartbeat(caplog):
 # ── _on_connect unit tests ────────────────────────────────────────────────────
 
 
-def test_on_connect_zero_rc_subscribes():
+async def _connect(sub, fake):
+    from ori.gateway.mqtt_retry import MqttSession
+
+    session = MqttSession(
+        asyncio.get_running_loop(),
+        log=heartbeat_module.logger,
+        service="gateway-heartbeat",
+    )
+    await sub._connect(session)
+    await asyncio.sleep(0)
+    return session
+
+
+async def test_a_granted_subscription_brings_the_session_up():
     fake = _FakeClient()
     sub = _subscriber(client_factory=lambda **_: fake)
 
-    sub._on_connect(fake, None, None, 0)
+    session = await _connect(sub, fake)
 
     assert fake.subscribed == [GATEWAY_HEALTH_TOPIC]
+    assert session.connected and not session.lost.is_set()
 
 
-def test_on_connect_nonzero_rc_does_not_subscribe(caplog):
+async def test_a_refused_connection_does_not_subscribe(caplog):
     fake = _FakeClient()
+    fake._connect_rc = 5
     sub = _subscriber(client_factory=lambda **_: fake)
 
     with caplog.at_level(logging.WARNING, logger="ori.gateway.heartbeat"):
-        sub._on_connect(fake, None, None, 5)
+        session = await _connect(sub, fake)
 
     assert fake.subscribed == []
+    assert not session.connected and session.lost.is_set()
     assert "connect failed" in caplog.text
+
+
+@pytest.mark.parametrize("refusal", [0x80, 0x87, 3, []])
+async def test_a_refused_subscription_is_not_up(caplog, refusal):
+    """SUBACK refusing the health topic ends the session, naming topic and code."""
+    fake = _FakeClient()
+
+    def refuse(topic, qos=0):
+        fake.subscribed.append(topic)
+        fake.on_subscribe(fake, None, 1, refusal if refusal == [] else [refusal], None)
+        return (0, 1)
+
+    fake.subscribe = refuse
+    sub = _subscriber(client_factory=lambda **_: fake)
+
+    with caplog.at_level(logging.WARNING, logger="ori.gateway.heartbeat"):
+        session = await _connect(sub, fake)
+
+    assert not session.connected and not session.ever_connected
+    assert session.lost.is_set()
+    assert f"refused subscription to {GATEWAY_HEALTH_TOPIC}" in caplog.text
 
 
 # ── serve_until integration tests ────────────────────────────────────────────

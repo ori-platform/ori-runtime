@@ -460,10 +460,14 @@ class MqttGatewayExportServer:
             client_id=f"ori-export-{self._responder._device_id}"
         )
         self._client = client
-        session.bind(client, on_connect=self._on_connect, on_message=self._on_message)
+        session.bind(
+            client,
+            subscribe=(self._responder.request_topic, 0),
+            on_message=self._on_message,
+        )
         await start_mqtt_client(client, self._broker)
         logger.info(
-            "[gateway-export] MQTT responder listening on %s via %s:%s",
+            "[gateway-export] connecting to subscribe to %s via %s:%s",
             self._responder.request_topic,
             self._broker.host,
             self._broker.port,
@@ -483,14 +487,6 @@ class MqttGatewayExportServer:
             await asyncio.to_thread(client.disconnect)
         except Exception:
             logger.warning("[gateway-export] failed to disconnect MQTT client")
-
-    def _on_connect(
-        self, client: Any, _userdata: Any, _flags: Any, rc: Any, *_: Any
-    ) -> None:
-        if int(getattr(rc, "value", rc)) != 0:
-            logger.warning("[gateway-export] MQTT connect failed rc=%s", rc)
-            return
-        client.subscribe(self._responder.request_topic)
 
     def _on_message(self, client: Any, _userdata: Any, message: Any) -> None:
         loop = self._loop

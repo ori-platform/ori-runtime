@@ -120,10 +120,15 @@ class MqttFirmwareTelemetrySubscriber:
     async def _connect(self, session: MqttSession) -> Any:
         client = self._client_factory(client_id=f"ori-fw-{self._runtime_device_id}")
         self._client = client
-        session.bind(client, on_connect=self._on_connect, on_message=self._on_message)
+        session.bind(
+            client,
+            subscribe=(self._topic, self._qos),
+            on_subscribed=self._on_subscribed,
+            on_message=self._on_message,
+        )
         await start_mqtt_client(client, self._broker)
         logger.info(
-            "[firmware-telemetry] subscribed to %s via %s:%s",
+            "[firmware-telemetry] connecting to subscribe to %s via %s:%s",
             self._topic,
             self._broker.host,
             self._broker.port,
@@ -144,13 +149,7 @@ class MqttFirmwareTelemetrySubscriber:
         except Exception:
             logger.warning("[firmware-telemetry] failed to disconnect MQTT client")
 
-    def _on_connect(
-        self, client: Any, _userdata: Any, _flags: Any, rc: Any, *_: Any
-    ) -> None:
-        if int(getattr(rc, "value", rc)) != 0:
-            logger.warning("[firmware-telemetry] MQTT connect failed rc=%s", rc)
-            return
-        client.subscribe(self._topic, qos=self._qos)
+    def _on_subscribed(self) -> None:
         # A restored link is the most likely moment for anything waiting on
         # the far side to resolve. This runs on the MQTT client's thread, so
         # the callback is handed to the loop rather than invoked here.

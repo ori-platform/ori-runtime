@@ -14,6 +14,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from ori.gateway.mqtt_retry import reason_code_value
 from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_url
 from ori.gateway.payload_bounds import (
     REASONING_REQUEST,
@@ -33,6 +34,7 @@ from ori.security.payload_members import (
     PayloadMemberError,
     admitted_text,
 )
+from ori.utils.mqtt_suback import subscription_refusal
 from ori.utils.time_utils import now_ms
 
 try:
@@ -227,7 +229,33 @@ class MqttGatewayReasoner:
                     GatewayReasoningError(f"gateway MQTT connect failed rc={rc}"),
                 )
                 return
-            connected_client.subscribe(self.response_topic)
+            # Sending SUBSCRIBE is not being subscribed: the request is
+            # published only once SUBACK grants the response topic.
+            result = connected_client.subscribe(self.response_topic)
+            sent = result[0] if isinstance(result, tuple) else result
+            if sent is not None and reason_code_value(sent) != 0:
+                loop.call_soon_threadsafe(
+                    _set_future_exception,
+                    connected,
+                    GatewayReasoningError(
+                        f"could not send subscribe for {self.response_topic} rc={sent}"
+                    ),
+                )
+
+        def _on_subscribe(
+            _client: Any, _userdata: Any, _mid: Any, reason_codes: Any, *_: Any
+        ) -> None:
+            refused = subscription_refusal(reason_codes)
+            if refused is not None:
+                loop.call_soon_threadsafe(
+                    _set_future_exception,
+                    connected,
+                    GatewayReasoningError(
+                        f"broker refused subscription to {self.response_topic} "
+                        f"({refused})"
+                    ),
+                )
+                return
             loop.call_soon_threadsafe(_set_future_result, connected, True)
 
         # Set on this client's network thread once the request is answered:
@@ -322,6 +350,7 @@ class MqttGatewayReasoner:
             loop.call_soon_threadsafe(_set_future_result, response, payload)
 
         client.on_connect = _on_connect
+        client.on_subscribe = _on_subscribe
         client.on_message = _on_message
 
         try:

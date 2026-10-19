@@ -130,10 +130,14 @@ class MqttGatewayHeartbeatSubscriber:
     async def _connect(self, session: MqttSession) -> Any:
         client = self._client_factory(client_id=f"ori-hb-{self._device_id}")
         self._client = client
-        session.bind(client, on_connect=self._on_connect, on_message=self._on_message)
+        session.bind(
+            client,
+            subscribe=(GATEWAY_HEALTH_TOPIC, 0),
+            on_message=self._on_message,
+        )
         await start_mqtt_client(client, self._broker)
         logger.info(
-            "[gateway-heartbeat] subscribed to %s via %s:%s (auth=%s)",
+            "[gateway-heartbeat] connecting to subscribe to %s via %s:%s (auth=%s)",
             GATEWAY_HEALTH_TOPIC,
             self._broker.host,
             self._broker.port,
@@ -157,15 +161,6 @@ class MqttGatewayHeartbeatSubscriber:
             logger.warning("[gateway-heartbeat] failed to disconnect MQTT client")
 
     # ── paho callbacks ────────────────────────────────────────────────────────
-
-    def _on_connect(
-        self, client: Any, _userdata: Any, _flags: Any, rc: Any, *_: Any
-    ) -> None:
-        """Subscribe to the heartbeat topic on successful broker connect."""
-        if int(getattr(rc, "value", rc)) != 0:
-            logger.warning("[gateway-heartbeat] MQTT connect failed rc=%s", rc)
-            return
-        client.subscribe(GATEWAY_HEALTH_TOPIC)
 
     def _on_message(self, _client: Any, _userdata: Any, message: Any) -> None:
         """Parse a heartbeat payload and update gateway posture directly."""

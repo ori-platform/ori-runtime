@@ -268,46 +268,83 @@ def _subscriber_with_hook(on_connected):
 
 
 class _Client:
-    def __init__(self) -> None:
+    def __init__(self, connack: int = 0, suback: int | None = None) -> None:
+        self.connack = connack
+        self.suback = suback
         self.subscribed: list = []
+        self.on_connect: Any = None
+        self.on_subscribe: Any = None
+        self.on_disconnect: Any = None
+        self.on_message: Any = None
 
-    def subscribe(self, topic, qos=0) -> None:
+    def connect(self, *_args) -> int:
+        self.on_connect(self, None, None, self.connack)
+        return 0
+
+    def loop_start(self) -> int:
+        return 0
+
+    def subscribe(self, topic, qos=0) -> tuple[int, int]:
         self.subscribed.append((topic, qos))
+        granted = qos if self.suback is None else self.suback
+        self.on_subscribe(self, None, 1, [granted], None)
+        return (0, 1)
 
 
-def test_successful_connect_schedules_the_hook_on_the_loop():
-    """`_on_connect` runs on the MQTT client's thread, never the event loop."""
+async def _connect(subscriber, client):
+    """Run the subscriber's own connect step against *client*."""
+    from ori.gateway.mqtt_retry import MqttSession
+    from ori.gateway.mqtt_security import parse_gateway_broker_url
+
+    subscriber._broker = parse_gateway_broker_url("mqtt://localhost")
+    subscriber._client_factory = lambda **_: client
+    subscriber._runtime_device_id = "runtime-1"
+    subscriber._client = None
+    session = MqttSession(asyncio.get_running_loop())
+    await subscriber._connect(session)
+    await asyncio.sleep(0)
+    return session
+
+
+async def test_a_granted_subscription_schedules_the_hook_on_the_loop():
+    """The hook runs on the MQTT client's thread, never the event loop."""
     calls: list[int] = []
     subscriber: Any = _subscriber_with_hook(lambda: calls.append(1))
     client = _Client()
 
-    subscriber._on_connect(client, None, None, 0)
+    session = await _connect(subscriber, client)
 
     assert client.subscribed == [("ori/fw/+/telemetry", 1)]
+    assert session.connected
     assert subscriber._loop.scheduled, "hook must be handed to the loop"
     for scheduled in subscriber._loop.scheduled:
         scheduled()
     assert calls == [1]
 
 
-def test_failed_connect_does_not_schedule_the_hook():
-    """A refused connection is not a restored link."""
+@pytest.mark.parametrize(("connack", "suback"), [(5, None), (0, 0x80), (0, 0x87)])
+async def test_a_refused_connection_or_subscription_does_not_schedule_the_hook(
+    connack, suback
+):
+    """Neither a refused connection nor a refused subscription is a restored link."""
     calls: list[int] = []
     subscriber: Any = _subscriber_with_hook(lambda: calls.append(1))
-    client = _Client()
+    client = _Client(connack=connack, suback=suback)
 
-    subscriber._on_connect(client, None, None, 5)
+    session = await _connect(subscriber, client)
 
-    assert client.subscribed == []
+    assert client.subscribed == ([] if connack else [("ori/fw/+/telemetry", 1)])
+    assert not session.connected and session.lost.is_set()
     assert subscriber._loop.scheduled == []
     assert calls == []
 
 
-def test_connect_without_a_hook_is_harmless():
+async def test_a_grant_without_a_hook_is_harmless():
     subscriber: Any = _subscriber_with_hook(None)
     client = _Client()
-    subscriber._on_connect(client, None, None, 0)
+    session = await _connect(subscriber, client)
     assert client.subscribed == [("ori/fw/+/telemetry", 1)]
+    assert session.connected
     assert subscriber._loop.scheduled == []
 
 

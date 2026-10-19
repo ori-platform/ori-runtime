@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -31,6 +32,7 @@ class _Client:
         self.on_connect: Any = None
         self.on_disconnect: Any = None
         self.on_message: Any = None
+        self.on_subscribe: Any = None
         self.connect_calls = 0
         self.loop_started = False
         self.loop_stopped = False
@@ -65,8 +67,14 @@ class _Client:
         if self.on_disconnect is not None:
             self.on_disconnect(self, None, 0)
 
-    def subscribe(self, topic: str, qos: int = 0) -> None:
+    def subscribe(self, topic: str, qos: int = 0) -> tuple[int, int]:
         self.subscribed.append(topic)
+        if self.failure == "subscribe_not_sent":
+            return (4, 1)
+        if self.on_subscribe is not None:
+            granted = 0x80 if self.failure == "suback" else qos
+            self.on_subscribe(self, None, 1, [granted], None)
+        return (0, 1)
 
     def publish(self, _topic: str, body: bytes, **_kwargs: Any) -> Any:
         self.published.append(body)
@@ -454,3 +462,129 @@ async def test_each_session_is_retired_and_closed_however_it_ends() -> None:
     stale.on_disconnect(stale, None, 0)
     await asyncio.sleep(0)
     assert not sessions[0].lost.is_set()
+
+
+SUBSCRIBERS = ("export", "gateway_heartbeat", "firmware_telemetry")
+
+
+@pytest.mark.parametrize("surface", SUBSCRIBERS)
+@pytest.mark.parametrize("failure", ("suback", "subscribe_not_sent"))
+async def test_a_refused_subscription_is_a_failed_session(
+    monkeypatch: pytest.MonkeyPatch, surface: str, failure: str
+) -> None:
+    """A session whose subscription is refused never counts as connected.
+
+    It reconnects, and its back-off keeps growing rather than restarting at the
+    minimum, as it would after a session that came up.
+    """
+    shutdown = asyncio.Event()
+    delays: list[float] = []
+
+    async def record(_shutdown: asyncio.Event, base_delay_s: float) -> bool:
+        delays.append(base_delay_s)
+        if len(delays) == 3:
+            shutdown.set()
+            return False
+        return True
+
+    monkeypatch.setattr(retry_module, "wait_before_retry", record)
+    clients = [_Client(failure) for _ in range(3)]
+    service = _service(surface, list(clients))
+    await asyncio.wait_for(service.serve_until(shutdown), 5)
+
+    assert delays == [5.0, 10.0, 20.0]
+    assert all(client.subscribed for client in clients)
+    assert all(client.loop_stopped and client.disconnected for client in clients)
+
+
+async def test_a_grant_for_a_retired_session_reaches_nothing() -> None:
+    """A SUBACK from the client of a session already retired is not a grant."""
+    hooks: list[int] = []
+    session = retry_module.MqttSession(asyncio.get_running_loop())
+    client = _Client()
+    client.subscribe = lambda *_args, **_kwargs: (0, 1)  # SUBACK held back
+    session.bind(client, subscribe=("t", 1), on_subscribed=lambda: hooks.append(1))
+    client.on_connect(client, None, None, 0)
+    session.retire()
+    client.on_subscribe(client, None, 1, [1], None)
+    await asyncio.sleep(0)
+    assert not session.connected and not session.ever_connected
+    assert hooks == []
+
+
+async def test_only_the_answer_to_this_sessions_subscribe_is_read() -> None:
+    """A SUBACK for another message id neither grants nor refuses; a repeat
+    grant does not run the hook twice."""
+    hooks: list[int] = []
+    session = retry_module.MqttSession(asyncio.get_running_loop())
+    client = _Client()
+    client.subscribe = lambda *_args, **_kwargs: (0, 7)  # SUBACK held back
+    session.bind(client, subscribe=("t", 1), on_subscribed=lambda: hooks.append(1))
+    client.on_connect(client, None, None, 0)
+
+    client.on_subscribe(client, None, 6, [0x80], None)
+    client.on_subscribe(client, None, 8, [1], None)
+    await asyncio.sleep(0)
+    assert not session.connected and not session.lost.is_set()
+
+    client.on_subscribe(client, None, 7, [1], None)
+    client.on_subscribe(client, None, 7, [1], None)
+    await asyncio.sleep(0)
+    assert session.connected and hooks == [1]
+
+
+class _NetworkThreadClient(_Client):
+    """Answers SUBSCRIBE later, from another thread, as paho's network loop does."""
+
+    def __init__(self, granted: int) -> None:
+        super().__init__()
+        self.granted = granted
+        self.release = threading.Event()
+
+    def subscribe(self, topic: str, qos: int = 0) -> tuple[int, int]:
+        self.subscribed.append(topic)
+
+        def answer() -> None:
+            self.release.wait(5)
+            self.on_subscribe(
+                self, None, 1, [self.granted if self.granted else qos], None
+            )
+
+        threading.Thread(target=answer, daemon=True).start()
+        return (0, 1)
+
+
+@pytest.mark.parametrize("granted", [0, 0x80])
+async def test_a_suback_from_the_network_thread_decides_the_session(
+    monkeypatch: pytest.MonkeyPatch, granted: int
+) -> None:
+    """Nothing counts as subscribed until a SUBACK arrives off the event loop."""
+    hooks: list[int] = []
+    delays: list[float] = []
+    shutdown = asyncio.Event()
+
+    async def record(_shutdown: asyncio.Event, base_delay_s: float) -> bool:
+        delays.append(base_delay_s)
+        shutdown.set()
+        return False
+
+    monkeypatch.setattr(retry_module, "wait_before_retry", record)
+    client = _NetworkThreadClient(granted)
+    service = _service("firmware_telemetry", [client])
+    service._on_connected = lambda: hooks.append(1)
+    serving = asyncio.create_task(service.serve_until(shutdown))
+    try:
+        await wait_until(lambda: bool(client.subscribed), what="SUBSCRIBE to be sent")
+        await asyncio.sleep(0.05)
+        assert hooks == [] and not serving.done(), "up before any SUBACK"
+        client.release.set()
+        if granted:
+            await asyncio.wait_for(serving, 5)
+            assert hooks == [] and delays == [5.0]
+        else:
+            await wait_until(lambda: hooks == [1], what="the grant to run the hook")
+            assert not serving.done()
+    finally:
+        shutdown.set()
+        client.release.set()
+        await settle([serving], what="the subscriber to stop")

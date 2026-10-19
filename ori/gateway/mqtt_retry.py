@@ -12,6 +12,9 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
 from ori.gateway.mqtt_security import GatewayBrokerConfig, apply_tls_context
+from ori.utils.mqtt_suback import subscription_refusal
+
+logger = logging.getLogger(__name__)
 
 RECONNECT_MIN_S = 5.0
 RECONNECT_MAX_S = 300.0
@@ -20,10 +23,19 @@ SessionEnd = Literal["shutdown", "lost", "timeout"]
 
 
 class MqttSession:
-    """Keep callbacks from a retired paho client out of the next session."""
+    """One broker session: up only once connected and, where it subscribes,
+    granted its subscription; callbacks from a retired client reach nothing."""
 
-    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        *,
+        log: logging.Logger = logger,
+        service: str = "gateway-mqtt",
+    ) -> None:
         self._loop = loop
+        self._log = log
+        self._service = service
         self.lost = asyncio.Event()
         self.connected = False
         self.ever_connected = False
@@ -33,25 +45,70 @@ class MqttSession:
         self,
         client: Any,
         *,
-        on_connect: Callable[..., Any] | None = None,
+        subscribe: tuple[str, int] | None = None,
+        on_subscribed: Callable[[], None] | None = None,
         on_message: Callable[..., Any] | None = None,
     ) -> None:
-        def connected(c: Any, userdata: Any, flags: Any, rc: Any, *extra: Any) -> None:
+        """Bind *client*'s callbacks to this session.
+
+        With *subscribe*, sending SUBSCRIBE is not being subscribed: the
+        session is up, and *on_subscribed* runs, only once SUBACK grants a QoS
+        of 0 to 2. A refusal ends the session like a dropped connection.
+        """
+
+        # The message id of this session's SUBSCRIBE; a SUBACK for any other
+        # is not its answer. None when a stand-in client returns no id.
+        pending_mid: list[Any] = [None]
+
+        def connected(c: Any, _userdata: Any, _flags: Any, rc: Any, *_: Any) -> None:
             if not self._active:
                 return
-            self.connected = int(getattr(rc, "value", rc)) == 0
-            self.ever_connected |= self.connected
-            if not self.connected:
-                self._signal_lost()
-            if on_connect is not None:
-                on_connect(c, userdata, flags, rc, *extra)
+            if reason_code_value(rc) != 0:
+                self._log.warning("[%s] MQTT connect failed rc=%s", self._service, rc)
+                self._end()
+                return
+            if subscribe is None:
+                self._up(on_subscribed)
+                return
+            topic, qos = subscribe
+            result = c.subscribe(topic, qos=qos)
+            sent = result[0] if isinstance(result, tuple) else result
+            pending_mid[0] = result[1] if isinstance(result, tuple) else None
+            if sent is not None and reason_code_value(sent) != 0:
+                self._log.warning(
+                    "[%s] could not send subscribe for %s rc=%s",
+                    self._service,
+                    topic,
+                    sent,
+                )
+                self._end()
+
+        def subscribed(
+            _c: Any, _userdata: Any, mid: Any, reason_codes: Any, *_: Any
+        ) -> None:
+            if not self._active or subscribe is None:
+                return
+            if pending_mid[0] is not None and mid != pending_mid[0]:
+                return
+            refused = subscription_refusal(reason_codes)
+            if refused is not None:
+                self._log.warning(
+                    "[%s] broker refused subscription to %s (%s)",
+                    self._service,
+                    subscribe[0],
+                    refused,
+                )
+                self._end()
+                return
+            self._log.info("[%s] subscribed to %s", self._service, subscribe[0])
+            self._up(on_subscribed)
 
         def disconnected(_c: Any, *_args: Any) -> None:
             if self._active:
-                self.connected = False
-                self._signal_lost()
+                self._end()
 
         client.on_connect = connected
+        client.on_subscribe = subscribed
         client.on_disconnect = disconnected
         if on_message is not None:
 
@@ -64,9 +121,26 @@ class MqttSession:
     def retire(self) -> None:
         self._active = False
 
-    def _signal_lost(self) -> None:
+    def _up(self, on_subscribed: Callable[[], None] | None) -> None:
+        if self.connected:
+            return
+        self.connected = True
+        self.ever_connected = True
+        if on_subscribed is not None:
+            on_subscribed()
+
+    def _end(self) -> None:
+        self.connected = False
         if not self._loop.is_closed():
             self._loop.call_soon_threadsafe(self.lost.set)
+
+
+def reason_code_value(code: Any) -> int:
+    """Numeric value of a paho reason code, whichever callback API produced it."""
+    try:
+        return int(getattr(code, "value", code))
+    except (TypeError, ValueError):
+        return -1
 
 
 def ensure_mqtt_success(result: Any, operation: str) -> None:
@@ -132,12 +206,13 @@ async def serve_with_reconnect(
     session is only held open. A session ends retired and closed however it
     ends, so a retired client's callbacks never reach the next one. Backoff
     doubles to ``RECONNECT_MAX_S`` with jitter and restarts at
-    ``RECONNECT_MIN_S`` after a session that connected.
+    ``RECONNECT_MIN_S`` after a session that came up: connected and, where it
+    subscribes, granted its subscription.
     """
     loop = asyncio.get_running_loop()
     delay = RECONNECT_MIN_S
     while True:
-        session = MqttSession(loop)
+        session = MqttSession(loop, log=log, service=service)
         try:
             client = await connect(session)
             if run is None:

@@ -715,6 +715,7 @@ async def test_mqtt_server_subscribes_to_device_request_topic(store):
         def __init__(self):
             self.on_connect = None
             self.on_message = None
+            self.on_subscribe = None
             self.subscribed = []
             self.connected = None
             self.loop_started = False
@@ -736,8 +737,11 @@ async def test_mqtt_server_subscribes_to_device_request_topic(store):
         def loop_start(self):
             self.loop_started = True
 
-        def subscribe(self, topic):
+        def subscribe(self, topic, qos=0):
             self.subscribed.append(topic)
+            if self.on_subscribe is not None:
+                self.on_subscribe(self, None, 1, [qos], None)
+            return (0, 1)
 
         def loop_stop(self):
             self.loop_stopped = True

@@ -1,6 +1,7 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
+import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -50,6 +51,7 @@ class _FakeClient:
         self.response_builder = response_builder
         self.on_connect = None
         self.on_message = None
+        self.on_subscribe = None
         self.connected = None
         self.subscribed = []
         self.published = []
@@ -72,8 +74,11 @@ class _FakeClient:
         assert self.on_connect is not None
         self.on_connect(self, None, None, 0)
 
-    def subscribe(self, topic):
+    def subscribe(self, topic, qos=0):
         self.subscribed.append(topic)
+        if self.on_subscribe is not None:
+            self.on_subscribe(self, None, 1, [qos], None)
+        return (0, 1)
 
     def publish(self, topic, payload, qos=0, retain=False):
         decoded = json.loads(payload.decode("utf-8"))
@@ -745,3 +750,43 @@ async def test_a_flood_of_malformed_responses_is_counted_not_logged_each(caplog)
     refusals = reasoner._ingress.refusals()
     assert refusals.get("malformed_json") == 4
     assert refusals.get("not_an_object") == 4
+
+
+@pytest.mark.parametrize(
+    ("grant", "sent", "match"),
+    [
+        ([0x80], 0, "broker refused subscription"),
+        ([0x87], 0, "broker refused subscription"),
+        ([], 0, "broker refused subscription"),
+        ([0], 4, "could not send subscribe"),
+    ],
+)
+async def test_a_refused_response_subscription_fails_at_once_and_publishes_nothing(
+    grant, sent, match
+):
+    """No request goes out on a response topic the broker will not deliver."""
+    fake = _FakeClient(response_builder=lambda req: {})
+
+    def subscribe(topic, qos=0):
+        fake.subscribed.append(topic)
+        if sent == 0 and fake.on_subscribe is not None:
+            fake.on_subscribe(fake, None, 1, grant, None)
+        return (sent, 1)
+
+    fake.subscribe = subscribe
+    reasoner = MqttGatewayReasoner(
+        broker_url="mqtt://broker.local",
+        device_id="site-a",
+        timeout_ms=30_000,
+        client_factory=lambda **_: fake,
+        request_id_factory=lambda: "req-refused",
+    )
+
+    with pytest.raises(GatewayReasoningError, match=match) as exc:
+        await asyncio.wait_for(
+            reasoner.reason("Prompt", event=_event(), rule_result=_rule("A")), 5
+        )
+
+    assert reasoner.response_topic in str(exc.value)
+    assert fake.published == []
+    assert fake.loop_stopped and fake.disconnected

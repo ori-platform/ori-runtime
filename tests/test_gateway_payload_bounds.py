@@ -539,6 +539,7 @@ class _ReasoningClient:
         self.answer = answer
         self.on_connect: Any = None
         self.on_message: Any = None
+        self.on_subscribe: Any = None
         self.published: list[bytes] = []
         self.connected = False
 
@@ -548,8 +549,10 @@ class _ReasoningClient:
     def loop_start(self) -> None:
         self.on_connect(self, None, None, 0)
 
-    def subscribe(self, _topic: str) -> None:
-        pass
+    def subscribe(self, _topic: str, qos: int = 0) -> tuple[int, int]:
+        if self.on_subscribe is not None:
+            self.on_subscribe(self, None, 1, [qos], None)
+        return (0, 1)
 
     def publish(self, _topic: str, payload: bytes, *_args: Any) -> Any:
         self.published.append(payload)
