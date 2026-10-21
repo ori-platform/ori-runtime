@@ -26,6 +26,7 @@ from ori.gateway.payload_bounds import (
 from ori.network.events import OriEvent, ReasoningResult, history_as_of
 from ori.network.producer_time import NOT_REPORTED, UNKNOWN, read_producer_time
 from ori.security.gateway_messages import (
+    REPLAY_REFUSALS,
     GatewayMessageAuthenticator,
     GatewayMessageAuthError,
 )
@@ -328,7 +329,10 @@ class MqttGatewayReasoner:
                     # Verification precedes every side effect (gateway-api/v2
                     # Reasoning Auth Envelope): an unverified answer ends
                     # nothing, and the request waits for an authentic one.
-                    _drop("unverified", exc)
+                    # A replay is refused here too, before it is recorded.
+                    _drop(
+                        "replayed" if str(exc) in REPLAY_REFUSALS else "unverified", exc
+                    )
                     return
             replay: GatewayMessageAuthError | None = None
             with settling:

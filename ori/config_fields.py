@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 
@@ -42,3 +43,29 @@ def _string_or_refuse(value: Any, context: str, requirement: str) -> str:
     raise ConfigValidationError(
         f"{context} {requirement}, got {type(value).__name__}: {value!r}{hint}"
     )
+
+
+def checked_device_endpoint(value: str, field: str, *, urls_supported: bool) -> str:
+    """Refuse a device endpoint that names neither a node nor a reachable URL.
+
+    A device path is not resolved against the configuration the way a data file
+    is: it names something the host owns, and there is no directory it would be
+    relative to. Left relative it would follow the working directory, which the
+    unit points at a runtime directory systemd empties on every stop.
+
+    Whether a URL is accepted is the consumer's own rule rather than a shared
+    one. `usb_serial` hands anything containing `://` to `serial_for_url`, so
+    it can reach a bridge; `serial` and the GSM modem call `Serial()` directly,
+    which takes a port name only. Admitting a URL where it cannot be opened
+    would move the failure from config load to the first read.
+    """
+    if not value:
+        return value
+    if urls_supported and "://" in value:
+        return value
+    if not Path(value).expanduser().is_absolute():
+        supported = " or a URL its transport can open" if urls_supported else ""
+        raise ConfigValidationError(
+            f"{field} must be an absolute device path{supported}: {value!r}"
+        )
+    return value

@@ -445,7 +445,7 @@ ori/
 │   │   ├── device_policy.py
 │   │   └── remote_fetch.py
 │   │
-│   ├── safety/                ← release-owned safety registry (dormant until the cutover)
+│   ├── safety/                ← release-owned safety registry (inert while every shipped profile is a candidate; sole Tier D path after #324)
 │   │
 │   ├── security/
 │   │   ├── __init__.py

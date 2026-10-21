@@ -16,6 +16,7 @@ from ori.gateway.node_heartbeat import (
 from ori.security.gateway_messages import (
     GatewayMessageAuthConfig,
     GatewayMessageAuthenticator,
+    GatewayReplayCache,
 )
 from tests.waiting import settle, wait_until
 
@@ -51,6 +52,11 @@ class _FakeClient:
     def publish(self, topic, payload, qos=0, retain=False):
         self.published.append((topic, payload, qos, retain))
         return SimpleNamespace(rc=0)
+
+
+def _verifier_cache() -> GatewayReplayCache:
+    # Started at clock 0, so a heartbeat signed before it was built still passes.
+    return GatewayReplayCache(max_skew_ms=300_000, start_ms=0)
 
 
 def _auth() -> GatewayMessageAuthenticator:
@@ -117,7 +123,8 @@ async def test_runtime_node_heartbeat_signs_payload_when_auth_enabled(monkeypatc
 
     payload = json.loads(client.published[0][1])
     verified = GatewayMessageAuthenticator(
-        GatewayMessageAuthConfig(shared_secret="site-test-secret")
+        GatewayMessageAuthConfig(shared_secret="site-test-secret"),
+        replay_cache=_verifier_cache(),
     ).verify(
         payload,
         message_type=RUNTIME_HEARTBEAT_MESSAGE_TYPE,
@@ -417,7 +424,8 @@ async def test_degradation_reasons_are_inside_the_signed_payload(monkeypatch):
     assert "auth" in payload
 
     verifier = GatewayMessageAuthenticator(
-        GatewayMessageAuthConfig(shared_secret="site-test-secret")
+        GatewayMessageAuthConfig(shared_secret="site-test-secret"),
+        replay_cache=_verifier_cache(),
     )
     # Unmodified: authenticates.
     verifier.verify(
@@ -831,3 +839,25 @@ async def test_absent_and_null_evidence_values_publish_as_empty(monkeypatch):
         "available": False,
         "action_event_type": "",
     }
+
+
+@pytest.mark.asyncio
+async def test_a_refusing_signing_clock_sends_nothing_and_logs_no_traceback(
+    tmp_path, caplog
+):
+    from ori.security.signing_clock import SigningClock
+
+    # A store that cannot open: the clock refuses every signing time.
+    refusing = SigningClock(str(tmp_path / "missing" / "state.db"))
+    authenticator = GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(shared_secret="site-test-secret", max_skew_ms=300_000),
+        replay_cache=_verifier_cache(),
+        signing_clock=refusing,
+    )
+    client = _FakeClient()
+    publisher = _publisher(client=client, authenticator=authenticator)
+    with caplog.at_level("WARNING"):
+        await publisher._tick(client)
+    refusing.stop()
+    assert client.published == []
+    assert not any(record.exc_info for record in caplog.records)

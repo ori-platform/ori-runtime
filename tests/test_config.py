@@ -618,6 +618,42 @@ class TestLoadExample:
         ):
             Config.load(yaml_path)
 
+    def test_an_in_memory_database_refuses_gateway_auth_in_production(self, tmp_path):
+        """Senders: the gateway signing clock must outlive a restart."""
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+              deployment_profile: production
+            database:
+              path: ":memory:"
+            sensors: []
+            skills: []
+            reasoning: {}
+            gateway:
+              enabled: true
+              broker_url: mqtt://127.0.0.1:1883
+              auth:
+                enabled: true
+                shared_secret_env: GATEWAY_SHARED_SECRET
+            actions:
+              primary_alert_channel: sms
+              sms:
+                enabled: false
+            security:
+              skills:
+                require_signed: true
+            """,
+        )
+
+        with pytest.raises(
+            ConfigValidationError, match="signing clock must be durable"
+        ):
+            Config.load(yaml_path)
+
     def test_gateway_auth_bounds_must_be_positive(self, tmp_path):
         yaml_path = _write_yaml(
             tmp_path,

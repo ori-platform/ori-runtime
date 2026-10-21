@@ -486,8 +486,12 @@ that are hard to debug.
    `gateway.auth.previous_shared_secret_env` is verify-only; the runtime must
    continue signing outbound gateway MQTT envelopes with the current secret. Do
    not reuse remote-command secrets for gateway MQTT. Replay protection for gateway
-   MQTT is in-memory and TTL-bounded; do not copy the remote-command SQLite
-   audit/replay pattern into this higher-frequency path. MQTT gateway messages
+   MQTT is gateway-api/v2 Envelope Freshness and Replay: held keys and a replay
+   floor, shared by every route and persisted to the state database
+   (`ori/security/gateway_messages.py`); do not copy the remote-command
+   audit/replay pattern into this higher-frequency path. Every gateway signer
+   takes its time from the one shared signing clock
+   (`ori/security/signing_clock.py`), never from the wall clock. MQTT gateway messages
    must never mutate runtime config, policy, update intent, relay state, or
    actuator settings outside the separate authenticated remote-command path.
    Production broker deployments must also follow `docs/MQTT_SECURITY.md`:

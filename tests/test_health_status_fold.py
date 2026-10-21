@@ -18,6 +18,7 @@ import pathlib
 import textwrap
 import types
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -67,6 +68,17 @@ async def _evidence_storage_fault() -> dict[str, Any]:
     return {"application_storage_fault": True}
 
 
+class _RefusingClock:
+    def refusing(self) -> bool:
+        return True
+
+
+def _signing_refused(runtime: OriRuntime) -> None:
+    runtime._gateway_envelope_state = SimpleNamespace(  # type: ignore[assignment]
+        signing_clock=_RefusingClock()
+    )
+
+
 CONDITIONS: dict[str, tuple[str, Callable[[OriRuntime], None]]] = {
     "decision_record_lost": ("critical", _set("_decision_records_lost", lambda: 1)),
     "liveness_critical": (
@@ -102,6 +114,7 @@ CONDITIONS: dict[str, tuple[str, Callable[[OriRuntime], None]]] = {
         "degraded",
         _set("_evidence_health", _evidence_storage_fault),
     ),
+    "gateway_signing_refused": ("degraded", _signing_refused),
 }
 # Both liveness entries drive the one liveness branch.
 BRANCHES = len(CONDITIONS) - 1

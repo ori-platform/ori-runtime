@@ -77,6 +77,7 @@ from ori.security.gateway_messages import (
     GatewayMessageAuthenticator,
     GatewayMessageEncryptionConfig,
     GatewayMessageEncryptor,
+    GatewayReplayCache,
 )
 from ori.security.payload_members import DUPLICATE_MEMBER
 from ori.state.store import StateStore
@@ -98,7 +99,11 @@ MAX_INT = 2**53 - 1
 
 
 def _auth() -> GatewayMessageAuthenticator:
-    return GatewayMessageAuthenticator(GatewayMessageAuthConfig(shared_secret=SECRET))
+    # Started at clock 0, so envelopes signed before it was built still pass.
+    return GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(shared_secret=SECRET),
+        replay_cache=GatewayReplayCache(max_skew_ms=300_000, start_ms=0),
+    )
 
 
 def _construct(construction: str, length: int) -> bytes:
@@ -883,21 +888,26 @@ def test_any_replay_window_the_contract_admits_is_accepted():
         assert _parse_gateway(data).auth["replay_ttl_ms"] == ttl_ms
 
 
-def test_the_replay_cache_prunes_in_expiry_order_without_scanning():
-    from ori.security.gateway_messages import GatewayReplayCache
+def _admit(cache: Any, key: str, at_ms: int) -> str | None:
+    return cache.admit(
+        key, signed_at_ms=at_ms, received_at_ms=at_ms, now_ms_value=at_ms
+    )
 
-    cache = GatewayReplayCache(ttl_ms=100, max_entries=10)
-    assert cache.mark_seen("a", now_ms_value=0)
-    assert cache.mark_seen("b", now_ms_value=50)
-    assert not cache.mark_seen("a", now_ms_value=99)
-    assert cache.mark_seen("a", now_ms_value=100)  # expired at 100
-    assert not cache.mark_seen("b", now_ms_value=149)
-    assert cache.mark_seen("b", now_ms_value=150)  # expired at 150
-    # Every live key has one heap entry still to come; expired ones are gone.
-    assert sorted(cache._seen_until_ms) == ["a", "b"]
-    assert sorted(cache._expiries) == [(200, "a"), (250, "b")]
-    assert cache.mark_seen("c", now_ms_value=10_000)
-    assert len(cache._expiries) == 1 and list(cache._seen_until_ms) == ["c"]
+
+def test_the_replay_cache_prunes_in_expiry_order_without_scanning():
+    cache = GatewayReplayCache(ttl_ms=100, max_skew_ms=0, max_entries=10, start_ms=0)
+    assert _admit(cache, "a", 0) is None  # expires at 100
+    assert _admit(cache, "b", 50) is None  # expires at 150
+    assert _admit(cache, "c", 99) is None
+    assert sorted(cache._held) == ["a", "b", "c"]
+    assert _admit(cache, "d", 100) is None
+    assert sorted(cache._held) == ["b", "c", "d"] and cache.floor_ms() == 1
+    assert _admit(cache, "e", 150) is None
+    assert sorted(cache._held) == ["c", "d", "e"] and cache.floor_ms() == 51
+    # Every live key has one expiry entry still to come; expired ones are gone.
+    assert sorted(cache._expiries) == [(199, "c"), (200, "d"), (250, "e")]
+    assert _admit(cache, "f", 10_000) is None
+    assert len(cache._expiries) == 1 and list(cache._held) == ["f"]
 
 
 def test_the_persisted_replay_cache_prunes_by_index(tmp_path):
@@ -906,20 +916,31 @@ def test_the_persisted_replay_cache_prunes_by_index(tmp_path):
     from ori.security.gateway_messages import GatewayReplayCache
 
     db = tmp_path / "replay.db"
-    GatewayReplayCache(ttl_ms=100, db_path=str(db))
+    GatewayReplayCache(ttl_ms=100, max_skew_ms=0, db_path=str(db))
     with sqlite3.connect(db) as connection:
+        # A dropped key is deleted by its own key, never by a scan.
         plan = connection.execute(
+            "EXPLAIN QUERY PLAN DELETE FROM gateway_replay_cache WHERE key = ?",
+            ("k",),
+        ).fetchall()
+        # A release before the floor deletes by expiry after a rollback.
+        rollback_plan = connection.execute(
             "EXPLAIN QUERY PLAN DELETE FROM gateway_replay_cache WHERE seen_until_ms <= ?",
             (0,),
         ).fetchall()
-    assert any("gateway_replay_cache_expiry" in str(row) for row in plan), plan
+    assert any("sqlite_autoindex_gateway_replay_cache" in str(row) for row in plan), (
+        plan
+    )
+    assert any("gateway_replay_cache_expiry" in str(row) for row in rollback_plan), (
+        rollback_plan
+    )
 
 
 @pytest.mark.parametrize(
     "ttl_ms, skew_ms",
     [(2**63, 300_000), (2**80, 2**80), (10**309, 10**309), (1_000, 300_000)],
 )
-def test_any_replay_window_the_contract_admits_starts_and_records(
+async def test_any_replay_window_the_contract_admits_starts_and_records(
     tmp_path, monkeypatch, ttl_ms, skew_ms
 ):
     """Through the runtime's own builder, persistent: the window is decided in
@@ -951,9 +972,14 @@ def test_any_replay_window_the_contract_admits_starts_and_records(
         replay_retention_ms(ttl_ms, skew_ms)
     )
 
+    # The durable signing clock issues nothing before its first claim commits.
+    await wait_until(
+        lambda: bool(auth._signing_clock._ranges), what="the first signing claim"
+    )
     signed = auth.sign(
         {"device_id": "dev-01", "request_id": "r1"}, message_type="export_request"
     )
+    auth._signing_clock.stop()
     assert auth.verify(
         signed, message_type="export_request", expected_device_id="dev-01"
     )
@@ -970,7 +996,8 @@ def test_a_replay_is_refused_until_it_is_stale_whatever_the_ttl(ttl_ms, broadcas
     auth = GatewayMessageAuthenticator(
         GatewayMessageAuthConfig(
             shared_secret=SECRET, max_skew_ms=skew, replay_ttl_ms=ttl_ms
-        )
+        ),
+        replay_cache=GatewayReplayCache(ttl_ms=ttl_ms, max_skew_ms=skew, start_ms=0),
     )
     received = 1_000_000_000
     if broadcast:
@@ -1844,7 +1871,6 @@ def test_a_key_a_previous_release_stored_lives_until_its_envelope_is_stale(
 
     from ori.config import GatewayConfig
     from ori.runtime import _build_gateway_message_auth
-    from ori.security.gateway_messages import GatewayReplayCache
 
     clock = [1_000_000_000]
     monkeypatch.setattr("ori.security.gateway_messages.now_ms", lambda: clock[0])
@@ -1856,21 +1882,25 @@ def test_a_key_a_previous_release_stored_lives_until_its_envelope_is_stale(
         message_type="export_request",
         signed_at_ms=received + skew,
     )
-    # The previous release: receipt plus replay_ttl_ms (300000).
-    old = GatewayMessageAuthenticator(
-        GatewayMessageAuthConfig(shared_secret=SECRET),
-        replay_cache=GatewayReplayCache(ttl_ms=300_000, db_path=str(db)),
-    )
-    old.verify(
-        payload,
-        message_type="export_request",
-        expected_device_id="dev-01",
-        now_ms_value=received,
+    # The previous release's row: the key and receipt plus replay_ttl_ms
+    # (300000), in the table as it created it.
+    key = "\n".join(
+        [
+            "export_request",
+            "dev-01",
+            "r1",
+            str(received + skew),
+            payload["auth"]["signature"],
+        ]
     )
     with sqlite3.connect(db) as connection:
-        assert connection.execute(
-            "SELECT seen_until_ms FROM gateway_replay_cache"
-        ).fetchone() == (received + 300_000,)
+        connection.execute(
+            "CREATE TABLE gateway_replay_cache ("
+            "key TEXT PRIMARY KEY, seen_until_ms INTEGER NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO gateway_replay_cache VALUES (?, ?)", (key, received + 300_000)
+        )
 
     monkeypatch.setenv("GATEWAY_SHARED_SECRET", SECRET)
     for _restart in range(2):
@@ -1898,10 +1928,12 @@ def test_a_key_a_previous_release_stored_lives_until_its_envelope_is_stale(
                     expected_device_id="dev-01",
                     now_ms_value=replayed_at,
                 )
+        auth._replay_cache.close()
+        auth._signing_clock.stop()
     with sqlite3.connect(db) as connection:
         assert connection.execute(
-            "SELECT seen_until_ms FROM gateway_replay_cache"
-        ).fetchone() == (received + 2 * skew + 1,)
+            "SELECT seen_until_ms, signed_at_ms FROM gateway_replay_cache"
+        ).fetchone() == (received + 2 * skew + 1, received + skew)
 
 
 def _restarting_auth(db: Any, *, skew: int, monkeypatch: Any) -> Any:
@@ -1935,15 +1967,20 @@ def test_the_widest_skew_survives_a_restart(tmp_path, monkeypatch, skew):
 
     db = tmp_path / "state.db"
     first = _restarting_auth(db, skew=skew, monkeypatch=monkeypatch)
+    # Signed a millisecond before the restart, whatever the signing clock reads.
     signed = first.sign(
-        {"device_id": "dev-01", "request_id": "r1"}, message_type="export_request"
+        {"device_id": "dev-01", "request_id": "r1"},
+        message_type="export_request",
+        signed_at_ms=now_ms() - 1,
     )
     first.verify(signed, message_type="export_request", expected_device_id="dev-01")
+    first._replay_cache.close()
 
     restarted = _restarting_auth(db, skew=skew, monkeypatch=monkeypatch)
-    (expires,) = restarted._replay_cache._seen_until_ms.values()
+    ((expires, _signed),) = restarted._replay_cache._held.values()
     assert expires < 2**63
-    with pytest.raises(Exception, match="replay_detected"):
+    # Signed before this start, so the start floor refuses it first.
+    with pytest.raises(Exception, match="before_replay_floor"):
         restarted.verify(
             signed,
             message_type="export_request",
@@ -1958,19 +1995,26 @@ def test_the_stored_and_the_in_memory_expiry_agree_to_the_millisecond(tmp_path):
     from ori.security.gateway_messages import GatewayReplayCache
 
     db = tmp_path / "replay.db"
-    cache = GatewayReplayCache(ttl_ms=100, db_path=str(db))
-    assert cache.mark_seen("k", now_ms_value=0)  # expires at 100
+    cache = GatewayReplayCache(ttl_ms=100, max_skew_ms=0, db_path=str(db), start_ms=0)
+    assert _admit(cache, "k", 0) is None  # expires at 100
 
-    def stored() -> int:
+    def stored() -> tuple[int, int | None]:
         with sqlite3.connect(db) as connection:
-            return connection.execute(
+            count = connection.execute(
                 "SELECT COUNT(*) FROM gateway_replay_cache WHERE key = 'k'"
             ).fetchone()[0]
+            floor = connection.execute(
+                "SELECT floor_ms FROM gateway_replay_floor"
+            ).fetchone()
+        return count, floor[0] if floor else None
 
-    assert cache.mark_seen("a", now_ms_value=99)
-    assert stored() == 1 and not cache.mark_seen("k", now_ms_value=99)
-    assert cache.mark_seen("b", now_ms_value=100)
-    assert stored() == 0 and "k" not in cache._seen_until_ms
+    assert _admit(cache, "a", 99) is None
+    assert stored() == (1, None) and cache.check("k", signed_at_ms=0) == (
+        "replay_detected"
+    )
+    assert _admit(cache, "b", 100) is None
+    assert stored() == (0, 1) and "k" not in cache._held
+    assert cache.floor_ms() == 1
 
 
 def test_a_loaded_key_with_no_signing_time_keeps_its_stored_expiry(tmp_path):
@@ -1986,16 +2030,27 @@ def test_a_loaded_key_with_no_signing_time_keeps_its_stored_expiry(tmp_path):
             ("foreign-key-without-fields", 12_345),
         )
     loaded = GatewayReplayCache(ttl_ms=100, max_skew_ms=50, db_path=str(db))
-    assert loaded._seen_until_ms == {"foreign-key-without-fields": 12_345}
+    # The latest signing time that expiry allows, so its drop raises the floor
+    # at least as far as its real one would.
+    assert loaded._held == {"foreign-key-without-fields": (12_345, 12_294)}
 
 
 def test_the_expiry_heap_never_outgrows_the_live_keys():
     from ori.security.gateway_messages import GatewayReplayCache
 
-    cache = GatewayReplayCache(ttl_ms=10, max_entries=100)
+    cache = GatewayReplayCache(ttl_ms=10, max_skew_ms=0, max_entries=100, start_ms=0)
     for index in range(20_000):
-        assert cache.mark_seen(f"k{index}", now_ms_value=index)
-        assert len(cache._expiries) == len(cache._seen_until_ms) <= 10
+        assert _admit(cache, f"k{index}", index) is None
+        assert len(cache._held) <= 10
+        assert len(cache._expiries) <= 2 * len(cache._held) + 64
+        assert len(cache._signings) <= 2 * len(cache._held) + 64
+    # Full of live keys, it evicts instead: neither heap outgrows it either.
+    full = GatewayReplayCache(ttl_ms=10**9, max_skew_ms=0, max_entries=50, start_ms=0)
+    for index in range(20_000):
+        assert _admit(full, f"k{index}", index) is None
+        assert len(full._held) <= 50
+        assert len(full._expiries) <= 2 * len(full._held) + 64
+        assert len(full._signings) <= 2 * len(full._held) + 64
 
 
 @pytest.mark.parametrize("broadcast", [False, True])
@@ -2012,11 +2067,11 @@ def test_the_expiry_heap_never_outgrows_the_live_keys():
     ],
 )
 def test_a_key_is_kept_as_before_and_until_its_envelope_is_stale(
-    tmp_path, broadcast, own_cache, ttl_ms, signed_offset, expected_offset
+    tmp_path, monkeypatch, broadcast, own_cache, ttl_ms, signed_offset, expected_offset
 ):
-    from ori.security.gateway_messages import GatewayReplayCache
-
     skew, received = 300_000, 1_000_000_000
+    # Each cache starts at the receiver's clock, before anything is signed.
+    monkeypatch.setattr("ori.security.gateway_messages.now_ms", lambda: 0)
     config = GatewayMessageAuthConfig(
         shared_secret=SECRET, max_skew_ms=skew, replay_ttl_ms=ttl_ms
     )
@@ -2051,48 +2106,39 @@ def test_a_key_is_kept_as_before_and_until_its_envelope_is_stale(
             expected_device_id="dev-01",
             now_ms_value=received,
         )
-    (expires,) = auth._replay_cache._seen_until_ms.values()
+    ((expires, _signed),) = auth._replay_cache._held.values()
     assert expires == received + expected_offset
 
 
-def test_a_restart_never_shortens_a_stored_key(tmp_path):
-    """What the last run stored is only ever extended on load."""
-    from ori.security.gateway_messages import GatewayReplayCache
-
+def test_a_restart_under_the_same_settings_keeps_a_stored_key_as_it_was(tmp_path):
+    """Decided again from its stored signing and receipt times."""
     received, skew, ttl = 1_000_000_000, 300_000, 3_600_000
     db = tmp_path / "replay.db"
-    first = GatewayReplayCache(ttl_ms=ttl, max_skew_ms=skew, db_path=str(db))
+    first = GatewayReplayCache(
+        ttl_ms=ttl, max_skew_ms=skew, db_path=str(db), start_ms=0
+    )
     key = f"export_request\ndev-01\nr1\n{received}\nhmac-sha256:{'0' * 64}"
-    assert first.mark_seen(key, now_ms_value=received, signed_at_ms=received)
-    loaded = GatewayReplayCache(ttl_ms=ttl, max_skew_ms=skew, db_path=str(db))
-    assert loaded._seen_until_ms[key] == received + ttl
+    assert _admit(first, key, received) is None
+    first.close()
+    loaded = GatewayReplayCache(
+        ttl_ms=ttl, max_skew_ms=skew, db_path=str(db), start_ms=0
+    )
+    assert loaded._held[key] == (received + ttl, received)
 
 
-def test_a_key_signed_beyond_any_clock_survives_a_restart(tmp_path, monkeypatch):
-    """Under a skew wide enough to accept it, an envelope signed far ahead is
-    stored bounded; reloading leaves that bound rather than overflowing."""
-    from ori.utils.time_utils import now_ms
-
+def test_a_key_signed_beyond_any_clock_is_refused_as_future(tmp_path, monkeypatch):
+    """The skew is bounded where a clock never reaches, so an envelope signed
+    past that is refused, and no signing time or floor leaves SQLite's range."""
     db = tmp_path / "state.db"
-    skew = 2**80
-    first = _restarting_auth(db, skew=skew, monkeypatch=monkeypatch)
+    first = _restarting_auth(db, skew=2**80, monkeypatch=monkeypatch)
     signed = first.sign(
         {"device_id": "dev-01", "request_id": "far"},
         message_type="export_request",
         signed_at_ms=2**70,
     )
-    first.verify(signed, message_type="export_request", expected_device_id="dev-01")
-    (stored,) = first._replay_cache._seen_until_ms.values()
-
-    restarted = _restarting_auth(db, skew=skew, monkeypatch=monkeypatch)
-    assert list(restarted._replay_cache._seen_until_ms.values()) == [stored]
-    with pytest.raises(Exception, match="replay_detected"):
-        restarted.verify(
-            signed,
-            message_type="export_request",
-            expected_device_id="dev-01",
-            now_ms_value=now_ms(),
-        )
+    with pytest.raises(Exception, match="future_timestamp"):
+        first.verify(signed, message_type="export_request", expected_device_id="dev-01")
+    assert first._replay_cache._held == {}
 
 
 def test_a_replay_cache_never_grows_past_its_ceiling():
@@ -2103,9 +2149,10 @@ def test_a_replay_cache_never_grows_past_its_ceiling():
     assert replay_capacity(600_001) < REPLAY_CACHE_CEILING
 
 
-def test_every_gateway_route_built_by_the_runtime_shares_one_replay_cache():
+def test_every_gateway_route_built_by_the_runtime_shares_one_envelope_state():
     """Read from `Runtime.start` itself: every route builder is handed the
-    one cache, so the table is held once per process, not once per route."""
+    one replay cache and signing clock, so the table is held once per process,
+    not once per route, and one clock signs for every signer."""
     import ast
     import importlib
     import inspect
@@ -2130,7 +2177,7 @@ def test_every_gateway_route_built_by_the_runtime_shares_one_replay_cache():
             name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
             if name in builders:
                 called[name] = any(
-                    isinstance(arg, ast.Name) and arg.id == "gateway_replay_cache"
+                    isinstance(arg, ast.Name) and arg.id == "gateway_envelope_state"
                     for arg in [*node.args, *(k.value for k in node.keywords)]
                 )
     assert called == dict.fromkeys(builders, True)
@@ -2139,7 +2186,9 @@ def test_every_gateway_route_built_by_the_runtime_shares_one_replay_cache():
         node
         for node in ast.walk(start)
         if isinstance(node, ast.Assign)
-        and any(getattr(t, "id", None) == "gateway_replay_cache" for t in node.targets)
+        and any(
+            getattr(t, "id", None) == "gateway_envelope_state" for t in node.targets
+        )
         and isinstance(node.value, ast.Call)
     ]
     assert len(built) == 1
@@ -2155,14 +2204,14 @@ def test_every_gateway_route_built_by_the_runtime_shares_one_replay_cache():
             ):
                 forwarded = [*node.args[1:], *(k.value for k in node.keywords)]
                 assert any(
-                    isinstance(arg, ast.Name) and arg.id == "replay_cache"
+                    isinstance(arg, ast.Name) and arg.id == "envelope_state"
                     for arg in forwarded
                 ), f"{function.name} builds an authenticator without its cache"
 
 
-def test_a_route_builder_uses_the_replay_cache_it_is_given(monkeypatch):
+def test_a_route_builder_uses_the_envelope_state_it_is_given(monkeypatch):
     from ori.config import GatewayConfig
-    from ori.runtime import _build_gateway_message_auth, _build_gateway_replay_cache
+    from ori.runtime import _build_gateway_envelope_state, _build_gateway_message_auth
 
     monkeypatch.setenv("GATEWAY_SHARED_SECRET", SECRET)
     config: Any = SimpleNamespace(
@@ -2179,12 +2228,15 @@ def test_a_route_builder_uses_the_replay_cache_it_is_given(monkeypatch):
             },
         ),
     )
-    shared = _build_gateway_replay_cache(config)
+    shared = _build_gateway_envelope_state(config)
     assert shared is not None
     first = _build_gateway_message_auth(config, shared)
     second = _build_gateway_message_auth(config, shared)
     assert first is not None and second is not None
-    assert first._replay_cache is shared and second._replay_cache is shared
+    assert first._replay_cache is shared.replay_cache
+    assert second._replay_cache is shared.replay_cache
+    assert first._signing_clock is shared.signing_clock
+    assert second._signing_clock is shared.signing_clock
 
 
 # ── Payload Member Rule refusals are recorded with their reason ────────────

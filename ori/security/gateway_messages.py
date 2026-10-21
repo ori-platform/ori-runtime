@@ -11,8 +11,9 @@ Gateway messages have a different trust model from remote commands:
 This module therefore uses the same HMAC/canonical-JSON idea as remote
 commands, with a bounded TTL replay cache. The cache is in-memory by
 default; when a database path is supplied it also persists seen keys to
-SQLite so a restart alone does not reopen the replay window (a raised
-skew or a clock that steps back still can: ori-runtime#879). Restarts
+SQLite, with the replay floor of gateway-api/v2 Envelope Freshness and
+Replay, so neither a restart, a raised skew nor a clock stepped back
+reopens the replay window outside that section's stated limits. Restarts
 are attacker-influenceable on physically accessible devices (pulling
 power is enough), so persistence is the hardened posture. Persistence
 failures degrade to in-memory protection with a WARNING — replay defense
@@ -22,6 +23,7 @@ must never become an availability outage.
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import heapq
 import hmac
 import json
@@ -33,7 +35,7 @@ import threading
 from base64 import urlsafe_b64decode, urlsafe_b64encode
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping, NoReturn, TypeVar
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -44,6 +46,8 @@ from ori.security.payload_members import (
     PayloadMemberError,
     admitted_object,
 )
+from ori.security.signing_clock import SigningClock, durable_store
+from ori.utils.coalesced_log import CoalescedWarning
 from ori.utils.path_utils import shown
 from ori.utils.time_utils import now_ms
 
@@ -83,6 +87,11 @@ def replay_retention_ms(replay_ttl_ms: int, max_skew_ms: int) -> int:
     )
 
 
+#: The refusals of gateway-api/v2 Envelope Freshness and Replay checks 3 and
+#: 4: an envelope already seen, or one signed before what the floor covers.
+REPLAY_REFUSALS = frozenset({"before_replay_floor", "replay_detected"})
+
+_T = TypeVar("_T")
 _AES_GCM_NONCE_BYTES = 12
 logger = logging.getLogger(__name__)
 
@@ -143,61 +152,129 @@ class AuthenticatedMessage:
     signed_at_ms: int
 
 
-class GatewayReplayCache:
-    """TTL replay cache for short-lived gateway MQTT messages.
+class ReplayStoreOwnedError(RuntimeError):
+    """Another replay cache, in this process or another, owns this store."""
 
-    In-memory by default. When *db_path* is supplied, seen keys are also
-    persisted to a ``gateway_replay_cache`` table at that path and warmed
-    back on construction, so a restart alone cannot be used to reopen the
-    replay window. The cache is thread-safe: ``verify()`` runs on
-    MQTT client callback threads, and receivers on the event loop commit
-    through ``commit_async``, which writes on a worker thread.
+
+def _own_replay_store(path: str) -> Any | None:
+    """An exclusive, non-blocking lock owning the database at *path*.
+
+    Ownership follows the database file, never the name it was given. The
+    lock is named by the file's device and inode, in the file's directory, so
+    every name that reaches that file - a symlink, a case variant on a
+    case-insensitive filesystem, a second mount of the directory - reaches the
+    same lock; a hard link, a second directory entry for the file, is refused.
+    flock is per open file, so a second cache in this process is refused as
+    surely as one in another. None only where no store can exist, a missing
+    directory; any other failure to take ownership raises rather than becoming
+    a second, independent receiver.
+    """
+    directory = os.path.dirname(path)
+    if not os.path.isdir(directory):
+        return None
+    try:
+        # Created here if new, so the lock can be named by the file itself.
+        os.close(os.open(path, os.O_RDWR | os.O_CREAT, 0o600))
+        identity = os.stat(path)
+        lock_path = os.path.join(
+            directory,
+            f".ori-gateway-replay-{identity.st_dev}-{identity.st_ino}.lock",
+        )
+        lock = open(lock_path, "a+b")  # noqa: SIM115
+    except OSError as exc:
+        raise ReplayStoreOwnedError(
+            f"cannot take ownership of {shown(path)}: {exc.strerror}"
+        ) from exc
+    try:
+        if identity.st_nlink != 1:
+            raise ReplayStoreOwnedError(
+                f"gateway replay store {shown(path)} is hard-linked; ownership "
+                "cannot be established"
+            )
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # The lock is the file at its path: one replaced while it was
+            # being taken would be a lock nobody else is looking at.
+            if os.fstat(lock.fileno()).st_ino != os.stat(lock_path).st_ino:
+                raise OSError("lock file replaced while it was taken")
+        except OSError as exc:
+            raise ReplayStoreOwnedError(
+                f"another gateway replay cache owns {shown(path)}"
+            ) from exc
+    except ReplayStoreOwnedError:
+        lock.close()
+        raise
+    return lock
+
+
+class GatewayReplayCache:
+    """The replay floor and held keys of gateway-api/v2 Envelope Freshness and Replay.
+
+    A held key is dropped once its envelope is stale and *ttl_ms* has passed
+    since its receipt, or evicted, smallest signing time first, when the cache
+    is full. Either raises the floor to one past the key's signing time in the
+    same step, so no check sees the key gone and the floor not raised. The
+    floor in force is the greater of that raised floor and the clock when the
+    cache was built; only a raised floor is stored, never a clock reading.
+
+    Nothing lowers the stored floor or drops a held key early, a secret
+    rotation included: the contract's reset on rotation is optional, and a
+    reset is the one path that could readmit an envelope, through a secret
+    that comes back. A floor ahead of the clock clears as the clock passes it.
+
+    With *db_path*, held keys and the raised floor persist to that SQLite file
+    in one transaction per change, and a write failure degrades to in-memory
+    protection with a WARNING. Thread-safe: paho callbacks verify on their own
+    threads, and receivers on the event loop commit through a worker thread.
     """
 
     def __init__(
         self,
         *,
         ttl_ms: int = DEFAULT_GATEWAY_AUTH_REPLAY_TTL_MS,
-        max_skew_ms: int | None = None,
+        max_skew_ms: int,
         max_entries: int = _MAX_REPLAY_ENTRIES,
         db_path: str | None = None,
+        start_ms: int | None = None,
     ) -> None:
         self._ttl_ms = min(max(1, int(ttl_ms)), _LONGEST_MEANINGFUL_MS)
-        # A key is kept *ttl_ms* from receipt, as it always was, and with the
-        # skew also until its envelope turns stale: one millisecond past its
-        # signing time plus the skew, whichever is later. Never shorter than
-        # before, so no envelope can be replayed more often than it could.
-        self._max_skew_ms = (
-            None
-            if max_skew_ms is None
-            else min(max(0, int(max_skew_ms)), _LONGEST_MEANINGFUL_MS)
-        )
+        self._max_skew_ms = min(max(0, int(max_skew_ms)), _LONGEST_MEANINGFUL_MS)
         self._max_entries = max(1, int(max_entries))
-        self._seen_until_ms: dict[str, int] = {}
-        # Expiry order, so pruning pops what has expired instead of scanning
-        # a cache the replay window may make large. A key is never unrecorded
-        # or re-seen while live, so each live key has exactly one entry.
+        # key -> (expiry, signing time). Both heaps are lazy: an entry is live
+        # while it matches what _held records for its key.
+        self._held: dict[str, tuple[int, int]] = {}
         self._expiries: list[tuple[int, str]] = []
+        self._signings: list[tuple[int, str]] = []
+        self._raised_floor: int | None = None
+        self._start_floor = int(start_ms if start_ms is not None else now_ms())
         self._lock = threading.Lock()
         self._conn: sqlite3.Connection | None = None
+        self._ownership: Any = None
         path = str(db_path or "").strip()
+        # SQLite's private in-memory database is one connection's memory: no
+        # store to own, and nothing that survives a restart.
+        path = os.path.realpath(path) if durable_store(path) else ""
         if path:
+            # One cache owns a store at a time, in this process or any other:
+            # a cache's memory is then the whole of the store's history, and
+            # falling back to it when the store fails readmits nothing.
+            self._ownership = _own_replay_store(path)
+        if path and self._ownership is None:
+            logger.warning(
+                "[gateway-auth] persistent replay cache unavailable at %s; "
+                "falling back to in-memory replay protection.",
+                shown(path),
+            )
+        elif path:
             try:
-                conn = sqlite3.connect(path, check_same_thread=False)
+                # Transactions are explicit: every change is one BEGIN
+                # IMMEDIATE, written whole or not at all.
+                conn = sqlite3.connect(
+                    path, check_same_thread=False, isolation_level=None
+                )
                 conn.execute("PRAGMA busy_timeout = 5000")
-                conn.execute(
-                    "CREATE TABLE IF NOT EXISTS gateway_replay_cache ("
-                    "key TEXT PRIMARY KEY, seen_until_ms INTEGER NOT NULL)"
-                )
-                # Expired rows are deleted on every write: by index, not by
-                # scanning a table the replay window may make large.
-                conn.execute(
-                    "CREATE INDEX IF NOT EXISTS gateway_replay_cache_expiry "
-                    "ON gateway_replay_cache (seen_until_ms)"
-                )
-                conn.commit()
                 self._conn = conn
-                self._warm_from_db()
+                self._open(conn)
             except sqlite3.Error:
                 logger.warning(
                     "[gateway-auth] persistent replay cache unavailable at %s; "
@@ -206,123 +283,363 @@ class GatewayReplayCache:
                     exc_info=True,
                 )
                 self._conn = None
+                self._clear()
+                self._raised_floor = None
 
     @property
     def persistent(self) -> bool:
         return self._conn is not None
 
-    def mark_seen(
+    def close(self) -> None:
+        """Release the store: its connection, then its ownership."""
+        with self._lock:
+            conn, self._conn = self._conn, None
+            if conn is not None:
+                conn.close()
+            ownership, self._ownership = self._ownership, None
+            if ownership is not None:
+                ownership.close()
+
+    @property
+    def max_skew_ms(self) -> int:
+        return self._max_skew_ms
+
+    def floor_ms(self) -> int:
+        with self._lock:
+            return self._floor()
+
+    def check(self, key: str, *, signed_at_ms: int) -> str | None:
+        """Checks 3 and 4 without recording: the refusal reason, or None.
+
+        Nothing is pruned here: a key whose retention ended belongs to a stale
+        envelope, which check 1 has already refused.
+        """
+        with self._lock:
+            return self._refusal(key, signed_at_ms)
+
+    def admit(
         self,
         key: str,
         *,
+        signed_at_ms: int,
+        received_at_ms: int,
         now_ms_value: int | None = None,
-        signed_at_ms: int | None = None,
-    ) -> bool:
-        """Return False when *key* is already present and unexpired."""
+    ) -> str | None:
+        """Checks 3 and 4 and, when both hold, hold *key*, as one step.
+
+        With a store, the step is one transaction against it, the floor and
+        held keys there deciding as well as this cache's own. The cache owns
+        its store alone, so when a transaction fails its own memory is the
+        whole history, and it decides from that.
+        """
         current_ms = int(now_ms_value if now_ms_value is not None else now_ms())
         with self._lock:
-            self._prune(current_ms)
-            if key in self._seen_until_ms:
-                return False
-            if len(self._seen_until_ms) >= self._max_entries:
-                return False
-            expires_ms = self._expiry(current_ms, signed_at_ms)
-            self._seen_until_ms[key] = expires_ms
-            heapq.heappush(self._expiries, (expires_ms, key))
-            self._persist(key, expires_ms, current_ms)
-            return True
+            dropped = self._prune_locked(current_ms)
+            reason = self._refusal(key, signed_at_ms)
+            if reason is None and self._conn is not None:
+                try:
+                    return self._transact(
+                        lambda conn: self._admit_stored(
+                            conn, key, signed_at_ms, received_at_ms, dropped
+                        )
+                    )
+                except sqlite3.Error:
+                    self._degrade()
+                # Decided in memory alone from here, as a cache with no store.
+                reason = self._refusal(key, signed_at_ms)
+            held: tuple[str, int, int, int] | None = None
+            if reason is None:
+                while len(self._held) >= self._max_entries:
+                    dropped.append(self._evict_locked())
+                self._compact()
+                expiry = self._expiry(signed_at_ms, received_at_ms)
+                self._hold(key, expiry, signed_at_ms)
+                held = (key, expiry, signed_at_ms, received_at_ms)
+            if dropped or held is not None:
+                self._write(lambda conn: self._write_change(conn, dropped, held))
+            return reason
 
-    def _expiry(self, current_ms: int, signed_at_ms: int | None) -> int:
-        """When a key recorded at *current_ms* may be forgotten."""
-        configured = current_ms + self._ttl_ms
-        if self._max_skew_ms is None or signed_at_ms is None:
-            return configured
-        # Bounded by the window, so nothing derived from a skew the contract
-        # admits leaves its integer range.
-        stale = min(
-            signed_at_ms + self._max_skew_ms + 1,
-            current_ms + replay_window_ms(self._max_skew_ms),
+    def prune(self, now_ms_value: int | None = None) -> None:
+        """Drop every key whose retention has ended."""
+        current_ms = int(now_ms_value if now_ms_value is not None else now_ms())
+        with self._lock:
+            dropped = self._prune_locked(current_ms)
+            if dropped:
+                self._write(lambda conn: self._write_change(conn, dropped, None))
+
+    def evict_one(self) -> None:
+        """What a full cache does before holding a new key."""
+        with self._lock:
+            if self._held:
+                dropped = [self._evict_locked()]
+                self._compact()
+                self._write(lambda conn: self._write_change(conn, dropped, None))
+
+    def _admit_stored(
+        self,
+        conn: sqlite3.Connection,
+        key: str,
+        signed_at_ms: int,
+        received_at_ms: int,
+        dropped: list[str],
+    ) -> str | None:
+        row = conn.execute(
+            "SELECT floor_ms FROM gateway_replay_floor WHERE id = 1"
+        ).fetchone()
+        if row is not None and row[0] is not None:
+            stored = int(row[0])
+            if self._raised_floor is None or stored > self._raised_floor:
+                self._raised_floor = stored
+        reason: str | None = None
+        if signed_at_ms < self._floor():
+            reason = "before_replay_floor"
+        elif conn.execute(
+            "SELECT 1 FROM gateway_replay_cache WHERE key = ?", (key,)
+        ).fetchone():
+            reason = "replay_detected"
+        held: tuple[str, int, int, int] | None = None
+        if reason is None:
+            while len(self._held) >= self._max_entries:
+                dropped.append(self._evict_locked())
+            self._compact()
+            expiry = self._expiry(signed_at_ms, received_at_ms)
+            held = (key, expiry, signed_at_ms, received_at_ms)
+        self._write_change(conn, dropped, held)
+        if held is not None:
+            self._hold(key, held[1], signed_at_ms)
+        return reason
+
+    def _transact(self, change: Callable[[sqlite3.Connection], _T]) -> _T:
+        """Run *change* in one BEGIN IMMEDIATE transaction; its result."""
+        conn = self._conn
+        assert conn is not None
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            result = change(conn)
+            conn.execute("COMMIT")
+        except BaseException:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        return result
+
+    def _degrade(self) -> None:
+        logger.warning(
+            "[gateway-auth] persistent replay cache write failed; "
+            "continuing with in-memory replay protection.",
+            exc_info=True,
         )
-        return max(configured, stale)
+        self._conn = None
 
-    def _warm_from_db(self) -> None:
-        if self._conn is None:
-            return
-        # No wall-clock filter here: expiry is evaluated by _prune with the
-        # caller-supplied clock on every mark_seen, which keeps behaviour
-        # consistent with deterministic test clocks.
-        rows = self._conn.execute(
-            "SELECT key, seen_until_ms FROM gateway_replay_cache "
-            "ORDER BY seen_until_ms DESC LIMIT ?",
-            (self._max_entries,),
-        ).fetchall()
-        rewritten: list[tuple[int, str]] = []
-        for key, seen_until_ms in rows:
-            expires_ms = self._warm_expiry(str(key), int(seen_until_ms))
-            self._seen_until_ms[str(key)] = expires_ms
-            heapq.heappush(self._expiries, (expires_ms, str(key)))
-            if expires_ms != int(seen_until_ms):
-                rewritten.append((expires_ms, str(key)))
-        if rewritten:
-            # Stored as decided, so the next write's expiry delete and the next
-            # restart both read the same expiry as this process.
-            self._conn.executemany(
-                "UPDATE gateway_replay_cache SET seen_until_ms = ? WHERE key = ?",
-                rewritten,
+    def _floor(self) -> int:
+        raised = self._raised_floor
+        return self._start_floor if raised is None else max(raised, self._start_floor)
+
+    def _refusal(self, key: str, signed_at_ms: int) -> str | None:
+        if signed_at_ms < self._floor():
+            return "before_replay_floor"
+        if key in self._held:
+            return "replay_detected"
+        return None
+
+    def _expiry(self, signed_at_ms: int, received_at_ms: int) -> int:
+        """The first clock reading at which the key may be dropped."""
+        return min(
+            max(signed_at_ms + self._max_skew_ms + 1, received_at_ms + self._ttl_ms),
+            _LONGEST_MEANINGFUL_MS,
+        )
+
+    def _hold(self, key: str, expiry: int, signed_at_ms: int) -> None:
+        self._held[key] = (expiry, signed_at_ms)
+        heapq.heappush(self._expiries, (expiry, key))
+        heapq.heappush(self._signings, (signed_at_ms, key))
+
+    def _drop(self, key: str) -> None:
+        _expiry, signed_at_ms = self._held.pop(key)
+        raised = signed_at_ms + 1
+        if self._raised_floor is None or raised > self._raised_floor:
+            self._raised_floor = raised
+
+    def _prune_locked(self, current_ms: int) -> list[str]:
+        dropped: list[str] = []
+        expiries = self._expiries
+        while expiries and expiries[0][0] <= current_ms:
+            expiry, key = heapq.heappop(expiries)
+            entry = self._held.get(key)
+            if entry is not None and entry[0] == expiry:
+                self._drop(key)
+                dropped.append(key)
+        self._compact()
+        return dropped
+
+    def _evict_locked(self) -> str:
+        while True:
+            signed_at_ms, key = heapq.heappop(self._signings)
+            entry = self._held.get(key)
+            if entry is not None and entry[1] == signed_at_ms:
+                self._drop(key)
+                return key
+
+    def _compact(self) -> None:
+        # Entries of dropped keys stay in the other heap until they reach its
+        # top; rebuilt once they outnumber the live ones, so neither grows
+        # past a small multiple of the cache.
+        limit = 2 * len(self._held) + 64
+        if len(self._signings) > limit:
+            self._signings = [(s, k) for k, (_e, s) in self._held.items()]
+            heapq.heapify(self._signings)
+        if len(self._expiries) > limit:
+            self._expiries = [(e, k) for k, (e, _s) in self._held.items()]
+            heapq.heapify(self._expiries)
+
+    def _clear(self) -> None:
+        self._held.clear()
+        self._expiries.clear()
+        self._signings.clear()
+
+    def _open(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS gateway_replay_cache ("
+            "key TEXT PRIMARY KEY, seen_until_ms INTEGER NOT NULL)"
+        )
+        # Added, never required: a release before the floor writes rows
+        # without them after an automatic rollback.
+        columns = {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(gateway_replay_cache)")
+        }
+        for column in ("signed_at_ms", "received_at_ms"):
+            if column not in columns:
+                conn.execute(
+                    f"ALTER TABLE gateway_replay_cache ADD COLUMN {column} INTEGER"
+                )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS gateway_replay_cache_expiry "
+            "ON gateway_replay_cache (seen_until_ms)"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS gateway_replay_floor ("
+            "id INTEGER PRIMARY KEY CHECK (id = 1), floor_ms INTEGER)"
+        )
+        row = conn.execute(
+            "SELECT floor_ms FROM gateway_replay_floor WHERE id = 1"
+        ).fetchone()
+        if row is not None and row[0] is not None:
+            self._raised_floor = int(row[0])
+        rewritten: list[tuple[int, int, str]] = []
+        for key, stored_ms, signed_col, received_col in conn.execute(
+            "SELECT key, seen_until_ms, signed_at_ms, received_at_ms "
+            "FROM gateway_replay_cache"
+        ).fetchall():
+            key = str(key)
+            stored_ms = int(stored_ms)
+            signed_at_ms = (
+                int(signed_col)
+                if signed_col is not None
+                else self._stored_signing_time(key, stored_ms)
             )
-            self._conn.commit()
+            if received_col is not None:
+                # Decided again under this start's skew and window.
+                expiry = self._expiry(signed_at_ms, int(received_col))
+            else:
+                # Written by a release that kept no receipt time: extended to
+                # when the envelope turns stale, never shortened.
+                expiry = min(
+                    max(stored_ms, signed_at_ms + self._max_skew_ms + 1),
+                    _LONGEST_MEANINGFUL_MS,
+                )
+            self._hold(key, expiry, signed_at_ms)
+            if expiry != stored_ms or signed_col is None:
+                rewritten.append((expiry, signed_at_ms, key))
+        dropped: list[str] = []
+        while len(self._held) > self._max_entries:
+            dropped.append(self._evict_locked())
+        kept = [entry for entry in rewritten if entry[2] in self._held]
+        if kept or dropped:
 
-    def _warm_expiry(self, key: str, stored_ms: int) -> int:
-        """A loaded key's expiry, decided again from its own signing time.
+            def rewrite(conn: sqlite3.Connection) -> None:
+                conn.executemany(
+                    "UPDATE gateway_replay_cache SET seen_until_ms = ?, "
+                    "signed_at_ms = ? WHERE key = ?",
+                    kept,
+                )
+                self._write_change(conn, dropped, None)
 
-        A previous release wrote its receipt plus a configured window, which
-        could end before the envelope turned stale. Every gateway key ends
-        with its signing time and signature, so the stored expiry is extended
-        to when that envelope turns stale, and never shortened. A signing time
-        past what a clock reaches leaves the stored value, which `mark_seen`
-        bounded.
+            self._transact(rewrite)
+
+    def _stored_signing_time(self, key: str, stored_ms: int) -> int:
+        """A row's signing time from its key, which always ends with it.
+
+        A key of any other shape takes the latest signing time its stored
+        expiry allows, so dropping it raises the floor at least as far as
+        its real signing time would have.
         """
-        if self._max_skew_ms is None:
-            return stored_ms
         fields = key.split("\n")
         try:
             signed_at_ms = int(fields[-2])
         except (IndexError, ValueError):
-            return stored_ms
-        # Only ever extended, never shortened: a clock that started behind
-        # cannot cut what the last run stored.
+            return stored_ms - self._max_skew_ms - 1
         if abs(signed_at_ms) > _LONGEST_MEANINGFUL_MS:
-            return stored_ms
-        return max(stored_ms, signed_at_ms + self._max_skew_ms + 1)
+            return stored_ms - self._max_skew_ms - 1
+        return signed_at_ms
 
-    def _persist(self, key: str, expires_ms: int, current_ms: int) -> None:
+    def _write(self, change: Any) -> None:
         if self._conn is None:
             return
         try:
-            self._conn.execute(
-                "INSERT OR REPLACE INTO gateway_replay_cache "
-                "(key, seen_until_ms) VALUES (?, ?)",
-                (key, expires_ms),
-            )
-            self._conn.execute(
-                "DELETE FROM gateway_replay_cache WHERE seen_until_ms <= ?",
-                (current_ms,),
-            )
-            self._conn.commit()
+            self._transact(change)
         except sqlite3.Error:
-            logger.warning(
-                "[gateway-auth] persistent replay cache write failed; "
-                "continuing with in-memory replay protection.",
-                exc_info=True,
-            )
-            self._conn = None
+            self._degrade()
 
-    def _prune(self, current_ms: int) -> None:
-        expiries = self._expiries
-        while expiries and expiries[0][0] <= current_ms:
-            expires_ms, key = heapq.heappop(expiries)
-            if self._seen_until_ms.get(key) == expires_ms:
-                del self._seen_until_ms[key]
+    def _write_change(
+        self,
+        conn: sqlite3.Connection,
+        dropped: list[str],
+        held: tuple[str, int, int, int] | None,
+    ) -> None:
+        if dropped:
+            conn.executemany(
+                "DELETE FROM gateway_replay_cache WHERE key = ?",
+                [(key,) for key in dropped],
+            )
+            conn.execute(
+                "INSERT INTO gateway_replay_floor (id, floor_ms) VALUES (1, ?) "
+                "ON CONFLICT (id) DO UPDATE SET floor_ms = MAX("
+                "COALESCE(gateway_replay_floor.floor_ms, excluded.floor_ms), "
+                "excluded.floor_ms)",
+                (self._raised_floor,),
+            )
+        if held is not None:
+            key, expiry, signed_at_ms, received_at_ms = held
+            conn.execute(
+                "INSERT INTO gateway_replay_cache "
+                "(key, seen_until_ms, signed_at_ms, received_at_ms) "
+                "VALUES (?, ?, ?, ?)",
+                (key, expiry, signed_at_ms, received_at_ms),
+            )
+
+
+@dataclass(frozen=True)
+class GatewayEnvelopeState:
+    """What every gateway route of one runtime shares: one replay cache, and
+    one signing clock behind every signer."""
+
+    replay_cache: GatewayReplayCache
+    signing_clock: SigningClock
+
+    def close(self) -> None:
+        """Stop the clock's writer, then release the store the cache owns.
+
+        Each step is attempted whatever the other did, and none raises.
+        """
+        for step, what in (
+            (self.signing_clock.stop, "stopping the signing clock"),
+            (self.replay_cache.close, "closing the gateway replay cache"),
+        ):
+            try:
+                step()
+            except Exception:
+                logger.exception("[gateway-auth] error %s", what)
 
 
 class GatewayMessageAuthenticator:
@@ -333,6 +650,7 @@ class GatewayMessageAuthenticator:
         config: GatewayMessageAuthConfig,
         *,
         replay_cache: GatewayReplayCache | None = None,
+        signing_clock: SigningClock | None = None,
     ) -> None:
         secret = str(config.shared_secret or "").strip()
         if not secret:
@@ -344,11 +662,21 @@ class GatewayMessageAuthenticator:
                 "gateway message previous_shared_secret must differ from shared_secret"
             )
         self._previous_secret = previous_secret
-        self._max_skew_ms = max(0, int(config.max_skew_ms))
+        self._max_skew_ms = min(max(0, int(config.max_skew_ms)), _LONGEST_MEANINGFUL_MS)
         self._replay_cache = replay_cache or GatewayReplayCache(
             ttl_ms=config.replay_ttl_ms,
             max_skew_ms=config.max_skew_ms,
         )
+        # The cache drops a key once its envelope is stale under its own skew,
+        # so one built for a narrower skew would forget envelopes this still
+        # admits.
+        if self._replay_cache.max_skew_ms != self._max_skew_ms:
+            raise ValueError(
+                "gateway replay cache skew differs from the authenticator's"
+            )
+        self._floor_warning = CoalescedWarning(logger)
+        # In-process only unless the runtime's durable one is supplied.
+        self._signing_clock = signing_clock or SigningClock(clock=lambda: now_ms())
 
     @property
     def persists_replay_keys(self) -> bool:
@@ -367,9 +695,16 @@ class GatewayMessageAuthenticator:
         message_type: str,
         signed_at_ms: int | None = None,
     ) -> dict[str, Any]:
-        """Return a copy of *payload* with an HMAC auth block attached."""
+        """Return a copy of *payload* with an HMAC auth block attached.
+
+        The signing time comes from the signing clock, which never repeats
+        one; raises `SigningClockUnavailableError` when it has none to give.
+        *signed_at_ms* is for tests and the vectors; no runtime signer passes it.
+        """
         signed_payload = _payload_without_auth(payload)
-        issued_ms = int(signed_at_ms if signed_at_ms is not None else now_ms())
+        issued_ms = int(
+            signed_at_ms if signed_at_ms is not None else self._signing_clock.issue()
+        )
         signature = self._signature(
             payload=signed_payload,
             message_type=message_type,
@@ -403,7 +738,7 @@ class GatewayMessageAuthenticator:
             expected_request_id=expected_request_id,
             now_ms_value=now_ms_value,
         )
-        self.commit(message)
+        self.commit(message, now_ms_value=message.at_ms)
         return message.payload
 
     def authenticate(
@@ -433,14 +768,53 @@ class GatewayMessageAuthenticator:
         except _UNVERIFIABLE as exc:
             raise GatewayMessageAuthError("unverifiable_payload") from exc
 
-    def commit(self, message: AuthenticatedMessage) -> None:
-        """Record *message* as seen; raises `replay_detected` if it was already."""
-        if not self._replay_cache.mark_seen(
+    def commit(
+        self, message: AuthenticatedMessage, *, now_ms_value: int | None = None
+    ) -> None:
+        """Record *message* as seen, making checks 3 and 4 again as it does.
+
+        Its receipt time stays the time it was authenticated. Without
+        *now_ms_value*, keys are pruned as of that time too: a later prune only
+        ever keeps a key longer, and the receiver's own clock decides it.
+        """
+        current_ms = int(now_ms_value if now_ms_value is not None else message.at_ms)
+        reason = self._replay_cache.admit(
             message.replay_key,
-            now_ms_value=message.at_ms,
             signed_at_ms=message.signed_at_ms,
-        ):
-            raise GatewayMessageAuthError("replay_detected")
+            received_at_ms=message.at_ms,
+            now_ms_value=current_ms,
+        )
+        if reason is not None:
+            self._refuse(reason, current_ms)
+
+    def _replay_checks(
+        self, replay_key: str, signed_at_ms: int, current_ms: int
+    ) -> None:
+        reason = self._replay_cache.check(replay_key, signed_at_ms=signed_at_ms)
+        if reason is not None:
+            self._refuse(reason, current_ms)
+
+    def _freshness(self, signed_at_ms: int, current_ms: int) -> None:
+        if signed_at_ms < current_ms - self._max_skew_ms:
+            raise GatewayMessageAuthError("stale_timestamp")
+        if signed_at_ms > current_ms + self._max_skew_ms:
+            raise GatewayMessageAuthError("future_timestamp")
+
+    def _refuse(self, reason: str, current_ms: int) -> NoReturn:
+        if reason == "before_replay_floor":
+            # Check 1 held, so the floor sits above the clock less the skew
+            # whenever this refuses: a restart, a clock step or an eviction
+            # ahead of the clock, far more often than an attack. Fresh
+            # envelopes are refused until the senders' clocks pass the floor.
+            self._floor_warning.warn(
+                reason,
+                "[gateway-auth] envelope refused below the replay floor "
+                "%d at clock %d; envelopes signed before the floor are "
+                "refused until the senders' clocks pass it",
+                self._replay_cache.floor_ms(),
+                current_ms,
+            )
+        raise GatewayMessageAuthError(reason)
 
     async def verify_async(
         self,
@@ -491,12 +865,6 @@ class GatewayMessageAuthenticator:
             raise GatewayMessageAuthError("missing_signature")
         signed_at_ms = _signed_at_ms(auth)
 
-        current_ms = int(now_ms_value if now_ms_value is not None else now_ms())
-        if signed_at_ms < current_ms - self._max_skew_ms:
-            raise GatewayMessageAuthError("stale_timestamp")
-        if signed_at_ms > current_ms + self._max_skew_ms:
-            raise GatewayMessageAuthError("future_timestamp")
-
         unsigned_payload = _payload_without_auth(payload)
         device_id = str(unsigned_payload.get("device_id", "") or "")
         if device_id != str(expected_device_id):
@@ -522,9 +890,13 @@ class GatewayMessageAuthenticator:
                 request_id,
             )
 
+        # Freshness only once the signature and the topic-device check hold.
+        current_ms = int(now_ms_value if now_ms_value is not None else now_ms())
+        self._freshness(signed_at_ms, current_ms)
         replay_key = "\n".join(
             [message_type, device_id, request_id, str(signed_at_ms), signature]
         )
+        self._replay_checks(replay_key, signed_at_ms, current_ms)
         return AuthenticatedMessage(
             unsigned_payload, replay_key, current_ms, signed_at_ms
         )
@@ -573,12 +945,6 @@ class GatewayMessageAuthenticator:
             raise GatewayMessageAuthError("missing_signature")
         signed_at_ms = _signed_at_ms(auth)
 
-        current_ms = int(now_ms_value if now_ms_value is not None else now_ms())
-        if signed_at_ms < current_ms - self._max_skew_ms:
-            raise GatewayMessageAuthError("stale_timestamp")
-        if signed_at_ms > current_ms + self._max_skew_ms:
-            raise GatewayMessageAuthError("future_timestamp")
-
         unsigned_payload = _payload_without_auth(payload)
         signature_match = self._signature_match(
             signature,
@@ -595,11 +961,17 @@ class GatewayMessageAuthenticator:
                 message_type,
             )
 
+        current_ms = int(now_ms_value if now_ms_value is not None else now_ms())
+        self._freshness(signed_at_ms, current_ms)
         replay_key = "\n".join([message_type, str(signed_at_ms), signature])
-        if not self._replay_cache.mark_seen(
-            replay_key, now_ms_value=current_ms, signed_at_ms=signed_at_ms
-        ):
-            raise GatewayMessageAuthError("replay_detected")
+        reason = self._replay_cache.admit(
+            replay_key,
+            signed_at_ms=signed_at_ms,
+            received_at_ms=current_ms,
+            now_ms_value=current_ms,
+        )
+        if reason is not None:
+            self._refuse(reason, current_ms)
         return unsigned_payload
 
     def _signature(

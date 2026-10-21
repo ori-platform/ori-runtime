@@ -56,13 +56,21 @@ is enforced where it is observable — at runtime startup.
 Use layered controls:
 
 1. **Payload authentication**: enable `gateway.auth` so reasoning/export
-   envelopes are HMAC signed and replay-checked. Seen envelope keys are
+   envelopes are HMAC signed and replay-checked under gateway-api/v2
+   Envelope Freshness and Replay. Held envelope keys and the replay floor are
    persisted to the state database by default
-   (`gateway.auth.persistent_replay_cache: true`), so a power cycle — an
-   attacker-influenceable event on a physically accessible device — does not
-   by itself reopen the replay window. Raising `max_clock_skew_ms`, or a clock
-   that steps back (live or across a start, as on a Pi with no clock battery),
-   can still reopen it for keys already pruned; see ori-runtime#879.
+   (`gateway.auth.persistent_replay_cache: true`). Every dropped or evicted
+   key raises the floor past its signing time, and each start takes the
+   greater of the stored floor and its own clock, so a power cycle — an
+   attacker-influenceable event on a physically accessible device — a raised
+   `max_clock_skew_ms` and a clock stepped back do not reopen the replay
+   window, outside the limits that section states. The cost: an envelope
+   signed before a start is refused as `before_replay_floor`, and a sender
+   whose clock runs behind the runtime's is refused for that lag after each
+   start; a warning names the floor and the clock. The runtime signs every
+   envelope from one clock whose values never repeat, kept in the state
+   database, and refuses to sign once the values it has claimed run out
+   while the database stalls; health then reads degraded.
 2. **Payload encryption**: enable `gateway.encryption` so sensitive runtime
    export responses are AES-GCM encrypted before the broker sees them.
 3. **Broker authentication and ACLs**: require MQTT usernames/passwords and

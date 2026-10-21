@@ -556,6 +556,8 @@ def test_build_gateway_message_auth_accepts_previous_env_secret(monkeypatch):
         signed_at_ms=1_000,
     )
 
+    # The receiver starts at the test's clock, so its start floor admits it.
+    monkeypatch.setattr("ori.security.gateway_messages.now_ms", lambda: 1_000)
     auth = _build_gateway_message_auth(config)
 
     assert auth is not None

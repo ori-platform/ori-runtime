@@ -46,6 +46,7 @@ from ori.security.evidence.ledger import (
 from ori.security.gateway_messages import (
     GatewayMessageAuthConfig,
     GatewayMessageAuthenticator,
+    GatewayReplayCache,
 )
 from tests.waiting import wait_until
 
@@ -126,8 +127,22 @@ def rig(tmp_path):
     rig.close()
 
 
+_CONFIG = GatewayMessageAuthConfig(shared_secret=ENVELOPE_SECRET)
+
+
+def _cache(config: GatewayMessageAuthConfig, **kwargs: Any) -> GatewayReplayCache:
+    """A replay cache whose start floor precedes this file's synthetic clocks."""
+    return GatewayReplayCache(
+        ttl_ms=config.replay_ttl_ms,
+        max_skew_ms=config.max_skew_ms,
+        start_ms=0,
+        **kwargs,
+    )
+
+
 def _auth(secret: str = ENVELOPE_SECRET) -> GatewayMessageAuthenticator:
-    return GatewayMessageAuthenticator(GatewayMessageAuthConfig(shared_secret=secret))
+    config = GatewayMessageAuthConfig(shared_secret=secret)
+    return GatewayMessageAuthenticator(config, replay_cache=_cache(config))
 
 
 def _ack(
@@ -216,9 +231,7 @@ async def test_the_published_acknowledgement_retires_the_published_checkpoint(ri
     router = EvidenceOutboundAckRouter(
         device_id=DEVICE,
         outbox=rig.outbox,
-        message_auth=GatewayMessageAuthenticator(
-            GatewayMessageAuthConfig(shared_secret=vector["shared_secret"])
-        ),
+        message_auth=_auth(vector["shared_secret"]),
         now=lambda: ack["signed_at_ms"] + 1,
     )
     routed = await router.handle_ack(json.dumps(ack["payload"]).encode())
@@ -770,6 +783,7 @@ class _Cfg:
 
     class _Device:
         id = DEVICE
+        deployment_profile = "development"
 
     def __init__(self, *, enabled: bool = True, auth: dict | None = None) -> None:
         self.gateway = _Cfg._Gateway(enabled=enabled, auth=auth or {})
@@ -1363,8 +1377,6 @@ async def test_an_acknowledgement_for_nothing_sent_adds_no_replay_state(rig, tmp
     seen only once it answers something this device sent."""
     import sqlite3
 
-    from ori.security.gateway_messages import GatewayReplayCache
-
     db = tmp_path / "replay.db"
 
     def rows() -> int:
@@ -1377,8 +1389,7 @@ async def test_an_acknowledgement_for_nothing_sent_adds_no_replay_state(rig, tmp
         device_id=DEVICE,
         outbox=rig.outbox,
         message_auth=GatewayMessageAuthenticator(
-            GatewayMessageAuthConfig(shared_secret=ENVELOPE_SECRET),
-            replay_cache=GatewayReplayCache(db_path=str(db)),
+            _CONFIG, replay_cache=_cache(_CONFIG, db_path=str(db))
         ),
         now=lambda: 1787000004000,
     )
@@ -1496,19 +1507,21 @@ async def test_an_acknowledgement_writes_its_replay_key_off_the_event_loop(
     from ori.security.gateway_messages import GatewayReplayCache
 
     writes: list[int] = []
-    persist = GatewayReplayCache._persist
+    persist = GatewayReplayCache._write_change
 
     def recorded(self, *args, **kwargs):
         writes.append(threading.get_ident())
         return persist(self, *args, **kwargs)
 
-    monkeypatch.setattr(GatewayReplayCache, "_persist", recorded)
+    monkeypatch.setattr(GatewayReplayCache, "_write_change", recorded)
     router = EvidenceOutboundAckRouter(
         device_id=DEVICE,
         outbox=rig.outbox,
         message_auth=GatewayMessageAuthenticator(
             GatewayMessageAuthConfig(shared_secret=ENVELOPE_SECRET),
-            replay_cache=GatewayReplayCache(db_path=str(tmp_path / "replay.db")),
+            replay_cache=GatewayReplayCache(
+                max_skew_ms=300_000, db_path=str(tmp_path / "replay.db"), start_ms=0
+            ),
         ),
         now=lambda: 1787000004000,
     )

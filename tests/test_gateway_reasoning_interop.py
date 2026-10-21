@@ -21,6 +21,7 @@ from ori.security.gateway_messages import (
     GatewayMessageAuthConfig,
     GatewayMessageAuthenticator,
     GatewayMessageAuthError,
+    GatewayReplayCache,
 )
 
 FIXTURE = (
@@ -36,8 +37,12 @@ def corpus() -> dict:
 
 
 def _verifier(corpus: dict) -> GatewayMessageAuthenticator:
+    config = GatewayMessageAuthConfig(shared_secret=corpus["secret"])
     return GatewayMessageAuthenticator(
-        GatewayMessageAuthConfig(shared_secret=corpus["secret"])
+        config,
+        replay_cache=GatewayReplayCache(
+            ttl_ms=config.replay_ttl_ms, max_skew_ms=config.max_skew_ms, start_ms=0
+        ),
     )
 
 

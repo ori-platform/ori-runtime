@@ -46,6 +46,7 @@ from ori.security.evidence.ledger import RECEIPT_NONE
 from ori.security.gateway_messages import (
     GatewayMessageAuthConfig,
     GatewayMessageAuthenticator,
+    GatewayReplayCache,
 )
 from tests.waiting import wait_until
 
@@ -90,10 +91,19 @@ class _RecordingIngest(BoundIngestService):
         }[artifact_type](artifact)
 
 
-def _authenticator() -> GatewayMessageAuthenticator:
-    return GatewayMessageAuthenticator(
-        GatewayMessageAuthConfig(shared_secret=ENVELOPE_SECRET)
+def _cache(config: GatewayMessageAuthConfig, **kwargs: Any) -> GatewayReplayCache:
+    """A replay cache whose start floor precedes this file's synthetic clocks."""
+    return GatewayReplayCache(
+        ttl_ms=config.replay_ttl_ms,
+        max_skew_ms=config.max_skew_ms,
+        start_ms=0,
+        **kwargs,
     )
+
+
+def _authenticator() -> GatewayMessageAuthenticator:
+    config = GatewayMessageAuthConfig(shared_secret=ENVELOPE_SECRET)
+    return GatewayMessageAuthenticator(config, replay_cache=_cache(config))
 
 
 def _envelope(artifact_type: str, artifact: dict, *, device_id: str = DEVICE) -> dict:
@@ -518,6 +528,7 @@ class _Cfg:
 
     class _Device:
         id = DEVICE
+        deployment_profile = "development"
 
     def __init__(self, *, enabled: bool = True, auth: dict | None = None) -> None:
         self.gateway = _Cfg._Gateway(enabled=enabled, auth=auth or {})
@@ -1074,13 +1085,11 @@ class _FixtureIngest(BoundIngestService):
 
 
 def _fixture_router() -> EvidenceInboundRouter:
-    secret = FIXTURE["shared_secret"]
+    config = GatewayMessageAuthConfig(shared_secret=FIXTURE["shared_secret"])
     return EvidenceInboundRouter(
         device_id="site-a-edge-01",
         ingest=_FixtureIngest(),
-        message_auth=GatewayMessageAuthenticator(
-            GatewayMessageAuthConfig(shared_secret=secret)
-        ),
+        message_auth=GatewayMessageAuthenticator(config, replay_cache=_cache(config)),
     )
 
 
@@ -1166,14 +1175,12 @@ def _replay_rows(db: pathlib.Path) -> int:
 
 
 def _persisted_router(db: pathlib.Path, ingest=None) -> EvidenceInboundRouter:
-    from ori.security.gateway_messages import GatewayReplayCache
-
+    config = GatewayMessageAuthConfig(shared_secret=ENVELOPE_SECRET)
     return EvidenceInboundRouter(
         device_id=DEVICE,
         ingest=ingest,
         message_auth=GatewayMessageAuthenticator(
-            GatewayMessageAuthConfig(shared_secret=ENVELOPE_SECRET),
-            replay_cache=GatewayReplayCache(db_path=str(db)),
+            config, replay_cache=_cache(config, db_path=str(db))
         ),
     )
 
@@ -1277,13 +1284,13 @@ def test_the_route_writes_replay_keys_off_the_event_loop(tmp_path, monkeypatch):
     from ori.security.gateway_messages import GatewayReplayCache
 
     writes: list[int] = []
-    persist = GatewayReplayCache._persist
+    persist = GatewayReplayCache._write_change
 
     def recorded_persist(self, *args, **kwargs):
         writes.append(threading.get_ident())
         return persist(self, *args, **kwargs)
 
-    monkeypatch.setattr(GatewayReplayCache, "_persist", recorded_persist)
+    monkeypatch.setattr(GatewayReplayCache, "_write_change", recorded_persist)
     ingest = _RecordingIngest()
     router = _persisted_router(tmp_path / "replay.db", ingest)
     payload = _signed(_envelope(ARTIFACT_CUSTODY, {"v": 1}))

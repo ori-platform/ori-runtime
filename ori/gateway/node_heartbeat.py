@@ -34,6 +34,7 @@ from ori.gateway.payload_bounds import (
     fitting_count,
 )
 from ori.security.gateway_messages import GatewayMessageAuthenticator
+from ori.security.signing_clock import SigningClockUnavailableError
 from ori.utils.time_utils import now_ms
 
 try:
@@ -219,6 +220,10 @@ class MqttRuntimeNodeHeartbeatPublisher:
         payload = await self._payload()
         try:
             body = self._fitted(payload)
+        except SigningClockUnavailableError:
+            # A fallback would be refused the same way: nothing is signed
+            # until the signing clock has claimed again, and it says so.
+            return
         except Exception as exc:
             # A mapped heartbeat that cannot be signed or encoded is replaced,
             # not dropped: silence would read as offline rather than degraded.

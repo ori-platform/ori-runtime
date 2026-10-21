@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import yaml
 
 from ori.config_fields import ConfigValidationError
+from ori.config_fields import checked_device_endpoint as _checked_device_endpoint
 from ori.config_fields import require_optional_str as _require_optional_str
 from ori.config_fields import require_str as _require_str
 from ori.hal.config_schema import (
@@ -2877,6 +2878,13 @@ def _validate_production_security_posture(
                 "production posture requires gateway.auth.enabled: true "
                 "when gateway is enabled"
             )
+        if database_path == _IN_MEMORY_STORE:
+            # gateway-api/v2 Senders: signing times never repeat across a
+            # restart, which an in-memory store cannot keep.
+            raise ConfigValidationError(
+                "production posture requires database.path to name a file when "
+                "gateway.auth is enabled: the gateway signing clock must be durable"
+            )
         if not is_truthy(gateway.encryption.get("enabled", False)):
             raise ConfigValidationError(
                 "production posture requires gateway.encryption.enabled: true "
@@ -3446,32 +3454,6 @@ def _parse_database_path(data: Any) -> str:
     if not path:
         raise ConfigValidationError("database.path must not be empty.")
     return path
-
-
-def _checked_device_endpoint(value: str, field: str, *, urls_supported: bool) -> str:
-    """Refuse a device endpoint that names neither a node nor a reachable URL.
-
-    A device path is not resolved against the configuration the way a data file
-    is: it names something the host owns, and there is no directory it would be
-    relative to. Left relative it would follow the working directory, which the
-    unit points at a runtime directory systemd empties on every stop.
-
-    Whether a URL is accepted is the consumer's own rule rather than a shared
-    one. `usb_serial` hands anything containing `://` to `serial_for_url`, so
-    it can reach a bridge; `serial` and the GSM modem call `Serial()` directly,
-    which takes a port name only. Admitting a URL where it cannot be opened
-    would move the failure from config load to the first read.
-    """
-    if not value:
-        return value
-    if urls_supported and "://" in value:
-        return value
-    if not Path(value).expanduser().is_absolute():
-        supported = " or a URL its transport can open" if urls_supported else ""
-        raise ConfigValidationError(
-            f"{field} must be an absolute device path{supported}: {value!r}"
-        )
-    return value
 
 
 def anchor_to_config(declared: str, config_path: str) -> str:

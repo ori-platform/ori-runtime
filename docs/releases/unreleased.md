@@ -464,9 +464,53 @@ release is cut.
   whichever is later. Before, at the default of 300000, an envelope a gateway
   signed with its clock running ahead could be replayed after its key
   expired. Keys a previous release stored are extended the same way when this
-  release loads them, never shortened. A raised skew, or a clock that steps
-  back, can still reopen keys already pruned, as before: ori-runtime#879.
+  release loads them, never shortened.
+- Gateway envelopes are checked in gateway-api/v2's order: the signature and
+  topic-device check first, then freshness, then the replay floor, then held
+  keys. Before, freshness came first. A dropped or evicted key raises a replay
+  floor past its signing time, stored with the held keys; each start takes
+  the greater of the stored floor and its own clock. An envelope signed below
+  the floor is refused as `before_replay_floor`, so a raised skew, a clock
+  stepped back, or a restart no longer reopens keys already dropped. Expect a
+  `before_replay_floor` refusal for an envelope in flight across a runtime
+  start, and for a gateway whose clock runs behind the runtime's, for that
+  lag after each start; a warning names the floor and the clock on each
+  such refusal. No secret rotation lowers the floor
+  or drops a held key, so a secret brought back readmits nothing it signed; a
+  floor ahead of the clock clears as the clock passes it. `gateway.auth.max_clock_skew_ms` is bounded at 2^53, as the cache
+  always was, so an envelope signed beyond that is refused as future.
+- `database.path: ":memory:"` is no durable store for gateway signing: a
+  staging or production configuration with `gateway.auth.enabled` and an
+  in-memory database is refused at start; a development one runs with a
+  warning that signing times can repeat across a restart.
+- The runtime signs every gateway envelope (node heartbeat, reasoning
+  requests, export responses, inbound acknowledgements) from one signing
+  clock that never repeats a `signed_at_ms`, across a restart too. It claims
+  values ahead in the state database, off the signing path: a tenth of
+  `gateway.auth.max_clock_skew_ms`, between one and thirty seconds and never
+  more than half the skew. No signing time is issued more than a reservation
+  ahead of the wall clock as it reads at that moment, so every one passes a
+  receiver under the same skew. Restarts faster than the clock moves, or a
+  clock stepped back, live or across a start, refuse signing until the wall
+  clock catches up. A skew below twenty seconds shrinks the reservation, and
+  the database sees a claim more often: about every 250 ms at a 1000 ms skew. While nothing signs, the database
+  sees one claim per reservation (about every thirty seconds at the default
+  skew); a database that fails is retried once a second. It signs only within
+  what it has claimed; while the database stalls past that, it refuses to
+  sign, logs a warning, and health reads degraded.
 - The runtime keeps one gateway replay cache, shared by every gateway route.
+  With a state database, it owns the database's replay tables alone, through
+  an exclusive lock named by the database file's device and inode
+  (`.ori-gateway-replay-<device>-<inode>.lock`, in the database's directory).
+  A second cache, in this process or another, through any name for that file
+  (the same path, a symlink, a case variant, a second mount of the directory)
+  is refused at construction rather than sharing them; a hard-linked database
+  is refused outright, and a lock that cannot be taken refuses the cache
+  rather than running it alone. Replacing the lock file, or the database
+  itself, while a runtime holds it needs write access to the state directory,
+  which already reaches the store; neither is guarded beyond that. Each admission is one transaction against the store, and when the
+  store cannot be written the cache decides from its own memory, which as sole
+  owner is the whole history.
   It holds every message the gateway families can admit in the longer of
   `replay_ttl_ms` and twice the skew, up to 131072 entries (tens of
   megabytes).
@@ -474,9 +518,10 @@ release is cut.
   refused an authentic message as a replay; at the default window the
   admitted rates exceed 4096. A window of about 51 minutes or longer, from
   either setting, still reaches the ceiling at full gateway rates; a full
-  cache then refuses authentic messages as replays, for every family, since
-  one family's traffic fills it for all. Expired keys are pruned
-  in expiry order and, when persisted, by index rather than by a scan. The
+  cache then evicts the key with the smallest signing time and raises the
+  replay floor past it, so senders whose clocks run behind that envelope are
+  refused until their clocks pass it. Expired keys are pruned in expiry
+  order and, when persisted, deleted by key rather than by a scan. The
   evidence ledger finds an acknowledged envelope by index.
 - The gateway export responder no longer answers a request whose envelope
   fails verification. Before, with `gateway.auth.enabled: true`, it published

@@ -790,18 +790,20 @@ async def test_a_verified_export_request_writes_its_replay_key_off_the_event_loo
     from ori.security.gateway_messages import GatewayReplayCache
 
     writes: list[int] = []
-    persist = GatewayReplayCache._persist
+    persist = GatewayReplayCache._write_change
 
     def recorded(self, *args, **kwargs):
         writes.append(threading.get_ident())
         return persist(self, *args, **kwargs)
 
-    monkeypatch.setattr(GatewayReplayCache, "_persist", recorded)
+    monkeypatch.setattr(GatewayReplayCache, "_write_change", recorded)
     responder = _responder(
         store,
         message_auth=GatewayMessageAuthenticator(
             GatewayMessageAuthConfig(shared_secret="gateway-secret"),
-            replay_cache=GatewayReplayCache(db_path=str(tmp_path / "replay.db")),
+            replay_cache=GatewayReplayCache(
+                max_skew_ms=300_000, db_path=str(tmp_path / "replay.db"), start_ms=0
+            ),
         ),
     )
     signed = GatewayMessageAuthenticator(
