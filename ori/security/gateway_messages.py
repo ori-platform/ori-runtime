@@ -676,7 +676,7 @@ class GatewayMessageAuthenticator:
             )
         self._floor_warning = CoalescedWarning(logger)
         # In-process only unless the runtime's durable one is supplied.
-        self._signing_clock = signing_clock or SigningClock(clock=lambda: now_ms())
+        self._signing_clock = signing_clock or SigningClock(clock=_wall_now_ms)
 
     @property
     def persists_replay_keys(self) -> bool:
@@ -1135,6 +1135,12 @@ class GatewayMessageEncryptor:
         if _encryption_metadata(decoded) != metadata:
             raise GatewayMessageEncryptionError("metadata_mismatch")
         return decoded
+
+
+def _wall_now_ms() -> int:
+    """This module's wall clock, read when called, so a patch of `now_ms`
+    here reaches a default signing clock built before it."""
+    return now_ms()
 
 
 def _payload_without_auth(payload: Mapping[str, Any]) -> dict[str, Any]:

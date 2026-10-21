@@ -276,8 +276,6 @@ async def test_an_idle_signer_still_finds_a_claimed_value(tmp_path):
 async def test_a_store_locked_at_start_delays_nothing_and_recovers(
     tmp_path, monkeypatch
 ):
-    import ori.security.signing_clock as signing_clock
-
     db = tmp_path / "state.db"
     holder = sqlite3.connect(db, isolation_level=None)
     holder.execute("PRAGMA journal_mode = WAL")
@@ -289,7 +287,7 @@ async def test_a_store_locked_at_start_delays_nothing_and_recovers(
         opened_on.append(threading.get_ident())
         return real_connect(*args, **kwargs)
 
-    monkeypatch.setattr(signing_clock.sqlite3, "connect", connect)
+    monkeypatch.setattr("ori.security.signing_clock.sqlite3.connect", connect)
     clock = SigningClock(str(db), clock=_Clock(4_000_000))
     # Construction touches no store, so a locked one cannot hold up a start.
     assert threading.get_ident() not in opened_on
@@ -356,7 +354,6 @@ async def test_rapid_restarts_never_sign_more_than_a_reservation_ahead(
 async def test_a_failing_store_is_retried_at_its_own_pace(tmp_path, monkeypatch):
     """However often signers are refused, no claim is retried before its pause
     ends: with a pause longer than the test, the first attempt is the only one."""
-    import ori.security.signing_clock as signing_clock
 
     attempts = [0]
 
@@ -364,7 +361,7 @@ async def test_a_failing_store_is_retried_at_its_own_pace(tmp_path, monkeypatch)
         attempts[0] += 1
         return None
 
-    monkeypatch.setattr(signing_clock, "_RETRY_S", 3_600.0)
+    monkeypatch.setattr("ori.security.signing_clock._RETRY_S", 3_600.0)
     monkeypatch.setattr(SigningClock, "_claim", failing)
     clock = SigningClock(str(tmp_path / "state.db"), clock=_Clock(1_000))
     await wait_until(lambda: attempts[0] >= 1, what="the first claim attempt")
@@ -417,17 +414,22 @@ async def test_every_signing_time_passes_a_receiver_under_the_same_skew(
             attempts[0] += 1
 
     monkeypatch.setattr(SigningClock, "_claim", counted)
+    issued: list[int] = []
+    refused = 0
     for _ in range(40):
         before = attempts[0]
         clock = SigningClock(str(db), clock=wall, reservation_ms=reservation)
         await wait_until(lambda: attempts[0] > before, what="a claim attempt")
         for _ in range(3):
             try:
-                assert clock.issue() - wall.at_ms <= skew_ms
+                issued.append(clock.issue() - wall.at_ms)
             except SigningClockUnavailableError:
-                pass
+                # Permitted: a start too soon after the last claims nothing.
+                refused += 1
         clock.stop()
         wall.at_ms += 1
+    assert issued and all(lead <= skew_ms for lead in issued)
+    assert refused + len(issued) == 120
 
 
 async def test_a_live_backward_clock_step_refuses_rather_than_signing_ahead(tmp_path):

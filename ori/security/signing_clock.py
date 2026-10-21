@@ -283,6 +283,7 @@ class SigningClock:
             return None
         try:
             conn.execute("BEGIN IMMEDIATE")
+            committed = False
             try:
                 row = conn.execute(
                     "SELECT mark_ms FROM gateway_signing_clock WHERE id = 1"
@@ -316,9 +317,11 @@ class SigningClock:
                     (high,),
                 )
                 conn.execute("COMMIT")
-            except BaseException:
-                conn.execute("ROLLBACK")
-                raise
+                committed = True
+            finally:
+                # Whatever stopped the claim, nothing of it stays open.
+                if not committed and conn.in_transaction:
+                    conn.execute("ROLLBACK")
         except (sqlite3.Error, ValueError) as exc:
             self._warning.warn(
                 "claim_failed",
