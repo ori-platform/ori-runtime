@@ -313,7 +313,9 @@ async def test_a_restored_subscriber_handles_a_message(
                 what="gateway heartbeat to update posture after recovery",
             )
         else:
-            second.on_message(second, None, SimpleNamespace(payload=b'{"envelope":{}}'))
+            # One family key beside a signature: the shape the route accepts.
+            payload = b'{"envelope":{},"signature":"ed25519:x"}'
+            second.on_message(second, None, SimpleNamespace(payload=payload))
             await wait_until(
                 lambda: bool(service._telemetry_gate.received),
                 what="firmware telemetry to reach the gate after recovery",

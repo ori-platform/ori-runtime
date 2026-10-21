@@ -87,7 +87,7 @@ PRODUCTION_POSTURES = ("sealed_flash", "hardware_key")
 DEVICE_MODES = frozenset({"sensor_node", "bridge_node", "actuator_node", "mixed"})
 # Names the rules validate_manifest_policy applies, so a stored anchor is
 # re-checked when they change rather than once for all time.
-MANIFEST_POLICY_REVISION = "firmware-telemetry/v2 runtime-key-domains"
+MANIFEST_POLICY_REVISION = "firmware-telemetry/v2 runtime-key-domains command-results"
 SUPPORTED_TRANSPORTS = frozenset({"mqtt", "uart", "rs485"})
 SUPPORTED_CHANNEL_PROTOCOLS = frozenset(
     {"adc", "gpio", "i2c", "uart", "modbus_rtu", "rs232", "pulse", "one_wire"}
@@ -113,11 +113,44 @@ MANIFEST_REQUIRED_FIELDS = frozenset(
         "interlocks",
     }
 )
+#: firmware-telemetry/v2 Command Results: a device that signs the
+#: command_result family declares it, with this one value.
+COMMAND_RESULTS_FIELD = "command_results"
+COMMAND_RESULTS_VALUE = "firmware-command-result/v1"
 MANIFEST_OPTIONAL_FIELDS = frozenset(
-    {"deployment_maintenance_limit_ms", RUNTIME_KEY_DOMAINS_FIELD}
+    {
+        "deployment_maintenance_limit_ms",
+        RUNTIME_KEY_DOMAINS_FIELD,
+        COMMAND_RESULTS_FIELD,
+    }
 )
 _ACTION_FIELDS = frozenset({"action", "channel", "authority"})
 _INTERLOCK_FIELDS = frozenset({"name", "channel", "action"})
+
+#: firmware-telemetry/v2 Layer 1 evidence families: the closed set of keys a
+#: topic payload carries beside `signature`, exactly one of them.
+FAMILY_KEYS = frozenset(
+    {"envelope", "fault", "maintenance_event", "result", "command_result"}
+)
+
+
+def payload_family(message: object) -> str | None:
+    """The payload's one family key, or None when it is not exactly one.
+
+    Decided on the keys alone, before any inner object is read, and applied by
+    every verifier as well as the route: no layer relies on another's check.
+    """
+    if not isinstance(message, dict):
+        return None
+    keys = set(message)
+    if "signature" not in keys:
+        return None
+    families = keys - {"signature"}
+    if len(families) != 1 or not families <= FAMILY_KEYS:
+        return None
+    (family,) = families
+    return str(family)
+
 
 GRADE_ATTESTED = "attested"
 GRADE_ATTESTED_DEV = "attested_dev"
@@ -140,6 +173,7 @@ ERR_INVALID_ENVELOPE = "invalid_envelope"
 ERR_INVALID_DEVICE_MODE = "invalid_device_mode"
 ERR_NO_CHANNELS = "no_channels"
 ERR_INVALID_RUNTIME_KEY_DOMAINS = "invalid_runtime_key_domains"
+ERR_INVALID_COMMAND_RESULTS = "invalid_command_results"
 ERR_UNSUPPORTED_ALG = "unsupported_alg"
 ERR_DEVICE_REVOKED = "device_revoked"
 ERR_DEVICE_NOT_APPROVED = "device_not_approved"
@@ -318,7 +352,9 @@ CLOSED_FAULT_DETAILS_V2: dict[str, frozenset[str]] = {
     "command_rejected": COMMAND_REJECTION_VERDICTS_V2,
     "ingress_degraded": CLOSED_FAULT_DETAILS["ingress_degraded"]
     | {"liveness_authority_failed"},
-    "storage_degraded": CLOSED_FAULT_DETAILS["storage_degraded"],
+    # firmware-command-result/v1: the device could not record a command's result.
+    "storage_degraded": CLOSED_FAULT_DETAILS["storage_degraded"]
+    | {"command_record_write_failed"},
 }
 
 # The fault object's own v decides which closed sets apply. It is inside the
@@ -776,10 +812,10 @@ def _validate_manifest_fields(manifest: dict[str, Any]) -> None:
                 ERR_INVALID_ENVELOPE,
                 "deployment_maintenance_limit_ms must be a positive integer",
             )
-    _validate_runtime_key_domains(manifest)
+    _validate_declarations(manifest)
 
 
-def _validate_runtime_key_domains(manifest: dict[str, Any]) -> None:
+def _validate_declarations(manifest: dict[str, Any]) -> None:
     # Compared whole: never by prefix, length, NUL, trimming, case or
     # normalization, any of which would admit a value the contract defines
     # nothing for. Applied to fresh and stored manifests alike.
@@ -787,6 +823,15 @@ def _validate_runtime_key_domains(manifest: dict[str, Any]) -> None:
         raise FirmwareVerificationError(
             ERR_INVALID_RUNTIME_KEY_DOMAINS,
             f"{RUNTIME_KEY_DOMAINS_FIELD} must be the string {RUNTIME_KEY_DOMAINS_VALUE!r}",
+        )
+    # The same whole-value comparison, for the same reason.
+    if COMMAND_RESULTS_FIELD in manifest and not (
+        type(manifest[COMMAND_RESULTS_FIELD]) is str
+        and manifest[COMMAND_RESULTS_FIELD] == COMMAND_RESULTS_VALUE
+    ):
+        raise FirmwareVerificationError(
+            ERR_INVALID_COMMAND_RESULTS,
+            f"{COMMAND_RESULTS_FIELD} must be the string {COMMAND_RESULTS_VALUE!r}",
         )
 
 
@@ -838,7 +883,7 @@ def validate_manifest_policy(manifest: Any) -> None:
             ERR_INVALID_ENVELOPE, "stored manifest has no actions list"
         )
     _validate_device_mode(manifest, channels)
-    _validate_runtime_key_domains(manifest)
+    _validate_declarations(manifest)
 
 
 def _validate_device_mode(
@@ -1067,11 +1112,12 @@ def verify_telemetry_message(
             raise FirmwareVerificationError(ERR_DEVICE_REVOKED)
         if not approved:
             raise FirmwareVerificationError(ERR_DEVICE_NOT_APPROVED)
-        if not isinstance(message, dict) or not isinstance(
-            message.get("envelope"), dict
+        if payload_family(message) != "envelope" or not isinstance(
+            message["envelope"], dict
         ):
             raise FirmwareVerificationError(
-                ERR_INVALID_ENVELOPE, "missing envelope object"
+                ERR_INVALID_ENVELOPE,
+                "not exactly an envelope object and its signature",
             )
         envelope: dict[str, Any] = message["envelope"]
 
@@ -1217,9 +1263,9 @@ def verify_fault_message(
             raise FirmwareVerificationError(ERR_DEVICE_REVOKED)
         if not approved:
             raise FirmwareVerificationError(ERR_DEVICE_NOT_APPROVED)
-        if not isinstance(message, dict) or not isinstance(message.get("fault"), dict):
+        if payload_family(message) != "fault" or not isinstance(message["fault"], dict):
             raise FirmwareVerificationError(
-                ERR_INVALID_ENVELOPE, "missing fault object"
+                ERR_INVALID_ENVELOPE, "not exactly a fault object and its signature"
             )
         fault: dict[str, Any] = message["fault"]
 

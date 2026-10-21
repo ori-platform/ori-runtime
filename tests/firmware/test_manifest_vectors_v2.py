@@ -64,6 +64,7 @@ def test_the_corpus_holds_accepted_cases_and_each_refusal_class() -> None:
         "invalid_controller_profile",
         "invalid_alarm_channel",
         "invalid_runtime_key_domains",
+        "invalid_command_results",
     }
     assert set(CORPUS["reasons"]) == {case["reason"] for case in REJECTS.values()}
     assert all(case["signature_valid"] for case in REJECTS.values())

@@ -161,8 +161,15 @@ def test_the_v2_closed_sets_are_the_contracts() -> None:
                 "liveness_authority_failed",
             }
         ),
-        "storage_degraded": frozenset({"buffer_write_failed", "buffer_mount_failed"}),
+        "storage_degraded": frozenset(
+            {
+                "buffer_write_failed",
+                "buffer_mount_failed",
+                "command_record_write_failed",
+            }
+        ),
     }
+    assert "command_record_write_failed" not in CLOSED_FAULT_DETAILS["storage_degraded"]
     assert "rate_limited" not in CLOSED_FAULT_DETAILS["command_rejected"]
 
 
@@ -595,3 +602,20 @@ def test_v1_keeps_its_ingress_set_without_liveness_authority_failed() -> None:
     assert verdicts[2].accepted
     assert not verdicts[1].accepted
     assert "ingress_degraded detail" in verdicts[1].error_detail
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{"envelope": {}}, {"command_result": {}}, {"junk": 1}],
+    ids=["envelope", "command_result", "unknown_key"],
+)
+async def test_the_gate_refuses_a_signed_fault_beside_another_key(
+    gate: FirmwareTelemetryGate, extra: dict[str, Any]
+) -> None:
+    """One family key beside the signature, held by the verifier itself."""
+    case = CASES[sorted(CASES)[0]]
+    refused = await gate.ingest_fault(message(case) | extra, received_at_ms=1)
+    assert not refused.accepted
+    assert refused.error_code == "invalid_envelope"
+    accepted = await gate.ingest_fault(message(case), received_at_ms=1)
+    assert accepted.accepted, "the refusal advanced the freshness mark"

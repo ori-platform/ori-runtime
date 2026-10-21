@@ -345,9 +345,15 @@ _DECLARATION_REFUSALS = [
     for c in _MANIFEST_CORPUS["reject_cases"]
     if c["reason"] == "invalid_runtime_key_domains"
 ]
+#: Every declaration the stored policy holds a manifest to.
+_STORED_DECLARATION_REFUSALS = [
+    c
+    for c in _MANIFEST_CORPUS["reject_cases"]
+    if c["reason"] in ("invalid_runtime_key_domains", "invalid_command_results")
+]
 
 
-@pytest.mark.parametrize("case", _DECLARATION_REFUSALS, ids=lambda c: c["name"])
+@pytest.mark.parametrize("case", _STORED_DECLARATION_REFUSALS, ids=lambda c: c["name"])
 def test_the_stored_policy_refuses_every_invalid_declaration(
     case: dict[str, Any],
 ) -> None:
@@ -358,13 +364,14 @@ def test_the_stored_policy_refuses_every_invalid_declaration(
 
     with pytest.raises(FirmwareVerificationError) as refused:
         validate_manifest_policy(case["message"]["manifest"])
-    assert refused.value.code == "invalid_runtime_key_domains"
+    assert refused.value.code == case["reason"]
 
 
-def test_the_stored_policy_revision_names_the_declaration_rule() -> None:
+def test_the_stored_policy_revision_names_the_declaration_rules() -> None:
     from ori.security.firmware.telemetry import MANIFEST_POLICY_REVISION
 
     assert "runtime-key-domains" in MANIFEST_POLICY_REVISION
+    assert "command-results" in MANIFEST_POLICY_REVISION
 
 
 async def test_a_retained_candidate_with_an_invalid_declaration_is_not_promoted(

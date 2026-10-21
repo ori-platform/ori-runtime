@@ -165,6 +165,21 @@ release is cut.
 
 ## Changed
 
+- A firmware manifest may declare `command_results:
+  "firmware-command-result/v1"` (`firmware-telemetry/v2` Command Results); any
+  other value is refused at registration with `invalid_command_results`. A
+  `v` 2 `storage_degraded` fault may carry `command_record_write_failed`. The
+  runtime does not yet consume command results: a `command_result` payload, like
+  a `maintenance_event` or `result` payload, is not acted on and supervises
+  nothing (ori-runtime#482 adopts it).
+- A firmware telemetry payload must carry exactly one Layer 1 family key beside
+  its `signature` (`firmware-telemetry/v2` Layer 1 evidence families). One with
+  two family keys, or any other top-level key, is refused on its keys alone,
+  before any inner object is read: by the subscriber, with a coalesced WARNING,
+  and again by the envelope and fault verifiers, as `invalid_envelope` once
+  the device's anchor checks pass. Before,
+  the route took the first key it recognised and the verifiers accepted other
+  keys beside theirs.
 - Every sensor reading records what its `timestamp` is, as `gateway-api/v2`
   Producer Time defines it: `reported` for a read the runtime requested,
   `not_reported` for a value pushed to it, timed by its arrival, and `unknown`

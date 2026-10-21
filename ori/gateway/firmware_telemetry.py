@@ -30,7 +30,9 @@ from ori.network.event_bus import EventBus
 from ori.network.events import OriEvent
 from ori.security.firmware.ingest import FirmwareTelemetryGate
 from ori.security.firmware.liveness import FirmwareLivenessSupervisor
+from ori.security.firmware.telemetry import payload_family
 from ori.state.store import StateStore
+from ori.utils.coalesced_log import CoalescedWarning
 from ori.utils.strict_json import unique_members
 
 # Annotated Any so the fallback assignment needs no ignore, which would be
@@ -45,6 +47,10 @@ except ImportError:  # pragma: no cover - paho is installed in production images
     _PAHO_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+#: The families this runtime consumes. The others are not acted on.
+CONSUMED_FAMILIES = frozenset({"envelope", "fault"})
+
 
 FIRMWARE_TELEMETRY_TOPIC = "ori/fw/+/telemetry"
 
@@ -102,6 +108,7 @@ class MqttFirmwareTelemetrySubscriber:
         self._client_factory = client_factory or _default_client_factory
         self._client: Any = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._refusals = CoalescedWarning(logger)
 
     @property
     def telemetry_gate(self) -> FirmwareTelemetryGate:
@@ -179,17 +186,21 @@ class MqttFirmwareTelemetrySubscriber:
             logger.debug("[firmware-telemetry] ignoring non-object payload")
             return
 
-        if isinstance(payload.get("envelope"), dict):
-            future = asyncio.run_coroutine_threadsafe(
-                self._ingest_telemetry(payload), loop
+        family = payload_family(payload)
+        if family is None:
+            self._refusals.warn(
+                "family",
+                "[firmware-telemetry] refused a payload that does not carry exactly "
+                "one Layer 1 family key beside its signature",
             )
-            future.add_done_callback(_log_background_failure)
             return
-        if isinstance(payload.get("fault"), dict):
-            future = asyncio.run_coroutine_threadsafe(self._ingest_fault(payload), loop)
-            future.add_done_callback(_log_background_failure)
+        if family not in CONSUMED_FAMILIES:
+            # Not adopted: nothing it says is acted on, and it supervises nothing.
+            logger.debug("[firmware-telemetry] not consuming a %s payload", family)
             return
-        logger.debug("[firmware-telemetry] ignoring payload without envelope or fault")
+        ingest = self._ingest_telemetry if family == "envelope" else self._ingest_fault
+        future = asyncio.run_coroutine_threadsafe(ingest(payload), loop)
+        future.add_done_callback(_log_background_failure)
 
     async def _ingest_telemetry(self, payload: dict[str, Any]) -> None:
         verification, readings = await self._telemetry_gate.ingest(payload)

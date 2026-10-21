@@ -1,14 +1,14 @@
 {
   "source_repository": "ori-platform/ori-specs",
   "source_path": "firmware-telemetry",
-  "source_commit": "4880b99a015fc063186bae1473d779a13d4a44b5",
+  "source_commit": "22f618f1130d7b23914d51c38939dc871e0bb10f",
   "contract_version": "v2",
   "note": "Vendored copies of the normative vectors. The runtime must produce and accept the bytes they describe, so they are its conformance fixtures. Digests detect a local edit; the source commit is the provenance trail.",
   "files": {
     "controller-profile-vectors-v2.json": "3504e144432b3c8f05f66850c60d974ed44588f175702a0a2f2162dbaa6ea6d3",
     "envelope-vectors-v2.json": "dff9e940de06bdb1dda12ec19c3f66679b39b4a1f4d7565d9a985e9282558d7f",
-    "fault-vectors-v2.json": "7c54e32f65e02e9b58f7eb28a669977277863c81f2349b78970a69354b30bff0",
-    "manifest-vectors-v2.json": "784ea324f183aff14aa08fb965794faccf059cb62eaf4d4222d992c4c6d44015",
+    "fault-vectors-v2.json": "365b9e87afefe619b84866f70d5bdc37fa4ced50307fa1cabd505668813774b1",
+    "manifest-vectors-v2.json": "d7f7456e617792cab42a0a34684fb0bf36ed102874ec4a8e2f6a4c4c7ecea24b",
     "reading-age-vectors-v2.json": "909ef412cec0da86683aea72c2fdd430ce4797089166750f97c3c72db3696d83"
   }
 }
