@@ -84,6 +84,7 @@ from tests.conftest import (
     run_runtime_full_startup,
     run_runtime_until,
 )
+from tests.gateway_auth_helpers import cache_for
 from tests.waiting import DEADLINE_S, settle, wait_until
 
 
@@ -543,7 +544,10 @@ def test_build_gateway_message_auth_accepts_previous_env_secret(monkeypatch):
         )
     )
     previous_auth = GatewayMessageAuthenticator(
-        GatewayMessageAuthConfig(shared_secret="previous-secret")
+        GatewayMessageAuthConfig(shared_secret="previous-secret"),
+        replay_cache=cache_for(
+            GatewayMessageAuthConfig(shared_secret="previous-secret")
+        ),
     )
     payload = {
         "request_id": "req-1",

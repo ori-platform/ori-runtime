@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from ori.utils.coalesced_log import CoalescedWarning
+from tests.gateway_auth_helpers import cache_for
 
 LOGGER = "tests.coalesced"
 
@@ -80,7 +81,10 @@ def test_a_flood_of_rejected_heartbeats_writes_one_line(caplog):
         posture_tracker=SimpleNamespace(),  # type: ignore[arg-type]
         device_id="dev-01",
         authenticator=GatewayMessageAuthenticator(
-            GatewayMessageAuthConfig(shared_secret="gateway-secret")
+            GatewayMessageAuthConfig(shared_secret="gateway-secret"),
+            replay_cache=cache_for(
+                GatewayMessageAuthConfig(shared_secret="gateway-secret")
+            ),
         ),
         client_factory=lambda **_: None,
     )
@@ -116,7 +120,10 @@ async def test_a_flood_of_unauthenticated_export_requests_writes_one_line(
             device_id="dev-01",
             health_snapshot_provider=dict,
             message_auth=GatewayMessageAuthenticator(
-                GatewayMessageAuthConfig(shared_secret="gateway-secret")
+                GatewayMessageAuthConfig(shared_secret="gateway-secret"),
+                replay_cache=cache_for(
+                    GatewayMessageAuthConfig(shared_secret="gateway-secret")
+                ),
             ),
         )
         request = json.dumps(

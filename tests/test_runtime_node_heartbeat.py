@@ -18,6 +18,7 @@ from ori.security.gateway_messages import (
     GatewayMessageAuthenticator,
     GatewayReplayCache,
 )
+from tests.gateway_auth_helpers import cache_for
 from tests.waiting import settle, wait_until
 
 
@@ -65,7 +66,14 @@ def _auth() -> GatewayMessageAuthenticator:
             shared_secret="site-test-secret",
             max_skew_ms=300_000,
             replay_ttl_ms=300_000,
-        )
+        ),
+        replay_cache=cache_for(
+            GatewayMessageAuthConfig(
+                shared_secret="site-test-secret",
+                max_skew_ms=300_000,
+                replay_ttl_ms=300_000,
+            )
+        ),
     )
 
 

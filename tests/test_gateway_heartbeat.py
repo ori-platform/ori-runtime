@@ -21,6 +21,7 @@ from ori.security.gateway_messages import (
     GatewayMessageAuthenticator,
 )
 from ori.utils.time_utils import now_ms as _now_ms
+from tests.gateway_auth_helpers import cache_for
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -47,7 +48,14 @@ def _auth(
             shared_secret="site-test-secret",
             max_skew_ms=max_skew_ms,
             replay_ttl_ms=replay_ttl_ms,
-        )
+        ),
+        replay_cache=cache_for(
+            GatewayMessageAuthConfig(
+                shared_secret="site-test-secret",
+                max_skew_ms=max_skew_ms,
+                replay_ttl_ms=replay_ttl_ms,
+            )
+        ),
     )
 
 

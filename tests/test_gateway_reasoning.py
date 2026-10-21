@@ -15,6 +15,7 @@ from ori.security.gateway_messages import (
     GatewayMessageAuthConfig,
     GatewayMessageAuthenticator,
 )
+from tests.gateway_auth_helpers import cache_for
 
 
 def _reading(value: float = 14.2) -> SensorReading:
@@ -248,10 +249,16 @@ async def test_mqtt_gateway_reasoner_rejects_invalid_response_action_tier():
 
 async def test_mqtt_gateway_reasoner_signs_request_and_verifies_response():
     request_auth = GatewayMessageAuthenticator(
-        GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        GatewayMessageAuthConfig(shared_secret="gateway-secret"),
+        replay_cache=cache_for(
+            GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        ),
     )
     response_auth = GatewayMessageAuthenticator(
-        GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        GatewayMessageAuthConfig(shared_secret="gateway-secret"),
+        replay_cache=cache_for(
+            GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        ),
     )
 
     def _response(req):
@@ -324,7 +331,8 @@ class _ManyAnswersClient(_FakeClient):
 
 def _signed_by(secret: str, answer: dict) -> dict:
     return GatewayMessageAuthenticator(
-        GatewayMessageAuthConfig(shared_secret=secret)
+        GatewayMessageAuthConfig(shared_secret=secret),
+        replay_cache=cache_for(GatewayMessageAuthConfig(shared_secret=secret)),
     ).sign(answer, message_type="reasoning_response")
 
 
@@ -336,7 +344,10 @@ def _authenticated_reasoner(client, *, timeout_ms: int = 1000):
         client_factory=lambda **_: client,
         request_id_factory=lambda: "req-1",
         message_auth=GatewayMessageAuthenticator(
-            GatewayMessageAuthConfig(shared_secret="gateway-secret")
+            GatewayMessageAuthConfig(shared_secret="gateway-secret"),
+            replay_cache=cache_for(
+                GatewayMessageAuthConfig(shared_secret="gateway-secret")
+            ),
         ),
     )
 

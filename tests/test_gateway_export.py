@@ -22,6 +22,7 @@ from ori.security.gateway_messages import (
     GatewayMessageEncryptor,
 )
 from ori.state.store import StateStore
+from tests.gateway_auth_helpers import cache_for
 from tests.store_layout import store_clock_at
 
 
@@ -166,7 +167,10 @@ async def test_an_out_of_form_request_id_is_not_answered_even_as_an_auth_failure
     responder = _responder(
         store,
         message_auth=GatewayMessageAuthenticator(
-            GatewayMessageAuthConfig(shared_secret="gateway-secret")
+            GatewayMessageAuthConfig(shared_secret="gateway-secret"),
+            replay_cache=cache_for(
+                GatewayMessageAuthConfig(shared_secret="gateway-secret")
+            ),
         ),
     )
     payload = json.dumps(_request("health", request_id=request_id)).encode()
@@ -254,12 +258,18 @@ async def test_an_out_of_range_integer_is_refused_with_its_own_reason(
 
 async def test_export_responder_verifies_signed_request(store):
     request_auth = GatewayMessageAuthenticator(
-        GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        GatewayMessageAuthConfig(shared_secret="gateway-secret"),
+        replay_cache=cache_for(
+            GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        ),
     )
     responder = _responder(
         store,
         message_auth=GatewayMessageAuthenticator(
-            GatewayMessageAuthConfig(shared_secret="gateway-secret")
+            GatewayMessageAuthConfig(shared_secret="gateway-secret"),
+            replay_cache=cache_for(
+                GatewayMessageAuthConfig(shared_secret="gateway-secret")
+            ),
         ),
     )
     signed = request_auth.sign(_request("health"), message_type="export_request")
@@ -274,13 +284,17 @@ async def test_export_responder_verifies_signed_request(store):
 def _unauthenticated_requests() -> dict[str, dict]:
     def signed(secret: str = "gateway-secret", **overrides) -> dict:
         return GatewayMessageAuthenticator(
-            GatewayMessageAuthConfig(shared_secret=secret)
+            GatewayMessageAuthConfig(shared_secret=secret),
+            replay_cache=cache_for(GatewayMessageAuthConfig(shared_secret=secret)),
         ).sign(_request("sensor_history", **overrides), message_type="export_request")
 
     tampered = signed()
     tampered["limit"] = 1000
     wrong_type = GatewayMessageAuthenticator(
-        GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        GatewayMessageAuthConfig(shared_secret="gateway-secret"),
+        replay_cache=cache_for(
+            GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        ),
     ).sign(_request("sensor_history"), message_type="export_response")
     return {
         "unsigned": _request("sensor_history"),
@@ -289,7 +303,10 @@ def _unauthenticated_requests() -> dict[str, dict]:
         "other device": signed(device_id="dev-02"),
         "other message type": wrong_type,
         "stale": GatewayMessageAuthenticator(
-            GatewayMessageAuthConfig(shared_secret="gateway-secret")
+            GatewayMessageAuthConfig(shared_secret="gateway-secret"),
+            replay_cache=cache_for(
+                GatewayMessageAuthConfig(shared_secret="gateway-secret")
+            ),
         ).sign(
             _request("sensor_history"),
             message_type="export_request",
@@ -305,7 +322,10 @@ async def test_an_unauthenticated_export_request_is_not_answered(store, name):
     responder = _responder(
         store,
         message_auth=GatewayMessageAuthenticator(
-            GatewayMessageAuthConfig(shared_secret="gateway-secret")
+            GatewayMessageAuthConfig(shared_secret="gateway-secret"),
+            replay_cache=cache_for(
+                GatewayMessageAuthConfig(shared_secret="gateway-secret")
+            ),
         ),
     )
     payload = json.dumps(_unauthenticated_requests()[name]).encode()
@@ -320,12 +340,18 @@ async def test_a_fault_inside_verification_is_not_answered_either(store):
     """Not verified, for whatever reason: no `internal_error` reply, signed or
     not, and nothing served."""
     auth = GatewayMessageAuthenticator(
-        GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        GatewayMessageAuthConfig(shared_secret="gateway-secret"),
+        replay_cache=cache_for(
+            GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        ),
     )
     responder = _responder(store, message_auth=auth)
     signed = json.dumps(
         GatewayMessageAuthenticator(
-            GatewayMessageAuthConfig(shared_secret="gateway-secret")
+            GatewayMessageAuthConfig(shared_secret="gateway-secret"),
+            replay_cache=cache_for(
+                GatewayMessageAuthConfig(shared_secret="gateway-secret")
+            ),
         ).sign(_request("health"), message_type="export_request")
     ).encode()
 
@@ -340,12 +366,18 @@ async def test_a_fault_inside_verification_is_not_answered_either(store):
 
 async def test_a_replayed_export_request_is_not_answered(store):
     request_auth = GatewayMessageAuthenticator(
-        GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        GatewayMessageAuthConfig(shared_secret="gateway-secret"),
+        replay_cache=cache_for(
+            GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        ),
     )
     responder = _responder(
         store,
         message_auth=GatewayMessageAuthenticator(
-            GatewayMessageAuthConfig(shared_secret="gateway-secret")
+            GatewayMessageAuthConfig(shared_secret="gateway-secret"),
+            replay_cache=cache_for(
+                GatewayMessageAuthConfig(shared_secret="gateway-secret")
+            ),
         ),
     )
     signed = json.dumps(
@@ -545,10 +577,16 @@ async def test_mqtt_server_publishes_response_on_request_topic(store):
 
 async def test_mqtt_server_signs_export_response_when_auth_configured(store):
     response_auth = GatewayMessageAuthenticator(
-        GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        GatewayMessageAuthConfig(shared_secret="gateway-secret"),
+        replay_cache=cache_for(
+            GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        ),
     )
     request_auth = GatewayMessageAuthenticator(
-        GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        GatewayMessageAuthConfig(shared_secret="gateway-secret"),
+        replay_cache=cache_for(
+            GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        ),
     )
     published = []
 
@@ -600,10 +638,16 @@ async def test_mqtt_server_encrypts_sensitive_export_response_when_configured(st
         sensor_type="voltage",
     )
     request_auth = GatewayMessageAuthenticator(
-        GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        GatewayMessageAuthConfig(shared_secret="gateway-secret"),
+        replay_cache=cache_for(
+            GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        ),
     )
     response_auth = GatewayMessageAuthenticator(
-        GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        GatewayMessageAuthConfig(shared_secret="gateway-secret"),
+        replay_cache=cache_for(
+            GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        ),
     )
     encryptor = GatewayMessageEncryptor(
         GatewayMessageEncryptionConfig(shared_secret="gateway-secret")
@@ -661,7 +705,10 @@ async def test_health_export_response_remains_plaintext_when_encryption_configur
     store,
 ):
     auth = GatewayMessageAuthenticator(
-        GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        GatewayMessageAuthConfig(shared_secret="gateway-secret"),
+        replay_cache=cache_for(
+            GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        ),
     )
     encryptor = GatewayMessageEncryptor(
         GatewayMessageEncryptionConfig(shared_secret="gateway-secret")
@@ -807,7 +854,10 @@ async def test_a_verified_export_request_writes_its_replay_key_off_the_event_loo
         ),
     )
     signed = GatewayMessageAuthenticator(
-        GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        GatewayMessageAuthConfig(shared_secret="gateway-secret"),
+        replay_cache=cache_for(
+            GatewayMessageAuthConfig(shared_secret="gateway-secret")
+        ),
     ).sign(_request("health"), message_type="export_request")
 
     response = await responder.handle_payload(json.dumps(signed).encode())

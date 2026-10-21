@@ -81,6 +81,7 @@ from ori.security.gateway_messages import (
 )
 from ori.security.payload_members import DUPLICATE_MEMBER
 from ori.state.store import StateStore
+from tests.gateway_auth_helpers import cache_for
 from tests.waiting import quiesce, wait_until
 
 CORPUS = json.loads(
@@ -1876,7 +1877,10 @@ def test_a_key_a_previous_release_stored_lives_until_its_envelope_is_stale(
     monkeypatch.setattr("ori.security.gateway_messages.now_ms", lambda: clock[0])
     skew, received = 300_000, 1_000_000_000
     db = tmp_path / "state.db"
-    signer = GatewayMessageAuthenticator(GatewayMessageAuthConfig(shared_secret=SECRET))
+    signer = GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(shared_secret=SECRET),
+        replay_cache=cache_for(GatewayMessageAuthConfig(shared_secret=SECRET)),
+    )
     payload = signer.sign(
         {"device_id": "dev-01", "request_id": "r1"},
         message_type="export_request",

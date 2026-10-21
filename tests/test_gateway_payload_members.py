@@ -48,6 +48,7 @@ from ori.security.payload_members import (
     fold,
     refusal,
 )
+from tests.gateway_auth_helpers import cache_for
 from tests.waiting import latency_bounds_apply
 
 #: Generous: a megabyte scans in milliseconds; a quadratic scan in minutes.
@@ -194,7 +195,10 @@ _ACKS = _cases_for("ori/{device_id}/evidence/outbound/ack")
 
 @pytest.mark.parametrize("case", _ACKS, ids=[c["name"] for c in _ACKS])
 def test_the_ack_route_refuses_each_case_for_its_reason(case):
-    auth = GatewayMessageAuthenticator(GatewayMessageAuthConfig(shared_secret="s"))
+    auth = GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(shared_secret="s"),
+        replay_cache=cache_for(GatewayMessageAuthConfig(shared_secret="s")),
+    )
     router = EvidenceOutboundAckRouter(
         device_id="site-a-edge-01",
         outbox=None,  # type: ignore[arg-type]
@@ -242,7 +246,10 @@ _HEALTH = _cases_for("ori/gateway/health")
 
 @pytest.mark.parametrize("case", _HEALTH, ids=[c["name"] for c in _HEALTH])
 def test_the_heartbeat_subscriber_reads_no_refused_heartbeat(case):
-    auth = GatewayMessageAuthenticator(GatewayMessageAuthConfig(shared_secret="s"))
+    auth = GatewayMessageAuthenticator(
+        GatewayMessageAuthConfig(shared_secret="s"),
+        replay_cache=cache_for(GatewayMessageAuthConfig(shared_secret="s")),
+    )
     sub = MqttGatewayHeartbeatSubscriber(
         broker_url="mqtt://localhost",
         posture_tracker=SimpleNamespace(),  # type: ignore[arg-type]
