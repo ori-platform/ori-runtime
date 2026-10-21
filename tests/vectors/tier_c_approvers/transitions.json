@@ -1,0 +1,4796 @@
+{
+  "commercial_test_public_key_b64": "CzJf9IyhyTJ8DQpovGI8heykR+smA0porxw3cqIXgMY=",
+  "contract": "tier-c-approvers/v1",
+  "previous_test_public_key_b64": "pATYfctmcQzVhHk+Aa6SZWUQCtxMIBDD2/WXjR68x9k=",
+  "proof": "state-model representability only; no runtime or gateway consumer. Channel match on possession and Tier C replies cannot decide alone in v1, and neither can a channel without an authenticated ingress on a possession reply: the set of authenticated ingresses changes only across a restart, which invalidates every pending operation first. The WhatsApp steps are two-fault by construction. A channel without an authenticated ingress decides alone only on a Tier C reply after a restart that removed SMS ingress. Each scenario starts with SMS as its one authenticated ingress; a restart step's sms_ingress flag sets the new configuration, and a restart without it keeps the configuration unchanged.",
+  "provisioning_test_public_key_b64": "CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+  "scenarios": [
+    {
+      "initial_mode": "locked",
+      "name": "recovery_once",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "recovery_once.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "recovery_once.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "recovery_once.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "recovery_once.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "candidate": [],
+          "challenge_id": "recovery_once.2",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "QEFCQ0RFRkdISUpLTE1OTw=="
+        },
+        {
+          "challenge_id": "recovery_once.2",
+          "epoch": "QEFCQ0RFRkdISUpLTE1OTw==",
+          "expect": "recovery_not_available",
+          "local_request": true,
+          "op": "recover"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "first_setup_requires_authenticated_local_request",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "first_setup_requires_authenticated_local_request.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "first_setup_requires_authenticated_local_request.0",
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "local_auth_required",
+          "local_request": false,
+          "op": "recover"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "recovery_refuses_provisioning_contacts",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "recovery_refuses_provisioning_contacts.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "recovery_refuses_provisioning_contacts.0",
+          "contacts": [
+            "owner-key"
+          ],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "contacts_forbidden",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": [],
+          "challenge_id": "recovery_refuses_provisioning_contacts.1",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "recovery_refuses_provisioning_contacts.1",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "recovery_refuses_multiple_contacts",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "recovery_refuses_multiple_contacts.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "recovery_refuses_multiple_contacts.0",
+          "contacts": [
+            "one",
+            "two",
+            "three"
+          ],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "contacts_forbidden",
+          "local_request": true,
+          "op": "recover"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "first_setup_uses_recovery",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "first_setup_uses_recovery.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "first_setup_uses_recovery.0",
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "empty_registry_admits_nobody",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "empty_registry_admits_nobody.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "empty_registry_admits_nobody.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "expect": "opened",
+          "op": "open",
+          "proposal": "p1"
+        },
+        {
+          "credential": "x",
+          "expect": "credential_unavailable",
+          "op": "admit",
+          "proposal": "p1"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "local_console_requires_registered_human",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "local_console_requires_registered_human.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "local_console_requires_registered_human.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "expect": "opened",
+          "op": "open",
+          "proposal": "p1"
+        },
+        {
+          "authenticated": false,
+          "channel": "local_console",
+          "credential": "x",
+          "expect": "ingress_unauthenticated",
+          "op": "admit",
+          "proposal": "p1"
+        },
+        {
+          "authenticated": true,
+          "channel": "local_console",
+          "credential": "x",
+          "expect": "credential_unavailable",
+          "op": "admit",
+          "proposal": "p1"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "empty_registry_local_seed_requires_site_proofs",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "empty_registry_local_seed_requires_site_proofs.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "empty_registry_local_seed_requires_site_proofs.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "expect": "opened",
+          "op": "open",
+          "proposal": "before-seed"
+        },
+        {
+          "candidate": {
+            "approver_id": "new-owner",
+            "channel": "lan_ed25519",
+            "credential": "app-1",
+            "value": "app-1"
+          },
+          "challenge_id": "empty_registry_local_seed_requires_site_proofs.2",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "new-owner",
+          "challenge_id": "empty_registry_local_seed_requires_site_proofs.2",
+          "channel": "lan_ed25519",
+          "credential": "app-1",
+          "expect": "local_auth_required",
+          "local_request": false,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "new-owner",
+            "channel": "sms",
+            "credential": "app-1",
+            "value": "app-1"
+          },
+          "challenge_id": "empty_registry_local_seed_requires_site_proofs.3",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "new-owner",
+          "challenge_id": "empty_registry_local_seed_requires_site_proofs.3",
+          "channel": "sms",
+          "credential": "app-1",
+          "expect": "lan_key_required",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "new-owner",
+            "channel": "lan_ed25519",
+            "credential": "app-1",
+            "value": "app-1"
+          },
+          "challenge_id": "empty_registry_local_seed_requires_site_proofs.4",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "new-owner",
+          "challenge_id": "empty_registry_local_seed_requires_site_proofs.4",
+          "channel": "lan_ed25519",
+          "credential": "app-1",
+          "expect": "possession_invalid",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": false
+        },
+        {
+          "candidate": {
+            "approver_id": "new-owner",
+            "channel": "lan_ed25519",
+            "credential": "app-1",
+            "value": "app-1"
+          },
+          "challenge_id": "empty_registry_local_seed_requires_site_proofs.5",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "new-owner",
+          "challenge_id": "empty_registry_local_seed_requires_site_proofs.5",
+          "channel": "lan_ed25519",
+          "credential": "app-1",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "credential": "app-1",
+          "expect": "enrolled_after_proposal",
+          "op": "admit",
+          "proposal": "before-seed"
+        },
+        {
+          "expect": "opened",
+          "op": "open",
+          "proposal": "after-seed"
+        },
+        {
+          "credential": "app-1",
+          "expect": "approved",
+          "op": "admit",
+          "proposal": "after-seed"
+        },
+        {
+          "candidate": {
+            "approver_id": "other-owner",
+            "channel": "lan_ed25519",
+            "credential": "app-2",
+            "value": "app-2"
+          },
+          "challenge_id": "empty_registry_local_seed_requires_site_proofs.9",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "other-owner",
+          "challenge_id": "empty_registry_local_seed_requires_site_proofs.9",
+          "channel": "lan_ed25519",
+          "credential": "app-2",
+          "expect": "active_authorizer_exists",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "recovery_can_seed_but_closes_old_proposals",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "recovery_can_seed_but_closes_old_proposals.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "recovery_can_seed_but_closes_old_proposals.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "recovery_can_seed_but_closes_old_proposals.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "recovery_can_seed_but_closes_old_proposals.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "expect": "opened",
+          "op": "open",
+          "proposal": "old"
+        },
+        {
+          "expect": "locked",
+          "op": "lose"
+        },
+        {
+          "candidate": {
+            "approver_id": "new-owner",
+            "channel": "lan_ed25519",
+            "credential": "new-app",
+            "value": "new-app"
+          },
+          "challenge_id": "recovery_can_seed_but_closes_old_proposals.4",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "new-owner",
+          "challenge_id": "recovery_can_seed_but_closes_old_proposals.4",
+          "channel": "lan_ed25519",
+          "credential": "new-app",
+          "expect": "registry_unavailable",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "candidate": [],
+          "challenge_id": "recovery_can_seed_but_closes_old_proposals.5",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "QEFCQ0RFRkdISUpLTE1OTw=="
+        },
+        {
+          "challenge_id": "recovery_can_seed_but_closes_old_proposals.5",
+          "epoch": "QEFCQ0RFRkdISUpLTE1OTw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "new-owner",
+            "channel": "lan_ed25519",
+            "credential": "new-app",
+            "value": "new-app"
+          },
+          "challenge_id": "recovery_can_seed_but_closes_old_proposals.6",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "new-owner",
+          "challenge_id": "recovery_can_seed_but_closes_old_proposals.6",
+          "channel": "lan_ed25519",
+          "credential": "new-app",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "credential": "new-app",
+          "expect": "proposal_unavailable",
+          "op": "admit",
+          "proposal": "old"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "all_revoked_can_seed_new_identity",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "all_revoked_can_seed_new_identity.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "all_revoked_can_seed_new_identity.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "all_revoked_can_seed_new_identity.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "all_revoked_can_seed_new_identity.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 1,
+            "signature": "ZLjwr+xtkDVE+Ghef2LT00AFVAnn0ExkZrZ6IGW0d1GxSZ3eJS37uzrfusoc6e751vxidPhLdD6Ms+rYfxs5AQ==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "approver:owner-key"
+            ],
+            "v": 1
+          },
+          "expect": "revoked",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b22617070726f7665723a6f776e65722d6b6579225d2c2276223a317d"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "app-1",
+            "value": "app-1"
+          },
+          "challenge_id": "all_revoked_can_seed_new_identity.3",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "all_revoked_can_seed_new_identity.3",
+          "channel": "lan_ed25519",
+          "credential": "app-1",
+          "expect": "approver_revoked",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "new-owner",
+            "channel": "lan_ed25519",
+            "credential": "app-1",
+            "value": "app-1"
+          },
+          "challenge_id": "all_revoked_can_seed_new_identity.4",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "new-owner",
+          "challenge_id": "all_revoked_can_seed_new_identity.4",
+          "channel": "lan_ed25519",
+          "credential": "app-1",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "loss_requires_recovery_not_reseed",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "loss_requires_recovery_not_reseed.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "loss_requires_recovery_not_reseed.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "loss_requires_recovery_not_reseed.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "loss_requires_recovery_not_reseed.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "expect": "locked",
+          "op": "lose"
+        },
+        {
+          "candidate": [],
+          "challenge_id": "loss_requires_recovery_not_reseed.3",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "QEFCQ0RFRkdISUpLTE1OTw=="
+        },
+        {
+          "challenge_id": "loss_requires_recovery_not_reseed.3",
+          "epoch": "QEFCQ0RFRkdISUpLTE1OTw==",
+          "expect": "local_auth_required",
+          "local_request": false,
+          "op": "recover"
+        },
+        {
+          "candidate": [],
+          "challenge_id": "loss_requires_recovery_not_reseed.4",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "QEFCQ0RFRkdISUpLTE1OTw=="
+        },
+        {
+          "challenge_id": "loss_requires_recovery_not_reseed.4",
+          "epoch": "QEFCQ0RFRkdISUpLTE1OTw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "enrol_requires_existing_authorizer",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "enrol_requires_existing_authorizer.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "enrol_requires_existing_authorizer.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "enrol_requires_existing_authorizer.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "enrol_requires_existing_authorizer.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "app-1",
+            "channel": "lan_ed25519",
+            "credential": "app-1",
+            "value": "app-1"
+          },
+          "challenge_id": "enrol_requires_existing_authorizer.2",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue"
+        },
+        {
+          "authorizer": "none",
+          "challenge_id": "enrol_requires_existing_authorizer.2",
+          "credential": "app-1",
+          "expect": "authorizer_unavailable",
+          "local_request": true,
+          "op": "enrol",
+          "possession": true
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "enrol_requires_local_request",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "enrol_requires_local_request.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "enrol_requires_local_request.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "enrol_requires_local_request.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "enrol_requires_local_request.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "app-1",
+            "channel": "lan_ed25519",
+            "credential": "app-1",
+            "value": "app-1"
+          },
+          "challenge_id": "enrol_requires_local_request.2",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "enrol_requires_local_request.2",
+          "credential": "app-1",
+          "expect": "local_auth_required",
+          "local_request": false,
+          "op": "enrol",
+          "possession": true
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "enrol_requires_possession",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "enrol_requires_possession.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "enrol_requires_possession.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "enrol_requires_possession.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "enrol_requires_possession.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "app-1",
+            "channel": "lan_ed25519",
+            "credential": "app-1",
+            "value": "app-1"
+          },
+          "challenge_id": "enrol_requires_possession.2",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "enrol_requires_possession.2",
+          "credential": "app-1",
+          "expect": "possession_invalid",
+          "local_request": true,
+          "op": "enrol",
+          "possession": false
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "phone_candidate_requires_channel_possession",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "phone_candidate_requires_channel_possession.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "phone_candidate_requires_channel_possession.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "phone_candidate_requires_channel_possession.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "phone_candidate_requires_channel_possession.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "phone-missing",
+            "channel": "sms",
+            "credential": "phone-missing",
+            "value": "+2348012345678"
+          },
+          "challenge_id": "phone_candidate_requires_channel_possession.2",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "648a829b49401968fa08c966c5f217f055934251e955727b7379641eca3d94ab"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "phone_candidate_requires_channel_possession.2",
+          "channel": "sms",
+          "credential": "phone-missing",
+          "expect": "phone_pending",
+          "local_request": true,
+          "op": "phone_authorize",
+          "value": "+2348012345678"
+        },
+        {
+          "challenge_id": "phone_candidate_requires_channel_possession.2",
+          "channel": "sms",
+          "expect": "possession_required",
+          "op": "phone_commit",
+          "value": "+2348012345678"
+        },
+        {
+          "candidate": {
+            "approver_id": "new-phone",
+            "channel": "sms",
+            "credential": "new-phone",
+            "value": "+2348012345678"
+          },
+          "challenge_id": "phone_candidate_requires_channel_possession.3",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "155c72224c70e35d2e5482d8155bcc49265a3b5f000f912f81f38e08ae25f9ca"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "phone_candidate_requires_channel_possession.3",
+          "channel": "sms",
+          "credential": "new-phone",
+          "expect": "phone_pending",
+          "local_request": true,
+          "op": "phone_authorize",
+          "value": "+2348012345678"
+        },
+        {
+          "challenge_id": "phone_candidate_requires_channel_possession.3",
+          "channel": "sms",
+          "expect": "enrolled",
+          "op": "phone_commit",
+          "phone_elapsed_ms": 1000,
+          "phone_reply": {
+            "authenticated": true,
+            "channel": "sms",
+            "sender": "+2348012345678",
+            "text": "ORI-POSSESS-V1 phone_candidate_requires_channel_possession.3 ed+hp+15ZeIIK1PX2nD5sg=="
+          },
+          "value": "+2348012345678"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "phone_candidate_rejects_wrong_code_and_sender",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "phone_candidate_rejects_wrong_code_and_sender.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "phone_candidate_rejects_wrong_code_and_sender.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "phone_candidate_rejects_wrong_code_and_sender.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "phone_candidate_rejects_wrong_code_and_sender.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "phone-wrong-code",
+            "channel": "sms",
+            "credential": "phone-wrong-code",
+            "value": "+2348012345678"
+          },
+          "challenge_id": "phone_candidate_rejects_wrong_code_and_sender.2",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "b012ddcda0c5a582dd4ac6f35224f98c7bfd95d16a66aa6948d16ac656c42b8a"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "phone_candidate_rejects_wrong_code_and_sender.2",
+          "channel": "sms",
+          "credential": "phone-wrong-code",
+          "expect": "phone_pending",
+          "local_request": true,
+          "op": "phone_authorize",
+          "value": "+2348012345678"
+        },
+        {
+          "challenge_id": "phone_candidate_rejects_wrong_code_and_sender.2",
+          "channel": "sms",
+          "expect": "possession_invalid",
+          "op": "phone_commit",
+          "phone_elapsed_ms": 1000,
+          "phone_reply": {
+            "authenticated": true,
+            "channel": "sms",
+            "sender": "+2348012345678",
+            "text": "ORI-POSSESS-V1 phone_candidate_rejects_wrong_code_and_sender.2 AAAAAAAAAAAAAAAAAAAAAA=="
+          },
+          "value": "+2348012345678"
+        },
+        {
+          "candidate": {
+            "approver_id": "phone-wrong-sender",
+            "channel": "sms",
+            "credential": "phone-wrong-sender",
+            "value": "+2348012345678"
+          },
+          "challenge_id": "phone_candidate_rejects_wrong_code_and_sender.3",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "318191bf40fd2f4086c9afe2a4f0d293f58c54355683ff3e71fae4d2c302efd1"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "phone_candidate_rejects_wrong_code_and_sender.3",
+          "channel": "sms",
+          "credential": "phone-wrong-sender",
+          "expect": "phone_pending",
+          "local_request": true,
+          "op": "phone_authorize",
+          "value": "+2348012345678"
+        },
+        {
+          "challenge_id": "phone_candidate_rejects_wrong_code_and_sender.3",
+          "channel": "sms",
+          "expect": "possession_invalid",
+          "op": "phone_commit",
+          "phone_elapsed_ms": 1000,
+          "phone_reply": {
+            "authenticated": true,
+            "channel": "sms",
+            "sender": "+2348099999999",
+            "text": "ORI-POSSESS-V1 phone_candidate_rejects_wrong_code_and_sender.3 mMrIGTYdKUv1Wd5xlNWDLA=="
+          },
+          "value": "+2348012345678"
+        },
+        {
+          "candidate": {
+            "approver_id": "phone-wrong-channel",
+            "channel": "sms",
+            "credential": "phone-wrong-channel",
+            "value": "+2348012345678"
+          },
+          "challenge_id": "phone_candidate_rejects_wrong_code_and_sender.4",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "11b49bdaeee13d9759c3c8f419d17516b46e77d21b479bc537a3408476cfb117"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "phone_candidate_rejects_wrong_code_and_sender.4",
+          "channel": "sms",
+          "credential": "phone-wrong-channel",
+          "expect": "phone_pending",
+          "local_request": true,
+          "op": "phone_authorize",
+          "value": "+2348012345678"
+        },
+        {
+          "challenge_id": "phone_candidate_rejects_wrong_code_and_sender.4",
+          "channel": "sms",
+          "expect": "possession_invalid",
+          "op": "phone_commit",
+          "phone_elapsed_ms": 1000,
+          "phone_reply": {
+            "authenticated": true,
+            "channel": "whatsapp",
+            "sender": "+2348012345678",
+            "text": "ORI-POSSESS-V1 phone_candidate_rejects_wrong_code_and_sender.4 OVG5U/0CmyRqv76iyLX06g=="
+          },
+          "value": "+2348012345678"
+        },
+        {
+          "candidate": {
+            "approver_id": "phone-unauthed",
+            "channel": "sms",
+            "credential": "phone-unauthed",
+            "value": "+2348012345678"
+          },
+          "challenge_id": "phone_candidate_rejects_wrong_code_and_sender.5",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "7d628e07a435900630cd0992426eea86037bbd0c4036635ca6420f693955b853"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "phone_candidate_rejects_wrong_code_and_sender.5",
+          "channel": "sms",
+          "credential": "phone-unauthed",
+          "expect": "phone_pending",
+          "local_request": true,
+          "op": "phone_authorize",
+          "value": "+2348012345678"
+        },
+        {
+          "challenge_id": "phone_candidate_rejects_wrong_code_and_sender.5",
+          "channel": "sms",
+          "expect": "possession_invalid",
+          "op": "phone_commit",
+          "phone_elapsed_ms": 1000,
+          "phone_reply": {
+            "authenticated": false,
+            "channel": "sms",
+            "sender": "+2348012345678",
+            "text": "ORI-POSSESS-V1 phone_candidate_rejects_wrong_code_and_sender.5 bIGkbcprlHciuZWLXGhTRQ=="
+          },
+          "value": "+2348012345678"
+        },
+        {
+          "candidate": {
+            "approver_id": "phone-good",
+            "channel": "sms",
+            "credential": "phone-good",
+            "value": "+2348012345678"
+          },
+          "challenge_id": "phone_candidate_rejects_wrong_code_and_sender.6",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "313399e3ac5e313a2cbc27dcf4ad292c3b76517d80986e6cd288810f1f3e52f4"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "phone_candidate_rejects_wrong_code_and_sender.6",
+          "channel": "sms",
+          "credential": "phone-good",
+          "expect": "phone_pending",
+          "local_request": true,
+          "op": "phone_authorize",
+          "value": "+2348012345678"
+        },
+        {
+          "challenge_id": "phone_candidate_rejects_wrong_code_and_sender.6",
+          "channel": "sms",
+          "expect": "enrolled",
+          "op": "phone_commit",
+          "phone_elapsed_ms": 1000,
+          "phone_reply": {
+            "authenticated": true,
+            "channel": "sms",
+            "sender": "+2348012345678",
+            "text": "ORI-POSSESS-V1 phone_candidate_rejects_wrong_code_and_sender.6 SZ6316u0I37C5wH2dS+IDg=="
+          },
+          "value": "+2348012345678"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "phone_candidate_late_reply_refused",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "phone_candidate_late_reply_refused.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "phone_candidate_late_reply_refused.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "phone_candidate_late_reply_refused.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "phone_candidate_late_reply_refused.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "phone-late",
+            "channel": "sms",
+            "credential": "phone-late",
+            "value": "+2348012345678"
+          },
+          "challenge_id": "phone_candidate_late_reply_refused.2",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "85ec1c56de3c6509e0f36a801bbc9e18aa50a51ffda468527b2b1e7f6b28d518"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "phone_candidate_late_reply_refused.2",
+          "channel": "sms",
+          "credential": "phone-late",
+          "expect": "phone_pending",
+          "local_request": true,
+          "op": "phone_authorize",
+          "value": "+2348012345678"
+        },
+        {
+          "challenge_id": "phone_candidate_late_reply_refused.2",
+          "channel": "sms",
+          "expect": "possession_expired",
+          "op": "phone_commit",
+          "phone_elapsed_ms": 600001,
+          "phone_reply": {
+            "authenticated": true,
+            "channel": "sms",
+            "sender": "+2348012345678",
+            "text": "ORI-POSSESS-V1 phone_candidate_late_reply_refused.2 aaOUcA8qQavhBuBq2eHdFA=="
+          },
+          "value": "+2348012345678"
+        },
+        {
+          "expect": "opened",
+          "op": "open",
+          "proposal": "after-late"
+        },
+        {
+          "credential": "phone-late",
+          "expect": "credential_unavailable",
+          "op": "admit",
+          "proposal": "after-late"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "phone_authorizer_revoked_before_commit",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "phone_authorizer_revoked_before_commit.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "phone_authorizer_revoked_before_commit.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "phone_authorizer_revoked_before_commit.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "phone_authorizer_revoked_before_commit.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "phone-revoked",
+            "channel": "sms",
+            "credential": "phone-revoked",
+            "value": "+2348012345678"
+          },
+          "challenge_id": "pending-revoked",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "683668de8fbbae89b618d55fe85750960243fe333e82e92c7b00dd1443d461fc"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "pending-revoked",
+          "channel": "sms",
+          "credential": "phone-revoked",
+          "expect": "phone_pending",
+          "local_request": true,
+          "op": "phone_authorize",
+          "value": "+2348012345678"
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 1,
+            "signature": "2etnONAWbYvNS/5uGjdR2VyICMlSg77kwWc1Y78WX+Tw+9GYa8BFs5Mvj8QygWlWeiKr/XDgdcANwO3MGzmaDw==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:owner-key"
+            ],
+            "v": 1
+          },
+          "expect": "revoked",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a6f776e65722d6b6579225d2c2276223a317d"
+        },
+        {
+          "challenge_id": "pending-revoked",
+          "channel": "sms",
+          "expect": "authorizer_unavailable",
+          "op": "phone_commit",
+          "phone_elapsed_ms": 1000,
+          "phone_reply": {
+            "authenticated": true,
+            "channel": "sms",
+            "sender": "+2348012345678",
+            "text": "ORI-POSSESS-V1 pending-revoked 6CzVHkYVGQzu9TQpIxWexg=="
+          },
+          "value": "+2348012345678"
+        },
+        {
+          "expect": "opened",
+          "op": "open",
+          "proposal": "after-revoke"
+        },
+        {
+          "credential": "phone-revoked",
+          "expect": "credential_unavailable",
+          "op": "admit",
+          "proposal": "after-revoke"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "phone_recovery_before_commit",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "phone_recovery_before_commit.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "phone_recovery_before_commit.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "phone_recovery_before_commit.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "phone_recovery_before_commit.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "phone-old-epoch",
+            "channel": "sms",
+            "credential": "phone-old-epoch",
+            "value": "+2348012345678"
+          },
+          "challenge_id": "pending-recovery",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "66148436ebd04b226337b52960a12148a4870ce781985f99453b2f2739b60d25"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "pending-recovery",
+          "channel": "sms",
+          "credential": "phone-old-epoch",
+          "expect": "phone_pending",
+          "local_request": true,
+          "op": "phone_authorize",
+          "value": "+2348012345678"
+        },
+        {
+          "expect": "locked",
+          "op": "lose"
+        },
+        {
+          "candidate": [],
+          "challenge_id": "phone_recovery_before_commit.5",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "QEFCQ0RFRkdISUpLTE1OTw=="
+        },
+        {
+          "challenge_id": "phone_recovery_before_commit.5",
+          "epoch": "QEFCQ0RFRkdISUpLTE1OTw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "challenge_id": "pending-recovery",
+          "channel": "sms",
+          "expect": "epoch_changed",
+          "op": "phone_commit",
+          "phone_elapsed_ms": 1000,
+          "phone_reply": {
+            "authenticated": true,
+            "channel": "sms",
+            "sender": "+2348012345678",
+            "text": "ORI-POSSESS-V1 pending-recovery phHC7LQqeAchTZMV5iaOVA=="
+          },
+          "value": "+2348012345678"
+        },
+        {
+          "expect": "opened",
+          "op": "open",
+          "proposal": "after-recovery"
+        },
+        {
+          "credential": "phone-old-epoch",
+          "expect": "credential_unavailable",
+          "op": "admit",
+          "proposal": "after-recovery"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "one_pending_phone_per_candidate_value",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "one_pending_phone_per_candidate_value.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "one_pending_phone_per_candidate_value.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "one_pending_phone_per_candidate_value.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "one_pending_phone_per_candidate_value.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "phone-first",
+            "channel": "sms",
+            "credential": "phone-first",
+            "value": "+2348012345678"
+          },
+          "challenge_id": "first-pending",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "ff51a499cfaea726b16b9211251012a91d77cccf5f643859cc253afad5d8d82f"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "first-pending",
+          "channel": "sms",
+          "credential": "phone-first",
+          "expect": "phone_pending",
+          "local_request": true,
+          "op": "phone_authorize",
+          "value": "+2348012345678"
+        },
+        {
+          "candidate": {
+            "approver_id": "phone-second",
+            "channel": "sms",
+            "credential": "phone-second",
+            "value": "+2348012345678"
+          },
+          "challenge_id": "second-pending",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "bc88e522ff0e8286b1208fea4539138c42aa09274c4aa13d0e58e6ce30509c7c"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "second-pending",
+          "channel": "sms",
+          "credential": "phone-second",
+          "expect": "phone_pending_for_value",
+          "local_request": true,
+          "op": "phone_authorize",
+          "value": "+2348012345678"
+        },
+        {
+          "challenge_id": "first-pending",
+          "channel": "sms",
+          "expect": "enrolled",
+          "op": "phone_commit",
+          "phone_elapsed_ms": 1000,
+          "phone_reply": {
+            "authenticated": true,
+            "channel": "sms",
+            "sender": "+2348012345678",
+            "text": "ORI-POSSESS-V1 first-pending umd00mLyUacnQrs0OGG62Q=="
+          },
+          "value": "+2348012345678"
+        },
+        {
+          "expect": "opened",
+          "op": "open",
+          "proposal": "after-one"
+        },
+        {
+          "credential": "phone-second",
+          "expect": "credential_unavailable",
+          "op": "admit",
+          "proposal": "after-one"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "sms_ingress_unavailable",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "sms_ingress_unavailable.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "sms_ingress_unavailable.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "sms_ingress_unavailable.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "sms_ingress_unavailable.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "phone-sms-live",
+            "channel": "sms",
+            "credential": "phone-sms-live",
+            "value": "+2348012345678"
+          },
+          "challenge_id": "sms_ingress_unavailable.2",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "70c9611438f0f9f06439043089c0a7f9bad0c7deae59d510b11d60792d2c9263"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "sms_ingress_unavailable.2",
+          "channel": "sms",
+          "credential": "phone-sms-live",
+          "expect": "phone_pending",
+          "local_request": true,
+          "op": "phone_authorize",
+          "value": "+2348012345678"
+        },
+        {
+          "challenge_id": "sms_ingress_unavailable.2",
+          "channel": "sms",
+          "expect": "enrolled",
+          "op": "phone_commit",
+          "phone_elapsed_ms": 1000,
+          "phone_reply": {
+            "authenticated": true,
+            "channel": "sms",
+            "sender": "+2348012345678",
+            "text": "ORI-POSSESS-V1 sms_ingress_unavailable.2 T9M2RXJVt+qVZlS7V370Wg=="
+          },
+          "value": "+2348012345678"
+        },
+        {
+          "expect": "opened",
+          "op": "open",
+          "proposal": "sms-before-restart"
+        },
+        {
+          "authenticated": true,
+          "channel": "sms",
+          "credential": "phone-sms-live",
+          "expect": "approved",
+          "op": "admit",
+          "proposal": "sms-before-restart"
+        },
+        {
+          "candidate": {
+            "approver_id": "phone-held",
+            "channel": "sms",
+            "credential": "phone-held",
+            "value": "+2348012345670"
+          },
+          "challenge_id": "held-before-restart",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "236d907eac149991b686c716b31a9ed68ea8fd127ba814f6c5de6f523c036808"
+        },
+        {
+          "candidate": {
+            "approver_id": "phone-pending",
+            "channel": "sms",
+            "credential": "phone-pending",
+            "value": "+2348012345671"
+          },
+          "challenge_id": "pending-before-restart",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "f018db1616c5db7971bc5f337bb363b0312b55e246f141e239330407c2adc31b"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "pending-before-restart",
+          "channel": "sms",
+          "credential": "phone-pending",
+          "expect": "phone_pending",
+          "local_request": true,
+          "op": "phone_authorize",
+          "value": "+2348012345671"
+        },
+        {
+          "expect": "restarted",
+          "op": "restart",
+          "sms_ingress": false
+        },
+        {
+          "expect": "opened",
+          "op": "open",
+          "proposal": "sms-after-restart"
+        },
+        {
+          "authenticated": true,
+          "channel": "sms",
+          "credential": "phone-sms-live",
+          "expect": "ingress_unauthenticated",
+          "op": "admit",
+          "proposal": "sms-after-restart"
+        },
+        {
+          "challenge_id": "pending-before-restart",
+          "channel": "sms",
+          "expect": "pending_unavailable",
+          "op": "phone_commit",
+          "phone_elapsed_ms": 1000,
+          "phone_reply": {
+            "authenticated": true,
+            "channel": "sms",
+            "sender": "+2348012345671",
+            "text": "ORI-POSSESS-V1 pending-before-restart RZ0vbkJnMfiUyahbgqP8Sw=="
+          },
+          "value": "+2348012345671"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "held-before-restart",
+          "channel": "sms",
+          "credential": "phone-held",
+          "expect": "challenge_unavailable",
+          "local_request": true,
+          "op": "phone_authorize",
+          "value": "+2348012345670"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "sms_ingress_unavailable.2",
+          "channel": "sms",
+          "credential": "phone-sms-live",
+          "expect": "challenge_unavailable",
+          "local_request": true,
+          "op": "phone_authorize",
+          "value": "+2348012345678"
+        },
+        {
+          "candidate": {
+            "approver_id": "phone-no-ingress",
+            "channel": "sms",
+            "credential": "phone-no-ingress",
+            "value": "+2348012345679"
+          },
+          "challenge_id": "sms-no-ingress",
+          "expect": "channel_unauthenticated",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "2517da6d9e39d700d6d27392b6e0726c2e1bbc18b5121ea4f49c8da960f7b558"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "sms-no-ingress",
+          "channel": "sms",
+          "credential": "phone-no-ingress",
+          "expect": "challenge_unavailable",
+          "local_request": true,
+          "op": "phone_authorize",
+          "value": "+2348012345679"
+        },
+        {
+          "credential": "owner-key",
+          "expect": "approved",
+          "op": "admit",
+          "proposal": "sms-after-restart"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "whatsapp_candidate_refused_at_issue",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "whatsapp_candidate_refused_at_issue.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "whatsapp_candidate_refused_at_issue.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "whatsapp_candidate_refused_at_issue.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "whatsapp_candidate_refused_at_issue.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "phone-whatsapp",
+            "channel": "whatsapp",
+            "credential": "phone-whatsapp",
+            "value": "+2348012345678"
+          },
+          "challenge_id": "whatsapp-candidate",
+          "expect": "channel_unauthenticated",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "c2c83d1bdd28126107a8ea04baf0508f086bf15f991362165f8f0e4d780e6fc3"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "whatsapp-candidate",
+          "channel": "whatsapp",
+          "credential": "phone-whatsapp",
+          "expect": "challenge_unavailable",
+          "local_request": true,
+          "op": "phone_authorize",
+          "value": "+2348012345678"
+        },
+        {
+          "candidate": {
+            "approver_id": "phone-sms",
+            "channel": "sms",
+            "credential": "phone-sms",
+            "value": "+2348012345678"
+          },
+          "challenge_id": "sms-after-whatsapp",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "f16aa66b2bdd05168dcc2e192912db3cffe8924aa75a0b2b7a917ddd179b6f15"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "sms-after-whatsapp",
+          "channel": "sms",
+          "credential": "phone-sms",
+          "expect": "phone_pending",
+          "local_request": true,
+          "op": "phone_authorize",
+          "value": "+2348012345678"
+        },
+        {
+          "challenge_id": "sms-after-whatsapp",
+          "channel": "sms",
+          "expect": "enrolled",
+          "op": "phone_commit",
+          "phone_elapsed_ms": 1000,
+          "phone_reply": {
+            "authenticated": true,
+            "channel": "sms",
+            "sender": "+2348012345678",
+            "text": "ORI-POSSESS-V1 sms-after-whatsapp ia1IVO/0RIeWL5DvpF0UHg=="
+          },
+          "value": "+2348012345678"
+        },
+        {
+          "expect": "opened",
+          "op": "open",
+          "proposal": "after-whatsapp"
+        },
+        {
+          "credential": "phone-whatsapp",
+          "expect": "credential_unavailable",
+          "op": "admit",
+          "proposal": "after-whatsapp"
+        },
+        {
+          "authenticated": true,
+          "channel": "whatsapp",
+          "credential": "phone-sms",
+          "expect": "ingress_unauthenticated",
+          "op": "admit",
+          "proposal": "after-whatsapp"
+        },
+        {
+          "authenticated": false,
+          "channel": "sms",
+          "credential": "phone-sms",
+          "expect": "ingress_unauthenticated",
+          "op": "admit",
+          "proposal": "after-whatsapp"
+        },
+        {
+          "authenticated": true,
+          "channel": "sms",
+          "credential": "owner-key",
+          "expect": "credential_unavailable",
+          "op": "admit",
+          "proposal": "after-whatsapp"
+        },
+        {
+          "authenticated": true,
+          "channel": "sms",
+          "credential": "phone-sms",
+          "expect": "approved",
+          "op": "admit",
+          "proposal": "after-whatsapp"
+        },
+        {
+          "candidate": {
+            "approver_id": "phone-sms",
+            "channel": "sms",
+            "credential": "phone-own",
+            "value": "+2348011114444"
+          },
+          "challenge_id": "own-phone-approver",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "f7ce6df4f321f001bf9f61f490ed41ab37e5d624fb49d5266283074a0f35f8c1"
+        },
+        {
+          "approver_id": "phone-sms",
+          "authorizer": "phone-sms",
+          "challenge_id": "own-phone-approver",
+          "channel": "sms",
+          "credential": "phone-own",
+          "expect": "phone_pending",
+          "local_request": true,
+          "op": "phone_authorize",
+          "value": "+2348011114444"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "sms",
+            "credential": "phone-other",
+            "value": "+2348011115555"
+          },
+          "challenge_id": "other-phone-approver",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "d8a1851388a1cffb2b3f11336d0a670bbdeba62a93998392f70665d237d57c68"
+        },
+        {
+          "approver_id": "owner-key",
+          "authorizer": "phone-sms",
+          "challenge_id": "other-phone-approver",
+          "channel": "sms",
+          "credential": "phone-other",
+          "expect": "authorizer_not_approver",
+          "local_request": true,
+          "op": "phone_authorize",
+          "value": "+2348011115555"
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 1,
+            "signature": "e5dOhcFpD7mid51WX1xWj0RQguv6B0Eld1onFLHD0hs18v0RMhxUE6VTjLPrvJx63ocjcqi1z/NQiwDJbI3/AA==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:phone-sms"
+            ],
+            "v": 1
+          },
+          "expect": "revoked",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a70686f6e652d736d73225d2c2276223a317d"
+        },
+        {
+          "candidate": {
+            "approver_id": "by-revoked-phone",
+            "channel": "lan_ed25519",
+            "credential": "by-revoked-phone",
+            "value": "by-revoked-phone"
+          },
+          "challenge_id": "whatsapp_candidate_refused_at_issue.18",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue"
+        },
+        {
+          "authorizer": "phone-sms",
+          "challenge_id": "whatsapp_candidate_refused_at_issue.18",
+          "credential": "by-revoked-phone",
+          "expect": "authorizer_unavailable",
+          "local_request": true,
+          "op": "enrol",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "phone-after-revoke",
+            "channel": "sms",
+            "credential": "phone-after-revoke",
+            "value": "+2348011116666"
+          },
+          "challenge_id": "revoked-phone-authorizer",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "47b9bf24783542a2665011ab3ea6bf78c50c5fd99a332959491b78b68f9d74b8"
+        },
+        {
+          "authorizer": "phone-sms",
+          "challenge_id": "revoked-phone-authorizer",
+          "channel": "sms",
+          "credential": "phone-after-revoke",
+          "expect": "authorizer_unavailable",
+          "local_request": true,
+          "op": "phone_authorize",
+          "value": "+2348011116666"
+        },
+        {
+          "expect": "site_locked",
+          "op": "config_site_change",
+          "site_id": "site-2"
+        },
+        {
+          "candidate": {
+            "approver_id": "phone-whatsapp-2",
+            "channel": "whatsapp",
+            "credential": "phone-whatsapp-2",
+            "value": "+2348012345679"
+          },
+          "challenge_id": "whatsapp-site-changed",
+          "expect": "site_binding_mismatch",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "9d084e0c19cfe49f0b9d389f4ce5077e7edea62cbb6d4db5d06e7ecf43234aa5"
+        },
+        {
+          "expect": "site_restored",
+          "op": "config_site_restore"
+        },
+        {
+          "expect": "locked",
+          "op": "lose"
+        },
+        {
+          "candidate": {
+            "approver_id": "phone-whatsapp-3",
+            "channel": "whatsapp",
+            "credential": "phone-whatsapp-3",
+            "value": "+2348012345679"
+          },
+          "challenge_id": "whatsapp-locked",
+          "expect": "registry_unavailable",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "ede982ee0710dae0a8a18b2004ef1c9aa7d4ba9622beedc9d927750a3bbe6ccf"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "phone_registry_change_before_commit",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "phone_registry_change_before_commit.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "phone_registry_change_before_commit.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "phone_registry_change_before_commit.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "phone_registry_change_before_commit.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "phone-revision",
+            "channel": "sms",
+            "credential": "phone-revision",
+            "value": "+2348012345678"
+          },
+          "challenge_id": "pending-revision",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "e0a90fbb7bb90668d629ed2f44693da2c781ac1deba5f1572c1318c83ab421ae"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "pending-revision",
+          "channel": "sms",
+          "credential": "phone-revision",
+          "expect": "phone_pending",
+          "local_request": true,
+          "op": "phone_authorize",
+          "value": "+2348012345678"
+        },
+        {
+          "candidate": {
+            "approver_id": "app-other",
+            "channel": "lan_ed25519",
+            "credential": "app-other",
+            "value": "app-other"
+          },
+          "challenge_id": "phone_registry_change_before_commit.4",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "phone_registry_change_before_commit.4",
+          "credential": "app-other",
+          "expect": "enrolled",
+          "local_request": true,
+          "op": "enrol",
+          "possession": true
+        },
+        {
+          "challenge_id": "pending-revision",
+          "channel": "sms",
+          "expect": "registry_changed",
+          "op": "phone_commit",
+          "phone_elapsed_ms": 1000,
+          "phone_reply": {
+            "authenticated": true,
+            "channel": "sms",
+            "sender": "+2348012345678",
+            "text": "ORI-POSSESS-V1 pending-revision /a/Hd6fhGaB5S5s3L8YETA=="
+          },
+          "value": "+2348012345678"
+        },
+        {
+          "expect": "opened",
+          "op": "open",
+          "proposal": "after-registry-change"
+        },
+        {
+          "credential": "phone-revision",
+          "expect": "credential_unavailable",
+          "op": "admit",
+          "proposal": "after-registry-change"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "phone_site_change_before_commit",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "phone_site_change_before_commit.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "phone_site_change_before_commit.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "phone_site_change_before_commit.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "phone_site_change_before_commit.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "phone-site",
+            "channel": "sms",
+            "credential": "phone-site",
+            "value": "+2348012345678"
+          },
+          "challenge_id": "pending-site",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "7158683a334262abf1991cd9741c66cf429126faa396fd708340b353a0b49592"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "pending-site",
+          "channel": "sms",
+          "credential": "phone-site",
+          "expect": "phone_pending",
+          "local_request": true,
+          "op": "phone_authorize",
+          "value": "+2348012345678"
+        },
+        {
+          "expect": "site_locked",
+          "op": "config_site_change",
+          "site_id": "site-2"
+        },
+        {
+          "expect": "site_restored",
+          "op": "config_site_restore"
+        },
+        {
+          "challenge_id": "pending-site",
+          "channel": "sms",
+          "expect": "site_binding_mismatch",
+          "op": "phone_commit",
+          "phone_elapsed_ms": 1000,
+          "phone_reply": {
+            "authenticated": true,
+            "channel": "sms",
+            "sender": "+2348012345678",
+            "text": "ORI-POSSESS-V1 pending-site Q3GVBjVXuapqeDt+NF0+dQ=="
+          },
+          "value": "+2348012345678"
+        },
+        {
+          "expect": "opened",
+          "op": "open",
+          "proposal": "after-site-change"
+        },
+        {
+          "credential": "phone-site",
+          "expect": "credential_unavailable",
+          "op": "admit",
+          "proposal": "after-site-change"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "phone_pending_expiry_releases_value",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "phone_pending_expiry_releases_value.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "phone_pending_expiry_releases_value.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "phone_pending_expiry_releases_value.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "phone_pending_expiry_releases_value.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "phone-expired",
+            "channel": "sms",
+            "credential": "phone-expired",
+            "value": "+2348012345678"
+          },
+          "challenge_id": "pending-expiry",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "8b5403fa11b337ef2bc16b271491ff1080ceee215bd2f5b2aaa0542c9074278e"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "pending-expiry",
+          "channel": "sms",
+          "credential": "phone-expired",
+          "expect": "phone_pending",
+          "local_request": true,
+          "op": "phone_authorize",
+          "value": "+2348012345678"
+        },
+        {
+          "challenge_id": "pending-expiry",
+          "expect": "not_expired",
+          "op": "expire_phone",
+          "phone_elapsed_ms": 600000
+        },
+        {
+          "challenge_id": "pending-expiry",
+          "expect": "expired",
+          "op": "expire_phone",
+          "phone_elapsed_ms": 600001
+        },
+        {
+          "candidate": {
+            "approver_id": "phone-after-expiry",
+            "channel": "sms",
+            "credential": "phone-after-expiry",
+            "value": "+2348012345678"
+          },
+          "challenge_id": "after-expiry",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "110b5fded52fa267525d5835cc8bc15ff5b96b34483a05aa4d8a26d4003eaec2"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "after-expiry",
+          "channel": "sms",
+          "credential": "phone-after-expiry",
+          "expect": "phone_pending",
+          "local_request": true,
+          "op": "phone_authorize",
+          "value": "+2348012345678"
+        },
+        {
+          "challenge_id": "after-expiry",
+          "channel": "sms",
+          "expect": "enrolled",
+          "op": "phone_commit",
+          "phone_elapsed_ms": 1000,
+          "phone_reply": {
+            "authenticated": true,
+            "channel": "sms",
+            "sender": "+2348012345678",
+            "text": "ORI-POSSESS-V1 after-expiry WbxuQlMSdIJ5rWcwlnvMhA=="
+          },
+          "value": "+2348012345678"
+        },
+        {
+          "expect": "opened",
+          "op": "open",
+          "proposal": "after-expiry-proposal"
+        },
+        {
+          "credential": "phone-expired",
+          "expect": "credential_unavailable",
+          "op": "admit",
+          "proposal": "after-expiry-proposal"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "duplicate_credential_and_value_refused",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "duplicate_credential_and_value_refused.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "duplicate_credential_and_value_refused.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "duplicate_credential_and_value_refused.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "duplicate_credential_and_value_refused.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "duplicate_credential_and_value_refused.2",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "duplicate_credential_and_value_refused.2",
+          "credential": "owner-key",
+          "expect": "credential_reused",
+          "local_request": true,
+          "op": "enrol",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "app-1",
+            "channel": "lan_ed25519",
+            "credential": "app-1",
+            "value": "owner-key"
+          },
+          "challenge_id": "duplicate_credential_and_value_refused.3",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "duplicate_credential_and_value_refused.3",
+          "credential": "app-1",
+          "expect": "duplicate_value",
+          "local_request": true,
+          "op": "enrol",
+          "possession": true,
+          "value": "owner-key"
+        },
+        {
+          "candidate": {
+            "approver_id": "app-1",
+            "channel": "lan_ed25519",
+            "credential": "app-1",
+            "value": "app-1"
+          },
+          "challenge_id": "duplicate_credential_and_value_refused.4",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "duplicate_credential_and_value_refused.4",
+          "credential": "app-1",
+          "expect": "enrolled",
+          "local_request": true,
+          "op": "enrol",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "app-2",
+            "channel": "lan_ed25519",
+            "credential": "app-1",
+            "value": "app-1"
+          },
+          "challenge_id": "duplicate_credential_and_value_refused.5",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue"
+        },
+        {
+          "approver_id": "app-2",
+          "authorizer": "owner-key",
+          "challenge_id": "duplicate_credential_and_value_refused.5",
+          "credential": "app-1",
+          "expect": "credential_reused",
+          "local_request": true,
+          "op": "enrol",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "app-1",
+            "channel": "lan_ed25519",
+            "credential": "app-2",
+            "value": "app-2"
+          },
+          "challenge_id": "duplicate_credential_and_value_refused.6",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue"
+        },
+        {
+          "approver_id": "app-1",
+          "authorizer": "owner-key",
+          "challenge_id": "duplicate_credential_and_value_refused.6",
+          "credential": "app-2",
+          "expect": "authorizer_not_approver",
+          "local_request": true,
+          "op": "enrol",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key-2",
+            "value": "owner-key-2"
+          },
+          "challenge_id": "duplicate_credential_and_value_refused.7",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "authorizer": "owner-key",
+          "challenge_id": "duplicate_credential_and_value_refused.7",
+          "credential": "owner-key-2",
+          "expect": "enrolled",
+          "local_request": true,
+          "op": "enrol",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "app-1",
+            "channel": "sms",
+            "credential": "phone-cross",
+            "value": "+2348011112222"
+          },
+          "challenge_id": "cross-phone",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "37f75d08ee8b225da8bfe84da81fc326e11d3e9478c1ef7af2d28ae023f93013"
+        },
+        {
+          "approver_id": "app-1",
+          "authorizer": "owner-key",
+          "challenge_id": "cross-phone",
+          "channel": "sms",
+          "credential": "phone-cross",
+          "expect": "authorizer_not_approver",
+          "local_request": true,
+          "op": "phone_authorize",
+          "value": "+2348011112222"
+        },
+        {
+          "candidate": {
+            "approver_id": "app-1",
+            "channel": "sms",
+            "credential": "phone-same",
+            "value": "+2348011113333"
+          },
+          "challenge_id": "same-phone",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "caf4c8d9801b1f6535fec726aebec435d3fcd0055641dd2fe7f748cc5e4222c2"
+        },
+        {
+          "approver_id": "app-1",
+          "authorizer": "app-1",
+          "challenge_id": "same-phone",
+          "channel": "sms",
+          "credential": "phone-same",
+          "expect": "phone_pending",
+          "local_request": true,
+          "op": "phone_authorize",
+          "value": "+2348011113333"
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 1,
+            "signature": "EwoUt+aA1f8uud26pps1vrLdmwAbkEhiO+oLlwzfO9JJYPVjlQZv7EZWFj3D0ybf+k1FY3W8lBtU72BCDvmKCg==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:app-1"
+            ],
+            "v": 1
+          },
+          "expect": "revoked",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a6170702d31225d2c2276223a317d"
+        },
+        {
+          "candidate": {
+            "approver_id": "by-revoked-lan",
+            "channel": "lan_ed25519",
+            "credential": "by-revoked-lan",
+            "value": "by-revoked-lan"
+          },
+          "challenge_id": "duplicate_credential_and_value_refused.13",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue"
+        },
+        {
+          "authorizer": "app-1",
+          "challenge_id": "duplicate_credential_and_value_refused.13",
+          "credential": "by-revoked-lan",
+          "expect": "authorizer_unavailable",
+          "local_request": true,
+          "op": "enrol",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "phone-after-lan-revoke",
+            "channel": "sms",
+            "credential": "phone-after-lan-revoke",
+            "value": "+2348011117777"
+          },
+          "challenge_id": "revoked-lan-authorizer",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue",
+          "phone_code_sha256": "b302ccf10b40bebdd4771c777536d2efb4cc2d724e1fb4edf827362b948a54db"
+        },
+        {
+          "authorizer": "app-1",
+          "challenge_id": "revoked-lan-authorizer",
+          "channel": "sms",
+          "credential": "phone-after-lan-revoke",
+          "expect": "authorizer_unavailable",
+          "local_request": true,
+          "op": "phone_authorize",
+          "value": "+2348011117777"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "challenge_expiry_reuse_change_and_restart",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "challenge_expiry_reuse_change_and_restart.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "challenge_expiry_reuse_change_and_restart.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "challenge_expiry_reuse_change_and_restart.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "challenge_expiry_reuse_change_and_restart.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "app-1",
+            "channel": "lan_ed25519",
+            "credential": "app-1",
+            "value": "app-1"
+          },
+          "challenge_id": "expiring",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue"
+        },
+        {
+          "challenge_id": "expiring",
+          "expect": "expired",
+          "op": "expire"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "expiring",
+          "credential": "app-1",
+          "expect": "challenge_expired",
+          "local_request": true,
+          "op": "enrol",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "app-1",
+            "channel": "lan_ed25519",
+            "credential": "app-1",
+            "value": "app-1"
+          },
+          "challenge_id": "changed",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "changed",
+          "credential": "app-1",
+          "expect": "candidate_changed",
+          "local_request": true,
+          "op": "enrol",
+          "possession": true,
+          "value": "altered-key"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "changed",
+          "credential": "app-1",
+          "expect": "challenge_reused",
+          "local_request": true,
+          "op": "enrol",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "app-1",
+            "channel": "lan_ed25519",
+            "credential": "app-1",
+            "value": "app-1"
+          },
+          "challenge_id": "good",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "good",
+          "credential": "app-1",
+          "expect": "enrolled",
+          "local_request": true,
+          "op": "enrol",
+          "possession": true
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "good",
+          "credential": "app-1",
+          "expect": "challenge_reused",
+          "local_request": true,
+          "op": "enrol",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "app-2",
+            "channel": "lan_ed25519",
+            "credential": "app-2",
+            "value": "app-2"
+          },
+          "challenge_id": "restart",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue"
+        },
+        {
+          "expect": "restarted",
+          "op": "restart"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "restart",
+          "credential": "app-2",
+          "expect": "challenge_unavailable",
+          "local_request": true,
+          "op": "enrol",
+          "possession": true
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "late_authorizer_cannot_use_stale_challenge",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "late_authorizer_cannot_use_stale_challenge.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "late_authorizer_cannot_use_stale_challenge.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "late_authorizer_cannot_use_stale_challenge.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "late_authorizer_cannot_use_stale_challenge.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "app-2",
+            "channel": "lan_ed25519",
+            "credential": "app-2",
+            "value": "app-2"
+          },
+          "challenge_id": "old-challenge",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue"
+        },
+        {
+          "candidate": {
+            "approver_id": "app-1",
+            "channel": "lan_ed25519",
+            "credential": "app-1",
+            "value": "app-1"
+          },
+          "challenge_id": "late_authorizer_cannot_use_stale_challenge.3",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "late_authorizer_cannot_use_stale_challenge.3",
+          "credential": "app-1",
+          "expect": "enrolled",
+          "local_request": true,
+          "op": "enrol",
+          "possession": true
+        },
+        {
+          "authorizer": "app-1",
+          "challenge_id": "old-challenge",
+          "credential": "app-2",
+          "expect": "challenge_stale",
+          "local_request": true,
+          "op": "enrol",
+          "possession": true
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "enrol_and_admit",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "enrol_and_admit.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "enrol_and_admit.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "enrol_and_admit.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "enrol_and_admit.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "app-1",
+            "channel": "lan_ed25519",
+            "credential": "app-1",
+            "value": "app-1"
+          },
+          "challenge_id": "enrol_and_admit.2",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "enrol_and_admit.2",
+          "credential": "app-1",
+          "expect": "enrolled",
+          "local_request": true,
+          "op": "enrol",
+          "possession": true
+        },
+        {
+          "expect": "opened",
+          "op": "open",
+          "proposal": "p1"
+        },
+        {
+          "credential": "app-1",
+          "expect": "approved",
+          "op": "admit",
+          "proposal": "p1"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "enrolled_after_proposal_refused",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "enrolled_after_proposal_refused.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "enrolled_after_proposal_refused.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "enrolled_after_proposal_refused.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "enrolled_after_proposal_refused.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "expect": "opened",
+          "op": "open",
+          "proposal": "p1"
+        },
+        {
+          "candidate": {
+            "approver_id": "app-1",
+            "channel": "lan_ed25519",
+            "credential": "app-1",
+            "value": "app-1"
+          },
+          "challenge_id": "enrolled_after_proposal_refused.3",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "enrolled_after_proposal_refused.3",
+          "credential": "app-1",
+          "expect": "enrolled",
+          "local_request": true,
+          "op": "enrol",
+          "possession": true
+        },
+        {
+          "credential": "app-1",
+          "expect": "enrolled_after_proposal",
+          "op": "admit",
+          "proposal": "p1"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "replacement_does_not_inherit_cutoff",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "replacement_does_not_inherit_cutoff.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "replacement_does_not_inherit_cutoff.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "replacement_does_not_inherit_cutoff.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "replacement_does_not_inherit_cutoff.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "app-old",
+            "channel": "lan_ed25519",
+            "credential": "app-old",
+            "value": "app-old"
+          },
+          "challenge_id": "replacement_does_not_inherit_cutoff.2",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "replacement_does_not_inherit_cutoff.2",
+          "credential": "app-old",
+          "expect": "enrolled",
+          "local_request": true,
+          "op": "enrol",
+          "possession": true
+        },
+        {
+          "expect": "opened",
+          "op": "open",
+          "proposal": "p1"
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 1,
+            "signature": "G8sOyv8SNIA8Qj89yUG6xnOZg80K8jwwoLkuCBs7B6hB1WL/Dh99MtvMQxH28DVXjNhBcUjPjovEM7IRv9FSDA==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:app-old"
+            ],
+            "v": 1
+          },
+          "expect": "revoked",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a6170702d6f6c64225d2c2276223a317d"
+        },
+        {
+          "candidate": {
+            "approver_id": "app-new",
+            "channel": "lan_ed25519",
+            "credential": "app-new",
+            "value": "app-new"
+          },
+          "challenge_id": "replacement_does_not_inherit_cutoff.5",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "replacement_does_not_inherit_cutoff.5",
+          "credential": "app-new",
+          "expect": "enrolled",
+          "local_request": true,
+          "op": "enrol",
+          "possession": true
+        },
+        {
+          "credential": "app-new",
+          "expect": "enrolled_after_proposal",
+          "op": "admit",
+          "proposal": "p1"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "revoked_value_cannot_be_relabelled_in_same_epoch",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "revoked_value_cannot_be_relabelled_in_same_epoch.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "revoked_value_cannot_be_relabelled_in_same_epoch.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "revoked_value_cannot_be_relabelled_in_same_epoch.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "revoked_value_cannot_be_relabelled_in_same_epoch.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "app-old",
+            "channel": "lan_ed25519",
+            "credential": "app-old",
+            "value": "key-value"
+          },
+          "challenge_id": "revoked_value_cannot_be_relabelled_in_same_epoch.2",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "revoked_value_cannot_be_relabelled_in_same_epoch.2",
+          "credential": "app-old",
+          "expect": "enrolled",
+          "local_request": true,
+          "op": "enrol",
+          "possession": true,
+          "value": "key-value"
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 1,
+            "signature": "G8sOyv8SNIA8Qj89yUG6xnOZg80K8jwwoLkuCBs7B6hB1WL/Dh99MtvMQxH28DVXjNhBcUjPjovEM7IRv9FSDA==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:app-old"
+            ],
+            "v": 1
+          },
+          "expect": "revoked",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a6170702d6f6c64225d2c2276223a317d"
+        },
+        {
+          "candidate": {
+            "approver_id": "app-new",
+            "channel": "lan_ed25519",
+            "credential": "app-new",
+            "value": "key-value"
+          },
+          "challenge_id": "revoked_value_cannot_be_relabelled_in_same_epoch.4",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue"
+        },
+        {
+          "authorizer": "owner-key",
+          "challenge_id": "revoked_value_cannot_be_relabelled_in_same_epoch.4",
+          "credential": "app-new",
+          "expect": "value_tombstoned",
+          "local_request": true,
+          "op": "enrol",
+          "possession": true,
+          "value": "key-value"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "revocation_repeat_regression_conflict",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "revocation_repeat_regression_conflict.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "revocation_repeat_regression_conflict.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "revocation_repeat_regression_conflict.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "revocation_repeat_regression_conflict.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 2,
+            "signature": "5rhBeImv44hlt2xMMx2W8BOuMgBqdcbRS8qvsnCFzXoq3mlmUCQcngiHgVGRonR/0TcAkA6ney3VW59plDJbDw==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:owner-key"
+            ],
+            "v": 1
+          },
+          "expect": "revoked",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a322c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a6f776e65722d6b6579225d2c2276223a317d"
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 2,
+            "signature": "5rhBeImv44hlt2xMMx2W8BOuMgBqdcbRS8qvsnCFzXoq3mlmUCQcngiHgVGRonR/0TcAkA6ney3VW59plDJbDw==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:owner-key"
+            ],
+            "v": 1
+          },
+          "document_wire": "{\n  \"v\": 1,\n  \"device_id\": \"edge-1\",\n  \"site_id\": \"site-1\",\n  \"identity_epoch\": \"MDEyMzQ1Njc4OTo7PD0+Pw==\",\n  \"revision\": 2,\n  \"targets\": [\n    \"credential:owner-key\"\n  ],\n  \"signing_key\": \"ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=\",\n  \"signature\": \"5rhBeImv44hlt2xMMx2W8BOuMgBqdcbRS8qvsnCFzXoq3mlmUCQcngiHgVGRonR/0TcAkA6ney3VW59plDJbDw==\"\n}",
+          "expect": "replayed",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a322c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a6f776e65722d6b6579225d2c2276223a317d"
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 1,
+            "signature": "2etnONAWbYvNS/5uGjdR2VyICMlSg77kwWc1Y78WX+Tw+9GYa8BFs5Mvj8QygWlWeiKr/XDgdcANwO3MGzmaDw==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:owner-key"
+            ],
+            "v": 1
+          },
+          "expect": "revision_regressed",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a6f776e65722d6b6579225d2c2276223a317d"
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 2,
+            "signature": "nVL1ej7mCEi72XkhLuOOGnF3/WUnBWpexkLFuoefXbwCidO54GwjrojX8cga7Ow4DUKyn0Ri7EcOJMTqhPylAA==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:other"
+            ],
+            "v": 1
+          },
+          "expect": "revision_conflict",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a322c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a6f74686572225d2c2276223a317d"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "revocation_unknown_target",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "revocation_unknown_target.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "revocation_unknown_target.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "revocation_unknown_target.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "revocation_unknown_target.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 1,
+            "signature": "MFJtyfXQ/7qRRg2/nPzuk1Ko5qtMSU8LOw24SPvDR3bbyW/+EjtaEaMnxTZY+8ZVVV8OsxLHMe2bDqiSTTShBQ==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:absent"
+            ],
+            "v": 1
+          },
+          "expect": "unknown_target",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a616273656e74225d2c2276223a317d"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "unsigned_config_cannot_revoke",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "unsigned_config_cannot_revoke.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "unsigned_config_cannot_revoke.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "unsigned_config_cannot_revoke.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "unsigned_config_cannot_revoke.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "config_signed": false,
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 1,
+            "signature": "2etnONAWbYvNS/5uGjdR2VyICMlSg77kwWc1Y78WX+Tw+9GYa8BFs5Mvj8QygWlWeiKr/XDgdcANwO3MGzmaDw==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:owner-key"
+            ],
+            "v": 1
+          },
+          "expect": "anchor_unavailable",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a6f776e65722d6b6579225d2c2276223a317d"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "previous_and_wrong_class_anchors_refused",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "previous_and_wrong_class_anchors_refused.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "previous_and_wrong_class_anchors_refused.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "previous_and_wrong_class_anchors_refused.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "previous_and_wrong_class_anchors_refused.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 1,
+            "signature": "BnDwyXJQwD/4yd9MZ29noJkffuJcjGSU2J6Dn5cn7sLAsj2TtKRzudtC/ybsEVSFmXrDkXU/CXovNyrbrW2ZCA==",
+            "signing_key": "ed25519:pATYfctmcQzVhHk+Aa6SZWUQCtxMIBDD2/WXjR68x9k=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:owner-key"
+            ],
+            "v": 1
+          },
+          "expect": "superseded_signer",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a704154596663746d63517a5668486b2b416136535a5755514374784d49424444322f57586a52363878396b3d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a6f776e65722d6b6579225d2c2276223a317d"
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 1,
+            "signature": "oueEAQNOtngaur24FuRKBBbLmCH6tkLydICFTQRwh7vb7XPSxD88qNu8oog1NN6eUKj+po1v9N1hb4be+418Cw==",
+            "signing_key": "ed25519:CzJf9IyhyTJ8DQpovGI8heykR+smA0porxw3cqIXgMY=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:owner-key"
+            ],
+            "v": 1
+          },
+          "expect": "wrong_authority",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a437a4a663949796879544a384451706f764749386865796b522b736d4130706f7278773363714958674d593d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a6f776e65722d6b6579225d2c2276223a317d"
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 1,
+            "signature": "2etnONAWbYvNS/5uGjdR2VyICMlSg77kwWc1Y78WX+Tw+9GYa8BFs5Mvj8QygWlWeiKr/XDgdcANwO3MGzmaDw==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:owner-key"
+            ],
+            "v": 1
+          },
+          "expect": "revoked",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a6f776e65722d6b6579225d2c2276223a317d"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "malformed_revocation_documents",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "malformed_revocation_documents.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "malformed_revocation_documents.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "malformed_revocation_documents.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "malformed_revocation_documents.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 1,
+            "signature": "2etnONAWbYvNS/5uGjdR2VyICMlSg77kwWc1Y78WX+Tw+9GYa8BFs5Mvj8QygWlWeiKr/XDgdcANwO3MGzmaDw==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:owner-key"
+            ],
+            "unexpected": 1,
+            "v": 1
+          },
+          "expect": "malformed",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a6f776e65722d6b6579225d2c22756e6578706563746564223a312c2276223a317d"
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 1,
+            "signature": "2etnONAWbYvNS/5uGjdR2VyICMlSg77kwWc1Y78WX+Tw+9GYa8BFs5Mvj8QygWlWeiKr/XDgdcANwO3MGzmaDw==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:owner-key",
+              "credential:owner-key"
+            ],
+            "v": 1
+          },
+          "expect": "malformed",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a6f776e65722d6b6579222c2263726564656e7469616c3a6f776e65722d6b6579225d2c2276223a317d"
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 1,
+            "signature": "2etnONAWbYvNS/5uGjdR2VyICMlSg77kwWc1Y78WX+Tw+9GYa8BFs5Mvj8QygWlWeiKr/XDgdcANwO3MGzmaDw==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:z",
+              "credential:a"
+            ],
+            "v": 1
+          },
+          "expect": "malformed",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a7a222c2263726564656e7469616c3a61225d2c2276223a317d"
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": true,
+            "signature": "2etnONAWbYvNS/5uGjdR2VyICMlSg77kwWc1Y78WX+Tw+9GYa8BFs5Mvj8QygWlWeiKr/XDgdcANwO3MGzmaDw==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:owner-key"
+            ],
+            "v": 1
+          },
+          "expect": "malformed",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a747275652c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a6f776e65722d6b6579225d2c2276223a317d"
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 1,
+            "signature": "2etnONAWbYvNS/5uGjdR2VyICMlSg77kwWc1Y78WX+Tw+9GYa8BFs5Mvj8QygWlWeiKr/XDgdcANwO3MGzmaDw==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [],
+            "v": 1
+          },
+          "expect": "malformed",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b5d2c2276223a317d"
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 1,
+            "signature": "bPkDxqhcd3D2ZZviIZUuycEN4HU5LqkrG19ERwDNvnS2WMEri8DyXsGPwuvSa4vbdc9FqzBzLIdv7g+/anFpDA==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:absent-00",
+              "credential:absent-01",
+              "credential:absent-02",
+              "credential:absent-03",
+              "credential:absent-04",
+              "credential:absent-05",
+              "credential:absent-06",
+              "credential:absent-07",
+              "credential:absent-08",
+              "credential:absent-09",
+              "credential:absent-10",
+              "credential:absent-11",
+              "credential:absent-12",
+              "credential:absent-13",
+              "credential:absent-14",
+              "credential:absent-15",
+              "credential:absent-16",
+              "credential:absent-17",
+              "credential:absent-18",
+              "credential:absent-19",
+              "credential:absent-20",
+              "credential:absent-21",
+              "credential:absent-22",
+              "credential:absent-23",
+              "credential:absent-24",
+              "credential:absent-25",
+              "credential:absent-26",
+              "credential:absent-27",
+              "credential:absent-28",
+              "credential:absent-29",
+              "credential:absent-30",
+              "credential:absent-31",
+              "credential:absent-32"
+            ],
+            "v": 1
+          },
+          "expect": "malformed",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a616273656e742d3030222c2263726564656e7469616c3a616273656e742d3031222c2263726564656e7469616c3a616273656e742d3032222c2263726564656e7469616c3a616273656e742d3033222c2263726564656e7469616c3a616273656e742d3034222c2263726564656e7469616c3a616273656e742d3035222c2263726564656e7469616c3a616273656e742d3036222c2263726564656e7469616c3a616273656e742d3037222c2263726564656e7469616c3a616273656e742d3038222c2263726564656e7469616c3a616273656e742d3039222c2263726564656e7469616c3a616273656e742d3130222c2263726564656e7469616c3a616273656e742d3131222c2263726564656e7469616c3a616273656e742d3132222c2263726564656e7469616c3a616273656e742d3133222c2263726564656e7469616c3a616273656e742d3134222c2263726564656e7469616c3a616273656e742d3135222c2263726564656e7469616c3a616273656e742d3136222c2263726564656e7469616c3a616273656e742d3137222c2263726564656e7469616c3a616273656e742d3138222c2263726564656e7469616c3a616273656e742d3139222c2263726564656e7469616c3a616273656e742d3230222c2263726564656e7469616c3a616273656e742d3231222c2263726564656e7469616c3a616273656e742d3232222c2263726564656e7469616c3a616273656e742d3233222c2263726564656e7469616c3a616273656e742d3234222c2263726564656e7469616c3a616273656e742d3235222c2263726564656e7469616c3a616273656e742d3236222c2263726564656e7469616c3a616273656e742d3237222c2263726564656e7469616c3a616273656e742d3238222c2263726564656e7469616c3a616273656e742d3239222c2263726564656e7469616c3a616273656e742d3330222c2263726564656e7469616c3a616273656e742d3331222c2263726564656e7469616c3a616273656e742d3332225d2c2276223a317d"
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 1,
+            "signature": "2etnONAWbYvNS/5uGjdR2VyICMlSg77kwWc1Y78WX+Tw+9GYa8BFs5Mvj8QygWlWeiKr/XDgdcANwO3MGzmaDw==",
+            "signing_key": "ed25519:8XnYUJphUTQZaYHMhM3opouum4CDrAakyby4v9KuZX0=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:owner-key"
+            ],
+            "v": 1
+          },
+          "expect": "unknown_signer",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a38586e59554a70685554515a6159484d684d336f706f75756d3443447241616b7962793476394b755a58303d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a6f776e65722d6b6579225d2c2276223a317d"
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 1,
+            "signature": "3+2qVRD32UWOmP0gkEzSSjlVw670Q6xMVSWE4q6VqpEqKzoNh9Kjkf0ABxHP7qkN9D/+Eds4Vl0vgnO2He6/AA==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:owner-key"
+            ],
+            "v": 1
+          },
+          "expect": "signature_invalid",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a6f776e65722d6b6579225d2c2276223a317d"
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 1,
+            "signature": "2etnONAWbYvNS/5uGjdR2VyICMlSg77kwWc1Y78WX+Tw+9GYa8BFs5Mvj8QygWlWeiKr/XDgdcANwO3MGzmaDw==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:owner-key"
+            ],
+            "v": 1
+          },
+          "document_wire": "{\"v\":1,\"v\":1}",
+          "expect": "malformed",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a6f776e65722d6b6579225d2c2276223a317d"
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 1,
+            "signature": "2etnONAWbYvNS/5uGjdR2VyICMlSg77kwWc1Y78WX+Tw+9GYa8BFs5Mvj8QygWlWeiKr/XDgdcANwO3MGzmaDw==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:owner-key"
+            ],
+            "v": 1
+          },
+          "document_wire": "                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 {\"v\": 1, \"device_id\": \"edge-1\", \"site_id\": \"site-1\", \"identity_epoch\": \"MDEyMzQ1Njc4OTo7PD0+Pw==\", \"revision\": 1, \"targets\": [\"credential:owner-key\"], \"signing_key\": \"ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=\", \"signature\": \"2etnONAWbYvNS/5uGjdR2VyICMlSg77kwWc1Y78WX+Tw+9GYa8BFs5Mvj8QygWlWeiKr/XDgdcANwO3MGzmaDw==\"}",
+          "expect": "payload_too_large",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a6f776e65722d6b6579225d2c2276223a317d"
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 1,
+            "signature": "2etnONAWbYvNS/5uGjdR2VyICMlSg77kwWc1Y78WX+Tw+9GYa8BFs5Mvj8QygWlWeiKr/XDgdcANwO3MGzmaDw==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:owner-key"
+            ],
+            "v": 1
+          },
+          "expect": "revoked",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a6f776e65722d6b6579225d2c2276223a317d"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "unknown_target_makes_revocation_atomic",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "unknown_target_makes_revocation_atomic.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "unknown_target_makes_revocation_atomic.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "unknown_target_makes_revocation_atomic.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "unknown_target_makes_revocation_atomic.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 1,
+            "signature": "p1wYFHViFct81dtebtkR4ZT2UmXZNwx6nmb1KaOHvd1K8/dEMjPTdcGuqczn+0/tTBg2mNX4vSLAHQrbkv1OAg==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:owner-key",
+              "credential:zzz-absent"
+            ],
+            "v": 1
+          },
+          "expect": "unknown_target",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a6f776e65722d6b6579222c2263726564656e7469616c3a7a7a7a2d616273656e74225d2c2276223a317d"
+        },
+        {
+          "expect": "opened",
+          "op": "open",
+          "proposal": "p1"
+        },
+        {
+          "credential": "owner-key",
+          "expect": "approved",
+          "op": "admit",
+          "proposal": "p1"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "approver_revocation_removes_all_credentials",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "approver_revocation_removes_all_credentials.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "approver_revocation_removes_all_credentials.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "approver_revocation_removes_all_credentials.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "approver_revocation_removes_all_credentials.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "secondary-key",
+            "channel": "lan_ed25519",
+            "credential": "secondary-key",
+            "value": "secondary-key"
+          },
+          "challenge_id": "approver_revocation_removes_all_credentials.2",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue"
+        },
+        {
+          "approver_id": "secondary-key",
+          "authorizer": "owner-key",
+          "challenge_id": "approver_revocation_removes_all_credentials.2",
+          "credential": "secondary-key",
+          "expect": "enrolled",
+          "local_request": true,
+          "op": "enrol",
+          "possession": true
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "app-1",
+            "value": "app-1"
+          },
+          "challenge_id": "approver_revocation_removes_all_credentials.3",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "authorizer": "owner-key",
+          "challenge_id": "approver_revocation_removes_all_credentials.3",
+          "credential": "app-1",
+          "expect": "enrolled",
+          "local_request": true,
+          "op": "enrol",
+          "possession": true
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 1,
+            "signature": "ZLjwr+xtkDVE+Ghef2LT00AFVAnn0ExkZrZ6IGW0d1GxSZ3eJS37uzrfusoc6e751vxidPhLdD6Ms+rYfxs5AQ==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "approver:owner-key"
+            ],
+            "v": 1
+          },
+          "expect": "revoked",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b22617070726f7665723a6f776e65722d6b6579225d2c2276223a317d"
+        },
+        {
+          "expect": "opened",
+          "op": "open",
+          "proposal": "p1"
+        },
+        {
+          "credential": "app-1",
+          "expect": "credential_unavailable",
+          "op": "admit",
+          "proposal": "p1"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "app-2",
+            "value": "app-2"
+          },
+          "challenge_id": "approver_revocation_removes_all_credentials.7",
+          "expect": "issued",
+          "kind": "enrol",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "authorizer": "secondary-key",
+          "challenge_id": "approver_revocation_removes_all_credentials.7",
+          "credential": "app-2",
+          "expect": "approver_revoked",
+          "local_request": true,
+          "op": "enrol",
+          "possession": true
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "revocation_wrong_epoch",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "revocation_wrong_epoch.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "revocation_wrong_epoch.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "revocation_wrong_epoch.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "revocation_wrong_epoch.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "ICEiIyQlJicoKSorLC0uLw==",
+            "revision": 1,
+            "signature": "gWUQhTId5XZwVidAczi0TLLUREYAaKbHVqtvJn6SMmXAImUdL98EZgj8HE6EaaIvs7zN79IFZdRk57zx2bh2Dw==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:owner-key"
+            ],
+            "v": 1
+          },
+          "expect": "binding_mismatch",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a22494345694979516c4a69636f4b536f724c4330754c773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a6f776e65722d6b6579225d2c2276223a317d"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "recovery_requires_new_epoch_for_revocation",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "recovery_requires_new_epoch_for_revocation.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "recovery_requires_new_epoch_for_revocation.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "recovery_requires_new_epoch_for_revocation.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "recovery_requires_new_epoch_for_revocation.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "expect": "locked",
+          "op": "lose"
+        },
+        {
+          "candidate": [],
+          "challenge_id": "recovery_requires_new_epoch_for_revocation.3",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "QEFCQ0RFRkdISUpLTE1OTw=="
+        },
+        {
+          "challenge_id": "recovery_requires_new_epoch_for_revocation.3",
+          "epoch": "QEFCQ0RFRkdISUpLTE1OTw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "new-owner",
+            "channel": "lan_ed25519",
+            "credential": "new-app",
+            "value": "new-app"
+          },
+          "challenge_id": "recovery_requires_new_epoch_for_revocation.4",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "new-owner",
+          "challenge_id": "recovery_requires_new_epoch_for_revocation.4",
+          "channel": "lan_ed25519",
+          "credential": "new-app",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "ICEiIyQlJicoKSorLC0uLw==",
+            "revision": 1,
+            "signature": "n3wWUTyupi9IYP1MI+xkqE0t9NKSmVMJCwaIm9qNGRTzFK9/o76VyoZUVhLKRnvzxRHvk7Md81azSL0GlONTBA==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:new-app"
+            ],
+            "v": 1
+          },
+          "expect": "binding_mismatch",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a22494345694979516c4a69636f4b536f724c4330754c773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a6e65772d617070225d2c2276223a317d"
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "QEFCQ0RFRkdISUpLTE1OTw==",
+            "revision": 1,
+            "signature": "MSUNjr70Lq6MsLZNLBFD2xy9VcwQwUV/9BMQClxYR9/nIg0O37R9nSJDNuiAPLJNIsBh8ej99I3jLYQZ7i1JBQ==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:new-app"
+            ],
+            "v": 1
+          },
+          "expect": "revoked",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a225145464351305246526b64495355704c5445314f54773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a6e65772d617070225d2c2276223a317d"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "invalid_site_binding_is_malformed",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "invalid_site_binding_is_malformed.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "invalid_site_binding_is_malformed.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "invalid_site_binding_is_malformed.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "invalid_site_binding_is_malformed.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 1,
+            "signature": "JBCBwiYZyp3SerjnIkAFMUjHuArRVeI0r7Rvhc+i+B03EXcMYpTakgNaA4B5HUdbTHk+3UwCNqAe7bQwBJhmDQ==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "sit\u00e9",
+            "targets": [
+              "credential:owner-key"
+            ],
+            "v": 1
+          },
+          "expect": "malformed",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974c3a9222c2274617267657473223a5b2263726564656e7469616c3a6f776e65722d6b6579225d2c2276223a317d"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "signed_site_change_locks_admission",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "signed_site_change_locks_admission.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "signed_site_change_locks_admission.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "signed_site_change_locks_admission.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "signed_site_change_locks_admission.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "expect": "opened",
+          "op": "open",
+          "proposal": "before-change"
+        },
+        {
+          "expect": "site_locked",
+          "op": "config_site_change",
+          "site_id": "site-2"
+        },
+        {
+          "credential": "owner-key",
+          "expect": "site_binding_mismatch",
+          "op": "admit",
+          "proposal": "before-change"
+        },
+        {
+          "expect": "site_binding_mismatch",
+          "op": "open",
+          "proposal": "during-change"
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 1,
+            "signature": "2etnONAWbYvNS/5uGjdR2VyICMlSg77kwWc1Y78WX+Tw+9GYa8BFs5Mvj8QygWlWeiKr/XDgdcANwO3MGzmaDw==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:owner-key"
+            ],
+            "v": 1
+          },
+          "expect": "site_binding_mismatch",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a6f776e65722d6b6579225d2c2276223a317d"
+        },
+        {
+          "expect": "site_restored",
+          "op": "config_site_restore"
+        },
+        {
+          "credential": "owner-key",
+          "expect": "proposal_unavailable",
+          "op": "admit",
+          "proposal": "before-change"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "revocation_before_admission",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "revocation_before_admission.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "revocation_before_admission.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "revocation_before_admission.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "revocation_before_admission.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "expect": "opened",
+          "op": "open",
+          "proposal": "p1"
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 1,
+            "signature": "2etnONAWbYvNS/5uGjdR2VyICMlSg77kwWc1Y78WX+Tw+9GYa8BFs5Mvj8QygWlWeiKr/XDgdcANwO3MGzmaDw==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:owner-key"
+            ],
+            "v": 1
+          },
+          "expect": "revoked",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a6f776e65722d6b6579225d2c2276223a317d"
+        },
+        {
+          "credential": "owner-key",
+          "expect": "credential_unavailable",
+          "op": "admit",
+          "proposal": "p1"
+        }
+      ]
+    },
+    {
+      "initial_mode": "locked",
+      "name": "admission_before_revocation_stands",
+      "steps": [
+        {
+          "candidate": [],
+          "challenge_id": "admission_before_revocation_stands.0",
+          "expect": "issued",
+          "kind": "recover",
+          "op": "issue",
+          "proposed_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw=="
+        },
+        {
+          "challenge_id": "admission_before_revocation_stands.0",
+          "contacts": [],
+          "epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+          "expect": "recovered",
+          "local_request": true,
+          "op": "recover"
+        },
+        {
+          "candidate": {
+            "approver_id": "owner-key",
+            "channel": "lan_ed25519",
+            "credential": "owner-key",
+            "value": "owner-key"
+          },
+          "challenge_id": "admission_before_revocation_stands.1",
+          "expect": "issued",
+          "kind": "local_seed",
+          "op": "issue"
+        },
+        {
+          "approver_id": "owner-key",
+          "challenge_id": "admission_before_revocation_stands.1",
+          "channel": "lan_ed25519",
+          "credential": "owner-key",
+          "expect": "seeded",
+          "local_request": true,
+          "op": "local_seed",
+          "possession": true
+        },
+        {
+          "expect": "opened",
+          "op": "open",
+          "proposal": "p1"
+        },
+        {
+          "credential": "owner-key",
+          "expect": "approved",
+          "op": "admit",
+          "proposal": "p1"
+        },
+        {
+          "document": {
+            "device_id": "edge-1",
+            "identity_epoch": "MDEyMzQ1Njc4OTo7PD0+Pw==",
+            "revision": 1,
+            "signature": "2etnONAWbYvNS/5uGjdR2VyICMlSg77kwWc1Y78WX+Tw+9GYa8BFs5Mvj8QygWlWeiKr/XDgdcANwO3MGzmaDw==",
+            "signing_key": "ed25519:CoCYmi2u1NnDLsVzNMglg2Ied+0M9Z74rgNvSGRBAdg=",
+            "site_id": "site-1",
+            "targets": [
+              "credential:owner-key"
+            ],
+            "v": 1
+          },
+          "expect": "revoked",
+          "op": "revoke",
+          "preimage_hex": "6f72692e746965725f635f617070726f7665722e7265766f6b652e7631007b226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a224d4445794d7a51314e6a63344f546f375044302b50773d3d222c227265766973696f6e223a312c227369676e696e675f6b6579223a22656432353531393a436f43596d693275314e6e444c73567a4e4d676c67324965642b304d395a373472674e76534752424164673d222c22736974655f6964223a22736974652d31222c2274617267657473223a5b2263726564656e7469616c3a6f776e65722d6b6579225d2c2276223a317d"
+        },
+        {
+          "credential": "owner-key",
+          "expect": "already_decided",
+          "op": "admit",
+          "proposal": "p1"
+        }
+      ]
+    }
+  ],
+  "wire": {
+    "authorizer": {
+      "object": {
+        "authorizer_credential_id": "app-1",
+        "challenge_id": "AAECAwQFBgcICQoLDA0ODw==",
+        "challenge_sha256": "aecbc783e3359c956d7127388efc20a0bf759a7e06985a91df68ef23ad85da6f",
+        "signature": "FG/jt8L43Y3l9V1y28z1CmvxGcFIfbbCL8K+WAJb/ADe93P+BnHOmD4ZGLf0NoJYlcKnxusAf4XDVHHtBzEQCQ==",
+        "v": 1
+      },
+      "preimage_hex": "6f72692e746965725f635f617070726f7665722e656e726f6c2e7631007b22617574686f72697a65725f63726564656e7469616c5f6964223a226170702d31222c226368616c6c656e67655f6964223a2241414543417751464267634943516f4c4441304f44773d3d222c226368616c6c656e67655f736861323536223a2261656362633738336533333539633935366437313237333838656663323061306266373539613765303639383561393164663638656632336164383564613666222c2276223a317d"
+    },
+    "authorizer_public_key_b64": "G+iK7S8KwwBgPTDfWHUa2qXxh2r9KBaZmOxrP9PYLW4=",
+    "candidate_public_key_b64": "8XnYUJphUTQZaYHMhM3opouum4CDrAakyby4v9KuZX0=",
+    "candidate_spki_sha256": "ed3f2d350e6f8e3c7bdaa4b2d17ec550ede7893a38e330f5bc9755c78437ba71",
+    "challenge": {
+      "candidates": [
+        {
+          "approver_id": "operator-2",
+          "channel": "lan_ed25519",
+          "credential_id": "app-2",
+          "value": "ed25519:8XnYUJphUTQZaYHMhM3opouum4CDrAakyby4v9KuZX0="
+        }
+      ],
+      "challenge_id": "AAECAwQFBgcICQoLDA0ODw==",
+      "device_id": "edge-1",
+      "identity_epoch": "ICEiIyQlJicoKSorLC0uLw==",
+      "operation": "enrol",
+      "registry_revision": 1,
+      "site_id": "site-1",
+      "v": 1
+    },
+    "challenge_canonical_hex": "7b2263616e64696461746573223a5b7b22617070726f7665725f6964223a226f70657261746f722d32222c226368616e6e656c223a226c616e5f65643235353139222c2263726564656e7469616c5f6964223a226170702d32222c2276616c7565223a22656432353531393a38586e59554a70685554515a6159484d684d336f706f75756d3443447241616b7962793476394b755a58303d227d5d2c226368616c6c656e67655f6964223a2241414543417751464267634943516f4c4441304f44773d3d222c226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a22494345694979516c4a69636f4b536f724c4330754c773d3d222c226f7065726174696f6e223a22656e726f6c222c2272656769737472795f7265766973696f6e223a312c22736974655f6964223a22736974652d31222c2276223a317d",
+    "phone_authorization_ascii_hex": "4f52492d454e524f4c2d56312041414543417751464267634943516f4c4441304f44773d3d2061656362633738336533333539633935366437313237333838656663323061306266373539613765303639383561393164663638656632336164383564613666",
+    "phone_candidate": {
+      "challenge": {
+        "candidates": [
+          {
+            "approver_id": "operator-phone",
+            "channel": "sms",
+            "credential_id": "phone-1",
+            "value": "+2348012345678"
+          }
+        ],
+        "challenge_id": "UFFSU1RVVldYWVpbXF1eXw==",
+        "device_id": "edge-1",
+        "identity_epoch": "ICEiIyQlJicoKSorLC0uLw==",
+        "operation": "enrol",
+        "registry_revision": 1,
+        "site_id": "site-1",
+        "v": 1
+      },
+      "challenge_canonical_hex": "7b2263616e64696461746573223a5b7b22617070726f7665725f6964223a226f70657261746f722d70686f6e65222c226368616e6e656c223a22736d73222c2263726564656e7469616c5f6964223a2270686f6e652d31222c2276616c7565223a222b32333438303132333435363738227d5d2c226368616c6c656e67655f6964223a225546465355315256566c6459575670625846316558773d3d222c226465766963655f6964223a22656467652d31222c226964656e746974795f65706f6368223a22494345694979516c4a69636f4b536f724c4330754c773d3d222c226f7065726174696f6e223a22656e726f6c222c2272656769737472795f7265766973696f6e223a312c22736974655f6964223a22736974652d31222c2276223a317d",
+      "code_sha256": "ffeae708a29dc2bc96ddaa8cfec9cc5b56cd088ee4287e0d220405117dbb070f",
+      "reply": {
+        "channel": "sms",
+        "sender": "+2348012345678",
+        "text_ascii_hex": "4f52492d504f53534553532d5631205546465355315256566c6459575670625846316558773d3d20594746695932526c5a6d646f615770726247317562773d3d"
+      },
+      "sent_ascii_hex": "4f52492d504f53534553532d5631205546465355315256566c6459575670625846316558773d3d20594746695932526c5a6d646f615770726247317562773d3d"
+    },
+    "phone_value_cases": [
+      {
+        "valid": true,
+        "value": "+2348012345678"
+      },
+      {
+        "valid": false,
+        "value": "whatsapp:+2348012345678"
+      },
+      {
+        "valid": false,
+        "value": "+1 555 0123"
+      },
+      {
+        "valid": false,
+        "value": "+01234"
+      },
+      {
+        "valid": false,
+        "value": "08012345678"
+      }
+    ],
+    "possession": {
+      "object": {
+        "candidate_credential_id": "app-2",
+        "challenge_id": "AAECAwQFBgcICQoLDA0ODw==",
+        "challenge_sha256": "aecbc783e3359c956d7127388efc20a0bf759a7e06985a91df68ef23ad85da6f",
+        "signature": "HMfoUUSdP+J1g/oE8ivXgB0J7HWo5M0mhWaTgKsd7piOVukXayjdxJ6fLPxn85Bn5TJaVvf6YlcCUuLRwVdLAw==",
+        "v": 1
+      },
+      "preimage_hex": "6f72692e746965725f635f617070726f7665722e706f7373657373696f6e2e7631007b2263616e6469646174655f63726564656e7469616c5f6964223a226170702d32222c226368616c6c656e67655f6964223a2241414543417751464267634943516f4c4441304f44773d3d222c226368616c6c656e67655f736861323536223a2261656362633738336533333539633935366437313237333838656663323061306266373539613765303639383561393164663638656632336164383564613666222c2276223a317d"
+    }
+  }
+}

@@ -126,8 +126,7 @@ from ori.operator_socket import (
     OperatorSocketServer,
     PeerCredentials,
     ReconcileRequest,
-    install_root_for_prefix,
-    read_operator_uid,
+    installed_operator_uid,
     runtime_directory,
 )
 from ori.policy.alert_classes import alert_class_for_trigger
@@ -157,6 +156,7 @@ from ori.reasoning.tier_c_admission import TierCAuthorityFacts
 from ori.runtime_health_socket import RuntimeHealthSocketServer
 from ori.safety.commander import ActuatorOutcomeCommander
 from ori.safety.registry import SafetyRegistry
+from ori.security.approvers.wiring import prepare_registry_service
 from ori.security.commissioning.anchors import (
     AnchorError,
     CommissioningAnchors,
@@ -2995,15 +2995,12 @@ class OriRuntime:
                 "by this process",
             )
             return
-        install_root = install_root_for_prefix(sys.prefix)
-        service_uid = os.geteuid()
         server = OperatorSocketServer(
             directory=directory,
             reconcile=self._reconcile_from_operator,
             commission=self._commission_from_operator,
-            operator_uid=lambda: read_operator_uid(
-                install_root, service_uid=service_uid
-            ),
+            operator_uid=installed_operator_uid(sys.prefix),
+            registry=await prepare_registry_service(self._state_store, self._config),
         )
         try:
             bound = await server.start()

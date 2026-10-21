@@ -120,18 +120,6 @@ DECLARATION_DEFECTS = {
         ),
         "tracking": "ori-specs#248",
     },
-    ("operator_socket", "tier-c-reconcile.json"): {
-        "declares": (
-            "cli-commands/v1 Tier C reconciliation (`evidence reconcile-tier-c`), "
-            "replayed through the tier-c-approval/v1 admission"
-        ),
-        "reason": (
-            "The pinned revision names cli-commands/v1 for a corpus held under "
-            "operator-socket/vectors. ori-specs main declares operator-socket/v1 "
-            "for it; re-vendoring the set removes this entry."
-        ),
-        "tracking": "the runtime's operator-socket/v2 claim re-vendors this set",
-    },
 }
 
 
@@ -419,9 +407,9 @@ MUTATIONS = {
         "evidence/v3",
     ),
     "recorded defect changes": (
-        "operator_socket/tier-c-reconcile.json",
+        "commissioned_safety_binding/binding-vectors-v2.json",
         "contract",
-        "operator-socket/v1 Tier C reconciliation",
+        "ori-specs/commissioned-safety-binding/v2.md",
     ),
 }
 

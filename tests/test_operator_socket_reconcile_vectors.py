@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """The operator-socket/v1 reconcile corpus, driven through the socket and the bridge.
 
-Every sequence in `tests/vectors/operator_socket/tier-c-reconcile.json` runs
+Every sequence in `tests/vectors/operator_socket/tier-c-reconcile-v2.json` runs
 through the admission replayer against the real dispatcher and a real SQLite
 file; every local reconcile step is submitted by the real bridge
 (`ori.cli_bridge`, `evidence reconcile-tier-c`) to a real
@@ -43,7 +43,10 @@ from tests.test_tier_c_approval_sequences import (
 
 CORPUS = json.loads(
     (
-        Path(__file__).parent / "vectors" / "operator_socket" / "tier-c-reconcile.json"
+        Path(__file__).parent
+        / "vectors"
+        / "operator_socket"
+        / "tier-c-reconcile-v2.json"
     ).read_text()
 )
 UID_CASES = {case["name"]: case for case in CORPUS["operator_uid_cases"]}
@@ -130,17 +133,13 @@ class _Server(OperatorSocketServer):
         self.received = 0
         self.drop_answer = False
 
-    async def _answer(self, reader: Any, writer: Any) -> dict[str, Any]:
-        readline = reader.readline
-
-        async def counted() -> bytes:
-            line = await readline()
-            if line:
-                self.received += 1
-            return line
-
-        reader.readline = counted
-        return await super()._answer(reader, writer)
+    async def answer(
+        self, received: bytes, caller: Any, answered: Any = None
+    ) -> dict[str, Any]:
+        # Every request a connection delivers reaches this, whatever it holds.
+        if received:
+            self.received += 1
+        return await super().answer(received, caller, answered)
 
     async def _write(self, writer: Any, response: dict[str, Any]) -> None:
         if self.drop_answer:
@@ -402,6 +401,9 @@ class SocketTransport:
             assert server is not None and server.received == 0, (
                 "the runtime received it"
             )
+        elif server is not None and "response" in expect:
+            # The counter the refusal above relies on counts what it should.
+            assert server.received > 0, "a delivered request was not counted"
         if "response" in expect:
             if expect["response"] == "reconciliation":
                 assert payload["ok"] and set(payload["result"]) >= {

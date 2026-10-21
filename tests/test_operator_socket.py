@@ -394,7 +394,10 @@ async def test_hostile_requests_are_refused_before_any_state(
     async with serving(short_dir, recorder) as server:
         answer = await send(server.path, raw)
     assert answer["ok"] is False
-    assert answer["error"]["code"] == "invalid_arguments", answer
+    # operator-socket/v3: over the bound is refused before anything is parsed.
+    over = len(raw.partition(b"\n")[0]) > op.MAX_REQUEST_BYTES
+    expected = "payload_too_large" if over else "invalid_arguments"
+    assert answer["error"]["code"] == expected, answer
     assert set(answer) == {"schema_version", "ok", "error"}
     assert recorder.calls == []
 
@@ -850,6 +853,7 @@ def _bare_runtime() -> OriRuntime:
     runtime._operator_socket_server = None
     runtime._dispatcher = None
     runtime._state_store = None
+    runtime._config = None
     runtime._device_id = "dev-1"
     return runtime
 
@@ -910,7 +914,7 @@ async def test_the_runtime_answers_through_its_dispatcher(
         installed.append((root, service_uid))
         return os.geteuid()
 
-    monkeypatch.setattr("ori.runtime.read_operator_uid", operator_uid)
+    monkeypatch.setattr("ori.operator_socket.read_operator_uid", operator_uid)
     # Access-control lists are Linux's; this proves the wiring, not the grant.
     monkeypatch.setattr(
         "ori.runtime.OperatorSocketServer",
@@ -1469,3 +1473,85 @@ def test_the_bridge_entry_point_refuses_with_one_object_and_no_file(
     assert payload["ok"] is False and payload["error"]["code"] == code, payload
     assert "SECRET-VALUE" not in proc.stdout + proc.stderr
     assert set(tmp_path.iterdir()) == before
+
+
+# ── operator-socket/v3: the approver registry over a real connection ──────────
+
+
+async def test_registry_operations_are_served_over_the_socket(
+    short_dir: Path, tmp_path: Path
+) -> None:
+    """The read loop, the bound and the framing, end to end on AF_UNIX."""
+    from ori.security.approvers.registry import (
+        Anchors,
+        ApproverRegistry,
+        RunContext,
+    )
+    from ori.security.approvers.requests import MAX_REQUEST_BYTES
+    from ori.security.approvers.service import RegistryService
+    from ori.state.store import StateStore
+
+    store = StateStore(db_path=str(tmp_path / "state.db"))
+    await store.open()
+    try:
+        context = RunContext(
+            device_id="edge-1",
+            verified_site_id="site-1",
+            authenticated_phone_channels=frozenset(),
+            anchors=Anchors(current=None),
+            run_id="run",
+        )
+        service = RegistryService(store, ApproverRegistry(context, clock=lambda: 0))
+        async with serving(short_dir, Recorder(), registry=service) as server:
+            binding = b'{"operation":"approver_registry_binding"}\n'
+            locked = await send(server.path, binding)
+            padded = b'{"operation":"approver_registry_binding"' + b" " * (
+                MAX_REQUEST_BYTES - 41
+            )
+            at_bound = await send(server.path, padded + b"}\n")
+            over = await send(server.path, padded + b" }\n")
+            unterminated = await send(server.path, binding[:-1])
+            streamed = await send(
+                server.path, b" " * (MAX_REQUEST_BYTES + 4096), close_write=False
+            )
+    finally:
+        await store.close()
+    assert len(padded) + 1 == MAX_REQUEST_BYTES
+    assert locked["error"]["code"] == "registry_unavailable"
+    assert at_bound["error"]["code"] == "registry_unavailable"
+    assert over["error"]["code"] == "payload_too_large"
+    assert unterminated["error"]["code"] == "invalid_arguments"
+    assert streamed["error"]["code"] == "payload_too_large"
+
+
+async def test_a_store_fault_preparing_the_registry_leaves_the_socket_serving(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Tier C fails closed; the start, and the rest of the socket, do not."""
+    import sqlite3
+    from types import SimpleNamespace
+
+    class Locked:
+        async def retire_approver_runs(self, _run_id: str) -> None:
+            raise sqlite3.OperationalError("database is locked")
+
+    runtime = _bare_runtime()
+    runtime._state_store = Locked()  # type: ignore[assignment]
+    runtime._config = SimpleNamespace(  # type: ignore[assignment]
+        device=SimpleNamespace(
+            id="edge-1", site_id="site-1", deployment_profile="development"
+        ),
+        security={"config_signature": {"verified": False, "trust_anchor_env": "X"}},
+        device_policy={},
+    )
+    from ori.security.approvers.wiring import prepare_registry_service
+
+    with caplog.at_level(logging.CRITICAL, logger="ori.security.approvers.wiring"):
+        assert (
+            await prepare_registry_service(runtime._state_store, runtime._config)
+            is None
+        )
+    assert any(
+        "approver registry could not be prepared" in r.getMessage()
+        for r in caplog.records
+    )

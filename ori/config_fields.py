@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -69,3 +70,33 @@ def checked_device_endpoint(value: str, field: str, *, urls_supported: bool) -> 
             f"{field} must be an absolute device path{supported}: {value!r}"
         )
     return value
+
+
+_DEVICE_ID = re.compile(r"[A-Za-z0-9._-]{1,128}")
+_SITE_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
+
+
+def checked_device_id(device_id: str) -> str:
+    """runtime-config/v2's `device.id` pattern, which gateway-api/v2 sizes every
+    topic by."""
+    if _DEVICE_ID.fullmatch(device_id) is None:
+        raise ConfigValidationError(
+            "device.id must be 1 to 128 characters from A-Z, a-z, 0-9, '.', "
+            f"'_' and '-', got: {device_id!r}"
+        )
+    return device_id
+
+
+def checked_site_id(value: Any) -> str:
+    """`device.site_id`, or "" when absent.
+
+    Compared byte for byte by the Tier C approver registry: never trimmed,
+    normalised or coerced.
+    """
+    site_id = require_optional_str(value, "device.site_id")
+    if site_id and _SITE_ID.fullmatch(site_id) is None:
+        raise ConfigValidationError(
+            "device.site_id must be 1 to 64 characters from A-Z, a-z, 0-9, '.', "
+            f"'_' and '-', got: {site_id!r}"
+        )
+    return site_id

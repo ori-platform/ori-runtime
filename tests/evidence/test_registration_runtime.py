@@ -115,7 +115,8 @@ def root(monkeypatch):
     # This process is the installed operator. Access-control lists are
     # Linux's, and granting is the operator socket tests' concern.
     monkeypatch.setattr(
-        "ori.runtime.read_operator_uid", lambda _root, *, service_uid: os.geteuid()
+        "ori.operator_socket.read_operator_uid",
+        lambda _root, *, service_uid: os.geteuid(),
     )
     monkeypatch.setattr(
         "ori.runtime.OperatorSocketServer",

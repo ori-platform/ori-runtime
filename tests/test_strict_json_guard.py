@@ -37,6 +37,12 @@ EXEMPT: dict[tuple[str, str], tuple[int, str]] = {
         1,
         "parses only bytes the Payload Member Rule admitted, which hold no repeat",
     ),
+    ("security/approvers/requests.py", "parse"): (
+        1,
+        "its hook records every repeated member, which the parse refuses in "
+        "operator-socket/v3's order: as the request's fault, or as a "
+        "revocation document's",
+    ),
     ("cli_bridge.py", "_read_health_snapshot"): (1, _LOCAL_TOOL),
     ("doctor.py", "_error_detail"): (1, _LOCAL_TOOL),
     ("doctor.py", "_health_payload"): (1, _LOCAL_TOOL),

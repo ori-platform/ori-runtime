@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
-from ori.config_fields import ConfigValidationError
+from ori.config_fields import ConfigValidationError, checked_device_id, checked_site_id
 from ori.config_fields import checked_device_endpoint as _checked_device_endpoint
 from ori.config_fields import require_optional_str as _require_optional_str
 from ori.config_fields import require_str as _require_str
@@ -499,6 +499,9 @@ class DeviceConfig:
     deployment_type: str = "pi"  # 'pi' | 'phone' | 'edge_node' | 'server'
     deployment_profile: str = "development"  # 'development' | 'staging' | 'production'
     site_type: str = ""  # business/site context, e.g. pharmacy | office | factory
+    #: runtime-config/v2 `device.site_id`: the provisioning authority's site
+    #: identifier the Tier C approver registry is bound to. "" when absent.
+    site_id: str = ""
 
 
 @dataclass
@@ -1141,20 +1144,11 @@ def config_env_placeholders(config_path: str) -> frozenset[str] | None:
 # ─── Section parsers ──────────────────────────────────────────────────────────
 
 
-_DEVICE_ID = re.compile(r"[A-Za-z0-9._-]{1,128}")
-
-
 def _parse_device(data: Any) -> DeviceConfig:
     if not isinstance(data, dict):
         raise ConfigValidationError("'device' section must be a mapping.")
 
-    device_id = _require_str(data, "id", "device")
-    if _DEVICE_ID.fullmatch(device_id) is None:
-        # runtime-config/v2's pattern, which gateway-api/v2 sizes every topic by.
-        raise ConfigValidationError(
-            "device.id must be 1 to 128 characters from A-Z, a-z, 0-9, '.', "
-            f"'_' and '-', got: {device_id!r}"
-        )
+    device_id = checked_device_id(_require_str(data, "id", "device"))
 
     deployment_type = str(data.get("deployment_type", "pi")).strip().lower()
     if deployment_type not in {"pi", "phone", "edge_node", "server"}:
@@ -1170,6 +1164,7 @@ def _parse_device(data: Any) -> DeviceConfig:
             "device.deployment_profile must be one of "
             "['development', 'staging', 'production']."
         )
+    site_id = checked_site_id(data.get("site_id"))
     country_code = str(data.get("country_code", "")).strip().upper()
     if country_code and (len(country_code) != 2 or not country_code.isalpha()):
         raise ConfigValidationError(
@@ -1186,6 +1181,7 @@ def _parse_device(data: Any) -> DeviceConfig:
         deployment_type=deployment_type,
         deployment_profile=deployment_profile,
         site_type=str(data.get("site_type", "") or "").strip(),
+        site_id=site_id,
     )
 
 

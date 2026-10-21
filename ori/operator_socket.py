@@ -1,11 +1,11 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
-"""The authenticated local operator socket (operator-socket/v1).
+"""The authenticated local operator socket (operator-socket/v3).
 
 A person at the device reaches the running runtime here, and only here, to
-record the commissioning reference for its evidence epoch and what they
-observed of an uncertain Tier C dispatch. The caller is established from the
+record the commissioning reference for its evidence epoch, what they observed
+of an uncertain Tier C dispatch, and the approver registry's local operations. The caller is established from the
 kernel's peer credentials and nothing else; the request is one JSON object
 whose members are closed; the answer is the runtime's.
 """
@@ -40,6 +40,15 @@ from ori.runtime_health_socket import (
     _socket_has_a_listener,
     _socket_identity,
 )
+from ori.security.approvers.requests import (
+    MAX_REQUEST_BYTES,
+    REGISTRY_OPERATIONS,
+    SocketRequestError,
+    frame,
+    parse,
+    validate_registry_request,
+)
+from ori.security.approvers.service import REGISTRY_ERRORS, RegistryService
 from ori.security.evidence.registration import RegistrationStatus, is_digest
 from ori.utils.path_utils import shown
 from ori.utils.platform import os_name, runtime_platform
@@ -59,9 +68,7 @@ COMMISSION_MEMBERS: Final = frozenset({"operation", "reference", "force"})
 RECONCILE_OUTCOMES: Final = ("executed", "not-executed")
 NOTE_MAX_BYTES: Final = 280
 ENTRY_POINT: Final = "local_operator_socket"
-#: Far above the largest valid request (the note is 280 bytes), finite so a
-#: peer cannot stream forever.
-MAX_REQUEST_BYTES: Final = 8192
+#: operator-socket/v3 Requests on the socket: the release-defined read deadline.
 REQUEST_TIMEOUT_S: Final = 5.0
 #: The kernel's value for an audit login user ID that was never set.
 UNSET_LOGIN_UID: Final = 4294967295
@@ -72,6 +79,7 @@ MAX_UID: Final = 4294967294
 #: them: it is the contract's unexpected runtime fault, exit 1 at the bridge.
 RECONCILE_ERRORS: Final = frozenset(
     {
+        "payload_too_large",
         "invalid_arguments",
         "unauthenticated",
         "device_mismatch",
@@ -87,6 +95,7 @@ RECONCILE_ERRORS: Final = frozenset(
 #: The same, for `evidence_commission`.
 COMMISSION_ERRORS: Final = frozenset(
     {
+        "payload_too_large",
         "invalid_arguments",
         "invalid_reference",
         "unauthenticated",
@@ -587,6 +596,17 @@ def install_root_for_prefix(prefix: str) -> Path | None:
     return None
 
 
+def installed_operator_uid(prefix: str) -> Callable[[], int | None]:
+    """The installed operator identity of the release at *prefix*, read on call.
+
+    Read afresh each time, from the install root, against the service account
+    this process runs as.
+    """
+    install_root = install_root_for_prefix(prefix)
+    service_uid = os.geteuid()
+    return lambda: read_operator_uid(install_root, service_uid=service_uid)
+
+
 def runtime_directory(environ: Mapping[str, str] | None = None) -> Path | None:
     """The directory systemd created for this service, when it created one."""
     value = (os.environ if environ is None else environ).get("RUNTIME_DIRECTORY", "")
@@ -782,7 +802,7 @@ Commissioner = Callable[
 
 
 class OperatorSocketServer:
-    """Serve both operations to root and the installed operator identity."""
+    """Serve every operation to root and the installed operator identity."""
 
     def __init__(
         self,
@@ -794,8 +814,10 @@ class OperatorSocketServer:
         peer_credentials: Callable[[Any], PeerCredentials | None] = peer_credentials,
         grant: Callable[[Path, Path, int | None], None] = grant_access,
         account: Callable[[int], str | None] = account_name,
+        registry: RegistryService | None = None,
     ) -> None:
         self._directory = directory
+        self._registry = registry
         self._path = directory / SOCKET_NAME
         self._reconcile = reconcile
         self._commission = commission
@@ -878,19 +900,23 @@ class OperatorSocketServer:
     async def _handle(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
+        # Set once the answer is written or the connection has ended; a
+        # registry operation stays in flight until then.
+        answered = asyncio.Event()
         try:
-            response = await self._answer(reader, writer)
-        except Exception:
-            logger.exception("[operator-socket] request failed")
-            response = _error(
-                "internal_error", "the runtime could not complete the request"
-            )
-        # A caller that left before its answer is not answered; the answer
-        # records nothing, and a begun append completes regardless.
-        try:
+            try:
+                response = await self._answer(reader, writer, answered)
+            except Exception:
+                logger.exception("[operator-socket] request failed")
+                response = _error(
+                    "internal_error", "the runtime could not complete the request"
+                )
+            # A caller that left before its answer is not answered; the answer
+            # records nothing, and a begun append completes regardless.
             with contextlib.suppress(OSError):
                 await self._write(writer, response)
         finally:
+            answered.set()
             writer.close()
             with contextlib.suppress(OSError):
                 await writer.wait_closed()
@@ -904,25 +930,44 @@ class OperatorSocketServer:
         await writer.drain()
 
     async def _answer(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        answered: asyncio.Event,
     ) -> dict[str, Any]:
+        received = await _read_request(reader)
+
+        async def caller() -> PeerCredentials | None:
+            # /proc, the identity file and the account database are read off the loop.
+            return await asyncio.to_thread(
+                self._peer_credentials, writer.get_extra_info("socket")
+            )
+
+        return await self.answer(received, caller, answered)
+
+    async def answer(
+        self,
+        received: bytes,
+        caller: Callable[[], Awaitable[PeerCredentials | None]],
+        answered: asyncio.Event | None = None,
+    ) -> dict[str, Any]:
+        """The answer to the bytes a connection sent, in the contract's order.
+
+        The bound, then the request's form, then the caller, then (for a
+        registry operation) the one in flight, then the operation's own checks.
+        With *answered*, an admitted registry operation stays in flight until
+        it is set as well as until its transaction completes.
+        """
         try:
-            raw = await asyncio.wait_for(reader.readline(), timeout=REQUEST_TIMEOUT_S)
-        except (TimeoutError, asyncio.IncompleteReadError):
-            return _error("invalid_arguments", "the request was not completed in time")
-        except ValueError:
-            return _error("invalid_arguments", "the request exceeds its bound")
-        if len(raw) > MAX_REQUEST_BYTES:
-            return _error("invalid_arguments", "the request exceeds its bound")
-        try:
-            request = validate_request(parse_request(raw))
-        except OperatorRequestError as exc:
+            parsed = parse(frame(received))
+            if parsed["operation"] in REGISTRY_OPERATIONS:
+                request: Any = validate_registry_request(parsed)
+            else:
+                request = validate_request(parsed)
+        except (SocketRequestError, OperatorRequestError) as exc:
             return _error(exc.code, exc.detail)
 
-        # /proc, the identity file and the account database are read off the loop.
-        peer = await asyncio.to_thread(
-            self._peer_credentials, writer.get_extra_info("socket")
-        )
+        peer = await caller()
         operator_uid = await asyncio.to_thread(self._operator_uid)
         if peer is None or not (peer.uid == 0 or peer.uid == operator_uid):
             logger.warning(
@@ -930,6 +975,9 @@ class OperatorSocketServer:
                 "unknown" if peer is None else peer.uid,
             )
             return _error("unauthenticated", "the caller is not admitted")
+
+        if isinstance(request, dict):
+            return await self._registry_answer(request, peer, answered)
 
         account = await asyncio.to_thread(self._account, peer.uid)
         # Nothing awaits between this check and the append beginning, so an
@@ -957,6 +1005,47 @@ class OperatorSocketServer:
         if isinstance(request, CommissionRequest):
             return self._commissioned(request, peer, answer)
         return self._reconciled(request, peer, answer)
+
+    async def _registry_answer(
+        self,
+        request: dict[str, Any],
+        peer: PeerCredentials,
+        answered: asyncio.Event | None,
+    ) -> dict[str, Any]:
+        registry = self._registry
+        if registry is None:
+            return _error("registry_unavailable", "this runtime holds no registry")
+        if not registry.try_admit():
+            return _error("registry_busy", "another registry operation is in flight")
+        if self._closing:
+            registry.release()
+            return _error("cancelled", "the runtime is stopping; nothing was recorded")
+        # In flight until its transaction completes and its answer is written
+        # or its connection has ended, whatever the connection does.
+        served = asyncio.ensure_future(registry.serve(request))
+
+        async def hold() -> None:
+            with contextlib.suppress(BaseException):
+                await served
+            if answered is not None:
+                await answered.wait()
+            registry.release()
+
+        holder = asyncio.ensure_future(hold())
+        for task in (served, holder):
+            self._appends.add(task)
+            task.add_done_callback(self._appends.discard)
+        answer = await asyncio.shield(served)
+        if answer["ok"] is False and answer["error"]["code"] not in REGISTRY_ERRORS:
+            raise MalformedAnswerError("the registry answered an unknown refusal")
+        logger.warning(
+            "[operator-socket] %s by uid %s (login %s): %s",
+            request["operation"],
+            peer.uid,
+            peer.login_uid,
+            "ok" if answer["ok"] else answer["error"]["code"],
+        )
+        return answer
 
     def _commissioned(
         self,
@@ -1050,6 +1139,30 @@ class OperatorSocketServer:
             " (already recorded)" if already else "",
         )
         return {"schema_version": 1, "ok": True, "result": result}
+
+
+async def _read_request(reader: asyncio.StreamReader) -> bytes:
+    """Bytes up to the first LF, one past the bound, or what came by the deadline.
+
+    Bytes are counted as they arrive, so nothing beyond the bound is read.
+    """
+    received = bytearray()
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + REQUEST_TIMEOUT_S
+    while b"\n" not in received and len(received) <= MAX_REQUEST_BYTES:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            break
+        try:
+            chunk = await asyncio.wait_for(
+                reader.read(MAX_REQUEST_BYTES + 1 - len(received)), timeout=remaining
+            )
+        except TimeoutError:
+            break
+        if not chunk:
+            break
+        received += chunk
+    return bytes(received)
 
 
 def _remove_own_socket(path: Path, provisional: tuple[int, int, int] | None) -> None:

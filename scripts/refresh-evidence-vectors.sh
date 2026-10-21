@@ -90,6 +90,13 @@ SETS=(
   # messages, so the corpus holds its signer to the device's bytes. The v1
   # liveness corpus is pinned by digest in tests/fixtures.
   "firmware-commands:tests/vectors/firmware_commands:v2"
+  # operator-socket/v3: the Tier C reconciliation and the approver registry's
+  # local operations. The runtime serves this socket, so both corpora are its
+  # conformance fixtures.
+  "operator-socket/vectors:tests/vectors/operator_socket:v3"
+  # tier-c-approvers/v1: the registry's state model, driven through the real
+  # store and operations.
+  "tier-c-approvers/vectors:tests/vectors/tier_c_approvers:v1"
 )
 
 if [ -n "${ORI_SPECS_DIR:-}" ]; then

@@ -110,6 +110,17 @@ release is cut.
 
 ## Added
 
+- The Tier C approver registry of `tier-c-approvers/v1`: the runtime-owned
+  record of who may approve a Tier C action, bound to the device, a verified
+  `device.site_id` and an identity epoch the runtime mints. Its local
+  operations (challenge, recover, local seed, enrol, revoke and the binding
+  readback) are served on the operator socket under `operator-socket/v3`. This
+  release enrols LAN keys only: no phone ingress reaches the registry, so an
+  SMS candidate is refused `channel_unauthenticated`, and no Tier C reply is
+  yet admitted against it.
+- `device.site_id` (optional, `^[A-Za-z0-9._-]{1,64}$`). The registry is
+  available only with a verified value: from a signed configuration, or the
+  configuration's own value in unsigned development posture.
 - `ori skills validate <path>` loads one skill directory, or every skill in a
   parent directory, through the runtime's own loader and reports the first
   problem in each. It exits 0 when every skill is valid, 1 when any is
@@ -177,9 +188,15 @@ release is cut.
   two family keys, or any other top-level key, is refused on its keys alone,
   before any inner object is read: by the subscriber, with a coalesced WARNING,
   and again by the envelope and fault verifiers, as `invalid_envelope` once
-  the device's anchor checks pass. Before,
-  the route took the first key it recognised and the verifiers accepted other
-  keys beside theirs.
+  the device's anchor checks pass. Before, the route took the first key it
+  recognised and the verifiers accepted other keys beside theirs.
+- The operator socket serves `operator-socket/v3`: a request is one JSON object
+  and one LF, at most 16,384 bytes (up from 8,192, a limit v2 never stated),
+  counted before anything is parsed and refused `payload_too_large`, for
+  `reconcile_tier_c` and `evidence_commission` as for the registry operations.
+  A registry operation that holds a string with no UTF-8 form, nests deeper
+  than 32 levels or names a member twice is `invalid_arguments`;
+  `reconcile_tier_c` and `evidence_commission` keep their v2 rules.
 - Every sensor reading records what its `timestamp` is, as `gateway-api/v2`
   Producer Time defines it: `reported` for a read the runtime requested,
   `not_reported` for a value pushed to it, timed by its arrival, and `unknown`

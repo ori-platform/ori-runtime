@@ -527,7 +527,13 @@ VECTOR_CONSUMERS = {
     ("runtime_evidence_anchor", "runtime-anchor-v2"): (
         "evidence/test_anchor.py::test_derivations_match_the_contract_vectors",
     ),
-    ("operator_socket", "tier-c-reconcile"): (
+    ("operator_socket", "approver-registry-v3"): (
+        "test_approver_registry_socket_vectors.py::test_every_case",
+    ),
+    ("tier_c_approvers", "transitions"): (
+        "test_approver_registry_transitions.py::test_every_scenario",
+    ),
+    ("operator_socket", "tier-c-reconcile-v2"): (
         "test_operator_socket_reconcile_vectors.py::test_operator_socket_sequence",
         "test_operator_socket_reconcile_vectors.py::test_operator_uid_cases",
     ),

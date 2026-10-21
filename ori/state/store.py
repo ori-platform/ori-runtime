@@ -6,6 +6,7 @@
 from ori.state._action_records import _check_action_record_shape
 from ori.state._actions import ActionLogStore
 from ori.state._alerts import AlertOutboxStore
+from ori.state._approvers import ApproverStore
 from ori.state._commissioning import CommissioningStore
 from ori.state._core import (
     _READ_WORKERS,
@@ -70,6 +71,7 @@ class StateStore(
     ReasoningStore,
     MeasurementStore,
     SkillStateStore,
+    ApproverStore,
 ):
     """Async-safe SQLite state store.
 

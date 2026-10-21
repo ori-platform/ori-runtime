@@ -968,6 +968,74 @@ CREATE TABLE IF NOT EXISTS sensor_history_basis_5min (
 _HISTORY_DDL = ";\n".join(_HISTORY_DDL_STATEMENTS) + ";\n"
 
 
+#: tier-c-approvers/v1: the approver registry. A missing header row is a
+#: locked registry. Challenges, phone authorizations and pending phone
+#: operations belong to the run that created them (`run_id`); every query is
+#: scoped to the run, and other runs' rows are deleted when a run's registry
+#: is prepared.
+_APPROVER_DDL = """
+CREATE TABLE IF NOT EXISTS approver_registry (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    site_id TEXT NOT NULL,
+    identity_epoch TEXT NOT NULL,
+    revision INTEGER NOT NULL,
+    last_external_revision INTEGER NOT NULL,
+    last_external_document_sha256 TEXT,
+    credential_sequence INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS approver_credentials (
+    credential_id TEXT PRIMARY KEY,
+    approver_id TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    value TEXT NOT NULL,
+    value_key TEXT NOT NULL UNIQUE,
+    -- lan_ed25519 only: the RFC 8410 SubjectPublicKeyInfo DER SHA-256, hex.
+    spki_sha256 TEXT,
+    sequence INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS approver_tombstones (
+    kind TEXT NOT NULL CHECK (kind IN ('credential', 'approver', 'value')),
+    name TEXT NOT NULL,
+    approver_id TEXT,
+    value TEXT,
+    PRIMARY KEY (kind, name)
+);
+CREATE TABLE IF NOT EXISTS approver_challenges (
+    challenge_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    canonical BLOB NOT NULL,
+    issued_at_ms INTEGER NOT NULL,
+    credential_sequence_at_issue INTEGER NOT NULL,
+    used INTEGER NOT NULL DEFAULT 0,
+    code_sha256 TEXT,
+    -- 1 when the runtime minted the candidate's approver ID.
+    approver_minted INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS approver_phone_authorizations (
+    arrival INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    challenge_id TEXT NOT NULL,
+    challenge_sha256 TEXT NOT NULL,
+    authorizer_credential_id TEXT
+);
+CREATE TABLE IF NOT EXISTS approver_pending_phone (
+    value TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    challenge_id TEXT NOT NULL UNIQUE,
+    channel TEXT NOT NULL,
+    candidate_json TEXT NOT NULL,
+    code_sha256 TEXT,
+    window_start_ms INTEGER NOT NULL,
+    authorizer_credential_id TEXT NOT NULL,
+    registry_revision INTEGER NOT NULL,
+    identity_epoch TEXT NOT NULL,
+    site_id TEXT NOT NULL,
+    approver_minted INTEGER NOT NULL DEFAULT 0
+);
+"""
+
+
 _DDL = _CORE_DDL + "\n" + _HISTORY_DDL
 
 
@@ -1136,6 +1204,7 @@ class StoreMigrations:
         # first and a fresh store gets its tables from the DDL after.
         self._rebuild_history_schema_if_unreceipted(conn)
         conn.executescript(_HISTORY_DDL)
+        conn.executescript(_APPROVER_DDL)
         self._add_history_producer_time(conn)
         self._migrate_alert_outbox_receipt(conn)
         self._key_firmware_fault_events_by_epoch(conn)
