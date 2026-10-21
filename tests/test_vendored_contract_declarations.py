@@ -83,6 +83,11 @@ UNDECLARED = {
         "Carries a table-format `v` and a prose note; no member names a contract."
     ),
     ("evidence", "canonical-form.json"): _WIRE_SCHEMA_ONLY,
+    ("gateway_api", "health-transition-baselines-v2.json"): (
+        "Two runtime releases' health exports exactly as their builders produced "
+        "them, keyed by release; data for health-transition-v2.json, which "
+        "declares the contract."
+    ),
     ("evidence", "chain-row-v3.json"): _WIRE_SCHEMA_ONLY,
     ("evidence", "event-id.json"): _WIRE_SCHEMA_ONLY,
     ("evidence", "genesis.json"): _WIRE_SCHEMA_ONLY,

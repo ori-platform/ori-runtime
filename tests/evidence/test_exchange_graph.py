@@ -656,6 +656,12 @@ VECTOR_CONSUMERS = {
         "test_gateway_payload_members.py"
         "::test_a_decrypted_plaintext_is_admitted_under_the_rule",
     ),
+    ("gateway_api", "health-transition-baselines-v2"): (
+        "test_health_transition_baselines.py"
+        "::test_every_snapshot_writes_critical_and_leaves_the_v2_5_0_set",
+        "test_health_transition_baselines.py"
+        "::test_the_export_keeps_every_baseline_member_at_its_type",
+    ),
     ("gateway_api", "replay-v2"): (
         "test_gateway_replay_vectors.py::test_every_replay_case",
     ),
@@ -683,6 +689,17 @@ VECTOR_CONSUMERS = {
 #: tracked, because naming a repository says who is answerable rather than that
 #: the work is done.
 VECTOR_EXEMPTIONS = {
+    ("gateway_api", "health-transition-v2"): {
+        "owner": "the site gateway",
+        "status": "proof_pending",
+        "tracking": "ori-gateway#127",
+        "reason": (
+            "How a gateway reads a runtime's health export while runtimes move "
+            "from runtime-health/v3 to v4. The runtime is the producer; its side "
+            "is the baselines corpus, which test_health_transition_baselines.py "
+            "consumes."
+        ),
+    },
     ("evidence_exchange", "routing-projection-v2"): {
         "owner": "the site gateway",
         "status": "proof_pending",

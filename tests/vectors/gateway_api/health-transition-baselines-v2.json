@@ -1,0 +1,279 @@
+{
+  "comment": "items[0] of the health export as two runtime releases produce it, each built by that release's own OriRuntime._build_health_snapshot from its tagged source, unstarted, on a fixed clock, with device_id dev-01. Unstarted, so safety is null, health_socket_path is empty and uptime_s is 0.0; a served export comes from a started runtime. Exact producer output: never edit these by hand.",
+  "v2.5.0": {
+    "alert_outbox": {
+      "backlog_count": 0,
+      "batch_size": 50,
+      "max_non_tier_d_attempts": 10,
+      "oldest_queued_age_ms": null,
+      "oldest_queued_at_ms": null,
+      "oldest_queued_original_ts": null,
+      "retry_interval_minutes": 0.5,
+      "tier_d_critical_warning_threshold": 3
+    },
+    "capability_posture": {
+      "available": false,
+      "checked_at_ms": 0,
+      "expires_at_ms": 0,
+      "gateway_last_heartbeat_ms": null,
+      "gateway_reachable": false,
+      "internet_available": false,
+      "local_slm_loaded": false,
+      "relay_connected": false,
+      "sms_available": false,
+      "whatsapp_available": false
+    },
+    "commissioning": {
+      "actuation_licensed": false,
+      "actuator": null,
+      "anchors_configured": false,
+      "binding_hash": null,
+      "binding_seq": 0,
+      "last_verdict": null,
+      "zones": []
+    },
+    "community_skills": {
+      "anchor_fault": null,
+      "anchor_usable": false,
+      "available": false,
+      "refused_skills": 0
+    },
+    "config_authority": {
+      "available": false,
+      "dotenv_loaded": false,
+      "signature_required": false,
+      "signature_verified": false,
+      "unsigned_value_source": false
+    },
+    "degradation_reasons": [],
+    "device_id": "dev-01",
+    "device_policy": {
+      "available": false,
+      "cloud_llm_enabled": null,
+      "enabled": false,
+      "is_expired": null,
+      "issued_at": null,
+      "policy_version": null,
+      "relay_b_enabled": null,
+      "relay_c_enabled": null,
+      "tier": null,
+      "valid_until": null
+    },
+    "evidence": {
+      "action_event_type": "",
+      "action_records": null,
+      "anchor_epoch_id": "",
+      "attestation_gap_count": 0,
+      "available": false,
+      "chain_head_hash": null,
+      "enabled": false,
+      "foreign_identity_pending_count": null,
+      "inbound_route_connected": false,
+      "ingest_refusal_count": null,
+      "last_attested_action_id": null,
+      "last_disposition": null,
+      "last_ingest_refusal": null,
+      "oldest_stopped_local_since_ms": null,
+      "pending_export_count": null,
+      "posture_problems": [],
+      "protocol_version": "",
+      "public_key_hex": "",
+      "registration_confirmation_overdue": false,
+      "registration_offer": "not_applicable",
+      "registration_pending_since_ms": null,
+      "registration_status": "disabled",
+      "status_counts": {},
+      "stopped_local_artifact_count": null,
+      "stopped_local_bytes": null
+    },
+    "firmware_liveness": {
+      "degraded": false,
+      "enabled": false,
+      "running": false
+    },
+    "firmware_mqtt_operator": {
+      "available": false,
+      "contract": "ori.runtime.firmware-mqtt-operator",
+      "schema_version": 1,
+      "socket_path": ""
+    },
+    "gateway_broker_posture": {
+      "acl_policy": "unknown",
+      "anonymous_access": "unknown",
+      "available": false,
+      "credentials_configured": false,
+      "deployment_check": "unknown",
+      "gateway_enabled": false,
+      "require_credentials": false,
+      "requires_acl_hardening": true
+    },
+    "health_socket_path": "",
+    "last_alert_timestamps": {
+      "by_channel": {},
+      "by_trigger": {}
+    },
+    "remote_command_lockout": {
+      "enforcement_enabled": false,
+      "incident_sender_limit": 50,
+      "risk_window_ms": 3600000,
+      "senders": [],
+      "stale_after_ms": 3600000
+    },
+    "safety": null,
+    "sensors": [],
+    "state_store_encryption": {
+      "available": false,
+      "marker_configured": false,
+      "mode": "unknown",
+      "path_prefix_configured": false,
+      "satisfied": false
+    },
+    "telemetry_export": {
+      "enabled": false
+    },
+    "uptime_s": 0.0
+  },
+  "e4ba3e92": {
+    "alert_outbox": {
+      "backlog_count": 0,
+      "batch_size": 50,
+      "max_non_tier_d_attempts": 10,
+      "oldest_queued_age_ms": null,
+      "oldest_queued_at_ms": null,
+      "oldest_queued_original_ts": null,
+      "retry_interval_minutes": 0.5,
+      "tier_d_critical_warning_threshold": 3
+    },
+    "capability_posture": {
+      "available": false,
+      "checked_at_ms": 0,
+      "expires_at_ms": 0,
+      "gateway_last_heartbeat_ms": null,
+      "gateway_reachable": false,
+      "internet_available": false,
+      "local_slm_loaded": false,
+      "relay_connected": false,
+      "sms_available": false,
+      "whatsapp_available": false
+    },
+    "commissioning": {
+      "actuation_licensed": false,
+      "actuator": null,
+      "anchors_configured": false,
+      "binding_hash": null,
+      "binding_seq": 0,
+      "last_verdict": null,
+      "zones": []
+    },
+    "community_skills": {
+      "anchor_fault": null,
+      "anchor_usable": false,
+      "available": false,
+      "refused_skills": 0
+    },
+    "config_authority": {
+      "available": false,
+      "dotenv_loaded": false,
+      "signature_required": false,
+      "signature_verified": false,
+      "unsigned_value_source": false
+    },
+    "critical": false,
+    "degradation_reasons": [],
+    "device_id": "dev-01",
+    "device_policy": {
+      "available": false,
+      "cloud_llm_enabled": null,
+      "enabled": false,
+      "is_expired": null,
+      "issued_at": null,
+      "policy_version": null,
+      "relay_b_enabled": null,
+      "relay_c_enabled": null,
+      "tier": null,
+      "valid_until": null
+    },
+    "evidence": {
+      "action_event_type": "",
+      "action_records": null,
+      "anchor_epoch_id": "",
+      "application_storage_fault": false,
+      "attestation_gap_count": 0,
+      "available": false,
+      "awaiting_receipt_count": null,
+      "chain_head_hash": null,
+      "enabled": false,
+      "foreign_identity_pending_count": null,
+      "inbound_route_connected": false,
+      "ingest_refusal_count": null,
+      "last_attested_action_id": null,
+      "last_disposition": null,
+      "last_ingest_refusal": null,
+      "oldest_awaiting_receipt_age_ms": null,
+      "oldest_stopped_local_since_ms": null,
+      "pending_export_count": null,
+      "posture_problems": [],
+      "protocol_version": "",
+      "public_key_hex": "",
+      "registration_confirmation_overdue": false,
+      "registration_offer": "not_applicable",
+      "registration_pending_since_ms": null,
+      "registration_status": "disabled",
+      "status_counts": {},
+      "stopped_local_artifact_count": null,
+      "stopped_local_bytes": null
+    },
+    "firmware_controller_profiles": {
+      "enabled": false
+    },
+    "firmware_liveness": {
+      "degraded": false,
+      "enabled": false,
+      "running": false
+    },
+    "firmware_mqtt_operator": {
+      "available": false,
+      "contract": "ori.runtime.firmware-mqtt-operator",
+      "schema_version": 1,
+      "socket_path": ""
+    },
+    "firmware_reading_age": {
+      "enabled": false
+    },
+    "gateway_broker_posture": {
+      "acl_policy": "unknown",
+      "anonymous_access": "unknown",
+      "available": false,
+      "credentials_configured": false,
+      "deployment_check": "unknown",
+      "gateway_enabled": false,
+      "require_credentials": false,
+      "requires_acl_hardening": true
+    },
+    "health_socket_path": "",
+    "last_alert_timestamps": {
+      "by_channel": {},
+      "by_trigger": {}
+    },
+    "remote_command_lockout": {
+      "enforcement_enabled": false,
+      "incident_sender_limit": 50,
+      "risk_window_ms": 3600000,
+      "senders": [],
+      "stale_after_ms": 3600000
+    },
+    "safety": null,
+    "sensors": [],
+    "state_store_encryption": {
+      "available": false,
+      "marker_configured": false,
+      "mode": "unknown",
+      "path_prefix_configured": false,
+      "satisfied": false
+    },
+    "telemetry_export": {
+      "enabled": false
+    },
+    "uptime_s": 0.0
+  }
+}
