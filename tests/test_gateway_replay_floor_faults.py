@@ -124,9 +124,16 @@ def test_nothing_reaches_the_store_while_it_cannot_be_read(tmp_path: Path) -> No
         finally:
             lock.release()
 
+        def _touched(*_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError("the store was touched")
+
         class _Untouchable:
-            def __getattr__(self, name: str) -> Any:
-                raise AssertionError(f"the store was touched: {name}")
+            # Every connection entry point the cache uses; none may run.
+            execute = executemany = commit = rollback = close = staticmethod(_touched)
+
+            @property
+            def in_transaction(self) -> bool:
+                raise AssertionError("the store was touched")
 
         real, cache._conn = cache._conn, _Untouchable()  # type: ignore[assignment]
         try:
