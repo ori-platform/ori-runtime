@@ -264,6 +264,15 @@ release is cut.
 
 ## Fixed
 
+- The rebuild of a commissioning proof table from an earlier build is one
+  transaction. A failure partway leaves the store as it was. A store that an
+  earlier, non-atomic rebuild left with its rows stranded in
+  `_commissioning_proof_observation_legacy` has them carried over on open.
+  Each observation is carried once, matched by its consent rather than its
+  id, so a row written since under a reused id is kept beside it. Before, the
+  next open left them behind, and with them the audit of the consents and
+  coil commands they recorded. A store holding the old schema under both
+  names refuses to open until repaired; no released build can produce one.
 - A state store write whose commit failed no longer stays pending on the
   shared writer connection, or on a skill hook's connection, for the next
   unrelated write to commit. Whatever a write did not commit is rolled back

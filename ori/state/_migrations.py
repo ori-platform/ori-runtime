@@ -80,6 +80,39 @@ CREATE TABLE IF NOT EXISTS firmware_fault_events (
 """
 
 
+#: Kept apart so its legacy rebuild can recreate this one table inside its own
+#: transaction, which `executescript` of the whole schema would commit.
+_PROOF_OBSERVATION_DDL = """-- What the commissioning proof operation did, one row per command. The consent
+-- and the actuation it permitted are the same record: the contract requires
+-- them audited together, and a consent stored apart from its command is a
+-- credential rather than an attestation. A row is opened when consent is given
+-- and completed once the command has been issued, so a store failure cannot
+-- leave a commanded coil unrecorded; a row whose commanded_at_ms is 0 records a
+-- consent whose command never completed, which is itself the honest outcome.
+CREATE TABLE IF NOT EXISTS commissioning_proof_observation (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    binding_hash         TEXT    NOT NULL,
+    zone_id              TEXT    NOT NULL,
+    gpio_pin             INTEGER NOT NULL,
+    active_high          INTEGER NOT NULL,
+    outcome              TEXT    NOT NULL,
+    coil_state_commanded TEXT    NOT NULL,
+    level_driven         TEXT    NOT NULL,
+    consent_nonce        TEXT    NOT NULL,
+    consented_at_ms      INTEGER NOT NULL,
+    commanded_at_ms      INTEGER NOT NULL,
+    command_issued       INTEGER NOT NULL,
+    -- The runtime does not observe the coil, so nothing it records may say the
+    -- commanded effect occurred. Enforced here rather than by convention.
+    effect_verified      INTEGER NOT NULL DEFAULT 0 CHECK (effect_verified = 0),
+    operator_attestation TEXT,
+    release_requested    INTEGER NOT NULL,
+    held_ms              INTEGER NOT NULL DEFAULT 0,
+    observation_json     TEXT,
+    outcome_note         TEXT
+);
+"""
+
 _CORE_DDL = (
     EVIDENCE_REFERENCE_DDL
     + """
@@ -828,36 +861,8 @@ CREATE TABLE IF NOT EXISTS commissioned_binding_provisional (
     verified_at_ms       INTEGER NOT NULL
 );
 
--- What the commissioning proof operation did, one row per command. The consent
--- and the actuation it permitted are the same record: the contract requires
--- them audited together, and a consent stored apart from its command is a
--- credential rather than an attestation. A row is opened when consent is given
--- and completed once the command has been issued, so a store failure cannot
--- leave a commanded coil unrecorded; a row whose commanded_at_ms is 0 records a
--- consent whose command never completed, which is itself the honest outcome.
-CREATE TABLE IF NOT EXISTS commissioning_proof_observation (
-    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-    binding_hash         TEXT    NOT NULL,
-    zone_id              TEXT    NOT NULL,
-    gpio_pin             INTEGER NOT NULL,
-    active_high          INTEGER NOT NULL,
-    outcome              TEXT    NOT NULL,
-    coil_state_commanded TEXT    NOT NULL,
-    level_driven         TEXT    NOT NULL,
-    consent_nonce        TEXT    NOT NULL,
-    consented_at_ms      INTEGER NOT NULL,
-    commanded_at_ms      INTEGER NOT NULL,
-    command_issued       INTEGER NOT NULL,
-    -- The runtime does not observe the coil, so nothing it records may say the
-    -- commanded effect occurred. Enforced here rather than by convention.
-    effect_verified      INTEGER NOT NULL DEFAULT 0 CHECK (effect_verified = 0),
-    operator_attestation TEXT,
-    release_requested    INTEGER NOT NULL,
-    held_ms              INTEGER NOT NULL DEFAULT 0,
-    observation_json     TEXT,
-    outcome_note         TEXT
-);
 """
+    + _PROOF_OBSERVATION_DDL
 )
 
 
@@ -1271,36 +1276,7 @@ class StoreMigrations:
         # adding the new columns is not enough on its own: the legacy
         # `executed` is NOT NULL with no default, so every later insert fails.
         # The table is rebuilt instead, carrying the recorded commands across.
-        legacy = {
-            row[1]
-            for row in conn.execute(
-                "PRAGMA table_info(commissioning_proof_observation)"
-            )
-        }
-        if "executed" in legacy:
-            conn.execute(
-                "ALTER TABLE commissioning_proof_observation RENAME TO "
-                "_commissioning_proof_observation_legacy"
-            )
-            conn.executescript(_DDL)
-            conn.execute(
-                """
-                INSERT INTO commissioning_proof_observation
-                    (id, binding_hash, zone_id, gpio_pin, active_high, outcome,
-                     coil_state_commanded, level_driven, consent_nonce,
-                     consented_at_ms, commanded_at_ms, command_issued,
-                     effect_verified, operator_attestation, release_requested,
-                     held_ms, observation_json, outcome_note)
-                SELECT id, binding_hash, zone_id, gpio_pin, active_high, outcome,
-                       coil_state_commanded, level_driven, consent_nonce,
-                       consented_at_ms, commanded_at_ms, executed,
-                       0, NULL, 0, 0, observation_json, outcome_note
-                  FROM _commissioning_proof_observation_legacy
-                """
-            )
-            conn.execute("DROP TABLE _commissioning_proof_observation_legacy")
-            conn.commit()
-        else:
+        if not self._rebuild_proof_observation_if_legacy(conn):
             for col, typedef in (
                 ("command_issued", "INTEGER NOT NULL DEFAULT 0"),
                 ("effect_verified", "INTEGER NOT NULL DEFAULT 0"),
@@ -2030,6 +2006,85 @@ class StoreMigrations:
         else:
             for name in _RECORD_KEY_UNIQUE_TRIGGER_NAMES:
                 conn.execute(f"DROP TRIGGER IF EXISTS {name}")
+
+    def _rebuild_proof_observation_if_legacy(self, conn: sqlite3.Connection) -> bool:
+        """Rebuild a legacy proof table, or finish one a crash left; whether it did.
+
+        One transaction, so a failure leaves the store as it was. A store an
+        earlier, non-atomic rebuild stranded holds the old rows under
+        `_commissioning_proof_observation_legacy`: they are carried into the
+        table now, every observation it does not already hold, matched by its
+        consent rather than its id, and the legacy table dropped.
+        """
+        legacy = "_commissioning_proof_observation_legacy"
+        stranded = (
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                (legacy,),
+            ).fetchone()
+            is not None
+        )
+        columns = {
+            row[1]
+            for row in conn.execute(
+                "PRAGMA table_info(commissioning_proof_observation)"
+            )
+        }
+        if "executed" not in columns and not stranded:
+            return False
+        if "executed" in columns and stranded:
+            raise sqlite3.DatabaseError(
+                "the commissioning proof table and its legacy copy both hold "
+                "the old schema; the store needs repair before it can open"
+            )
+        if conn.in_transaction:
+            # Earlier steps' implicit transaction: committed here, as the
+            # schema script this replaced did, so the rebuild is its own step.
+            conn.commit()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            if "executed" in columns:
+                conn.execute(
+                    f"ALTER TABLE commissioning_proof_observation RENAME TO {legacy}"
+                )
+                conn.execute(_PROOF_OBSERVATION_DDL)
+            # A row is the same observation by its consent, never by its id:
+            # rows written after an earlier rebuild stranded these reuse the
+            # ids, the legacy table having taken the id sequence with it.
+            # Rows whose id is free keep it; the rest take fresh ids after.
+            for ids in ("keep", "fresh"):
+                conn.execute(
+                    f"""
+                    INSERT INTO commissioning_proof_observation
+                        (id, binding_hash, zone_id, gpio_pin, active_high, outcome,
+                         coil_state_commanded, level_driven, consent_nonce,
+                         consented_at_ms, commanded_at_ms, command_issued,
+                         effect_verified, operator_attestation, release_requested,
+                         held_ms, observation_json, outcome_note)
+                    SELECT {"old.id" if ids == "keep" else "NULL"},
+                           old.binding_hash, old.zone_id, old.gpio_pin,
+                           old.active_high, old.outcome, old.coil_state_commanded,
+                           old.level_driven, old.consent_nonce, old.consented_at_ms,
+                           old.commanded_at_ms, old.executed, 0, NULL, 0, 0,
+                           old.observation_json, old.outcome_note
+                      FROM {legacy} AS old
+                     WHERE NOT EXISTS (
+                             SELECT 1 FROM commissioning_proof_observation AS cur
+                              WHERE cur.binding_hash = old.binding_hash
+                                AND cur.consent_nonce = old.consent_nonce
+                                AND cur.consented_at_ms = old.consented_at_ms)
+                       AND old.id {"NOT IN" if ids == "keep" else "IN"}
+                           (SELECT id FROM commissioning_proof_observation)
+                     ORDER BY old.id
+                    """  # noqa: S608 - fixed names
+                )
+            conn.execute(f"DROP TABLE {legacy}")
+            conn.commit()
+        except BaseException:
+            if conn.in_transaction:
+                conn.rollback()
+            raise
+        return True
 
     def _add_column_if_missing_on_conn(
         self,
