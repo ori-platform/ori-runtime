@@ -35,6 +35,9 @@ from typing import Any, cast
 
 import pytest
 
+from tests.supervised_process import Supervised
+from tests.supervised_process import run as supervised_run
+
 ROOT = Path(__file__).resolve().parents[1]
 CRATE = ROOT / "mobile" / "ori-runtime-mobile"
 BINARY = CRATE / "target" / "debug" / "ori-runtime-mobile"
@@ -63,7 +66,7 @@ ed25519 = pytest.importorskip(
 @pytest.fixture(scope="module")
 def payload() -> Path:
     """Build once for the module; a debug build of this crate is a few seconds."""
-    result = subprocess.run(
+    result = supervised_run(
         ["cargo", "build", "--locked"],
         cwd=CRATE,
         capture_output=True,
@@ -473,7 +476,7 @@ def _run(
     reached = threading.Event()
     lines: list[str] = []
     started = time.monotonic()
-    process = subprocess.Popen(
+    process = Supervised(
         [str(binary), "--config", str(config), "--progress"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -497,15 +500,18 @@ def _run(
 
     reader = threading.Thread(target=read, daemon=True)
     reader.start()
-    finished = reached.wait(RUN_DEADLINE_S)
-    still_running = process.poll() is None
-    if still_running:
-        process.terminate()
     try:
-        process.wait(timeout=30)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait(timeout=30)
+        finished = reached.wait(RUN_DEADLINE_S)
+        still_running = process.poll() is None
+        if still_running:
+            process.terminate()
+        try:
+            process.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=30)
+    finally:
+        process.stop()
     # Measured once the process has stopped, so the span covers every post it
     # made, including any between reaching its polls and being stopped.
     elapsed = time.monotonic() - started

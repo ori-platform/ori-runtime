@@ -26,6 +26,7 @@ from ori.gateway.firmware_commands import (
     FirmwareCommandPublishError,
     MqttFirmwareCommandPublisher,
 )
+from tests.supervised_process import Supervised
 from tests.test_dispatch_never_waits_on_delivery import _free_port, _mosquitto
 from tests.waiting import wait_until
 
@@ -38,7 +39,7 @@ FAMILIES = {
 
 
 @contextmanager
-def _broker_on(root: Path, port: int) -> Iterator[subprocess.Popen[bytes]]:
+def _broker_on(root: Path, port: int) -> Iterator[Supervised]:
     binary = _mosquitto()
     if binary is None:
         if os.environ.get("ORI_REQUIRE_MQTT_BROKER") == "1":
@@ -48,7 +49,7 @@ def _broker_on(root: Path, port: int) -> Iterator[subprocess.Popen[bytes]]:
     config.write_text(
         f"listener {port} 127.0.0.1\nallow_anonymous true\npersistence false\n"
     )
-    process = subprocess.Popen(
+    process = Supervised(
         [binary, "-c", str(config)],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -64,9 +65,7 @@ def _broker_on(root: Path, port: int) -> Iterator[subprocess.Popen[bytes]]:
             time.sleep(0.05)
         yield process
     finally:
-        if process.poll() is None:
-            process.kill()
-        process.wait(5.0)
+        process.stop()
 
 
 async def _publish(publisher: MqttFirmwareCommandPublisher, family: str, body: bytes):

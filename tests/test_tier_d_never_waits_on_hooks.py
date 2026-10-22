@@ -632,10 +632,11 @@ class TestAStalledHookRunsOffTheLoop:
         every reading and prints p50, p95 and max.
         """
         import os
-        import subprocess
         import sys
 
-        result = subprocess.run(
+        from tests.supervised_process import run as supervised_run
+
+        result = supervised_run(
             [
                 sys.executable,
                 "-m",

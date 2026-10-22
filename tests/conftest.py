@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 
 import pytest
@@ -89,6 +89,25 @@ def no_real_gpio(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in _OUTPUT_CLASSES:
         if hasattr(gpiozero, name):
             monkeypatch.setattr(gpiozero, name, FakeGPIODevice)
+
+
+@pytest.fixture(autouse=True)
+def no_child_outlives_its_test() -> Iterator[None]:
+    """Fail a test that leaves a running child no Supervised holds.
+
+    Whatever spelling started it: the spawn scan in
+    `tests/test_supervised_process.py` reads names, and a name can always be
+    spelled another way. The leaked child is killed before the test fails.
+    """
+    yield
+    from tests.supervised_process import leaked_children
+
+    leaked = leaked_children()
+    if leaked:
+        pytest.fail(
+            "the test left running children no Supervised holds (killed): "
+            + "; ".join(leaked)
+        )
 
 
 def _mark_startup_complete(runtime: Any) -> "asyncio.Event":

@@ -85,6 +85,7 @@ from ori.security.evidence.ingest import RECEIPT_DOMAIN
 from ori.security.evidence.registration import CONFIRMATION_OVERDUE_MS
 from ori.skills.loader import Trigger
 from ori.state.store import StateStore
+from tests.supervised_process import Supervised
 from tests.waiting import drained, latency_bounds_apply, settle, wait_until
 
 DEVICE = "dev-01"
@@ -1198,8 +1199,10 @@ def _broker(root: Path) -> Iterator[int]:
     config.write_text(
         f"listener {port} 127.0.0.1\nallow_anonymous true\npersistence false\n"
     )
-    process = subprocess.Popen(
-        [binary, "-c", str(config)], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+    process = Supervised(
+        [binary, "-c", str(config)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     try:
         deadline = time.monotonic() + _PROMPT_S
@@ -1210,8 +1213,7 @@ def _broker(root: Path) -> Iterator[int]:
             time.sleep(0.05)
         yield port
     finally:
-        process.terminate()
-        process.wait(_PROMPT_S)
+        process.stop()
 
 
 async def test_the_broker_redelivers_what_the_route_had_no_room_for(
