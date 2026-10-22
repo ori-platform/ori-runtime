@@ -21,6 +21,7 @@ from typing import Any
 
 import pytest
 
+import ori.gateway.reasoning as gateway_reasoning
 from ori.gateway.evidence_inbound import (
     EVIDENCE_INBOUND_MESSAGE_TYPE,
     EvidenceInboundRouter,
@@ -273,7 +274,7 @@ async def test_the_replay_thread_is_not_the_default_executor(tmp_path: Path) -> 
         assert release.is_set() is False and payload["request_id"] == "r"
     finally:
         release.set()
-        await occupied
+        _ = await occupied
         auth._replay_cache.close()
 
 
@@ -284,9 +285,9 @@ async def test_replay_work_past_the_ceiling_is_refused(
     auth = _authenticator(tmp_path)
     started, release = threading.Event(), threading.Event()
 
-    def busy() -> None:
+    def busy() -> bool:
         started.set()
-        release.wait(5)
+        return release.wait(5)
 
     held = asyncio.ensure_future(auth.run_off_loop(busy))
     assert await asyncio.to_thread(started.wait, 5)
@@ -300,7 +301,7 @@ async def test_replay_work_past_the_ceiling_is_refused(
             )
     finally:
         release.set()
-        await held
+        _ = await held
         auth._replay_cache.close()
 
 
@@ -312,9 +313,9 @@ async def test_a_closed_cache_refuses_replay_work_and_cancels_what_waits(
     started, release = threading.Event(), threading.Event()
     ran: list[str] = []
 
-    def busy() -> None:
+    def busy() -> bool:
         started.set()
-        release.wait(5)
+        return release.wait(5)
 
     held = asyncio.ensure_future(cache.run_off_loop(busy))
     assert await asyncio.to_thread(started.wait, 5)
@@ -322,9 +323,9 @@ async def test_a_closed_cache_refuses_replay_work_and_cancels_what_waits(
     await asyncio.sleep(0)
     cache.close()
     release.set()
-    await held
+    _ = await held
     with pytest.raises(asyncio.CancelledError):
-        await queued
+        _ = await queued
     with pytest.raises(ReplayWorkRefusedError):
         await cache.run_off_loop(ran.append, "after")
     assert ran == []
@@ -375,8 +376,6 @@ class _AnsweringClient:
 def _reasoning_rig(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[Any, GatewayMessageAuthenticator, _AnsweringClient]:
-    import ori.gateway.reasoning as gateway_reasoning
-    from ori.gateway.reasoning import MqttGatewayReasoner
 
     monkeypatch.setattr(gateway_reasoning, "_PAHO_AVAILABLE", True)
     monkeypatch.setattr(gateway_reasoning, "mqtt", object())
@@ -401,7 +400,7 @@ def _reasoning_rig(
         )
 
     client = _AnsweringClient(answer)
-    reasoner = MqttGatewayReasoner(
+    reasoner = gateway_reasoning.MqttGatewayReasoner(
         broker_url="mqtt://broker.local",
         device_id=DEVICE,
         timeout_ms=200,
@@ -464,7 +463,6 @@ async def test_an_answer_whose_round_trip_ended_records_nothing(
 ) -> None:
     """gateway-api/v2 Payload Volume: a response with no pending request adds
     no state, even when it was authenticated while the request was pending."""
-    from ori.gateway.reasoning import GatewayReasoningError
 
     reasoner, auth, client = _reasoning_rig(tmp_path, monkeypatch)
     cache = auth._replay_cache
@@ -478,7 +476,7 @@ async def test_an_answer_whose_round_trip_ended_records_nothing(
 
     cache.check = slow_check  # type: ignore[method-assign]
     try:
-        with pytest.raises(GatewayReasoningError, match="timeout"):
+        with pytest.raises(gateway_reasoning.GatewayReasoningError, match="timeout"):
             await reasoner.reason("Prompt", event=None, rule_result=_RULE)
         assert checking.is_set()
     finally:
@@ -503,13 +501,15 @@ async def test_an_answer_whose_round_trip_ended_records_nothing(
 async def test_a_below_floor_answer_is_not_logged_as_a_replay(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    from ori.gateway.reasoning import GatewayReasoningError
 
     reasoner, auth, client = _reasoning_rig(tmp_path, monkeypatch)
     cache = auth._replay_cache
     cache._start_floor = 2**52  # every answer is below the floor
     try:
-        with caplog.at_level("WARNING"), pytest.raises(GatewayReasoningError):
+        with (
+            caplog.at_level("WARNING"),
+            pytest.raises(gateway_reasoning.GatewayReasoningError),
+        ):
             await reasoner.reason("Prompt", event=None, rule_result=_RULE)
     finally:
         if client.thread is not None:

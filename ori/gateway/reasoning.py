@@ -237,7 +237,7 @@ class MqttGatewayReasoner:
             try:
                 loop.call_soon_threadsafe(callback, *args)
             except RuntimeError:
-                pass
+                pass  # the loop has closed; nothing waits for this any more
 
         def _set_future_exception(future: asyncio.Future, exc: BaseException) -> None:
             if not future.done():
