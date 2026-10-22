@@ -374,6 +374,16 @@ release is cut.
 
 ## Security
 
+- The gateway replay store no longer falls back to memory when it fails.
+  Under gateway-api/v2 as amended, a store that cannot be read or written, at
+  the start or later, refuses every gateway envelope that passes the freshness
+  checks as `before_replay_floor`. It drops no key and writes no floor, and is
+  tried again every 5 seconds off the receiving path until it answers. A
+  floor raise the store cannot take keeps its key held, and a key it cannot
+  store is refused. With `gateway.auth.persistent_replay_cache: false`, a floor
+  an earlier run stored is read at the start and every 5 seconds, and never
+  written. Before, a failed store degraded to memory protection that a
+  restart forgets, and persistence off ignored the stored floor.
 - Every gateway payload the runtime receives is admitted under gateway-api/v2's
   Payload Member Rule before any member is read or its envelope verified:
   gateway heartbeats, reasoning responses, export requests, outbound evidence

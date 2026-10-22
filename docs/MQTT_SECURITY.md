@@ -70,7 +70,13 @@ Use layered controls:
    start; a warning names the floor and the clock. The runtime signs every
    envelope from one clock whose values never repeat, kept in the state
    database, and refuses to sign once the values it has claimed run out
-   while the database stalls; health then reads degraded.
+   while the database stalls; health then reads degraded. A replay store that
+   cannot be read or written refuses every gateway envelope as
+   `before_replay_floor` until it answers, retried every few seconds off the
+   receiving path; it never falls back to memory, which a restart would
+   forget. With `persistent_replay_cache: false` the runtime still reads a
+   floor an earlier run stored, and never writes one. Tier D and dispatch
+   never consult the floor.
 2. **Payload encryption**: enable `gateway.encryption` so sensitive runtime
    export responses are AES-GCM encrypted before the broker sees them.
 3. **Broker authentication and ACLs**: require MQTT usernames/passwords and

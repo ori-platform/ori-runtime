@@ -1504,6 +1504,294 @@
       ]
     },
     {
+      "name": "unreadable_floor_refuses_and_drops_nothing",
+      "note": "while the stored floor cannot be read, an envelope that passes checks 1 and 2 is refused as below the floor, and no prune drops a key or writes a floor; once a read succeeds the stored floor stands",
+      "context": {
+        "skew_ms": 300,
+        "replay_ttl_ms": null,
+        "stores": true,
+        "stored_floor_ms": 10000,
+        "start_clock_ms": 0,
+        "held": [
+          {
+            "key": "a",
+            "signed_at_ms": 10100,
+            "received_at_ms": 10100
+          }
+        ]
+      },
+      "events": [
+        {
+          "event": "floor_unreadable",
+          "t": 10150,
+          "expected": {
+            "floor_ms": 10000,
+            "held": [
+              "a"
+            ]
+          }
+        },
+        {
+          "event": "receive",
+          "key": "b",
+          "signed_at_ms": 10150,
+          "t": 10150,
+          "expected": {
+            "reason": "before_replay_floor",
+            "floor_ms": 10000,
+            "held": [
+              "a"
+            ]
+          }
+        },
+        {
+          "event": "receive",
+          "key": "c",
+          "signed_at_ms": 9000,
+          "t": 10150,
+          "expected": {
+            "reason": "stale_timestamp",
+            "floor_ms": 10000,
+            "held": [
+              "a"
+            ]
+          }
+        },
+        {
+          "event": "prune",
+          "t": 10500,
+          "expected": {
+            "floor_ms": 10000,
+            "held": [
+              "a"
+            ]
+          }
+        },
+        {
+          "event": "floor_read",
+          "t": 10500,
+          "expected": {
+            "floor_ms": 10000,
+            "held": [
+              "a"
+            ]
+          }
+        },
+        {
+          "event": "receive",
+          "key": "e",
+          "signed_at_ms": 9999,
+          "t": 10200,
+          "expected": {
+            "reason": "before_replay_floor",
+            "floor_ms": 10000,
+            "held": [
+              "a"
+            ]
+          }
+        },
+        {
+          "event": "prune",
+          "t": 10500,
+          "expected": {
+            "floor_ms": 10101,
+            "held": []
+          }
+        },
+        {
+          "event": "receive",
+          "key": "d",
+          "signed_at_ms": 10500,
+          "t": 10500,
+          "expected": {
+            "reason": null,
+            "floor_ms": 10101,
+            "held": [
+              "d"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "unreadable_floor_survives_restart",
+      "note": "a restart while the stored floor cannot be read leaves it unreadable, refusing an envelope its floor would admit, until a read succeeds",
+      "context": {
+        "skew_ms": 300,
+        "replay_ttl_ms": null,
+        "stores": true,
+        "stored_floor_ms": 10000,
+        "start_clock_ms": 0,
+        "held": []
+      },
+      "events": [
+        {
+          "event": "floor_unreadable",
+          "t": 20000,
+          "expected": {
+            "floor_ms": 10000,
+            "held": []
+          }
+        },
+        {
+          "event": "restart",
+          "t": 21000,
+          "expected": {
+            "floor_ms": 21000,
+            "held": []
+          }
+        },
+        {
+          "event": "receive",
+          "key": "p",
+          "signed_at_ms": 21000,
+          "t": 21000,
+          "expected": {
+            "reason": "before_replay_floor",
+            "floor_ms": 21000,
+            "held": []
+          }
+        },
+        {
+          "event": "floor_read",
+          "t": 21000,
+          "expected": {
+            "floor_ms": 21000,
+            "held": []
+          }
+        },
+        {
+          "event": "receive",
+          "key": "q",
+          "signed_at_ms": 21000,
+          "t": 21000,
+          "expected": {
+            "reason": null,
+            "floor_ms": 21000,
+            "held": [
+              "q"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "unreadable_earlier_floor_refuses",
+      "note": "a receiver that no longer stores its floor, and cannot read the one an earlier run stored, refuses an envelope that floor would admit until a read succeeds",
+      "context": {
+        "skew_ms": 300,
+        "replay_ttl_ms": null,
+        "stores": false,
+        "stored_floor_ms": 10000,
+        "start_clock_ms": 0,
+        "held": []
+      },
+      "events": [
+        {
+          "event": "floor_unreadable",
+          "t": 20000,
+          "expected": {
+            "floor_ms": 10000,
+            "held": []
+          }
+        },
+        {
+          "event": "receive",
+          "key": "p",
+          "signed_at_ms": 20000,
+          "t": 20000,
+          "expected": {
+            "reason": "before_replay_floor",
+            "floor_ms": 10000,
+            "held": []
+          }
+        },
+        {
+          "event": "floor_read",
+          "t": 20000,
+          "expected": {
+            "floor_ms": 10000,
+            "held": []
+          }
+        },
+        {
+          "event": "receive",
+          "key": "q",
+          "signed_at_ms": 20000,
+          "t": 20000,
+          "expected": {
+            "reason": null,
+            "floor_ms": 10000,
+            "held": [
+              "q"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "restart_with_storage_off_keeps_earlier_floor",
+      "note": "a receiver that no longer stores its floor reads one an earlier run stored at every start, never raises it, and loses its own run's raise at a restart",
+      "context": {
+        "skew_ms": 300,
+        "replay_ttl_ms": null,
+        "stores": false,
+        "stored_floor_ms": 50000,
+        "start_clock_ms": 0,
+        "held": []
+      },
+      "events": [
+        {
+          "event": "restart",
+          "t": 20000,
+          "expected": {
+            "floor_ms": 50000,
+            "held": []
+          }
+        },
+        {
+          "event": "receive",
+          "key": "p",
+          "signed_at_ms": 20000,
+          "t": 20000,
+          "expected": {
+            "reason": "before_replay_floor",
+            "floor_ms": 50000,
+            "held": []
+          }
+        },
+        {
+          "event": "receive",
+          "key": "q",
+          "signed_at_ms": 60000,
+          "t": 60000,
+          "expected": {
+            "reason": null,
+            "floor_ms": 50000,
+            "held": [
+              "q"
+            ]
+          }
+        },
+        {
+          "event": "prune",
+          "t": 60301,
+          "expected": {
+            "floor_ms": 60001,
+            "held": []
+          }
+        },
+        {
+          "event": "restart",
+          "t": 55000,
+          "expected": {
+            "floor_ms": 55000,
+            "held": []
+          }
+        }
+      ]
+    },
+    {
       "name": "rotate_keeping_previous",
       "note": "a rotation that keeps the previous secret keeps the floor and every held key",
       "context": {
@@ -1549,7 +1837,7 @@
     },
     {
       "name": "rotate_keeping_none",
-      "note": "a rotation that keeps no earlier secret drops the stored floor and every held key, leaving the floor at the clock",
+      "note": "a rotation that keeps no earlier secret also keeps the stored floor and every held key; only an operator's offline reset lowers a stored floor",
       "context": {
         "skew_ms": 300,
         "replay_ttl_ms": null,
@@ -1570,8 +1858,10 @@
           "keeps_previous": false,
           "t": 20000,
           "expected": {
-            "floor_ms": 20000,
-            "held": []
+            "floor_ms": 50000,
+            "held": [
+              "a"
+            ]
           }
         },
         {
@@ -1580,10 +1870,10 @@
           "signed_at_ms": 20000,
           "t": 20000,
           "expected": {
-            "reason": null,
-            "floor_ms": 20000,
+            "reason": "before_replay_floor",
+            "floor_ms": 50000,
             "held": [
-              "b"
+              "a"
             ]
           }
         },
@@ -1594,9 +1884,9 @@
           "t": 20001,
           "expected": {
             "reason": "before_replay_floor",
-            "floor_ms": 20000,
+            "floor_ms": 50000,
             "held": [
-              "b"
+              "a"
             ]
           }
         }

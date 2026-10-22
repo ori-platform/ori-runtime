@@ -17,6 +17,7 @@ from typing import Any
 
 import pytest
 
+from ori.security import gateway_messages
 from ori.security.gateway_messages import (
     GatewayMessageAuthConfig,
     GatewayMessageAuthenticator,
@@ -25,19 +26,9 @@ from ori.security.gateway_messages import (
 )
 
 #: Cases whose declared outcome is one the contract permits and this runtime
-#: declines, each with what the runtime does instead, event by event.
-#:
-#: gateway-api/v2 Recovery: on a rotation that keeps no earlier secret, a
-#: receiver *may* drop its floor and held keys. This one never does: a reset is
-#: the one path that could readmit an envelope, through a secret brought back,
-#: and the contract's wait recovers a floor ahead of the clock without it.
-DECLINED = {
-    "rotate_keeping_none": [
-        {"floor_ms": 50_000, "held": ["a"]},
-        {"reason": "before_replay_floor", "floor_ms": 50_000, "held": ["a"]},
-        {"reason": "before_replay_floor", "floor_ms": 50_000, "held": ["a"]},
-    ],
-}
+#: declines, each with what the runtime does instead, event by event. Each
+#: must differ from the corpus, or it declines nothing.
+DECLINED: dict[str, list[dict[str, Any]]] = {}
 VECTORS = Path(__file__).parent / "vectors" / "gateway_api" / "replay-v2.json"
 CORPUS = json.loads(VECTORS.read_text(encoding="utf-8"))
 MESSAGE_TYPE = "export_request"
@@ -56,13 +47,14 @@ class Receiver:
         self.db_path = db_path
         self.secret_index = 0
         self.previous: str = ""
-        if self.stores:
+        self.blocker: sqlite3.Connection | None = None
+        if self.stores or context["stored_floor_ms"] is not None:
             self._seed(context)
         self._start(int(context["start_clock_ms"]))
 
     def _seed(self, context: dict[str, Any]) -> None:
         seeding = GatewayMessageAuthenticator(
-            self._config(), replay_cache=self._cache(start_ms=0)
+            self._config(), replay_cache=self._cache(start_ms=0, stores=True)
         )
         rows = []
         for held in context["held"]:
@@ -101,13 +93,30 @@ class Receiver:
             replay_ttl_ms=self.ttl_ms,
         )
 
-    def _cache(self, *, start_ms: int) -> GatewayReplayCache:
+    def _cache(
+        self, *, start_ms: int, stores: bool | None = None
+    ) -> GatewayReplayCache:
         return GatewayReplayCache(
             ttl_ms=self.ttl_ms,
             max_skew_ms=self.skew_ms,
-            db_path=str(self.db_path) if self.stores else None,
+            db_path=str(self.db_path),
+            stores=self.stores if stores is None else stores,
             start_ms=start_ms,
         )
+
+    def floor_unreadable(self) -> None:
+        """A real fault: another connection holds the store's exclusive lock,
+        and the receiver's next look at its store finds it so."""
+        self.blocker = sqlite3.connect(self.db_path, isolation_level=None)
+        self.blocker.execute("BEGIN EXCLUSIVE")
+        assert not self.cache.refresh()
+
+    def floor_read(self) -> None:
+        assert self.blocker is not None
+        self.blocker.execute("ROLLBACK")
+        self.blocker.close()
+        self.blocker = None
+        assert self.cache.refresh()
 
     def _start(self, start_ms: int) -> None:
         self.cache = self._cache(start_ms=start_ms)
@@ -150,6 +159,12 @@ def _reason(action: Any) -> str | None:
     except GatewayMessageAuthError as exc:
         return str(exc)
     return None
+
+
+@pytest.fixture(autouse=True)
+def _bounded_store_waits(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A locked store answers within the bound; a short one keeps cases fast.
+    monkeypatch.setattr(gateway_messages, "_STORE_BUSY_TIMEOUT_MS", 20)
 
 
 @pytest.mark.parametrize("case", CORPUS["cases"], ids=lambda case: case["name"])
@@ -199,6 +214,10 @@ def test_every_replay_case(case: dict[str, Any], tmp_path: Path) -> None:
             receiver.restart(t, event.get("skew_ms"))
         elif kind == "rotate":
             receiver.rotate(t, bool(event["keeps_previous"]))
+        elif kind == "floor_unreadable":
+            receiver.floor_unreadable()
+        elif kind == "floor_read":
+            receiver.floor_read()
         else:
             raise AssertionError(f"unknown event {kind!r}")
         where = f"{case['name']} event {index} ({kind} at {t})"
@@ -206,6 +225,9 @@ def test_every_replay_case(case: dict[str, Any], tmp_path: Path) -> None:
             assert reason == expected["reason"], where
         assert receiver.cache.floor_ms() == expected["floor_ms"], where
         assert receiver.held() == sorted(expected["held"]), where
+    if receiver.blocker is not None:
+        receiver.blocker.close()
+    receiver.cache.close()
 
 
 def test_the_corpus_names_every_event_kind_this_replays() -> None:
@@ -218,6 +240,8 @@ def test_the_corpus_names_every_event_kind_this_replays() -> None:
         "evict",
         "restart",
         "rotate",
+        "floor_unreadable",
+        "floor_read",
     }
     assert set(CORPUS["reasons"]) == {
         "stale_timestamp",
@@ -231,3 +255,5 @@ def test_every_declined_case_is_in_the_corpus_and_covers_its_events() -> None:
     cases = {case["name"]: case for case in CORPUS["cases"]}
     for name, outcomes in DECLINED.items():
         assert len(outcomes) == len(cases[name]["events"]), name
+        declared = [event["expected"] for event in cases[name]["events"]]
+        assert outcomes != declared, f"{name} declines nothing the corpus declares"

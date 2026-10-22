@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+import sqlite3
 
 import pytest
 
@@ -529,16 +530,20 @@ def test_a_dropped_key_stores_the_floor_across_restart(tmp_path):
     )
 
 
-def test_persistent_replay_cache_falls_back_when_db_unavailable(tmp_path, caplog):
+def test_a_replay_store_that_cannot_exist_refuses_rather_than_forgets(tmp_path, caplog):
+    """A store that cannot be reached holds keys nobody can store: every
+    envelope is refused, never admitted into memory a restart forgets."""
     unwritable = tmp_path / "missing-dir" / "replay.db"
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(logging.ERROR):
         cache = _cache(ttl_ms=60_000, max_skew_ms=60_000, db_path=str(unwritable))
-
-    assert cache.persistent is False
-    assert any("in-memory replay protection" in r.message for r in caplog.records)
-    # In-memory protection still works.
-    assert _admit(cache, "key", 10_000) is None
-    assert _admit(cache, "key", 10_500) == "replay_detected"
+    try:
+        assert cache.persistent and cache.unreadable
+        assert any("refused below the replay" in r.message for r in caplog.records)
+        assert _admit(cache, "key", 10_000) == "before_replay_floor"
+        assert cache._held == {}
+        assert not cache.refresh()
+    finally:
+        cache.close()
 
 
 def test_authenticator_rejects_replay_across_cache_restart(tmp_path):
@@ -775,8 +780,15 @@ def test_a_full_table_loaded_past_its_capacity_evicts_with_a_floor_raise(tmp_pat
     wide.close()
     narrow = _cache(ttl_ms=10**9, max_skew_ms=10**9, db_path=db, max_entries=3)
     assert sorted(narrow._held) == ["k2", "k3", "k4"]
-    assert narrow.floor_ms() == 1_002
+    assert narrow.floor_ms() == 1_002 and not narrow.unreadable
     narrow.close()
+    conn = sqlite3.connect(db)
+    try:
+        stored = conn.execute("SELECT floor_ms FROM gateway_replay_floor").fetchone()
+        count = conn.execute("SELECT COUNT(*) FROM gateway_replay_cache").fetchone()
+    finally:
+        conn.close()
+    assert (stored[0], count[0]) == (1_002, 3)
     again = _cache(ttl_ms=10**9, max_skew_ms=10**9, db_path=db, max_entries=3)
     assert sorted(again._held) == ["k2", "k3", "k4"] and again.floor_ms() == 1_002
 
@@ -990,19 +1002,26 @@ def test_a_hard_linked_store_is_refused_rather_than_shared(tmp_path):
     _cache(db_path=str(db)).close()
 
 
-def test_ownership_that_cannot_be_taken_raises_rather_than_running_alone(tmp_path):
+def test_ownership_that_cannot_be_taken_refuses_rather_than_running_alone(tmp_path):
+    """A lock no one can open is a storage fault: the cache owns nothing,
+    refuses every envelope, and takes ownership only once it can."""
     import os
-
-    from ori.security.gateway_messages import ReplayStoreOwnedError
 
     db = tmp_path / "replay.db"
     db.touch()
     identity = os.stat(db)
     lock = tmp_path / f".ori-gateway-replay-{identity.st_dev}-{identity.st_ino}.lock"
     lock.mkdir()  # The lock's name is taken by something no one can open.
-    with pytest.raises(ReplayStoreOwnedError, match="cannot take ownership"):
-        _cache(db_path=str(db))
-    os.rmdir(lock)
+    cache = _cache(db_path=str(db))
+    try:
+        assert cache.unreadable and cache._ownership is None
+        assert _admit(cache, "key", 10) == "before_replay_floor"
+        assert not cache.refresh() and cache._ownership is None
+        os.rmdir(lock)
+        assert cache.refresh() and cache._ownership is not None
+        assert _admit(cache, "key", 10) is None
+    finally:
+        cache.close()
 
 
 def test_an_in_memory_database_is_no_store_and_takes_no_lock(tmp_path, monkeypatch):
@@ -1013,11 +1032,10 @@ def test_an_in_memory_database_is_no_store_and_takes_no_lock(tmp_path, monkeypat
 
 
 @pytest.mark.parametrize("entry", ["verify", "authenticate_commit", "broadcast"])
-def test_a_fresh_envelope_admitted_while_the_store_fails_stays_a_replay(
-    tmp_path, entry
-):
-    """Forces the transaction to fail on a fresh envelope, so the cache falls
-    back to its memory, then replays it: as sole owner, its memory refuses."""
+def test_an_envelope_the_store_cannot_take_is_refused_until_it_answers(tmp_path, entry):
+    """Forces the transaction to fail on a fresh envelope: it is refused and
+    not held, and so is everything until the store answers; then it is
+    admitted once, and its replay refused."""
     import sqlite3
 
     db = str(tmp_path / "replay.db")
@@ -1060,13 +1078,18 @@ def test_a_fresh_envelope_admitted_while_the_store_fails_stays_a_replay(
     holder = sqlite3.connect(db, isolation_level=None)
     holder.execute("BEGIN IMMEDIATE")
     try:
-        receive(10_000)  # Admitted in memory; the store write failed.
+        with pytest.raises(GatewayMessageAuthError, match="before_replay_floor"):
+            receive(10_000)
+        assert cache.unreadable and cache._held == {}
+        with pytest.raises(GatewayMessageAuthError, match="before_replay_floor"):
+            receive(10_001)
     finally:
         holder.execute("ROLLBACK")
         holder.close()
-    assert cache.persistent is False
+    assert cache.refresh() and not cache.unreadable
+    receive(10_002)
     with pytest.raises(GatewayMessageAuthError, match="replay_detected"):
-        receive(10_001)
+        receive(10_003)
     cache.close()
 
 

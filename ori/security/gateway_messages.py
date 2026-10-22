@@ -15,9 +15,10 @@ SQLite, with the replay floor of gateway-api/v2 Envelope Freshness and
 Replay, so neither a restart, a raised skew nor a clock stepped back
 reopens the replay window outside that section's stated limits. Restarts
 are attacker-influenceable on physically accessible devices (pulling
-power is enough), so persistence is the hardened posture. Persistence
-failures degrade to in-memory protection with a WARNING — replay defense
-must never become an availability outage.
+power is enough), so persistence is the hardened posture. A store that
+cannot be read or written refuses every gateway envelope until it answers:
+falling back to memory would forget a floor a restart must keep. Tier D and
+dispatch never consult the floor.
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ import threading
 from base64 import urlsafe_b64decode, urlsafe_b64encode
 from dataclasses import dataclass
 from hashlib import sha256
+from pathlib import Path
 from typing import Any, Callable, Mapping, NoReturn, TypeVar
 
 from cryptography.hazmat.primitives import hashes
@@ -64,6 +66,16 @@ _MAX_REPLAY_ENTRIES = 4096
 #: A wall clock in milliseconds stays below this for about 285,000 years, so
 #: remembering a key any longer is the same as remembering it for ever.
 _LONGEST_MEANINGFUL_MS = 2**53
+_BELOW_FLOOR = "before_replay_floor"
+#: The bounded wait of one atomic step of the replay store; past it, refused.
+_STORE_BUSY_TIMEOUT_MS = 5_000
+#: How often a store that does not answer is tried again, off the verifying
+#: path, and how often a floor an earlier run stored is read again.
+_FLOOR_READ_INTERVAL_S = 5.0
+_FLOOR_TABLE_DDL = (
+    "CREATE TABLE IF NOT EXISTS gateway_replay_floor ("
+    "id INTEGER PRIMARY KEY CHECK (id = 1), floor_ms INTEGER)"
+)
 
 
 def replay_window_ms(max_skew_ms: int) -> int:
@@ -156,6 +168,11 @@ class ReplayStoreOwnedError(RuntimeError):
     """Another replay cache, in this process or another, owns this store."""
 
 
+class ReplayStoreAccessError(OSError):
+    """The store, or the lock beside it, cannot be opened: a storage fault,
+    not another owner. The cache refuses until it can be."""
+
+
 def _own_replay_store(path: str) -> Any | None:
     """An exclusive, non-blocking lock owning the database at *path*.
 
@@ -182,8 +199,8 @@ def _own_replay_store(path: str) -> Any | None:
         )
         lock = open(lock_path, "a+b")  # noqa: SIM115
     except OSError as exc:
-        raise ReplayStoreOwnedError(
-            f"cannot take ownership of {shown(path)}: {exc.strerror}"
+        raise ReplayStoreAccessError(
+            exc.errno, f"cannot open {shown(path)} to own it: {exc.strerror}"
         ) from exc
     try:
         if identity.st_nlink != 1:
@@ -218,14 +235,20 @@ class GatewayReplayCache:
     cache was built; only a raised floor is stored, never a clock reading.
 
     Nothing lowers the stored floor or drops a held key early, a secret
-    rotation included: the contract's reset on rotation is optional, and a
-    reset is the one path that could readmit an envelope, through a secret
-    that comes back. A floor ahead of the clock clears as the clock passes it.
+    rotation included. A floor ahead of the clock clears as the clock passes it.
 
-    With *db_path*, held keys and the raised floor persist to that SQLite file
-    in one transaction per change, and a write failure degrades to in-memory
-    protection with a WARNING. Thread-safe: paho callbacks verify on their own
-    threads, and receivers on the event loop commit through a worker thread.
+    With *db_path* and *stores*, held keys and the raised floor persist to that
+    SQLite file in one transaction per change. With *db_path* alone, a floor an
+    earlier run stored there is read at the start and again every
+    ``_FLOOR_READ_INTERVAL_S``, and never written.
+
+    A store that exists and cannot be read or written, at the start or later,
+    leaves the floor in force unbounded: every envelope reaching checks 3 and 4
+    is refused as below the floor, no key is dropped and no floor written, and
+    the store is tried again off the verifying path until it answers. A write
+    that failed changed nothing, here or in the store. Thread-safe: paho
+    callbacks verify on their own threads, and receivers on the event loop
+    commit through a worker thread.
     """
 
     def __init__(
@@ -235,6 +258,7 @@ class GatewayReplayCache:
         max_skew_ms: int,
         max_entries: int = _MAX_REPLAY_ENTRIES,
         db_path: str | None = None,
+        stores: bool = True,
         start_ms: int | None = None,
     ) -> None:
         self._ttl_ms = min(max(1, int(ttl_ms)), _LONGEST_MEANINGFUL_MS)
@@ -250,49 +274,49 @@ class GatewayReplayCache:
         self._lock = threading.Lock()
         self._conn: sqlite3.Connection | None = None
         self._ownership: Any = None
+        self._unreadable = False
+        self._closed = threading.Event()
+        # Held by a probe for its whole run, and by close() before it releases
+        # the store, so no probe touches the store after it is released.
+        self._probing = threading.Lock()
+        self._watch: threading.Thread | None = None
         path = str(db_path or "").strip()
         # SQLite's private in-memory database is one connection's memory: no
         # store to own, and nothing that survives a restart.
-        path = os.path.realpath(path) if durable_store(path) else ""
-        if path:
+        self._path = os.path.realpath(path) if durable_store(path) else ""
+        self._stores = bool(self._path) and bool(stores)
+        if self._stores:
             # One cache owns a store at a time, in this process or any other:
-            # a cache's memory is then the whole of the store's history, and
-            # falling back to it when the store fails readmits nothing.
-            self._ownership = _own_replay_store(path)
-        if path and self._ownership is None:
-            logger.warning(
-                "[gateway-auth] persistent replay cache unavailable at %s; "
-                "falling back to in-memory replay protection.",
-                shown(path),
-            )
-        elif path:
+            # a cache's memory is then the whole of the store's history.
             try:
-                # Transactions are explicit: every change is one BEGIN
-                # IMMEDIATE, written whole or not at all.
-                conn = sqlite3.connect(
-                    path, check_same_thread=False, isolation_level=None
-                )
-                conn.execute("PRAGMA busy_timeout = 5000")
-                self._conn = conn
-                self._open(conn)
+                self._ownership = _own_replay_store(self._path)
+                self._connect()
+            except (sqlite3.Error, ReplayStoreAccessError):
+                self._enter_unreadable()
+        elif self._path and os.path.exists(self._path):
+            try:
+                self._merge_floor(self._read_earlier_floor())
             except sqlite3.Error:
-                logger.warning(
-                    "[gateway-auth] persistent replay cache unavailable at %s; "
-                    "falling back to in-memory replay protection.",
-                    shown(path),
-                    exc_info=True,
-                )
-                self._conn = None
-                self._clear()
-                self._raised_floor = None
+                self._enter_unreadable()
+            self._start_watch()
 
     @property
     def persistent(self) -> bool:
-        return self._conn is not None
+        """Whether recording a key is a write to the store."""
+        return self._stores
+
+    @property
+    def unreadable(self) -> bool:
+        """Whether the stored floor cannot be read, so every envelope is refused."""
+        return self._unreadable
 
     def close(self) -> None:
-        """Release the store: its connection, then its ownership."""
-        with self._lock:
+        """Release the store: its connection, then its ownership.
+
+        A probe already running finishes first; none starts after.
+        """
+        self._closed.set()
+        with self._probing, self._lock:
             conn, self._conn = self._conn, None
             if conn is not None:
                 conn.close()
@@ -305,6 +329,7 @@ class GatewayReplayCache:
         return self._max_skew_ms
 
     def floor_ms(self) -> int:
+        """The floor this cache keeps, whether or not the store can be read."""
         with self._lock:
             return self._floor()
 
@@ -328,52 +353,218 @@ class GatewayReplayCache:
         """Checks 3 and 4 and, when both hold, hold *key*, as one step.
 
         With a store, the step is one transaction against it, the floor and
-        held keys there deciding as well as this cache's own. The cache owns
-        its store alone, so when a transaction fails its own memory is the
-        whole history, and it decides from that.
+        held keys there deciding as well as this cache's own, and a key held
+        only once the store has it.
         """
         current_ms = int(now_ms_value if now_ms_value is not None else now_ms())
         with self._lock:
+            if self._unreadable:
+                return _BELOW_FLOOR
+            prior = self._raised_floor
             dropped = self._prune_locked(current_ms)
             reason = self._refusal(key, signed_at_ms)
-            if reason is None and self._conn is not None:
-                try:
-                    return self._transact(
-                        lambda conn: self._admit_stored(
-                            conn, key, signed_at_ms, received_at_ms, dropped
-                        )
+            if not self._stores:
+                if reason is None:
+                    while len(self._held) >= self._max_entries:
+                        dropped.append(self._evict_locked())
+                    self._compact()
+                    self._hold(
+                        key, self._expiry(signed_at_ms, received_at_ms), signed_at_ms
                     )
-                except sqlite3.Error:
-                    self._degrade()
-                # Decided in memory alone from here, as a cache with no store.
-                reason = self._refusal(key, signed_at_ms)
-            held: tuple[str, int, int, int] | None = None
-            if reason is None:
-                while len(self._held) >= self._max_entries:
-                    dropped.append(self._evict_locked())
-                self._compact()
-                expiry = self._expiry(signed_at_ms, received_at_ms)
-                self._hold(key, expiry, signed_at_ms)
-                held = (key, expiry, signed_at_ms, received_at_ms)
-            if dropped or held is not None:
-                self._write(lambda conn: self._write_change(conn, dropped, held))
+                return reason
+            if reason is not None and not dropped:
+                return reason
+            try:
+                held = self._transact(
+                    lambda conn: self._admit_stored(
+                        conn, key, signed_at_ms, received_at_ms, dropped, reason
+                    )
+                )
+            except sqlite3.Error:
+                self._restore(dropped, prior)
+                self._enter_unreadable()
+                return _BELOW_FLOOR
+            if isinstance(held, str):
+                return held
+            if held is not None:
+                self._hold(key, held[1], signed_at_ms)
             return reason
 
     def prune(self, now_ms_value: int | None = None) -> None:
         """Drop every key whose retention has ended."""
         current_ms = int(now_ms_value if now_ms_value is not None else now_ms())
         with self._lock:
-            dropped = self._prune_locked(current_ms)
-            if dropped:
-                self._write(lambda conn: self._write_change(conn, dropped, None))
+            if self._unreadable:
+                return
+            prior = self._raised_floor
+            self._settle(self._prune_locked(current_ms), prior)
 
     def evict_one(self) -> None:
         """What a full cache does before holding a new key."""
         with self._lock:
-            if self._held:
+            if self._held and not self._unreadable:
+                prior = self._raised_floor
                 dropped = [self._evict_locked()]
                 self._compact()
-                self._write(lambda conn: self._write_change(conn, dropped, None))
+                self._settle(dropped, prior)
+
+    def refresh(self) -> bool:
+        """Read the stored floor again; whether the store answered.
+
+        Run off the verifying path: the store is tried on a connection of its
+        own, outside the lock every verification takes, and only an answer is
+        applied under it. A storing cache must also commit a write again.
+        """
+        if not self._path:
+            return True
+        with self._probing:
+            if self._closed.is_set():
+                return False
+            try:
+                floor = self._probe()
+            except (sqlite3.Error, OSError):
+                with self._lock:
+                    self._enter_unreadable()
+                return False
+            return self._apply_probe(floor)
+
+    def _apply_probe(self, floor: int | None) -> bool:
+        with self._lock:
+            try:
+                if self._stores and self._conn is None:
+                    # Under the lock every verification takes: a store taken
+                    # again since the probe refuses at once, never waited on.
+                    self._connect(wait_ms=0)
+                else:
+                    self._merge_floor(floor)
+            except (sqlite3.Error, OSError, ReplayStoreOwnedError):
+                self._enter_unreadable()
+                return False
+            if self._unreadable:
+                self._unreadable = False
+                logger.warning(
+                    "[gateway-auth] gateway replay store %s answers again; "
+                    "the replay floor is %d",
+                    shown(self._path),
+                    self._floor(),
+                )
+            return True
+
+    # ─── the store ──────────────────────────────────────────────────────────
+
+    def _connect(self, *, wait_ms: int | None = None) -> None:
+        """Connect to the owned store and load it; nothing kept if it fails.
+
+        *wait_ms* bounds each wait for the store while loading it; afterwards
+        every step waits at most the store's ordinary bound.
+        """
+        wait = _STORE_BUSY_TIMEOUT_MS if wait_ms is None else wait_ms
+        if self._ownership is None:
+            self._ownership = _own_replay_store(self._path)
+        if self._ownership is None:
+            raise sqlite3.OperationalError("the replay store's directory is missing")
+        # Transactions are explicit: every change is one BEGIN IMMEDIATE,
+        # written whole or not at all.
+        conn = sqlite3.connect(
+            self._path,
+            check_same_thread=False,
+            isolation_level=None,
+            timeout=wait / 1000,
+        )
+        try:
+            self._conn = conn
+            self._open(conn)
+            conn.execute(f"PRAGMA busy_timeout = {int(_STORE_BUSY_TIMEOUT_MS)}")
+        except BaseException:
+            self._conn = None
+            conn.close()
+            raise
+
+    def _probe(self) -> int | None:
+        """The stored floor, read on a connection of this call's own."""
+        if self._stores:
+            if not os.path.isdir(os.path.dirname(self._path)):
+                raise OSError("the replay store's directory is missing")
+            conn = sqlite3.connect(
+                self._path, isolation_level=None, timeout=_STORE_BUSY_TIMEOUT_MS / 1000
+            )
+            try:
+                # A committed write, not only the write lock: a full or
+                # read-only store takes the lock and fails the write. The row
+                # written is the floor as it stands, or none.
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    floor = _stored_floor(conn)
+                    conn.execute(_FLOOR_TABLE_DDL)
+                    conn.execute(
+                        "INSERT INTO gateway_replay_floor (id, floor_ms) "
+                        "VALUES (1, NULL) ON CONFLICT (id) DO UPDATE SET "
+                        "floor_ms = gateway_replay_floor.floor_ms"
+                    )
+                    conn.execute("COMMIT")
+                except BaseException:
+                    if conn.in_transaction:
+                        conn.execute("ROLLBACK")
+                    raise
+                return floor
+            finally:
+                conn.close()
+        return self._read_earlier_floor()
+
+    def _read_earlier_floor(self) -> int | None:
+        """The floor an earlier, storing run left, read and never written."""
+        if not os.path.exists(self._path):
+            return None
+        conn = sqlite3.connect(
+            f"{Path(self._path).as_uri()}?mode=ro",
+            uri=True,
+            timeout=_STORE_BUSY_TIMEOUT_MS / 1000,
+        )
+        try:
+            return _stored_floor(conn)
+        finally:
+            conn.close()
+
+    def _merge_floor(self, stored: int | None) -> None:
+        if stored is not None and (
+            self._raised_floor is None or stored > self._raised_floor
+        ):
+            self._raised_floor = stored
+
+    def _enter_unreadable(self) -> None:
+        if not self._unreadable:
+            self._unreadable = True
+            logger.error(
+                "[gateway-auth] gateway replay store %s cannot be read or "
+                "written; every gateway envelope is refused below the replay "
+                "floor until it answers",
+                shown(self._path),
+                exc_info=True,
+            )
+        if self._stores:
+            self._start_watch()
+
+    def _start_watch(self) -> None:
+        # Under the lock, or before the cache is shared. The watch clears this
+        # itself, under the lock, only once it has seen the store answer.
+        if self._watch is not None or self._closed.is_set():
+            return
+        self._watch = threading.Thread(
+            target=self._watch_store, name="ori-gateway-replay-floor", daemon=True
+        )
+        self._watch.start()
+
+    def _watch_store(self) -> None:
+        # A storing cache reads its floor in every admission, so it is watched
+        # only while the store refuses; one that only reads an earlier floor is
+        # watched for the life of the run.
+        while not self._closed.wait(_FLOOR_READ_INTERVAL_S):
+            self.refresh()
+            if self._stores:
+                with self._lock:
+                    if not self._unreadable:
+                        self._watch = None
+                        return
 
     def _admit_stored(
         self,
@@ -381,22 +572,18 @@ class GatewayReplayCache:
         key: str,
         signed_at_ms: int,
         received_at_ms: int,
-        dropped: list[str],
-    ) -> str | None:
-        row = conn.execute(
-            "SELECT floor_ms FROM gateway_replay_floor WHERE id = 1"
-        ).fetchone()
-        if row is not None and row[0] is not None:
-            stored = int(row[0])
-            if self._raised_floor is None or stored > self._raised_floor:
-                self._raised_floor = stored
-        reason: str | None = None
-        if signed_at_ms < self._floor():
-            reason = "before_replay_floor"
-        elif conn.execute(
-            "SELECT 1 FROM gateway_replay_cache WHERE key = ?", (key,)
-        ).fetchone():
-            reason = "replay_detected"
+        dropped: list[tuple[str, int, int]],
+        reason: str | None,
+    ) -> tuple[str, int, int, int] | str | None:
+        """The key to hold once this commits, the refusal, or None for neither."""
+        if reason is None:
+            self._merge_floor(_stored_floor(conn))
+            if signed_at_ms < self._floor():
+                reason = _BELOW_FLOOR
+            elif conn.execute(
+                "SELECT 1 FROM gateway_replay_cache WHERE key = ?", (key,)
+            ).fetchone():
+                reason = "replay_detected"
         held: tuple[str, int, int, int] | None = None
         if reason is None:
             while len(self._held) >= self._max_entries:
@@ -404,15 +591,34 @@ class GatewayReplayCache:
             self._compact()
             expiry = self._expiry(signed_at_ms, received_at_ms)
             held = (key, expiry, signed_at_ms, received_at_ms)
-        self._write_change(conn, dropped, held)
-        if held is not None:
-            self._hold(key, held[1], signed_at_ms)
-        return reason
+        self._write_change(conn, [entry[0] for entry in dropped], held)
+        return reason if reason is not None else held
+
+    def _settle(self, dropped: list[tuple[str, int, int]], prior: int | None) -> None:
+        """Write *dropped* and its raise, or keep every key held if it fails."""
+        if not dropped or not self._stores:
+            return
+        try:
+            self._transact(
+                lambda conn: self._write_change(
+                    conn, [entry[0] for entry in dropped], None
+                )
+            )
+        except sqlite3.Error:
+            self._restore(dropped, prior)
+            self._enter_unreadable()
+
+    def _restore(self, dropped: list[tuple[str, int, int]], prior: int | None) -> None:
+        """Undo drops the store did not take: the keys held, the floor as it was."""
+        for key, expiry, signed_at_ms in dropped:
+            self._hold(key, expiry, signed_at_ms)
+        self._raised_floor = prior
 
     def _transact(self, change: Callable[[sqlite3.Connection], _T]) -> _T:
         """Run *change* in one BEGIN IMMEDIATE transaction; its result."""
         conn = self._conn
-        assert conn is not None
+        if conn is None:
+            raise sqlite3.OperationalError("the replay store is not open")
         conn.execute("BEGIN IMMEDIATE")
         try:
             result = change(conn)
@@ -423,21 +629,17 @@ class GatewayReplayCache:
             raise
         return result
 
-    def _degrade(self) -> None:
-        logger.warning(
-            "[gateway-auth] persistent replay cache write failed; "
-            "continuing with in-memory replay protection.",
-            exc_info=True,
-        )
-        self._conn = None
+    # ─── memory ─────────────────────────────────────────────────────────────
 
     def _floor(self) -> int:
         raised = self._raised_floor
         return self._start_floor if raised is None else max(raised, self._start_floor)
 
     def _refusal(self, key: str, signed_at_ms: int) -> str | None:
-        if signed_at_ms < self._floor():
-            return "before_replay_floor"
+        # An unreadable store leaves the floor unbounded: a refusal, never a
+        # floor, so it is neither stored nor reported.
+        if self._unreadable or signed_at_ms < self._floor():
+            return _BELOW_FLOOR
         if key in self._held:
             return "replay_detected"
         return None
@@ -454,31 +656,30 @@ class GatewayReplayCache:
         heapq.heappush(self._expiries, (expiry, key))
         heapq.heappush(self._signings, (signed_at_ms, key))
 
-    def _drop(self, key: str) -> None:
-        _expiry, signed_at_ms = self._held.pop(key)
+    def _drop(self, key: str) -> tuple[str, int, int]:
+        expiry, signed_at_ms = self._held.pop(key)
         raised = signed_at_ms + 1
         if self._raised_floor is None or raised > self._raised_floor:
             self._raised_floor = raised
+        return key, expiry, signed_at_ms
 
-    def _prune_locked(self, current_ms: int) -> list[str]:
-        dropped: list[str] = []
+    def _prune_locked(self, current_ms: int) -> list[tuple[str, int, int]]:
+        dropped: list[tuple[str, int, int]] = []
         expiries = self._expiries
         while expiries and expiries[0][0] <= current_ms:
             expiry, key = heapq.heappop(expiries)
             entry = self._held.get(key)
             if entry is not None and entry[0] == expiry:
-                self._drop(key)
-                dropped.append(key)
+                dropped.append(self._drop(key))
         self._compact()
         return dropped
 
-    def _evict_locked(self) -> str:
+    def _evict_locked(self) -> tuple[str, int, int]:
         while True:
             signed_at_ms, key = heapq.heappop(self._signings)
             entry = self._held.get(key)
             if entry is not None and entry[1] == signed_at_ms:
-                self._drop(key)
-                return key
+                return self._drop(key)
 
     def _compact(self) -> None:
         # Entries of dropped keys stay in the other heap until they reach its
@@ -491,11 +692,6 @@ class GatewayReplayCache:
         if len(self._expiries) > limit:
             self._expiries = [(e, k) for k, (e, _s) in self._held.items()]
             heapq.heapify(self._expiries)
-
-    def _clear(self) -> None:
-        self._held.clear()
-        self._expiries.clear()
-        self._signings.clear()
 
     def _open(self, conn: sqlite3.Connection) -> None:
         conn.execute(
@@ -517,22 +713,24 @@ class GatewayReplayCache:
             "CREATE INDEX IF NOT EXISTS gateway_replay_cache_expiry "
             "ON gateway_replay_cache (seen_until_ms)"
         )
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS gateway_replay_floor ("
-            "id INTEGER PRIMARY KEY CHECK (id = 1), floor_ms INTEGER)"
-        )
-        row = conn.execute(
-            "SELECT floor_ms FROM gateway_replay_floor WHERE id = 1"
-        ).fetchone()
-        if row is not None and row[0] is not None:
-            self._raised_floor = int(row[0])
-        rewritten: list[tuple[int, int, str]] = []
-        for key, stored_ms, signed_col, received_col in conn.execute(
+        conn.execute(_FLOOR_TABLE_DDL)
+        floor = _stored_floor(conn)
+        rows = conn.execute(
             "SELECT key, seen_until_ms, signed_at_ms, received_at_ms "
             "FROM gateway_replay_cache"
-        ).fetchall():
-            key = str(key)
-            stored_ms = int(stored_ms)
+        ).fetchall()
+        # Every row is checked before any is held: a store with one it cannot
+        # read is unreadable whole.
+        for row in rows:
+            if not isinstance(row[0], str) or not all(
+                _stored_integer(value, nullable=index > 1)
+                for index, value in enumerate(row)
+                if index > 0
+            ):
+                raise sqlite3.DatabaseError("a stored replay key cannot be read")
+        self._merge_floor(floor)
+        rewritten: list[tuple[int, int, str]] = []
+        for key, stored_ms, signed_col, received_col in rows:
             signed_at_ms = (
                 int(signed_col)
                 if signed_col is not None
@@ -551,9 +749,11 @@ class GatewayReplayCache:
             self._hold(key, expiry, signed_at_ms)
             if expiry != stored_ms or signed_col is None:
                 rewritten.append((expiry, signed_at_ms, key))
-        dropped: list[str] = []
+        prior = self._raised_floor
+        evicted: list[tuple[str, int, int]] = []
         while len(self._held) > self._max_entries:
-            dropped.append(self._evict_locked())
+            evicted.append(self._evict_locked())
+        dropped = [entry[0] for entry in evicted]
         kept = [entry for entry in rewritten if entry[2] in self._held]
         if kept or dropped:
 
@@ -565,7 +765,13 @@ class GatewayReplayCache:
                 )
                 self._write_change(conn, dropped, None)
 
-            self._transact(rewrite)
+            try:
+                self._transact(rewrite)
+            except sqlite3.Error:
+                # Memory stays what the store holds: the evicted keys held,
+                # the floor not raised.
+                self._restore(evicted, prior)
+                raise
 
     def _stored_signing_time(self, key: str, stored_ms: int) -> int:
         """A row's signing time from its key, which always ends with it.
@@ -582,14 +788,6 @@ class GatewayReplayCache:
         if abs(signed_at_ms) > _LONGEST_MEANINGFUL_MS:
             return stored_ms - self._max_skew_ms - 1
         return signed_at_ms
-
-    def _write(self, change: Any) -> None:
-        if self._conn is None:
-            return
-        try:
-            self._transact(change)
-        except sqlite3.Error:
-            self._degrade()
 
     def _write_change(
         self,
@@ -617,6 +815,33 @@ class GatewayReplayCache:
                 "VALUES (?, ?, ?, ?)",
                 (key, expiry, signed_at_ms, received_at_ms),
             )
+
+
+def _stored_floor(conn: sqlite3.Connection) -> int | None:
+    """The floor stored in *conn*'s database; None when none ever was."""
+    if (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'gateway_replay_floor'"
+        ).fetchone()
+        is None
+    ):
+        return None
+    row = conn.execute(
+        "SELECT floor_ms FROM gateway_replay_floor WHERE id = 1"
+    ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    if not _stored_integer(row[0], nullable=False):
+        raise sqlite3.DatabaseError("the stored replay floor is not an integer")
+    return int(row[0])
+
+
+def _stored_integer(value: object, *, nullable: bool) -> bool:
+    """Whether a stored value is SQLite's INTEGER, or NULL where allowed."""
+    if value is None:
+        return nullable
+    return isinstance(value, int) and not isinstance(value, bool)
 
 
 @dataclass(frozen=True)
@@ -801,7 +1026,16 @@ class GatewayMessageAuthenticator:
             raise GatewayMessageAuthError("future_timestamp")
 
     def _refuse(self, reason: str, current_ms: int) -> NoReturn:
-        if reason == "before_replay_floor":
+        if reason == "before_replay_floor" and self._replay_cache.unreadable:
+            # No clock passes this one: it ends when the store answers.
+            self._floor_warning.warn(
+                "replay_store_unreadable",
+                "[gateway-auth] envelope refused: the gateway replay store "
+                "cannot be read or written, so every envelope is refused until "
+                "it answers (clock %d)",
+                current_ms,
+            )
+        elif reason == "before_replay_floor":
             # Check 1 held, so the floor sits above the clock less the skew
             # whenever this refuses: a restart, a clock step or an eviction
             # ahead of the clock, far more often than an attack. Fresh

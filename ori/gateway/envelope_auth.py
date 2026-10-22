@@ -60,14 +60,11 @@ def build_gateway_envelope_state(config: Config) -> GatewayEnvelopeState | None:
         max_entries=replay_capacity(retention_ms),
         # A restart is attacker-influenceable on a physically accessible
         # device (pulling power is enough), so held keys and the replay floor
-        # persist to the state database.
-        db_path=database_path if persistent else None,
+        # persist to the state database. With persistence off, a floor an
+        # earlier run stored there is still read, never written.
+        db_path=database_path,
+        stores=persistent,
     )
-    if persistent and not replay_cache.persistent:
-        logger.warning(
-            "[runtime] gateway replay cache persistence unavailable; "
-            "replay protection is in-memory only until the next restart."
-        )
     if not durable_store(database_path):
         # Refused at config load in a hardened posture; here, development only.
         logger.warning(
