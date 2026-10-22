@@ -18,6 +18,7 @@ from typing import Any, Callable, Concatenate, Optional, ParamSpec, TypeVar
 
 from ori.state._migrations import StoreMigrations
 from ori.state.deferred_writer import DeferredWriter
+from ori.utils.sqlite_utils import closed_on_failure
 
 _P = ParamSpec("_P")
 
@@ -122,6 +123,33 @@ HOOK_BUSY_TIMEOUT_S = 0.05
 HOOK_BUSY_BACKOFF_S = 1.0
 
 
+class _OpenClaim:
+    """Who closes a connection an open made: the open, or its writer job.
+
+    The job delivers the connection unless the open was abandoned first, in
+    which case the job closes it; an open abandoned after delivery takes what
+    was delivered and closes it.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._abandoned = False
+        self._delivered: sqlite3.Connection | None = None
+
+    def deliver(self, conn: sqlite3.Connection) -> bool:
+        with self._lock:
+            if self._abandoned:
+                return False
+            self._delivered = conn
+            return True
+
+    def abandon(self) -> sqlite3.Connection | None:
+        with self._lock:
+            self._abandoned = True
+            delivered, self._delivered = self._delivered, None
+            return delivered
+
+
 class StoreCore(StoreMigrations):
     """Connections, executors and the lifecycle every store domain runs on."""
 
@@ -174,14 +202,42 @@ class StoreCore(StoreMigrations):
         async with self._lifecycle_lock:
             if self._conn is not None:
                 return
-            conn = await self._on_writer(self._open_sync)
-            if not self._read_only:
-                self._history_frontier = await self._on_writer(
-                    self._history_sequence_sync, conn
-                )
-            if self._history_writer.closed:
-                self._history_writer = self._new_history_writer()
-            self._conn = conn
+            # One writer job opens the store and reads its history frontier.
+            # It owns its connection until this open takes it: if the open is
+            # abandoned first (cancelled, or its loop shut down), the job
+            # closes the connection itself, on the writer thread, whatever
+            # becomes of this task or the executor.
+            # Whatever can fail is done before the connection exists, so
+            # nothing but assignments follows its delivery.
+            writer = (
+                self._new_history_writer()
+                if self._history_writer.closed
+                else self._history_writer
+            )
+            claim = _OpenClaim()
+            try:
+                opened = await self._on_writer(self._open_claimed_sync, claim)
+            except BaseException:
+                orphan = claim.abandon()
+                if orphan is not None:
+                    # Delivered just before the abandon; the writer is done
+                    # with it, so nothing else can be using it.
+                    orphan.close()
+                raise
+            conn, frontier = opened
+            with closed_on_failure(conn):
+                if not self._read_only:
+                    self._history_frontier = frontier
+                self._history_writer = writer
+                self._conn = conn
+
+    def _open_claimed_sync(self, claim: _OpenClaim) -> tuple[sqlite3.Connection, int]:
+        conn = self._open_sync()
+        with closed_on_failure(conn):
+            frontier = 0 if self._read_only else self._history_sequence_sync(conn)
+        if not claim.deliver(conn):
+            conn.close()  # abandoned while it opened: nobody will take it
+        return conn, frontier
 
     @staticmethod
     def _new_history_writer() -> DeferredWriter:
@@ -219,11 +275,12 @@ class StoreCore(StoreMigrations):
         # pragma below already writes the header.
         self._refuse_unreceipted_history_unless_allowed()
         conn = sqlite3.connect(self._db_path, check_same_thread=False)
-        self._restrict_db_file_permissions()
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA foreign_keys=ON;")
-        self._migrate_sync(conn)
+        with closed_on_failure(conn):
+            self._restrict_db_file_permissions()
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA foreign_keys=ON;")
+            self._migrate_sync(conn)
         return conn
 
     def _restrict_db_file_permissions(self) -> None:
@@ -466,9 +523,10 @@ class StoreCore(StoreMigrations):
             return self._connect_read_only(), True
 
         conn = sqlite3.connect(self._db_path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA foreign_keys=ON;")
+        with closed_on_failure(conn):
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA foreign_keys=ON;")
         return conn, True
 
     async def _run(self, fn, *args):

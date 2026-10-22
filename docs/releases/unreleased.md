@@ -273,6 +273,11 @@ release is cut.
   next open left them behind, and with them the audit of the consents and
   coil commands they recorded. A store holding the old schema under both
   names refuses to open until repaired; no released build can produce one.
+- A connection whose open fails after the connect is closed at once, not left
+  for the collector. That covers the state store's writer, whose failed
+  migration could hold a write lock other writers waited on, its short-lived
+  read connections, and the gateway signing clock, which retries a failed open
+  every second and leaked one connection per attempt.
 - A state store write whose commit failed no longer stays pending on the
   shared writer connection, or on a skill hook's connection, for the next
   unrelated write to commit. Whatever a write did not commit is rolled back

@@ -526,8 +526,8 @@ class GatewayReplayCache:
             self._open(conn)
             conn.execute(f"PRAGMA busy_timeout = {int(_STORE_BUSY_TIMEOUT_MS)}")
         except BaseException:
-            self._conn = None
             conn.close()
+            self._conn = None
             raise
 
     def _probe(self) -> int | None:

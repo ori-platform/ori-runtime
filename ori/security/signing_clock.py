@@ -40,6 +40,7 @@ from collections.abc import Callable
 
 from ori.utils.coalesced_log import CoalescedWarning
 from ori.utils.path_utils import shown
+from ori.utils.sqlite_utils import closed_on_failure
 from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
@@ -259,13 +260,16 @@ class SigningClock:
     def _open(self) -> sqlite3.Connection | None:
         try:
             conn = sqlite3.connect(self._path, isolation_level=None)
-            conn.execute("PRAGMA busy_timeout = 5000")
-            # A claim counts once its commit returns, so it must be on disk.
-            conn.execute("PRAGMA synchronous = FULL")
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS gateway_signing_clock ("
-                "id INTEGER PRIMARY KEY CHECK (id = 1), mark_ms INTEGER NOT NULL)"
-            )
+            # Retried every second while it fails: each attempt's connection
+            # is closed, never left for the collector.
+            with closed_on_failure(conn):
+                conn.execute("PRAGMA busy_timeout = 5000")
+                # A claim counts once its commit returns, so it must be on disk.
+                conn.execute("PRAGMA synchronous = FULL")
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS gateway_signing_clock ("
+                    "id INTEGER PRIMARY KEY CHECK (id = 1), mark_ms INTEGER NOT NULL)"
+                )
         except sqlite3.Error:
             self._warning.warn(
                 "open_failed",
