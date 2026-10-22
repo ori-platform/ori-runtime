@@ -5,9 +5,10 @@
   "conventions": {
     "payload_hex": "the exact payload bytes, lowercase hex; the only input",
     "payload_text": "the same bytes as UTF-8 text for reading, or null when they are not valid UTF-8 or longer than 400 bytes; never an input",
-    "family": "the topic whose sections give the payload's defined members (their JSON example keys and Field table names, with the Envelope Members keys), which hold for every object of the payload; null for a payload that names no family",
+    "family": "the topic whose sections give the payload's defined members (their JSON example keys and Field table names, with the Envelope Members keys), which hold for every object of the payload, with `item_members` for the elements of `items`; null for a payload that names no family",
     "expected": "accept, or the reason a receiver refuses the payload for",
-    "families": "every topic's defined members, sorted, for an implementation to compare its own with"
+    "families": "every topic's defined members, sorted, for an implementation to compare its own with",
+    "item_members": "for a topic that has them, the further defined members that hold only for the objects that are elements of the payload's `items` array, sorted"
   },
   "reasons": [
     "invalid_unicode",
@@ -424,6 +425,40 @@
       "tokens_used"
     ]
   },
+  "item_members": {
+    "ori/{device_id}/export/response/{request_id}": [
+      "action_log_records",
+      "alert_outbox",
+      "capability_posture",
+      "commissioning",
+      "community_skills",
+      "config_authority",
+      "critical",
+      "degradation_reasons",
+      "device_id",
+      "device_policy",
+      "evidence",
+      "firmware_controller_profiles",
+      "firmware_liveness",
+      "firmware_mqtt_operator",
+      "firmware_reading_age",
+      "gateway_broker_posture",
+      "health_socket_path",
+      "last_alert_timestamps",
+      "projection",
+      "remote_command_lockout",
+      "safety",
+      "safety_registry",
+      "safety_zones",
+      "sensors",
+      "skill_hooks",
+      "state_store_encryption",
+      "status",
+      "telemetry_export",
+      "unknown_critical_blocks",
+      "uptime_s"
+    ]
+  },
   "cases": [
     {
       "name": "clean_runtime_heartbeat",
@@ -448,6 +483,94 @@
       "payload_text": "{\"request_id\":\"r-2\",\"export_type\":\"action_log\",\"device_id\":\"site-a-edge-01\",\"items\":[{\"record_kind\":\"dispatch\",\"record_key\":\"k-1\",\"contributed_to\":null,\"action_taken\":\"trip_relay\",\"executed\":true}],\"next_page_token\":\"\",\"complete\":true,\"error\":null}",
       "family": "ori/{device_id}/export/response/{request_id}",
       "expected": "accept"
+    },
+    {
+      "name": "clean_export_health_item",
+      "description": "A health export whose item carries status, critical and degradation_reasons.",
+      "payload_hex": "7b22726571756573745f6964223a22722d33222c226578706f72745f74797065223a226865616c7468222c226465766963655f6964223a22736974652d612d656467652d3031222c226974656d73223a5b7b226465766963655f6964223a22736974652d612d656467652d3031222c22737461747573223a226465677261646564222c22637269746963616c223a66616c73652c226465677261646174696f6e5f726561736f6e73223a5b2278225d7d5d2c226e6578745f706167655f746f6b656e223a22222c22636f6d706c657465223a747275652c226572726f72223a6e756c6c7d",
+      "payload_text": "{\"request_id\":\"r-3\",\"export_type\":\"health\",\"device_id\":\"site-a-edge-01\",\"items\":[{\"device_id\":\"site-a-edge-01\",\"status\":\"degraded\",\"critical\":false,\"degradation_reasons\":[\"x\"]}],\"next_page_token\":\"\",\"complete\":true,\"error\":null}",
+      "family": "ori/{device_id}/export/response/{request_id}",
+      "expected": "accept"
+    },
+    {
+      "name": "export_health_item_status_variant",
+      "description": "STATUS beside status in a health item: status is a member the health reading names.",
+      "payload_hex": "7b22726571756573745f6964223a22722d33222c226578706f72745f74797065223a226865616c7468222c226465766963655f6964223a22736974652d612d656467652d3031222c226974656d73223a5b7b22737461747573223a226f6b222c22535441545553223a22637269746963616c227d5d2c226e6578745f706167655f746f6b656e223a22222c22636f6d706c657465223a747275652c226572726f72223a6e756c6c7d",
+      "payload_text": "{\"request_id\":\"r-3\",\"export_type\":\"health\",\"device_id\":\"site-a-edge-01\",\"items\":[{\"status\":\"ok\",\"STATUS\":\"critical\"}],\"next_page_token\":\"\",\"complete\":true,\"error\":null}",
+      "family": "ori/{device_id}/export/response/{request_id}",
+      "expected": "case_variant_member"
+    },
+    {
+      "name": "export_health_item_status_variant_alone",
+      "description": "Status alone in a health item, where the health reading names status.",
+      "payload_hex": "7b22726571756573745f6964223a22722d33222c226578706f72745f74797065223a226865616c7468222c226465766963655f6964223a22736974652d612d656467652d3031222c226974656d73223a5b7b22537461747573223a22637269746963616c227d5d2c226e6578745f706167655f746f6b656e223a22222c22636f6d706c657465223a747275652c226572726f72223a6e756c6c7d",
+      "payload_text": "{\"request_id\":\"r-3\",\"export_type\":\"health\",\"device_id\":\"site-a-edge-01\",\"items\":[{\"Status\":\"critical\"}],\"next_page_token\":\"\",\"complete\":true,\"error\":null}",
+      "family": "ori/{device_id}/export/response/{request_id}",
+      "expected": "case_variant_member"
+    },
+    {
+      "name": "export_health_item_critical_variant",
+      "description": "CRITICAL in a health item, where the health reading names critical.",
+      "payload_hex": "7b22726571756573745f6964223a22722d33222c226578706f72745f74797065223a226865616c7468222c226465766963655f6964223a22736974652d612d656467652d3031222c226974656d73223a5b7b22637269746963616c223a66616c73652c22435249544943414c223a747275657d5d2c226e6578745f706167655f746f6b656e223a22222c22636f6d706c657465223a747275652c226572726f72223a6e756c6c7d",
+      "payload_text": "{\"request_id\":\"r-3\",\"export_type\":\"health\",\"device_id\":\"site-a-edge-01\",\"items\":[{\"critical\":false,\"CRITICAL\":true}],\"next_page_token\":\"\",\"complete\":true,\"error\":null}",
+      "family": "ori/{device_id}/export/response/{request_id}",
+      "expected": "case_variant_member"
+    },
+    {
+      "name": "export_health_item_multi_name_cell_variant",
+      "description": "Alert_Outbox in a health item: alert_outbox shares its member table cell with other names, each of which the health reading names.",
+      "payload_hex": "7b22726571756573745f6964223a22722d33222c226578706f72745f74797065223a226865616c7468222c226465766963655f6964223a22736974652d612d656467652d3031222c226974656d73223a5b7b22416c6572745f4f7574626f78223a7b7d7d5d2c226e6578745f706167655f746f6b656e223a22222c22636f6d706c657465223a747275652c226572726f72223a6e756c6c7d",
+      "payload_text": "{\"request_id\":\"r-3\",\"export_type\":\"health\",\"device_id\":\"site-a-edge-01\",\"items\":[{\"Alert_Outbox\":{}}],\"next_page_token\":\"\",\"complete\":true,\"error\":null}",
+      "family": "ori/{device_id}/export/response/{request_id}",
+      "expected": "case_variant_member"
+    },
+    {
+      "name": "export_nested_status_variant_tolerated",
+      "description": "Status nested inside a health item's member, a trigger name: the health names hold for the item itself only.",
+      "payload_hex": "7b22726571756573745f6964223a22722d33222c226578706f72745f74797065223a226865616c7468222c226465766963655f6964223a22736974652d612d656467652d3031222c226974656d73223a5b7b22737461747573223a226f6b222c226c6173745f616c6572745f74696d657374616d7073223a7b2262795f74726967676572223a7b22537461747573223a317d7d7d5d2c226e6578745f706167655f746f6b656e223a22222c22636f6d706c657465223a747275652c226572726f72223a6e756c6c7d",
+      "payload_text": "{\"request_id\":\"r-3\",\"export_type\":\"health\",\"device_id\":\"site-a-edge-01\",\"items\":[{\"status\":\"ok\",\"last_alert_timestamps\":{\"by_trigger\":{\"Status\":1}}}],\"next_page_token\":\"\",\"complete\":true,\"error\":null}",
+      "family": "ori/{device_id}/export/response/{request_id}",
+      "expected": "accept"
+    },
+    {
+      "name": "export_top_level_status_variant_tolerated",
+      "description": "Status at the response's top level, outside every item.",
+      "payload_hex": "7b22726571756573745f6964223a22722d33222c226578706f72745f74797065223a226865616c7468222c226465766963655f6964223a22736974652d612d656467652d3031222c226974656d73223a5b5d2c226e6578745f706167655f746f6b656e223a22222c22636f6d706c657465223a747275652c226572726f72223a6e756c6c2c22537461747573223a317d",
+      "payload_text": "{\"request_id\":\"r-3\",\"export_type\":\"health\",\"device_id\":\"site-a-edge-01\",\"items\":[],\"next_page_token\":\"\",\"complete\":true,\"error\":null,\"Status\":1}",
+      "family": "ori/{device_id}/export/response/{request_id}",
+      "expected": "accept"
+    },
+    {
+      "name": "other_topic_items_variant_tolerated",
+      "description": "Status in an items element on a topic other than the export response: the health names hold there only.",
+      "payload_hex": "7b226974656d73223a5b7b22537461747573223a317d5d7d",
+      "payload_text": "{\"items\":[{\"Status\":1}]}",
+      "family": "ori/{device_id}/reasoning/request",
+      "expected": "accept"
+    },
+    {
+      "name": "export_items_object_not_array",
+      "description": "items as an object whose member is named 0: the health names hold for array elements only, so a variant inside is tolerated here.",
+      "payload_hex": "7b22726571756573745f6964223a22722d33222c226578706f72745f74797065223a226865616c7468222c226465766963655f6964223a22736974652d612d656467652d3031222c226974656d73223a7b2230223a7b22537461747573223a317d7d2c226e6578745f706167655f746f6b656e223a22222c22636f6d706c657465223a747275652c226572726f72223a6e756c6c7d",
+      "payload_text": "{\"request_id\":\"r-3\",\"export_type\":\"health\",\"device_id\":\"site-a-edge-01\",\"items\":{\"0\":{\"Status\":1}},\"next_page_token\":\"\",\"complete\":true,\"error\":null}",
+      "family": "ori/{device_id}/export/response/{request_id}",
+      "expected": "accept"
+    },
+    {
+      "name": "export_items_nested_array_not_items",
+      "description": "An object inside an array that is itself an element of items is no item.",
+      "payload_hex": "7b22726571756573745f6964223a22722d33222c226578706f72745f74797065223a226865616c7468222c226465766963655f6964223a22736974652d612d656467652d3031222c226974656d73223a5b5b7b22537461747573223a317d5d5d2c226e6578745f706167655f746f6b656e223a22222c22636f6d706c657465223a747275652c226572726f72223a6e756c6c7d",
+      "payload_text": "{\"request_id\":\"r-3\",\"export_type\":\"health\",\"device_id\":\"site-a-edge-01\",\"items\":[[{\"Status\":1}]],\"next_page_token\":\"\",\"complete\":true,\"error\":null}",
+      "family": "ori/{device_id}/export/response/{request_id}",
+      "expected": "accept"
+    },
+    {
+      "name": "export_health_item_projection_variant",
+      "description": "Projection in a health item, a shape member the health reading names.",
+      "payload_hex": "7b22726571756573745f6964223a22722d33222c226578706f72745f74797065223a226865616c7468222c226465766963655f6964223a22736974652d612d656467652d3031222c226974656d73223a5b7b2250726f6a656374696f6e223a2272756e74696d652d6865616c74682f76342f72656d6f7465227d5d2c226e6578745f706167655f746f6b656e223a22222c22636f6d706c657465223a747275652c226572726f72223a6e756c6c7d",
+      "payload_text": "{\"request_id\":\"r-3\",\"export_type\":\"health\",\"device_id\":\"site-a-edge-01\",\"items\":[{\"Projection\":\"runtime-health/v4/remote\"}],\"next_page_token\":\"\",\"complete\":true,\"error\":null}",
+      "family": "ori/{device_id}/export/response/{request_id}",
+      "expected": "case_variant_member"
     },
     {
       "name": "clean_inbound_evidence",

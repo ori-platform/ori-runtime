@@ -461,6 +461,10 @@ release is cut.
   and logged with its reason through the family's ingress record, at most one
   line a second per reason. The scan is linear in the payload whatever its
   shape, and inbound evidence is scanned off the event loop.
+  A decrypted export response also defines the health reading's member names,
+  such as `status`, `critical` and `projection`, for the objects that are
+  elements of its root `items` array, and only for those: a case variant of
+  one there is refused as `case_variant_member`.
 - Every runtime reader of signed, authenticated or operator-supplied JSON
   refuses a repeated member through one shared hook
   (`ori/utils/strict_json.py`): device-signed firmware telemetry, remote

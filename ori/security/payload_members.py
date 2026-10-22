@@ -254,6 +254,44 @@ EXPORT_RESPONSE_MEMBERS: frozenset[str] = frozenset(
 )
 
 
+#: Further defined members for the objects that are elements of the root
+#: object's `items` array, and for no other object of the payload.
+EXPORT_RESPONSE_ITEM_MEMBERS: frozenset[str] = frozenset(
+    {
+        "action_log_records",
+        "alert_outbox",
+        "capability_posture",
+        "commissioning",
+        "community_skills",
+        "config_authority",
+        "critical",
+        "degradation_reasons",
+        "device_id",
+        "device_policy",
+        "evidence",
+        "firmware_controller_profiles",
+        "firmware_liveness",
+        "firmware_mqtt_operator",
+        "firmware_reading_age",
+        "gateway_broker_posture",
+        "health_socket_path",
+        "last_alert_timestamps",
+        "projection",
+        "remote_command_lockout",
+        "safety",
+        "safety_registry",
+        "safety_zones",
+        "sensors",
+        "skill_hooks",
+        "state_store_encryption",
+        "status",
+        "telemetry_export",
+        "unknown_critical_blocks",
+        "uptime_s",
+    }
+)
+
+
 class PayloadMemberError(ValueError):
     """The payload is refused under the Payload Member Rule, for *reason*."""
 
@@ -272,21 +310,30 @@ class _GrammarBreakError(Exception):
 
 
 class _Object:
-    __slots__ = ("exact", "folded")
+    __slots__ = ("defined", "exact", "folded", "last")
 
-    def __init__(self) -> None:
+    def __init__(self, defined: dict[str, str]) -> None:
+        #: The defined members that hold here, by their folded spelling.
+        self.defined = defined
         # Sets, so a flood of variants of one name costs constant time each.
         self.exact: set[str] = set()
         self.folded: set[str] = set()
+        #: The name the value being read is under.
+        self.last: str | None = None
 
 
 class _Array:
-    __slots__ = ()
+    __slots__ = ("root_items",)
+
+    def __init__(self, root_items: bool = False) -> None:
+        #: The root object's `items` array, whose element objects take the
+        #: item members as well.
+        self.root_items = root_items
 
 
 # Past MAX_DEPTH nesting_too_deep is already found and outranks every member
 # row, so deeper containers share one entry each and record no names.
-_DEEP_OBJECT = _Object()
+_DEEP_OBJECT = _Object({})
 _DEEP_ARRAY = _Array()
 
 
@@ -298,13 +345,36 @@ class _Scan:
     size, which Payload Size has already bounded.
     """
 
-    def __init__(self, data: bytes, defined: frozenset[str]) -> None:
+    def __init__(
+        self, data: bytes, defined: frozenset[str], item_defined: frozenset[str]
+    ) -> None:
         self.data = data
         self.pos = 0
         self.found: set[str] = set()
         self.max_depth = 0
         self.stack: list[_Object | _Array] = []
         self._defined = {fold(name): name for name in defined}
+        self._item_defined = {
+            **self._defined,
+            **{fold(name): name for name in item_defined},
+        }
+
+    def _open(self, opener: int) -> _Object | _Array:
+        """The container *opener* begins, knowing which members hold in it."""
+        if len(self.stack) >= MAX_DEPTH:
+            return _DEEP_OBJECT if opener == 0x7B else _DEEP_ARRAY
+        parent = self.stack[-1] if self.stack else None
+        if opener == 0x5B:
+            # Decided by container type: only an array under the root
+            # object's own `items` name is the items array.
+            return _Array(
+                len(self.stack) == 1
+                and isinstance(parent, _Object)
+                and parent.last == "items"
+            )
+        if isinstance(parent, _Array) and parent.root_items:
+            return _Object(self._item_defined)
+        return _Object(self._defined)
 
     def peek(self) -> int | None:
         return self.data[self.pos] if self.pos < len(self.data) else None
@@ -407,11 +477,12 @@ class _Scan:
                 self.found.add(DUPLICATE_MEMBER)
             elif folded in obj.folded:
                 self.found.add(CASE_VARIANT_MEMBER)
-            named = self._defined.get(folded)
+            named = obj.defined.get(folded)
             if named is not None and named != name:
                 self.found.add(CASE_VARIANT_MEMBER)
             obj.exact.add(name)
             obj.folded.add(folded)
+            obj.last = name
         self.skip_ws()
         if self.peek() != 0x3A:  # :
             raise _GrammarBreakError
@@ -431,11 +502,7 @@ class _Scan:
                 raise _GrammarBreakError
             if b in (0x7B, 0x5B):  # { [
                 self.pos += 1
-                container: _Object | _Array
-                if len(self.stack) >= MAX_DEPTH:
-                    container = _DEEP_OBJECT if b == 0x7B else _DEEP_ARRAY
-                else:
-                    container = _Object() if b == 0x7B else _Array()
+                container = self._open(b)
                 self.stack.append(container)
                 self.max_depth = max(self.max_depth, len(self.stack))
                 self.skip_ws()
@@ -478,12 +545,18 @@ class _Scan:
                 return opener
 
 
-def refusal(payload: bytes, *, defined: frozenset[str] = frozenset()) -> str | None:
+def refusal(
+    payload: bytes,
+    *,
+    defined: frozenset[str] = frozenset(),
+    item_defined: frozenset[str] = frozenset(),
+) -> str | None:
     """The reason *payload* is refused, or None when it is admitted.
 
     *defined* is the set of member names the contract defines for the
     payload's topic: a name that folds to one of them without equalling it is
-    a case variant, wherever it sits.
+    a case variant, wherever it sits. *item_defined* holds as well, and only,
+    in the objects that are elements of the root object's `items` array.
     """
     data = bytes(payload)
     found: set[str] = set()
@@ -491,7 +564,7 @@ def refusal(payload: bytes, *, defined: frozenset[str] = frozenset()) -> str | N
         data.decode("utf-8", "strict")
     except UnicodeDecodeError:
         found.add(INVALID_UNICODE)
-    scan = _Scan(data, defined)
+    scan = _Scan(data, defined, item_defined)
     opener: int | None = None
     try:
         opener = scan.first_value()
@@ -522,13 +595,16 @@ def _integer(text: str) -> int | float:
 
 
 def admitted_object(
-    payload: bytes, *, defined: frozenset[str] = frozenset()
+    payload: bytes,
+    *,
+    defined: frozenset[str] = frozenset(),
+    item_defined: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """The payload's object, read only once the rule admits it.
 
     Raises PayloadMemberError with the reason otherwise.
     """
-    reason = refusal(payload, defined=defined)
+    reason = refusal(payload, defined=defined, item_defined=item_defined)
     if reason is not None:
         raise PayloadMemberError(reason)
     value = json.loads(bytes(payload).decode("utf-8"), parse_int=_integer)
@@ -538,7 +614,10 @@ def admitted_object(
 
 
 def admitted_text(
-    payload: bytes | str, *, defined: frozenset[str] = frozenset()
+    payload: bytes | str,
+    *,
+    defined: frozenset[str] = frozenset(),
+    item_defined: frozenset[str] = frozenset(),
 ) -> dict[str, Any]:
     """`admitted_object` for a payload that may arrive as text: text that
     cannot be UTF-8 encoded, such as one holding a lone surrogate, is
@@ -548,4 +627,4 @@ def admitted_text(
             payload = payload.encode("utf-8")
         except UnicodeEncodeError:
             raise PayloadMemberError(INVALID_UNICODE) from None
-    return admitted_object(payload, defined=defined)
+    return admitted_object(payload, defined=defined, item_defined=item_defined)

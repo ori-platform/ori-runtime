@@ -1676,6 +1676,284 @@
       ]
     },
     {
+      "name": "unreadable_restart_takes_stored_floor",
+      "note": "a restart while the stored floor cannot be read knows only its clock at that start, and takes, once a read succeeds, the greater of the stored floor and that clock; the earlier run's start floor was never stored and does not carry over",
+      "context": {
+        "skew_ms": 300,
+        "replay_ttl_ms": null,
+        "stores": true,
+        "stored_floor_ms": 500,
+        "start_clock_ms": 1000,
+        "held": []
+      },
+      "events": [
+        {
+          "event": "floor_unreadable",
+          "t": 1100,
+          "expected": {
+            "floor_ms": 1000,
+            "held": []
+          }
+        },
+        {
+          "event": "restart",
+          "t": 100,
+          "expected": {
+            "floor_ms": 100,
+            "held": []
+          }
+        },
+        {
+          "event": "floor_read",
+          "t": 600,
+          "expected": {
+            "floor_ms": 500,
+            "held": []
+          }
+        },
+        {
+          "event": "receive",
+          "key": "p",
+          "signed_at_ms": 600,
+          "t": 600,
+          "expected": {
+            "reason": null,
+            "floor_ms": 500,
+            "held": [
+              "p"
+            ]
+          }
+        },
+        {
+          "event": "receive",
+          "key": "q",
+          "signed_at_ms": 499,
+          "t": 600,
+          "expected": {
+            "reason": "before_replay_floor",
+            "floor_ms": 500,
+            "held": [
+              "p"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "unreadable_restart_forgets_held_keys",
+      "note": "a restart while the stored floor cannot be read knows none of the keys it stored; the read that then succeeds gives them back, and a replay of one above the floor is refused as a replay",
+      "context": {
+        "skew_ms": 300,
+        "replay_ttl_ms": null,
+        "stores": true,
+        "stored_floor_ms": 10000,
+        "start_clock_ms": 0,
+        "held": [
+          {
+            "key": "a",
+            "signed_at_ms": 10100,
+            "received_at_ms": 10100
+          }
+        ]
+      },
+      "events": [
+        {
+          "event": "floor_unreadable",
+          "t": 10150,
+          "expected": {
+            "floor_ms": 10000,
+            "held": [
+              "a"
+            ]
+          }
+        },
+        {
+          "event": "restart",
+          "t": 10050,
+          "expected": {
+            "floor_ms": 10050,
+            "held": []
+          }
+        },
+        {
+          "event": "floor_read",
+          "t": 10100,
+          "expected": {
+            "floor_ms": 10050,
+            "held": [
+              "a"
+            ]
+          }
+        },
+        {
+          "event": "receive",
+          "key": "a",
+          "signed_at_ms": 10100,
+          "t": 10100,
+          "expected": {
+            "reason": "replay_detected",
+            "floor_ms": 10050,
+            "held": [
+              "a"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "unreadable_held_key_refused_below_floor",
+      "note": "a held key replayed while the stored floor cannot be read is refused as below the floor, not as a replay, since the floor check comes first",
+      "context": {
+        "skew_ms": 300,
+        "replay_ttl_ms": null,
+        "stores": true,
+        "stored_floor_ms": 10000,
+        "start_clock_ms": 0,
+        "held": [
+          {
+            "key": "a",
+            "signed_at_ms": 10100,
+            "received_at_ms": 10100
+          }
+        ]
+      },
+      "events": [
+        {
+          "event": "floor_unreadable",
+          "t": 10150,
+          "expected": {
+            "floor_ms": 10000,
+            "held": [
+              "a"
+            ]
+          }
+        },
+        {
+          "event": "receive",
+          "key": "a",
+          "signed_at_ms": 10100,
+          "t": 10150,
+          "expected": {
+            "reason": "before_replay_floor",
+            "floor_ms": 10000,
+            "held": [
+              "a"
+            ]
+          }
+        },
+        {
+          "event": "floor_read",
+          "t": 10200,
+          "expected": {
+            "floor_ms": 10000,
+            "held": [
+              "a"
+            ]
+          }
+        },
+        {
+          "event": "receive",
+          "key": "a",
+          "signed_at_ms": 10100,
+          "t": 10200,
+          "expected": {
+            "reason": "replay_detected",
+            "floor_ms": 10000,
+            "held": [
+              "a"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "unreadable_evict_drops_nothing",
+      "note": "an evict while the stored floor cannot be read drops nothing, so the floor stays and the key with the smallest signing time stays held",
+      "context": {
+        "skew_ms": 300,
+        "replay_ttl_ms": null,
+        "stores": true,
+        "stored_floor_ms": 10000,
+        "start_clock_ms": 0,
+        "held": [
+          {
+            "key": "a",
+            "signed_at_ms": 10100,
+            "received_at_ms": 10100
+          },
+          {
+            "key": "b",
+            "signed_at_ms": 10200,
+            "received_at_ms": 10200
+          }
+        ]
+      },
+      "events": [
+        {
+          "event": "floor_unreadable",
+          "t": 10250,
+          "expected": {
+            "floor_ms": 10000,
+            "held": [
+              "a",
+              "b"
+            ]
+          }
+        },
+        {
+          "event": "evict",
+          "t": 10250,
+          "expected": {
+            "floor_ms": 10000,
+            "held": [
+              "a",
+              "b"
+            ]
+          }
+        },
+        {
+          "event": "floor_read",
+          "t": 10300,
+          "expected": {
+            "floor_ms": 10000,
+            "held": [
+              "a",
+              "b"
+            ]
+          }
+        },
+        {
+          "event": "receive",
+          "key": "a",
+          "signed_at_ms": 10100,
+          "t": 10300,
+          "expected": {
+            "reason": "replay_detected",
+            "floor_ms": 10000,
+            "held": [
+              "a",
+              "b"
+            ]
+          }
+        },
+        {
+          "event": "receive",
+          "key": "c",
+          "signed_at_ms": 10050,
+          "t": 10300,
+          "expected": {
+            "reason": null,
+            "floor_ms": 10000,
+            "held": [
+              "a",
+              "b",
+              "c"
+            ]
+          }
+        }
+      ]
+    },
+    {
       "name": "unreadable_earlier_floor_refuses",
       "note": "a receiver that no longer stores its floor, and cannot read the one an earlier run stored, refuses an envelope that floor would admit until a read succeeds",
       "context": {

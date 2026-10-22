@@ -46,6 +46,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from ori.security.payload_members import (
+    EXPORT_RESPONSE_ITEM_MEMBERS,
     EXPORT_RESPONSE_MEMBERS,
     PayloadMemberError,
     admitted_object,
@@ -1446,7 +1447,11 @@ class GatewayMessageEncryptor:
         # The plaintext is a JSON text in its own right, admitted under the
         # Payload Member Rule before any member of it is read.
         try:
-            decoded = admitted_object(plaintext, defined=EXPORT_RESPONSE_MEMBERS)
+            decoded = admitted_object(
+                plaintext,
+                defined=EXPORT_RESPONSE_MEMBERS,
+                item_defined=EXPORT_RESPONSE_ITEM_MEMBERS,
+            )
         except PayloadMemberError as exc:
             raise GatewayMessageEncryptionError(
                 f"invalid_plaintext: {exc.reason}"

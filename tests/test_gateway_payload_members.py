@@ -39,6 +39,7 @@ from ori.security.payload_members import (
     EVIDENCE_INBOUND_MEMBERS,
     EVIDENCE_OUTBOUND_ACK_MEMBERS,
     EXPORT_REQUEST_MEMBERS,
+    EXPORT_RESPONSE_ITEM_MEMBERS,
     EXPORT_RESPONSE_MEMBERS,
     GATEWAY_HEALTH_MEMBERS,
     REASONING_RESPONSE_MEMBERS,
@@ -72,6 +73,21 @@ RUNTIME_SETS = {
 }
 
 
+#: The runtime's own item member sets, by topic.
+RUNTIME_ITEM_SETS = {
+    "ori/{device_id}/export/response/{request_id}": EXPORT_RESPONSE_ITEM_MEMBERS,
+}
+
+
+def _item_defined(case: dict[str, Any]) -> frozenset[str]:
+    family = case["family"]
+    if family is None:
+        return frozenset()
+    return RUNTIME_ITEM_SETS.get(
+        family, frozenset(CORPUS["item_members"].get(family, ()))
+    )
+
+
 def _defined(case: dict[str, Any]) -> frozenset[str]:
     family = case["family"]
     if family is None:
@@ -92,9 +108,19 @@ def test_the_runtimes_member_sets_are_the_contracts(topic):
     assert sorted(RUNTIME_SETS[topic]) == CORPUS["families"][topic]
 
 
+def test_the_runtimes_item_member_sets_are_the_contracts():
+    assert {topic: sorted(names) for topic, names in RUNTIME_ITEM_SETS.items()} == (
+        CORPUS["item_members"]
+    )
+
+
 @pytest.mark.parametrize("case", CASES, ids=[case["name"] for case in CASES])
 def test_every_case_reaches_its_verdict(case):
-    got = refusal(bytes.fromhex(case["payload_hex"]), defined=_defined(case))
+    got = refusal(
+        bytes.fromhex(case["payload_hex"]),
+        defined=_defined(case),
+        item_defined=_item_defined(case),
+    )
     assert (got or "accept") == case["expected"], case["description"]
 
 
@@ -118,6 +144,31 @@ def test_an_admitted_payload_is_read_with_one_reading():
     with pytest.raises(PayloadMemberError) as refused:
         admitted_object(b'{"status":1}', defined=frozenset({"STATUS"}))
     assert refused.value.reason == CASE_VARIANT_MEMBER
+
+
+_ITEM = frozenset({"status"})
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (b'{"items":[{"STATUS":1}]}', CASE_VARIANT_MEMBER),
+        (b'{"items":[1,{"Status":1}]}', CASE_VARIANT_MEMBER),
+        (b'{"x":1,"items":[{"STATUS":1}],"y":2}', CASE_VARIANT_MEMBER),
+        # Only an element of the root object's own items array.
+        (b'{"STATUS":1}', None),
+        (b'{"items":{"STATUS":1}}', None),
+        (b'{"items":[[{"STATUS":1}]]}', None),
+        (b'{"items":[{"inner":{"STATUS":1}}]}', None),
+        (b'{"other":[{"STATUS":1}]}', None),
+        (b'{"a":{"items":[{"STATUS":1}]}}', None),
+        (b'[{"items":[{"STATUS":1}]}]', "not_an_object"),
+        (b'{"items":[],"x":[{"STATUS":1}]}', None),
+    ],
+)
+def test_item_members_hold_only_in_root_item_elements(payload, expected):
+    got = refusal(payload, defined=frozenset({"items"}), item_defined=_ITEM)
+    assert got == expected
 
 
 def test_an_integer_python_cannot_convert_reaches_its_section_as_infinite():
