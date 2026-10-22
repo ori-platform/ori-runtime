@@ -376,6 +376,25 @@
       "signed_at_ms",
       "status"
     ],
+    "ori/{device_id}/runtime/posture": [
+      "auth",
+      "boot_generation",
+      "ciphertext",
+      "commissioned_binding",
+      "deployment_profile",
+      "device_id",
+      "encrypted",
+      "encryption",
+      "issued_at_ms",
+      "key_identity",
+      "nonce",
+      "posture_seq",
+      "release",
+      "scheme",
+      "signature",
+      "signed_at_ms",
+      "v"
+    ],
     "ori/{device_id}/tier_c/enrichment/request": [
       "auth",
       "ciphertext",
@@ -2110,17 +2129,25 @@
     },
     {
       "name": "envelope_variant_14",
-      "description": "AUTH on ori/{device_id}/tier_c/enrichment/request.",
+      "description": "AUTH on ori/{device_id}/runtime/posture.",
       "payload_hex": "7b2241555448223a7b22736368656d65223a22686d61632d736861323536222c227369676e65645f61745f6d73223a302c227369676e6174757265223a22686d61632d7368613235363a3030227d7d",
       "payload_text": "{\"AUTH\":{\"scheme\":\"hmac-sha256\",\"signed_at_ms\":0,\"signature\":\"hmac-sha256:00\"}}",
-      "family": "ori/{device_id}/tier_c/enrichment/request",
+      "family": "ori/{device_id}/runtime/posture",
       "expected": "case_variant_member"
     },
     {
       "name": "envelope_variant_15",
-      "description": "Auth on ori/{device_id}/tier_c/enrichment/response.",
+      "description": "Auth on ori/{device_id}/tier_c/enrichment/request.",
       "payload_hex": "7b2241757468223a7b22736368656d65223a22686d61632d736861323536222c227369676e65645f61745f6d73223a302c227369676e6174757265223a22686d61632d7368613235363a3030227d7d",
       "payload_text": "{\"Auth\":{\"scheme\":\"hmac-sha256\",\"signed_at_ms\":0,\"signature\":\"hmac-sha256:00\"}}",
+      "family": "ori/{device_id}/tier_c/enrichment/request",
+      "expected": "case_variant_member"
+    },
+    {
+      "name": "envelope_variant_16",
+      "description": "AUTH on ori/{device_id}/tier_c/enrichment/response.",
+      "payload_hex": "7b2241555448223a7b22736368656d65223a22686d61632d736861323536222c227369676e65645f61745f6d73223a302c227369676e6174757265223a22686d61632d7368613235363a3030227d7d",
+      "payload_text": "{\"AUTH\":{\"scheme\":\"hmac-sha256\",\"signed_at_ms\":0,\"signature\":\"hmac-sha256:00\"}}",
       "family": "ori/{device_id}/tier_c/enrichment/response",
       "expected": "case_variant_member"
     },
