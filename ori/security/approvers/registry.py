@@ -37,6 +37,7 @@ from ori.security.approvers.forms import (
     canonical,
     canonical_b64,
     challenge_object,
+    is_device_id,
     is_e164,
     is_id,
     is_integer,
@@ -197,7 +198,7 @@ def read_header(conn: sqlite3.Connection) -> Header | None:
         return None
     device, site, epoch, revision, external, document, sequence = rows[0]
     if not (
-        is_id(device)
+        is_device_id(device)
         and is_id(site)
         and canonical_b64(epoch, 16) is not None
         and is_integer(revision, 1)
@@ -995,7 +996,7 @@ def _is_revocation(document: object) -> bool:
     return (
         type(document["v"]) is int
         and document["v"] == 1
-        and is_id(document["device_id"])
+        and is_device_id(document["device_id"])
         and is_id(document["site_id"])
         and canonical_b64(document["identity_epoch"], 16) is not None
         and is_integer(document["revision"], 1)

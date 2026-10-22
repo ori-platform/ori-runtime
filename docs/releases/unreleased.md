@@ -123,7 +123,8 @@ release is cut.
   configuration's own value in unsigned development posture. A registry
   created under another `device.id` refuses every operation as
   `device_binding_mismatch`, recovery included, until the original identity is
-  restored, as a changed site refuses as `site_binding_mismatch`.
+  restored, as a changed site refuses as `site_binding_mismatch`. Any legal
+  `device.id`, up to 128 characters, can hold a registry.
 - `ori skills validate <path>` loads one skill directory, or every skill in a
   parent directory, through the runtime's own loader and reports the first
   problem in each. It exits 0 when every skill is valid, 1 when any is

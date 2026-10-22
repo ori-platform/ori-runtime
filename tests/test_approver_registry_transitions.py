@@ -34,12 +34,15 @@ Two places differ in where a check runs, not in what it decides:
   `possession_invalid`; for the runtime that pending operation, too, ends
   only when its window lapses.
 
-A runtime's configuration is fixed for a run, so a signed change of
-`device.site_id`, and its restoration, take effect across a restart. A
-restart removes every pending phone operation, so a commit after one is
-`pending_unavailable` at the runtime where the model, which keeps the
-operation, refuses it `site_binding_mismatch` or `epoch_changed`. Either way no
-credential is added. A recovery within a run is told exactly: `epoch_changed`.
+This runtime accepts a provisioning document only at start, so a restart
+step carrying `device_id` or `site_id` starts it under that identity. An
+`apply_provisioning` step is what an in-run apply would be: the identity
+changes and the run's state survives, and the registry is compared against
+the identity now accepted. A restart removes every pending phone operation,
+so a commit after one is `pending_unavailable` at the runtime where the
+model, which keeps the operation, refuses it `device_binding_mismatch`,
+`site_binding_mismatch` or `epoch_changed`. Either way no credential is added.
+A recovery within a run is told exactly: `epoch_changed`.
 
 A revocation's wire bytes reach the socket on one line, so the LFs in the
 model's whitespace variants are sent as spaces, which JSON reads the same.
@@ -116,6 +119,14 @@ NEEDS_TIER_C_ADMISSION = frozenset(
         "signed_site_change_locks_admission",
         "revocation_before_admission",
         "admission_before_revocation_stands",
+        "device_change_decides_over_site_change",
+        "device_identity_change_locks_admission",
+        "inrun_device_and_site_change_device_decides",
+        "inrun_device_change_locks_admission",
+        "inrun_site_change_locks_admission",
+        "phone_device_change_before_commit",
+        "recovery_binds_the_runtime_device",
+        "recovery_binds_the_runtime_site",
     }
 )
 
@@ -143,7 +154,9 @@ SAME_REFUSAL = frozenset(
 )
 #: The model's verdicts on a commit whose pending operation a restart had
 #: already removed.
-REMOVED_PENDING = frozenset({"site_binding_mismatch", "epoch_changed"})
+REMOVED_PENDING = frozenset(
+    {"device_binding_mismatch", "site_binding_mismatch", "epoch_changed"}
+)
 NO_CODE = "Tm8gY29kZSB3YXMgc2VudA=="
 
 
@@ -206,6 +219,7 @@ class Site:
         self.run = 0
         self.sms = True
         self.site = SITE
+        self.device = DEVICE
         self.signed = True
         self.minter = _Minter()
         self.issued_at: dict[str, int] = {}
@@ -218,7 +232,7 @@ class Site:
     def _registry(self) -> ApproverRegistry:
         return ApproverRegistry(
             RunContext(
-                device_id=DEVICE,
+                device_id=self.device,
                 verified_site_id=self.site,
                 authenticated_phone_channels=frozenset({"sms"} if self.sms else ()),
                 anchors=Anchors(
@@ -479,27 +493,36 @@ class Site:
         assert await self.store._run_read(read_header) is None
         return "locked"
 
+    def _accept(self, step: dict[str, Any]) -> None:
+        """The provisioning document the step makes the accepted one."""
+        self.device = step.get("device_id", self.device)
+        self.site = step.get("site_id", self.site)
+
     async def restart(self, step: dict[str, Any]) -> str:
         self.pending_removed |= set(self.issued_at)
         self.run += 1
         if "sms_ingress" in step:
             self.sms = bool(step["sms_ingress"])
+        self._accept(step)
         self.registry = self._registry()
         return "restarted"
+
+    async def apply_provisioning(self, step: dict[str, Any]) -> str:
+        """An accepted document changed within the run.
+
+        This runtime applies a provisioning document only at start, so it has
+        no such step; the step is what an in-run apply would be. The run's
+        challenges, phone state and challenge-state lock all survive it.
+        """
+        locked = self.registry._challenge_state_locked
+        self._accept(step)
+        self.registry = self._registry()
+        self.registry._challenge_state_locked = locked
+        return "applied"
 
     async def expire(self, step: dict[str, Any]) -> str:
         self.now = self.issued_at[step["challenge_id"]] + 60_001
         return "expired"
-
-    async def config_site_change(self, step: dict[str, Any]) -> str:
-        self.site = step["site_id"]
-        await self.restart({})
-        return "site_locked"
-
-    async def config_site_restore(self, _step: dict[str, Any]) -> str:
-        self.site = SITE
-        await self.restart({})
-        return "site_restored"
 
     async def expire_phone(self, step: dict[str, Any]) -> str:
         """Observed as the runtime shows it: whether the number is still held."""
@@ -562,9 +585,8 @@ async def test_every_scenario(store: StateStore, name: str) -> None:
         "revoke": site.revoke,
         "lose": site.lose,
         "restart": site.restart,
+        "apply_provisioning": site.apply_provisioning,
         "expire": site.expire,
-        "config_site_change": site.config_site_change,
-        "config_site_restore": site.config_site_restore,
         "expire_phone": site.expire_phone,
     }
     for index, step in enumerate(scenario["steps"]):

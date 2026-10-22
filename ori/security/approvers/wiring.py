@@ -24,12 +24,12 @@ import base64
 import binascii
 import logging
 import os
-import re
 import secrets
 import time
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Final
 
+from ori.security.approvers.forms import is_device_id
 from ori.security.approvers.registry import Anchors, ApproverRegistry, RunContext
 from ori.security.approvers.service import RegistryService
 from ori.security.commissioning.anchors import (
@@ -48,7 +48,6 @@ PREVIOUS_PROVISIONING_ANCHOR_ENV: Final = (
 )
 #: runtime-config-orchestration/v1's fixed location for the entitlement key.
 COMMERCIAL_ANCHOR_ENV: Final = "ORI_DEVICE_POLICY_PUBLIC_KEY_B64"
-_ID = re.compile(r"[A-Za-z0-9._-]{1,64}\Z")
 
 
 def _key(text: str | None) -> bytes | None:
@@ -96,9 +95,8 @@ def verified_site_for(config: Config) -> str | None:
     from ori.config import requires_production_posture
 
     site = config.device.site_id
-    if not site or _ID.match(config.device.id) is None:
-        # A device ID past 64 characters cannot appear in a challenge or a
-        # revocation, so no registry can be bound to it.
+    if not site or not is_device_id(config.device.id):
+        # A device ID no challenge or revocation can carry binds no registry.
         return None
     if config.security.get("config_signature", {}).get("verified"):
         return site

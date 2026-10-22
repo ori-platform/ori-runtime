@@ -83,7 +83,7 @@ def _load(store: StateStore, context: dict[str, Any]) -> None:
             " last_external_document_sha256, credential_sequence)"
             " VALUES (1, ?, ?, ?, ?, ?, ?, ?)",
             (
-                context["device_id"],
+                registry["device_id"],
                 registry["site_id"],
                 registry["identity_epoch"],
                 registry["registry_revision"],

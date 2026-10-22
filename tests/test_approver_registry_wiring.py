@@ -68,7 +68,8 @@ def _config(
         (_config(verified=False, profile="staging"), None),
         (_config(verified=False, profile="development", enforce=True), None),
         (_config(site=""), None),
-        (_config(device_id="d" * 65), None),
+        (_config(device_id="d" * 128), "site-1"),
+        (_config(device_id="d" * 129), None),
     ],
     ids=[
         "signed",
@@ -77,6 +78,7 @@ def _config(
         "unsigned_staging",
         "unsigned_development_enforcing",
         "no_site",
+        "device_id_at_the_registry_form",
         "device_id_past_the_registry_form",
     ],
 )

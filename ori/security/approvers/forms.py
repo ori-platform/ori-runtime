@@ -31,6 +31,8 @@ REVOKE_DOMAIN: Final = b"ori.tier_c_approver.revoke.v1\x00"
 SPKI_PREFIX: Final = bytes.fromhex("302a300506032b6570032100")
 
 _ID = re.compile(r"[A-Za-z0-9._-]{1,64}\Z")
+#: A device ID is runtime-config/v2's `device.id`, which allows 128.
+_DEVICE_ID = re.compile(r"[A-Za-z0-9._-]{1,128}\Z")
 _E164 = re.compile(r"\+[1-9][0-9]{1,14}\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 LAN_PREFIX: Final = "ed25519:"
@@ -70,6 +72,10 @@ def b64(raw: bytes) -> str:
 
 def is_id(value: object) -> bool:
     return isinstance(value, str) and _ID.match(value) is not None
+
+
+def is_device_id(value: object) -> bool:
+    return isinstance(value, str) and _DEVICE_ID.match(value) is not None
 
 
 def is_e164(value: object) -> bool:
