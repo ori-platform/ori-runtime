@@ -455,9 +455,12 @@ def test_the_guard_refuses_an_unguarded_shape(source: str) -> None:
 def test_closed_on_failure_closes_on_an_interrupt_too() -> None:
     from ori.utils.sqlite_utils import closed_on_failure
 
+    def interrupted() -> None:
+        raise KeyboardInterrupt
+
     conn = _Failing(":memory:")
     with pytest.raises(KeyboardInterrupt), closed_on_failure(conn):
-        raise KeyboardInterrupt
+        interrupted()
     assert conn.closed
 
 
@@ -624,7 +627,7 @@ async def test_a_cancelled_open_closes_the_connection_the_writer_still_makes(
             await asyncio.sleep(0.01)
         opening.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await opening
+            await asyncio.wait_for(opening, timeout=10)
     finally:
         release.set()
     assert store._write_executor is not None
@@ -693,7 +696,7 @@ async def test_a_store_closed_after_a_cancelled_open_still_closes_on_the_writer(
         await asyncio.sleep(0.01)
     opening.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await opening
+        await asyncio.wait_for(opening, timeout=10)
     await store.close()  # clears the executor before the open job finishes
     release.set()
     await wait_until(
