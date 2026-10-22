@@ -207,7 +207,7 @@ class EvidenceInboundRouter:
     async def route(self, payload: bytes | str | dict[str, Any]) -> Routed:
         """:meth:`handle_payload`, awaiting the evidence worker on the event loop.
 
-        A persisted replay key is written on a worker thread and awaited before
+        A persisted replay key is written on the replay thread and awaited before
         ingest. A recorded key is never unrecorded (gateway-api/v2: receivers
         do not relax replay protection to accommodate redelivery): an attempt
         the evidence worker was too busy to take is left undecided, like a
@@ -223,7 +223,17 @@ class EvidenceInboundRouter:
             return Routed(
                 InboundRefusal(REFUSE_UNADMISSIBLE, "the message could not be admitted")
             )
-        admitted = self._admit_or_refuse(payload, decoded)
+        # Its replay checks wait on the cache's lock, which another thread's
+        # store transaction can hold: off the event loop, wherever they wait.
+        if self._message_auth is None:
+            admitted = self._admit_or_refuse(payload, decoded)
+        else:
+            try:
+                admitted = await self._message_auth.run_off_loop(
+                    self._admit_or_refuse, payload, decoded
+                )
+            except GatewayMessageAuthError as exc:
+                admitted = InboundRefusal(REFUSE_ENVELOPE_UNAUTHENTICATED, str(exc))
         if isinstance(admitted, InboundRefusal):
             return Routed(admitted)
         artifact_type, artifact, ingest, claim = admitted

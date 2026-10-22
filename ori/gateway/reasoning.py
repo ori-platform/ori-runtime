@@ -26,7 +26,6 @@ from ori.gateway.payload_bounds import (
 from ori.network.events import OriEvent, ReasoningResult, history_as_of
 from ori.network.producer_time import NOT_REPORTED, UNKNOWN, read_producer_time
 from ori.security.gateway_messages import (
-    REPLAY_REFUSALS,
     GatewayMessageAuthenticator,
     GatewayMessageAuthError,
 )
@@ -94,6 +93,24 @@ class GatewayReasoningRequest:
         return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode(
             "utf-8"
         )
+
+
+#: How an unanswered response is named in the log, by why it was dropped.
+#: A response below the replay floor is not shown to be a replay.
+_DROP_LABELS = {
+    "unverified": "an unverified",
+    "replayed": "a replayed",
+    "below_floor": "a below-the-replay-floor",
+}
+
+
+def _refusal_kind(exc: GatewayMessageAuthError) -> str:
+    reason = str(exc)
+    if reason == "replay_detected":
+        return "replayed"
+    if reason == "before_replay_floor":
+        return "below_floor"
+    return "unverified"
 
 
 class MqttGatewayReasoner:
@@ -215,6 +232,13 @@ class MqttGatewayReasoner:
             if not future.done():
                 future.set_result(value)
 
+        def _call_on_loop(callback: Callable[..., None], *args: Any) -> None:
+            # A late answer can finish after the loop has closed.
+            try:
+                loop.call_soon_threadsafe(callback, *args)
+            except RuntimeError:
+                pass  # the loop has closed; nothing waits for this any more
+
         def _set_future_exception(future: asyncio.Future, exc: BaseException) -> None:
             if not future.done():
                 future.set_exception(exc)
@@ -263,13 +287,20 @@ class MqttGatewayReasoner:
         # a later answer, authentic or not, is read no further and records
         # nothing (gateway-api/v2 Payload Volume).
         answered = threading.Event()
-        # Held while an answer is checked against `answered` and recorded, and
-        # by the end of the round trip, so neither can slip between the other.
+        # Guards `answered`, `recording` and `waiters`, and is never held across
+        # I/O: an answer's record can wait on the replay store, and the event
+        # loop takes this lock when the round trip ends.
         settling = threading.Lock()
+        # Records begun while the request was pending and not yet finished;
+        # the round trip ends only once there are none, so nothing is recorded
+        # for a request that has ended (gateway-api/v2 Payload Volume).
+        recording = [0]
+        # The loop's futures waiting for `recording` to reach zero.
+        waiters: list[asyncio.Future[None]] = []
         # Unanswered responses dropped this round trip: the first of each kind
         # is logged at once, the rest summed when it ends, so a flood across a
         # long wait writes at most two lines per kind, not one per message.
-        dropped = {"unverified": 0, "replayed": 0}
+        dropped = dict.fromkeys(_DROP_LABELS, 0)
 
         def _drop(kind: str, detail: object) -> None:
             with settling:
@@ -277,9 +308,8 @@ class MqttGatewayReasoner:
                 first = dropped[kind] == 1
             if first:
                 logger.warning(
-                    "[gateway-reasoning] dropped %s %s response for %s: %s",
-                    "an" if kind == "unverified" else "a",
-                    kind,
+                    "[gateway-reasoning] dropped %s response for %s: %s",
+                    _DROP_LABELS[kind],
                     request.request_id,
                     detail,
                 )
@@ -330,14 +360,15 @@ class MqttGatewayReasoner:
                     # Reasoning Auth Envelope): an unverified answer ends
                     # nothing, and the request waits for an authentic one.
                     # A replay is refused here too, before it is recorded.
-                    _drop(
-                        "replayed" if str(exc) in REPLAY_REFUSALS else "unverified", exc
-                    )
+                    _drop(_refusal_kind(exc), exc)
                     return
-            replay: GatewayMessageAuthError | None = None
             with settling:
                 if answered.is_set():
                     return
+                recording[0] += 1
+            replay: GatewayMessageAuthError | None = None
+            won = False
+            try:
                 if claim is not None:
                     try:
                         self._message_auth.commit(claim)  # type: ignore[union-attr]
@@ -346,12 +377,22 @@ class MqttGatewayReasoner:
                         replay = exc
                     else:
                         payload = claim.payload
-                if replay is None:
-                    answered.set()
+            finally:
+                with settling:
+                    recording[0] -= 1
+                    if replay is None and not answered.is_set():
+                        answered.set()
+                        won = True
+                    woken = waiters[:] if recording[0] == 0 else []
+                    if woken:
+                        waiters.clear()
+                for waiter in woken:
+                    _call_on_loop(_set_future_result, waiter, None)
             if replay is not None:
-                _drop("replayed", replay)
+                _drop(_refusal_kind(replay), replay)
                 return
-            loop.call_soon_threadsafe(_set_future_result, response, payload)
+            if won:
+                _call_on_loop(_set_future_result, response, payload)
 
         client.on_connect = _on_connect
         client.on_subscribe = _on_subscribe
@@ -387,27 +428,80 @@ class MqttGatewayReasoner:
         except asyncio.TimeoutError as exc:
             raise GatewayReasoningError("gateway reasoning response timeout") from exc
         finally:
-            # Over, however it ended: an answer arriving while the client
-            # stops is for nothing pending.
-            with settling:
-                answered.set()
-                summary = dict(dropped)
+            # Over, however it ended: an answer arriving from here is for
+            # nothing pending. A record already begun is waited for, off the
+            # lock and without blocking the loop, and a cancellation does not
+            # cut that wait or the client's teardown short.
+            cancelled = False
+            while True:
+                with settling:
+                    answered.set()
+                    if recording[0] == 0:
+                        summary = dict(dropped)
+                        break
+                    waiter: asyncio.Future[None] = loop.create_future()
+                    waiters.append(waiter)
+                try:
+                    await asyncio.shield(waiter)
+                except asyncio.CancelledError:
+                    cancelled = True
             for kind, count in summary.items():
                 if count > 1:
                     logger.warning(
                         "[gateway-reasoning] dropped %d %s responses for %s in all",
                         count,
-                        kind,
+                        _DROP_LABELS[kind].split(" ", 1)[1],
                         request.request_id,
                     )
+            teardown = _teardown(client)
+            while not teardown.done():
+                try:
+                    await asyncio.shield(teardown)
+                except asyncio.CancelledError:
+                    cancelled = True
+            if cancelled:
+                raise asyncio.CancelledError
+
+
+def _stop_and_disconnect(client: Any) -> None:
+    """Stop the client's network thread, then disconnect it, each attempted."""
+    try:
+        client.loop_stop()
+    except Exception:
+        logger.warning("[gateway-reasoning] failed to stop MQTT loop")
+    try:
+        client.disconnect()
+    except Exception:
+        logger.warning("[gateway-reasoning] failed to disconnect MQTT client")
+
+
+def _teardown(client: Any) -> asyncio.Future[None]:
+    """Run `_stop_and_disconnect` on a thread of its own; its completion.
+
+    `loop_stop` joins the client's network thread, which may still be in a
+    replay check, so it occupies no thread other work shares. One callable
+    on one thread runs both calls whatever happens to the awaiting task, and
+    the thread is not a daemon, so even a loop shutting down does not cut it
+    short.
+    """
+    loop = asyncio.get_running_loop()
+    done: asyncio.Future[None] = loop.create_future()
+
+    def finished() -> None:
+        if not done.done():
+            done.set_result(None)
+
+    def run() -> None:
+        try:
+            _stop_and_disconnect(client)
+        finally:
             try:
-                await asyncio.to_thread(client.loop_stop)
-            except Exception:
-                logger.warning("[gateway-reasoning] failed to stop MQTT loop")
-            try:
-                await asyncio.to_thread(client.disconnect)
-            except Exception:
-                logger.warning("[gateway-reasoning] failed to disconnect MQTT client")
+                loop.call_soon_threadsafe(finished)
+            except RuntimeError:
+                pass  # the loop has closed; nothing awaits this any more
+
+    threading.Thread(target=run, name="ori-gateway-reasoning-teardown").start()
+    return done
 
 
 async def _history_points(

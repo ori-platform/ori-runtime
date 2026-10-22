@@ -213,7 +213,7 @@ class EvidenceOutboundAckRouter:
         claim: AuthenticatedMessage | None = None
         if self._message_auth is not None:
             try:
-                claim = self._message_auth.authenticate(
+                claim = await self._message_auth.authenticate_async(
                     decoded,
                     message_type=EVIDENCE_OUTBOUND_ACK_MESSAGE_TYPE,
                     expected_device_id=self._device_id,
