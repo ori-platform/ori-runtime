@@ -110,11 +110,12 @@ release is cut.
 
 ## Added
 
-- The Tier C approver registry of `tier-c-approvers/v1`: the runtime-owned
-  record of who may approve a Tier C action, bound to the device, a verified
-  `device.site_id` and an identity epoch the runtime mints. Its local
-  operations (challenge, recover, local seed, enrol, revoke and the binding
-  readback) are served on the operator socket under `operator-socket/v3`. This
+- The Tier C approver registry, built against the `tier-c-approvers/v1`
+  draft: the runtime-owned record of who may approve a Tier C action, bound to
+  the device, a verified `device.site_id` and an identity epoch the runtime
+  mints. Its local operations (challenge, recover, local seed, enrol, revoke
+  and the binding readback) are on the operator socket, built against the
+  `operator-socket/v3` draft; conformance to either is not yet assessed. This
   release enrols LAN keys only: no phone ingress reaches the registry, so an
   SMS candidate is refused `channel_unauthenticated`, and no Tier C reply is
   yet admitted against it.
@@ -194,7 +195,8 @@ release is cut.
   and again by the envelope and fault verifiers, as `invalid_envelope` once
   the device's anchor checks pass. Before, the route took the first key it
   recognised and the verifiers accepted other keys beside theirs.
-- The operator socket serves `operator-socket/v3`: a request is one JSON object
+- The operator socket is built against the `operator-socket/v3` draft, with no
+  conformance claimed: a request is one JSON object
   and one LF, at most 16,384 bytes (up from 8,192, a limit v2 never stated),
   counted before anything is parsed and refused `payload_too_large`, for
   `reconcile_tier_c` and `evidence_commission` as for the registry operations.

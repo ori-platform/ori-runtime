@@ -1,7 +1,7 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
-"""The authenticated local operator socket (operator-socket/v3).
+"""The authenticated local operator socket, built against the operator-socket/v3 draft.
 
 A person at the device reaches the running runtime here, and only here, to
 record the commissioning reference for its evidence epoch, what they observed
