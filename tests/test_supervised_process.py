@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -233,7 +234,7 @@ def test_every_long_running_child_is_supervised() -> None:
         "from concurrent.futures.process import ProcessPoolExecutor\n",
         "import subprocess\nsp = subprocess\nsp.Popen(['x'])\n",
         "import subprocess\ndef f():\n    import json as subprocess\n"
-        "subprocess.Popen(['x'])\n",
+        + "subprocess.Popen(['x'])\n",
     ],
 )
 def test_the_guard_sees_a_spawn(source: str) -> None:
@@ -631,10 +632,8 @@ async def test_a_test_that_leaks_fails_and_its_children_go(tmp_path: Path) -> No
         # Only when the fixture did not kill them: a passing run's pids are
         # gone, and may since name another process.
         for pid in (child, grandchild):
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
         raise
 
 

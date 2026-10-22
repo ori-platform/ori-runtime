@@ -14,6 +14,7 @@ Tests start their brokers and payloads through here
 from __future__ import annotations
 
 import atexit
+import contextlib
 import os
 import shutil
 import signal
@@ -158,19 +159,16 @@ class Supervised:
         return code
 
     def _kill_group(self) -> None:
-        try:
+        # Already gone, or its leader reaped and the pid not ours to signal.
+        with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(self.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
 
     def send_signal(self, signum: int) -> None:
         # Only while no exit status is recorded, so a pid the supervisor has
         # reaped, and the system may reuse, is never signalled.
         if self.poll() is None:
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 os.kill(self.pid, signum)
-            except ProcessLookupError:
-                pass
 
     def terminate(self) -> None:
         self.send_signal(signal.SIGTERM)

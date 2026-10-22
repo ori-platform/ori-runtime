@@ -22,6 +22,7 @@ reused pid leads; the window is microseconds, which a test harness accepts.
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import importlib.util
 import os
@@ -90,10 +91,9 @@ def _die_with(supervisor: int) -> Callable[[], None]:
 
 
 def _kill_group(pid: int) -> None:
-    try:
+    # Already gone, or its leader reaped and the pid not ours to signal.
+    with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        pass
 
 
 def main(argv: list[str]) -> int:
@@ -159,7 +159,7 @@ def _watch(
             try:
                 child.wait(POLL_S)
             except subprocess.TimeoutExpired:
-                pass
+                continue  # still running: check the parent and stop again
     finally:
         # Whatever ends the watch, a failed status write included: the group
         # goes, the child is reaped, and anything it left in its group with it.
