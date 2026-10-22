@@ -73,11 +73,27 @@ class ChallengeStateLockedError(Exception):
 
 
 class Minter(Protocol):
-    def challenge_id(self) -> str: ...
-    def approver_id(self) -> str: ...
-    def credential_id(self) -> str: ...
-    def identity_epoch(self) -> str: ...
-    def possession_code(self) -> str: ...
+    """Where every ID, epoch and code comes from. Implemented by CsprngMinter."""
+
+    def challenge_id(self) -> str:
+        """A fresh challenge ID."""
+        raise NotImplementedError
+
+    def approver_id(self) -> str:
+        """A fresh approver ID."""
+        raise NotImplementedError
+
+    def credential_id(self) -> str:
+        """A fresh credential ID."""
+        raise NotImplementedError
+
+    def identity_epoch(self) -> str:
+        """A fresh identity epoch."""
+        raise NotImplementedError
+
+    def possession_code(self) -> str:
+        """A fresh phone possession code."""
+        raise NotImplementedError
 
 
 class CsprngMinter:

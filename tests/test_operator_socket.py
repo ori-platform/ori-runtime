@@ -1528,7 +1528,6 @@ async def test_a_store_fault_preparing_the_registry_leaves_the_socket_serving(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Tier C fails closed; the start, and the rest of the socket, do not."""
-    import sqlite3
     from types import SimpleNamespace
 
     class Locked:

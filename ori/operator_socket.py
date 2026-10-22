@@ -1026,7 +1026,7 @@ class OperatorSocketServer:
 
         async def hold() -> None:
             with contextlib.suppress(BaseException):
-                await served
+                _ = await served
             if answered is not None:
                 await answered.wait()
             registry.release()
