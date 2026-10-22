@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import fcntl
+import functools
 import heapq
 import hmac
 import json
@@ -34,6 +35,7 @@ import re
 import sqlite3
 import threading
 from base64 import urlsafe_b64decode, urlsafe_b64encode
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -72,6 +74,9 @@ _STORE_BUSY_TIMEOUT_MS = 5_000
 #: How often a store that does not answer is tried again, off the verifying
 #: path, and how often a floor an earlier run stored is read again.
 _FLOOR_READ_INTERVAL_S = 5.0
+#: Replay work admitted to the replay thread and not yet finished. Past it,
+#: work is refused rather than queued behind a store that stopped answering.
+_REPLAY_WORK_CEILING = 64
 _FLOOR_TABLE_DDL = (
     "CREATE TABLE IF NOT EXISTS gateway_replay_floor ("
     "id INTEGER PRIMARY KEY CHECK (id = 1), floor_ms INTEGER)"
@@ -168,6 +173,10 @@ class ReplayStoreOwnedError(RuntimeError):
     """Another replay cache, in this process or another, owns this store."""
 
 
+class ReplayWorkRefusedError(RuntimeError):
+    """The replay thread holds as much work as it admits, or the cache closed."""
+
+
 class ReplayStoreAccessError(OSError):
     """The store, or the lock beside it, cannot be opened: a storage fault,
     not another owner. The cache refuses until it can be."""
@@ -248,7 +257,7 @@ class GatewayReplayCache:
     the store is tried again off the verifying path until it answers. A write
     that failed changed nothing, here or in the store. Thread-safe: paho
     callbacks verify on their own threads, and receivers on the event loop
-    commit through a worker thread.
+    hand their replay work to the cache's own replay thread.
     """
 
     def __init__(
@@ -280,6 +289,12 @@ class GatewayReplayCache:
         # the store, so no probe touches the store after it is released.
         self._probing = threading.Lock()
         self._watch: threading.Thread | None = None
+        # The replay thread: work an event-loop receiver hands off, so neither
+        # the loop nor its default executor, which Tier A notices also use,
+        # waits on this cache's lock. The lock serialises the work anyway.
+        self._work_lock = threading.Lock()
+        self._work_pending = 0
+        self._work_executor: ThreadPoolExecutor | None = None
         path = str(db_path or "").strip()
         # SQLite's private in-memory database is one connection's memory: no
         # store to own, and nothing that survives a restart.
@@ -316,6 +331,12 @@ class GatewayReplayCache:
         A probe already running finishes first; none starts after.
         """
         self._closed.set()
+        with self._work_lock:
+            executor, self._work_executor = self._work_executor, None
+        if executor is not None:
+            # Work already running finishes under the lock below; work still
+            # queued is cancelled, never left to run against a released store.
+            executor.shutdown(wait=False, cancel_futures=True)
         with self._probing, self._lock:
             conn, self._conn = self._conn, None
             if conn is not None:
@@ -323,6 +344,34 @@ class GatewayReplayCache:
             ownership, self._ownership = self._ownership, None
             if ownership is not None:
                 ownership.close()
+
+    async def run_off_loop(
+        self, fn: Callable[..., _T], /, *args: Any, **kwargs: Any
+    ) -> _T:
+        """Run *fn* on the replay thread and await it.
+
+        Refused, rather than queued, past ``_REPLAY_WORK_CEILING`` or once the
+        cache has closed.
+        """
+        with self._work_lock:
+            if self._closed.is_set():
+                raise ReplayWorkRefusedError("the gateway replay cache is closed")
+            if self._work_pending >= _REPLAY_WORK_CEILING:
+                raise ReplayWorkRefusedError(
+                    f"the replay thread holds {self._work_pending} checks already"
+                )
+            if self._work_executor is None:
+                self._work_executor = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="ori-gateway-replay"
+                )
+            self._work_pending += 1
+            future = self._work_executor.submit(functools.partial(fn, *args, **kwargs))
+        future.add_done_callback(self._work_finished)
+        return await asyncio.wrap_future(future)
+
+    def _work_finished(self, _future: Any) -> None:
+        with self._work_lock:
+            self._work_pending -= 1
 
     @property
     def max_skew_ms(self) -> int:
@@ -1050,6 +1099,45 @@ class GatewayMessageAuthenticator:
             )
         raise GatewayMessageAuthError(reason)
 
+    async def run_off_loop(
+        self, fn: Callable[..., _T], /, *args: Any, **kwargs: Any
+    ) -> _T:
+        """Run replay work for a receiver on the event loop, off it.
+
+        With a store, the replay checks wait on the cache's lock, which an
+        admission holds across its store transaction; so the work runs on the
+        cache's own replay thread, never on the loop Tier D runs on nor on its
+        default executor. Without one it never waits, and runs here. Work the
+        replay thread refuses is refused as `replay_store_busy`.
+        """
+        if not self.persists_replay_keys:
+            return fn(*args, **kwargs)
+        try:
+            return await self._replay_cache.run_off_loop(fn, *args, **kwargs)
+        except ReplayWorkRefusedError as exc:
+            raise GatewayMessageAuthError("replay_store_busy") from exc
+
+    async def authenticate_async(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        message_type: str,
+        expected_device_id: str,
+        expected_request_id: str | None = None,
+        now_ms_value: int | None = None,
+    ) -> AuthenticatedMessage:
+        """`authenticate` for a receiver on the event loop, off it wherever it
+        waits. Authenticating records nothing, so a cancelled wait leaves
+        nothing behind."""
+        return await self.run_off_loop(
+            self.authenticate,
+            payload,
+            message_type=message_type,
+            expected_device_id=expected_device_id,
+            expected_request_id=expected_request_id,
+            now_ms_value=now_ms_value,
+        )
+
     async def verify_async(
         self,
         payload: Mapping[str, Any],
@@ -1058,8 +1146,8 @@ class GatewayMessageAuthenticator:
         expected_device_id: str,
         expected_request_id: str | None = None,
     ) -> dict[str, Any]:
-        """`verify` for a receiver on the event loop."""
-        message = self.authenticate(
+        """`verify` for a receiver on the event loop, off it wherever it waits."""
+        message = await self.authenticate_async(
             payload,
             message_type=message_type,
             expected_device_id=expected_device_id,
@@ -1071,13 +1159,10 @@ class GatewayMessageAuthenticator:
     async def commit_async(self, message: AuthenticatedMessage) -> None:
         """`commit` for a receiver on the event loop.
 
-        A persisted key is committed to SQLite on a worker thread and awaited,
-        so the message is still recorded durably before it is acted on.
+        A persisted key is committed on the replay thread and awaited, so the
+        message is still recorded durably before it is acted on.
         """
-        if self.persists_replay_keys:
-            await asyncio.to_thread(self.commit, message)
-        else:
-            self.commit(message)
+        await self.run_off_loop(self.commit, message)
 
     def _verify(
         self,

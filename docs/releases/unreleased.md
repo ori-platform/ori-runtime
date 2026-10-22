@@ -266,6 +266,25 @@ release is cut.
   shared writer connection, or on a skill hook's connection, for the next
   unrelated write to commit. Whatever a write did not commit is rolled back
   when it returns or raises.
+- No gateway route on the event loop Tier D runs on waits for the replay
+  store any more. An admission holds the replay cache's lock across its store
+  transaction, which can wait out the store's busy timeout at its start and
+  again at its commit.
+  - The export, inbound evidence and outbound acknowledgement routes took
+    that lock on the loop to authenticate. With a store, their replay work
+    now runs on the cache's own replay thread, never on the loop or its
+    default executor, which Tier A notices share.
+  - Past 64 waiting checks, or once the cache has closed, new work is refused
+    as `replay_store_busy`.
+  - A reasoning round trip no longer holds a lock across an answer's record.
+    When it ends it still waits for a record already in progress, so nothing
+    is recorded after it ends, but neither the event loop nor any shared
+    thread waits with it. A cancellation waits for that record and for the
+    client's stop and disconnect before it propagates. Those two run as one
+    call on a thread of their own, so even an event loop shutting down still
+    disconnects the client.
+  - A response refused below the replay floor is logged as such, not as a
+    replay.
 - The health socket compares a request's bytes exactly. A request is the
   bytes up to and including its first line feed, or up to the end of the
   stream; what follows the line feed is discarded, not judged, so a request
