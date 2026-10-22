@@ -48,12 +48,14 @@ class ApproverStore(StoreCore):
                 "approver_challenges",
                 "approver_phone_authorizations",
                 "approver_pending_phone",
+                "approver_invalidated_phone",
             ):
                 conn.execute(
                     f"DELETE FROM {table} WHERE run_id <> ?",  # noqa: S608 - fixed names
                     (run_id,),
                 )
+            conn.commit()
         except BaseException:
-            conn.rollback()
+            if conn.in_transaction:
+                conn.rollback()
             raise
-        conn.commit()

@@ -120,7 +120,10 @@ release is cut.
   yet admitted against it.
 - `device.site_id` (optional, `^[A-Za-z0-9._-]{1,64}$`). The registry is
   available only with a verified value: from a signed configuration, or the
-  configuration's own value in unsigned development posture.
+  configuration's own value in unsigned development posture. A registry
+  created under another `device.id` refuses every operation as
+  `device_binding_mismatch`, recovery included, until the original identity is
+  restored, as a changed site refuses as `site_binding_mismatch`.
 - `ori skills validate <path>` loads one skill directory, or every skill in a
   parent directory, through the runtime's own loader and reports the first
   problem in each. It exits 0 when every skill is valid, 1 when any is
@@ -258,6 +261,10 @@ release is cut.
 
 ## Fixed
 
+- A state store write whose commit failed no longer stays pending on the
+  shared writer connection, or on a skill hook's connection, for the next
+  unrelated write to commit. Whatever a write did not commit is rolled back
+  when it returns or raises.
 - The health socket compares a request's bytes exactly. A request is the
   bytes up to and including its first line feed, or up to the end of the
   stream; what follows the line feed is discarded, not judged, so a request

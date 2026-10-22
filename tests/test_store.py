@@ -437,8 +437,9 @@ class TestAverages:
                 )
             )
         )
-        await store._run_write(
-            lambda: store._conn.execute(
+
+        def insert_bucket() -> None:
+            store._conn.execute(
                 """
                 INSERT INTO sensor_history_5min
                     (sensor_id, sensor_type, bucket_ms, avg_value, unit, sample_count,
@@ -447,8 +448,9 @@ class TestAverages:
                 """,
                 ("s1", "current_clamp", 2_000, 5.5, "ampere", 12, 2_000),
             )
-        )
-        await store._run_write(store._conn.commit)
+            store._conn.commit()
+
+        await store._run_write(insert_bucket)
 
         rows = await store.export_sensor_history(
             sensor_id="s1",

@@ -78,10 +78,12 @@ def _load(store: StateStore, context: dict[str, Any]) -> None:
     registry = context["registry"]
     if registry is not None:
         conn.execute(
-            "INSERT INTO approver_registry (singleton, site_id, identity_epoch,"
-            " revision, last_external_revision, last_external_document_sha256,"
-            " credential_sequence) VALUES (1, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO approver_registry (singleton, device_id, site_id,"
+            " identity_epoch, revision, last_external_revision,"
+            " last_external_document_sha256, credential_sequence)"
+            " VALUES (1, ?, ?, ?, ?, ?, ?, ?)",
             (
+                context["device_id"],
                 registry["site_id"],
                 registry["identity_epoch"],
                 registry["registry_revision"],

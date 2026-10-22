@@ -976,6 +976,7 @@ _HISTORY_DDL = ";\n".join(_HISTORY_DDL_STATEMENTS) + ";\n"
 _APPROVER_DDL = """
 CREATE TABLE IF NOT EXISTS approver_registry (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    device_id TEXT NOT NULL,
     site_id TEXT NOT NULL,
     identity_epoch TEXT NOT NULL,
     revision INTEGER NOT NULL,
@@ -1032,6 +1033,13 @@ CREATE TABLE IF NOT EXISTS approver_pending_phone (
     identity_epoch TEXT NOT NULL,
     site_id TEXT NOT NULL,
     approver_minted INTEGER NOT NULL DEFAULT 0
+);
+-- Pending phone operations a recovery ended, so a late reply to one is told
+-- its epoch changed rather than that nothing was pending.
+CREATE TABLE IF NOT EXISTS approver_invalidated_phone (
+    challenge_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    PRIMARY KEY (challenge_id, run_id)
 );
 """
 
@@ -1205,6 +1213,11 @@ class StoreMigrations:
         self._rebuild_history_schema_if_unreceipted(conn)
         conn.executescript(_HISTORY_DDL)
         conn.executescript(_APPROVER_DDL)
+        # A header written before it carried its device is not this device's
+        # registry: its NULL device_id reads as locked.
+        self._add_column_if_missing_on_conn(
+            conn, "approver_registry", "device_id", "TEXT"
+        )
         self._add_history_producer_time(conn)
         self._migrate_alert_outbox_receipt(conn)
         self._key_firmware_fault_events_by_epoch(conn)

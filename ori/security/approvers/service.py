@@ -46,6 +46,7 @@ REGISTRY_ERRORS: Final = frozenset(
         "registry_busy",
         "lan_key_required",
         "channel_unauthenticated",
+        "device_binding_mismatch",
         "site_binding_mismatch",
         "recovery_not_available",
         "registry_unavailable",

@@ -36,10 +36,10 @@ Two places differ in where a check runs, not in what it decides:
 
 A runtime's configuration is fixed for a run, so a signed change of
 `device.site_id`, and its restoration, take effect across a restart. A
-restart, like a recovery (operator-socket/v3 Recover clears them), removes
-every pending phone operation, so a commit after one is `pending_unavailable`
-at the runtime where the model, which keeps the operation, refuses it
-`site_binding_mismatch` or `epoch_changed`. Either way no credential is added.
+restart removes every pending phone operation, so a commit after one is
+`pending_unavailable` at the runtime where the model, which keeps the
+operation, refuses it `site_binding_mismatch` or `epoch_changed`. Either way no
+credential is added. A recovery within a run is told exactly: `epoch_changed`.
 
 A revocation's wire bytes reach the socket on one line, so the LFs in the
 model's whitespace variants are sent as spaces, which JSON reads the same.
@@ -141,8 +141,8 @@ SAME_REFUSAL = frozenset(
     {(code, code) for code in DECIDED_AT_ISSUE}
     | {("credential_reused", "duplicate_value")}
 )
-#: The model's verdicts on a commit whose pending operation the runtime had
-#: already removed, by a restart or a recovery.
+#: The model's verdicts on a commit whose pending operation a restart had
+#: already removed.
 REMOVED_PENDING = frozenset({"site_binding_mismatch", "epoch_changed"})
 NO_CODE = "Tm8gY29kZSB3YXMgc2VudA=="
 
@@ -338,7 +338,6 @@ class Site:
             "recover", {"challenge_id": step["challenge_id"]}
         )
         if verdict == "recovered":
-            self.pending_removed |= set(self.issued_at)
             header = await self.store._run_read(read_header)
             assert header is not None and header.identity_epoch == step["epoch"]
         return verdict
@@ -522,7 +521,19 @@ class Site:
             "candidate": {"approver_id": None, "channel": "sms", "value": held[0]},
         }
         verdict = await self.refused_or("issue", probe)
-        return "not_expired" if verdict == "phone_pending_for_value" else "expired"
+        if verdict == "phone_pending_for_value":
+            return "not_expired"
+        # Expired means the number is free again: the probe is issued, and the
+        # timed-out pending operation is gone. Any other verdict is a fault.
+        assert verdict == "issued", verdict
+        gone = await self.store._run_read(
+            lambda conn: conn.execute(
+                "SELECT 1 FROM approver_pending_phone WHERE challenge_id = ?",
+                (step["challenge_id"],),
+            ).fetchone()
+        )
+        assert gone is None
+        return "expired"
 
 
 @pytest.fixture

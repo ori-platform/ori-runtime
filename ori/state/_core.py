@@ -339,8 +339,22 @@ class StoreCore(StoreMigrations):
                 max_workers=1, thread_name_prefix="ori-store-write"
             )
         return await asyncio.get_running_loop().run_in_executor(
-            self._write_executor, functools.partial(fn, *args, **kwargs)
+            self._write_executor, functools.partial(self._settled, fn, *args, **kwargs)
         )
+
+    def _settled(self, fn: Callable[_P, _T], *args: _P.args, **kwargs: _P.kwargs) -> _T:
+        """Run *fn* and leave no transaction open on the writer, however it ends.
+
+        Every domain shares this connection, so a transaction left open is
+        everyone's: after a failed commit, the next unrelated write would commit
+        the failed operation. Whatever *fn* did not commit is rolled back.
+        """
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            conn = self._conn
+            if conn is not None and conn.in_transaction:
+                conn.rollback()
 
     def _run_read_on_primary_conn(
         self,
@@ -403,8 +417,13 @@ class StoreCore(StoreMigrations):
         """
         if self._db_path == ":memory:" or self._read_only:
             conn, close_when_done = self._open_read_conn_sync()
+            opened_here = not conn.in_transaction
             try:
                 return fn(conn, *args, **kwargs)
+            except BaseException:
+                if opened_here and conn.in_transaction:
+                    conn.rollback()
+                raise
             finally:
                 if close_when_done:
                     conn.close()
@@ -418,9 +437,12 @@ class StoreCore(StoreMigrations):
         except sqlite3.OperationalError as exc:
             if "locked" in str(exc) or "busy" in str(exc):
                 self._hook_busy_until = time.monotonic() + HOOK_BUSY_BACKOFF_S
-            with contextlib.suppress(sqlite3.Error):
-                conn.rollback()
             raise
+        finally:
+            # This thread's later hook writes would commit whatever is left.
+            if conn.in_transaction:
+                with contextlib.suppress(sqlite3.Error):
+                    conn.rollback()
 
     def _hook_connection(self) -> sqlite3.Connection:
         """This thread's hook connection, opened on first use by this thread."""

@@ -435,3 +435,157 @@ async def test_the_slot_is_held_until_the_answer_is_written(
     for _ in range(20):
         await asyncio.sleep(0)
     assert service.try_admit()
+
+
+async def _rebind_device(store: StateStore, device: str) -> None:
+    def rebind(conn: Any) -> None:
+        conn.execute("UPDATE approver_registry SET device_id = ?", (device,))
+        conn.commit()
+
+    await store._run_write(lambda: rebind(store._conn))
+
+
+@pytest.mark.parametrize(
+    ("operation", "candidate"),
+    [
+        ("recover", None),
+        ("enrol", {"approver_id": None, "channel": "lan_ed25519", "value": _lan("x")}),
+    ],
+)
+async def test_a_registry_bound_to_another_device_is_locked(
+    store: StateStore, operation: str, candidate: Any
+) -> None:
+    """Restarted as another device on the same site, nothing is inherited."""
+    await Site(store).seeded()
+    other = Site(store, device="edge-2")
+    assert await _refused(other, "binding", {}) == "device_binding_mismatch"
+    request = {"challenge_operation": operation, "candidate": candidate}
+    assert await _refused(other, "issue", request) == "device_binding_mismatch"
+    original = await Site(store).op("binding", {})
+    assert original.result["device_id"] == "edge-1"
+
+
+async def test_recovery_binds_the_registry_to_its_device(store: StateStore) -> None:
+    await Site(store).seeded()
+    row = await store._run_read(
+        lambda conn: conn.execute("SELECT device_id FROM approver_registry").fetchone()
+    )
+    assert tuple(row) == ("edge-1",)
+
+
+async def test_a_header_without_its_device_is_locked(store: StateStore) -> None:
+    """Locked, not bound elsewhere: an explicit recovery binds it afresh."""
+    site = Site(store)
+    await site.seeded()
+    await _rebind_device(store, "")
+    assert await _refused(site, "binding", {}) == "registry_unavailable"
+    challenge = await site.issue("recover", None)
+    await site.op("recover", {"challenge_id": challenge["challenge_id"]})
+    assert (await site.op("binding", {})).result["device_id"] == "edge-1"
+
+
+async def test_a_header_table_without_a_device_column_gains_one_and_is_locked(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "state.db"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE approver_registry (singleton INTEGER PRIMARY KEY"
+        " CHECK (singleton = 1), site_id TEXT NOT NULL, identity_epoch TEXT NOT NULL,"
+        " revision INTEGER NOT NULL, last_external_revision INTEGER NOT NULL,"
+        " last_external_document_sha256 TEXT, credential_sequence INTEGER NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO approver_registry VALUES (1, 'site-1', ?, 1, 0, NULL, 0)",
+        (b64(b"\x07" * 16),),
+    )
+    conn.commit()
+    conn.close()
+    store = StateStore(db_path=str(path))
+    await store.open()
+    try:
+        site = Site(store)
+        assert await _refused(site, "binding", {}) == "registry_unavailable"
+        challenge = await site.issue("recover", None)
+        await site.op("recover", {"challenge_id": challenge["challenge_id"]})
+        assert (await site.op("binding", {})).result["device_id"] == "edge-1"
+    finally:
+        await store.close()
+
+
+async def test_a_phone_commit_on_a_header_for_another_device_is_refused(
+    store: StateStore,
+) -> None:
+    site = Site(store)
+    owner = await site.seeded()
+    value = "+2348012345678"
+    challenge = await site.issue(
+        "enrol", {"approver_id": None, "channel": "sms", "value": value}
+    )
+    (candidate,) = challenge["candidates"]
+    await site.op(
+        "enrol",
+        {
+            "challenge_id": challenge["challenge_id"],
+            "candidate": candidate,
+            "authorization": site.authorization(challenge, owner, "owner"),
+            "possession": None,
+        },
+    )
+    await _rebind_device(store, "edge-2")
+    code = b64(b"\x01" * 16)
+    text = f"ORI-POSSESS-V1 {challenge['challenge_id']} {code}"
+    outcome = await site.op("phone_text", "sms", value, text, True)
+    assert outcome.result == {"outcome": "device_binding_mismatch"}
+    assert await _count_credentials(store) == 1
+
+
+async def _count_credentials(store: StateStore) -> int:
+    row = await store._run_read(
+        lambda conn: conn.execute(
+            "SELECT COUNT(*) FROM approver_credentials"
+        ).fetchone()
+    )
+    return int(row[0])
+
+
+@pytest.mark.parametrize("then", ["in_window", "late", "locked"])
+async def test_a_reply_to_an_operation_a_recovery_ended_is_an_epoch_change(
+    store: StateStore, then: str
+) -> None:
+    """Before every other check of the commit, its window and a lock included."""
+    site = Site(store)
+    owner = await site.seeded()
+    value = "+2348012345678"
+    challenge = await site.issue(
+        "enrol", {"approver_id": None, "channel": "sms", "value": value}
+    )
+    (candidate,) = challenge["candidates"]
+    await site.op(
+        "enrol",
+        {
+            "challenge_id": challenge["challenge_id"],
+            "candidate": candidate,
+            "authorization": site.authorization(challenge, owner, "owner"),
+            "possession": None,
+        },
+    )
+
+    def wipe(conn: Any) -> None:
+        conn.execute("DELETE FROM approver_registry")
+        conn.commit()
+
+    await store._run_write(lambda: wipe(store._conn))
+    recover = await site.issue("recover", None)
+    await site.op("recover", {"challenge_id": recover["challenge_id"]})
+    if then == "late":
+        site.now += 600_001
+    elif then == "locked":
+        await store._run_write(lambda: wipe(store._conn))
+    code = b64(b"\x01" * 16)
+    text = f"ORI-POSSESS-V1 {challenge['challenge_id']} {code}"
+    outcome = await site.op("phone_text", "sms", value, text, True)
+    assert outcome.result == {"outcome": "epoch_changed"}
+    again = await site.op("phone_text", "sms", value, text, True)
+    assert again.result == {"outcome": "pending_unavailable"}
+    assert await _count_credentials(store) == 0

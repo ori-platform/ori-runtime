@@ -159,6 +159,7 @@ class Outcome:
 
 @dataclass(frozen=True)
 class Header:
+    device_id: str
     site_id: str
     identity_epoch: str
     revision: int
@@ -186,17 +187,18 @@ def read_header(conn: sqlite3.Connection) -> Header | None:
     """
     try:
         rows = conn.execute(
-            "SELECT site_id, identity_epoch, revision, last_external_revision,"
-            " last_external_document_sha256, credential_sequence"
-            " FROM approver_registry WHERE singleton = 1"
+            "SELECT device_id, site_id, identity_epoch, revision,"
+            " last_external_revision, last_external_document_sha256,"
+            " credential_sequence FROM approver_registry WHERE singleton = 1"
         ).fetchall()
     except sqlite3.DatabaseError:
         return None
     if len(rows) != 1:
         return None
-    site, epoch, revision, external, document, sequence = rows[0]
+    device, site, epoch, revision, external, document, sequence = rows[0]
     if not (
-        is_id(site)
+        is_id(device)
+        and is_id(site)
         and canonical_b64(epoch, 16) is not None
         and is_integer(revision, 1)
         and is_integer(external)
@@ -204,7 +206,7 @@ def read_header(conn: sqlite3.Connection) -> Header | None:
         and is_integer(sequence)
     ):
         return None
-    return Header(site, epoch, revision, external, document, sequence)
+    return Header(device, site, epoch, revision, external, document, sequence)
 
 
 class ApproverRegistry:
@@ -231,6 +233,7 @@ class ApproverRegistry:
         conn.execute("BEGIN IMMEDIATE")
         try:
             outcome = operation(conn, *args)
+            conn.commit()
         except _ConsumedError as consumed:
             # Whatever the operation wrote is discarded: a refusal changes
             # nothing but its challenge's used marker, in its own transaction.
@@ -250,9 +253,9 @@ class ApproverRegistry:
                 raise
             raise RegistryRefusedError(consumed.code) from None
         except BaseException:
-            conn.rollback()
+            if conn.in_transaction:
+                conn.rollback()
             raise
-        conn.commit()
         return outcome
 
     def _verified_site(self) -> str:
@@ -262,6 +265,11 @@ class ApproverRegistry:
         return site
 
     def _site_matches(self, header: Header | None, site: str) -> None:
+        # The registry belongs to one device. A header bound to another is
+        # held like a site change: nothing mutates it, and recovery waits for
+        # the original device identity rather than inheriting its epoch.
+        if header is not None and header.device_id != self.context.device_id:
+            raise RegistryRefusedError("device_binding_mismatch")
         if header is not None and header.site_id != site:
             raise RegistryRefusedError("site_binding_mismatch")
 
@@ -485,6 +493,10 @@ class ApproverRegistry:
             or challenge["site_id"] != site
         ):
             raise _ConsumedError("challenge_stale", challenge_id)
+        invalidated = conn.execute(
+            "SELECT challenge_id FROM approver_pending_phone WHERE run_id = ?",
+            (self.context.run_id,),
+        ).fetchall()
         for table in (
             "approver_registry",
             "approver_credentials",
@@ -494,11 +506,17 @@ class ApproverRegistry:
             "approver_pending_phone",
         ):
             conn.execute(f"DELETE FROM {table}")  # noqa: S608 - fixed names
+        conn.executemany(
+            "INSERT OR IGNORE INTO approver_invalidated_phone (challenge_id, run_id)"
+            " VALUES (?, ?)",
+            [(row[0], self.context.run_id) for row in invalidated],
+        )
         conn.execute(
-            "INSERT INTO approver_registry (singleton, site_id, identity_epoch,"
-            " revision, last_external_revision, last_external_document_sha256,"
-            " credential_sequence) VALUES (1, ?, ?, 1, 0, NULL, 0)",
-            (site, challenge["identity_epoch"]),
+            "INSERT INTO approver_registry (singleton, device_id, site_id,"
+            " identity_epoch, revision, last_external_revision,"
+            " last_external_document_sha256, credential_sequence)"
+            " VALUES (1, ?, ?, ?, 1, 0, NULL, 0)",
+            (self.context.device_id, site, challenge["identity_epoch"]),
         )
         return Outcome({"status": "recovered", "registry_revision": 1})
 
@@ -882,6 +900,14 @@ class ApproverRegistry:
         challenge_id: str,
         code: str,
     ) -> Outcome:
+        # Before every other check of the commit, its window and a locked
+        # registry included: a recovery ended this operation.
+        if conn.execute(
+            "DELETE FROM approver_invalidated_phone"
+            " WHERE challenge_id = ? AND run_id = ?",
+            (challenge_id, self.context.run_id),
+        ).rowcount:
+            return Outcome({"outcome": "epoch_changed"})
         row = conn.execute(
             "SELECT value, channel, candidate_json, code_sha256, window_start_ms,"
             " authorizer_credential_id, registry_revision, identity_epoch, site_id,"
@@ -910,14 +936,16 @@ class ApproverRegistry:
         header = read_header(conn)
         if header is None:
             return Outcome({"outcome": "registry_unavailable"})
-        # In the contract's order: the authorizer, the revision, the site
-        # binding, the epoch. Within one run the site and epoch can change
+        # In the contract's order: the authorizer, the revision, the device
+        # and site bindings, the epoch. Within one run the site and epoch can change
         # only through recovery, which removes every pending operation first.
         active = self._active(conn)
         if not any(c["credential_id"] == authorizer for c in active):
             return Outcome({"outcome": "authorizer_unavailable"})
         if header.revision != revision:
             return Outcome({"outcome": "registry_changed"})
+        if header.device_id != self.context.device_id:
+            return Outcome({"outcome": "device_binding_mismatch"})
         if header.site_id != site or header.site_id != self.context.verified_site_id:
             return Outcome({"outcome": "site_binding_mismatch"})
         if header.identity_epoch != epoch:
