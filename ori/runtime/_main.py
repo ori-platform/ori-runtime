@@ -76,7 +76,7 @@ def _maybe_autoload_dotenv(config_path: str) -> frozenset[str] | None:
 def main() -> None:
     import argparse
 
-    parser = argparse.ArgumentParser(description="Ori Runtime")
+    parser = argparse.ArgumentParser(prog="ori-runtime", description="Ori Runtime")
     parser.add_argument(
         "--config",
         default="ori.yaml",

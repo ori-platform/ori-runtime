@@ -276,8 +276,23 @@ release is cut.
   `ori/state/`, with the DDL in `_migrations.py`. The methods moved unchanged:
   the schema, the migrations and every behaviour are the same, and
   `ori.state.store` still exports every name imported from it. A new test
-  holds every module under `ori/` to 2,500 lines, and the five already over
-  it, `ori/runtime.py` among them, to their current size.
+  holds every module under `ori/` to 2,500 lines, and those already over it
+  to their current size.
+- The runtime is split by concern. `OriRuntime.start()` runs nineteen
+  ordered stages over one startup context, in the order and with the
+  constraints `docs/STARTUP_STAGES.md` records and three tests hold, instead of
+  one 1,257-line method. `ori/runtime.py` is now the package `ori/runtime/`:
+  `OriRuntime` is composed from one class per domain (startup, shutdown,
+  health, alerts, remote commands, sensors, measurement, evidence, firmware,
+  device policy and the rest), and the module-level helpers live in private
+  modules by concern. The code moved unchanged and every behaviour is the same.
+  `ori.runtime` exports its interface only (`OriRuntime`, `main` and the
+  constants and helpers other modules read), listed in its `__all__`; a script
+  that imported a private name from it imports it from the module that defines
+  it. `python -m ori.runtime` and the `ori-runtime` command start the runtime
+  as before. Under `python -m`, log records are now named `ori.runtime`, as
+  they already were under the `ori-runtime` command, and `--help` names the
+  program `ori-runtime`.
 - The configuration loader is split by section. `ori/config.py` is now the
   package `ori/config/`, with one private module per top-level section of
   `ori.yaml` (device, sensors, skills, reasoning, gateway, actions, hal,
