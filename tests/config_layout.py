@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import functools
 import types
+from typing import Any, cast
 
 import ori.config
 
@@ -55,3 +56,56 @@ def config_owners() -> dict[str, tuple[str, ...]]:
             )
         )
     return owners
+
+
+def _refusal(name: str) -> str:
+    where = ", ".join(config_owners().get(name, ())) or "the module that reads it"
+    return (
+        f"{ori.config.__name__}.{name} is a re-export; rebinding it reaches no "
+        f"caller. Patch {where} instead."
+    )
+
+
+class _ReexportsHeld(types.ModuleType):
+    """``ori.config`` while the suite runs: a re-export cannot be rebound.
+
+    Every attribute spelling of a patch, from ``monkeypatch.setattr`` and
+    ``mock.patch`` to plain assignment and ``delattr``, rebinds through here,
+    inside a ``with`` block or a fixture as much as in a test body. Binding the
+    same object again, or a name the package does not re-export, such as a
+    section module the import system binds on first import, is allowed.
+    """
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if name in config_owners() and vars(self).get(name) is not value:
+            raise AssertionError(_refusal(name))
+        super().__setattr__(name, value)
+
+    def __delattr__(self, name: str) -> None:
+        if name in config_owners():
+            raise AssertionError(_refusal(name))
+        super().__delattr__(name)
+
+
+def hold_reexports() -> None:
+    """Refuse every attribute rebinding of an ``ori.config`` re-export."""
+    config_owners()  # computed before the class swap, from the real bindings
+    # A module's class may be swapped for a ModuleType subclass; pyright
+    # does not model that, so the assignment goes through Any.
+    cast(Any, ori.config).__class__ = _ReexportsHeld
+
+
+def bindings() -> dict[str, int]:
+    """The object each re-export is bound to now, by identity."""
+    namespace = vars(ori.config)
+    return {name: id(namespace[name]) for name in config_owners() if name in namespace}
+
+
+def rebound(before: dict[str, int]) -> list[str]:
+    """Refusals for re-exports bound to another object than *before*, or gone.
+
+    Catches what the class cannot: a write straight into the module's
+    ``__dict__``, as ``monkeypatch.setitem(vars(ori.config), ...)`` makes.
+    """
+    now = bindings()
+    return [_refusal(name) for name, ident in before.items() if now.get(name) != ident]

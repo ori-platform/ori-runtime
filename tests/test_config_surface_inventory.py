@@ -57,7 +57,7 @@ def _parse_sensors(data):
 
 
 def test_enumerate_loop_binds_the_item_not_the_index() -> None:
-    """`for i, item in enumerate(data)` is how config.py actually iterates."""
+    """`for i, item in enumerate(data)` is how ori/config/ actually iterates."""
     got = paths(
         """
 def _parse_sensors(data):
@@ -213,7 +213,7 @@ def test_adapter_correlation_is_confined_to_sensors() -> None:
 # would still pass if someone dropped `_parse_sensors` from ENTRY_POINTS, and
 # sensors would vanish from the real inventory exactly as they did before.
 #
-# This crosses the whole join: generator -> the real ori/config.py -> the real
+# This crosses the whole join: generator -> the real ori/config/ -> the real
 # adapters -> the classification that lands in the artifact. Components tested
 # and their join untested is the false-green shape these tests exist to catch.
 

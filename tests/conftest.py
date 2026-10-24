@@ -70,6 +70,35 @@ def _real_gpio_allowed() -> bool:
     return os.environ.get(ALLOW_GPIO_ENV, "").strip().lower() in {"1", "true", "yes"}
 
 
+_CONFIG_BINDINGS = pytest.StashKey[dict[str, int]]()
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    from tests.config_layout import hold_reexports
+
+    hold_reexports()
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_setup(item: pytest.Item) -> Iterator[None]:
+    from tests.config_layout import bindings
+
+    item.stash[_CONFIG_BINDINGS] = bindings()
+    return (yield)
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_call(item: pytest.Item) -> Iterator[None]:
+    """Fail a test whose fixtures or body left an ``ori.config`` re-export rebound."""
+    from tests.config_layout import rebound
+
+    result = yield
+    problems = rebound(item.stash[_CONFIG_BINDINGS])
+    if problems:
+        pytest.fail("\n".join(problems))
+    return result
+
+
 @pytest.fixture(autouse=True)
 def no_real_gpio(monkeypatch: pytest.MonkeyPatch) -> None:
     """Refuse real GPIO for the whole suite unless a run opts in.
