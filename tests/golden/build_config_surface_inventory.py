@@ -458,7 +458,7 @@ def coverage(entries: list[dict[str, Any]], in_example: set[str]) -> dict[str, A
 
     return {
         "note": (
-            "Paths the shipped example sets that ori/config.py's parse functions "
+            "Paths the shipped example sets that the parse functions under ori/config/ "
             "do not read. Adapter correlation is applied to sensors[] only, "
             "because a shared leaf name elsewhere proves nothing."
         ),
@@ -512,10 +512,10 @@ def main() -> None:
                 "versioned baseline entry."
             ),
             "runtime_commit": commit,
-            "source": "ori/config.py",
+            "source": "ori/config/",
             "example": "ori.yaml.example",
             "method": (
-                "Per-function AST walk of ori/config.py with an environment mapping "
+                "Per-function AST walk of ori/config/ with an environment mapping "
                 "local names to configuration paths. A read is recorded only when "
                 "its receiver holds configuration, so intermediate dictionaries are "
                 "not flattened in beside real settings. Types, constraints, "
