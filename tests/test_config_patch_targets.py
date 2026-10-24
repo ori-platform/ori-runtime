@@ -13,7 +13,9 @@ These tests drive that guard through each spelling of a patch.
 
 from __future__ import annotations
 
+import ast
 import importlib
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -111,3 +113,97 @@ def test_patching_the_owning_module_is_allowed(
 ) -> None:
     monkeypatch.setattr("ori.config._device._detect_host_timezone", lambda: None)
     monkeypatch.setattr("ori.config.Config.load", lambda *a, **k: None)
+
+
+TESTS = Path(__file__).resolve().parent
+
+
+def _is_package(node: ast.AST, aliases: set[str]) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id in aliases
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "config"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "ori"
+    )
+
+
+def _is_package_dict(node: ast.AST, aliases: set[str]) -> bool:
+    """``ori.config.__dict__`` or ``vars(ori.config)``, under any alias."""
+    if isinstance(node, ast.Attribute) and node.attr == "__dict__":
+        return _is_package(node.value, aliases)
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "vars"
+        and len(node.args) == 1
+        and _is_package(node.args[0], aliases)
+    )
+
+
+def dict_patches(root: Path) -> list[str]:
+    """``patch.dict`` or ``setitem`` calls on ``ori.config``'s namespace.
+
+    The one spelling neither guard sees: a ``with mock.patch.dict(...)`` block
+    restores the namespace before the test ends, and writes it without going
+    through the module's class.
+    """
+    found = []
+    for path in sorted(root.rglob("*.py")):
+        if path == Path(__file__).resolve():
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        aliases = (
+            {"config"}
+            if any(
+                isinstance(n, ast.ImportFrom)
+                and n.module == "ori"
+                and any(a.name == "config" and a.asname is None for a in n.names)
+                for n in ast.walk(tree)
+            )
+            else set()
+        )
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                aliases |= {
+                    a.asname for a in node.names if a.name == "ori.config" and a.asname
+                }
+            elif isinstance(node, ast.ImportFrom) and node.module == "ori":
+                aliases |= {
+                    a.asname for a in node.names if a.name == "config" and a.asname
+                }
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"dict", "setitem"}
+                and node.args
+                and _is_package_dict(node.args[0], aliases)
+            ):
+                found.append(f"{path.relative_to(root.parent)}:{node.lineno}")
+    return found
+
+
+def test_no_test_patches_the_namespace_of_ori_config() -> None:
+    found = dict_patches(TESTS)
+    assert not found, (
+        "patch the section module that defines the name, not ori.config's "
+        "namespace: " + ", ".join(found)
+    )
+
+
+def test_the_namespace_scan_finds_each_spelling(tmp_path: Path) -> None:
+    (tmp_path / "test_x.py").write_text(
+        "import ori.config\n"
+        "import ori.config as cfg\n"
+        "from unittest import mock\n"
+        "def test(monkeypatch):\n"
+        "    with mock.patch.dict(ori.config.__dict__, {}):\n"
+        "        pass\n"
+        "    mock.patch.dict(vars(cfg), {})\n"
+        "    monkeypatch.setitem(vars(ori.config), 'x', 1)\n"
+        "    monkeypatch.setitem(cfg.__dict__, 'x', 1)\n"
+        "    mock.patch.dict(ori.config._device.__dict__, {})\n"
+    )
+    assert len(dict_patches(tmp_path)) == 4
