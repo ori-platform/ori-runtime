@@ -15,7 +15,9 @@ from ori.runtime import (
     EVIDENCE_POSTURE_AUTHORITY_KEYS_REFUSED,
     EVIDENCE_POSTURE_CUSTODY_UNCONFIGURED,
     EVIDENCE_POSTURE_SIGNING_UNAVAILABLE,
-    _evidence_posture_problems,
+)
+from ori.runtime._evidence_wiring import (
+    evidence_posture_problems as _evidence_posture_problems,
 )
 from ori.security.evidence.authority_keys import (
     PURPOSE_DISPOSITION,

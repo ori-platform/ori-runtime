@@ -29,8 +29,10 @@ stage, and the guard holds the inventory.
 The order is data, not control flow: a tuple of stage names, a constraint
 table beside it of `(later, earlier, reason, safety)`, and a set of the
 boundaries after which startup checks for a stop request. All three, and the
-`StartupContext`, live in `ori/startup_stages.py`; the stage bodies stay on
-`OriRuntime`, and `start()` is the loop over the tuple. A test asserts the
+`StartupContext`, live in `ori/startup_stages.py`; the stage bodies are
+`OriRuntime` methods, defined in its two startup domain classes in
+`ori/runtime/_startup_foundation.py` and `ori/runtime/_startup.py`, and
+`start()` is the loop over the tuple. A test asserts the
 tuple satisfies every constraint, that every constraint names stages that
 exist, and that the checkpoint set is exactly the four the code has today.
 

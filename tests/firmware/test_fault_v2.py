@@ -296,7 +296,11 @@ COMMAND_EGRESS_CALLS = Counter(
             "FirmwareCommandService.publish_command",
             "publish_command",
         ): 1,
-        ("ori/runtime.py", "OriRuntime.publish_firmware_command", "publish_command"): 1,
+        (
+            "ori/runtime/_firmware.py",
+            "FirmwareCommands.publish_firmware_command",
+            "publish_command",
+        ): 1,
         (
             "ori/security/firmware/commands.py",
             "FirmwareCommandSigner.sign_command",

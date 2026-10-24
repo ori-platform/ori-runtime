@@ -542,7 +542,9 @@ class _StubAttestor:
 
 
 def test_the_route_is_not_built_without_a_gateway():
-    from ori.runtime import _build_evidence_inbound_subscriber
+    from ori.runtime._evidence_wiring import (
+        build_evidence_inbound_subscriber as _build_evidence_inbound_subscriber,
+    )
 
     subscriber = _build_evidence_inbound_subscriber(
         cast(Any, _Cfg(enabled=False)),
@@ -561,14 +563,18 @@ def test_the_route_is_not_built_without_a_gateway():
 )
 def test_the_route_is_not_built_without_somewhere_to_apply_artifacts(name, attestor):
     """Consuming what cannot be recorded makes the gateway stop retrying."""
-    from ori.runtime import _build_evidence_inbound_subscriber
+    from ori.runtime._evidence_wiring import (
+        build_evidence_inbound_subscriber as _build_evidence_inbound_subscriber,
+    )
 
     built = _build_evidence_inbound_subscriber(cast(Any, _Cfg()), cast(Any, attestor))
     assert built is None, name
 
 
 def test_the_route_is_built_when_a_gateway_and_ingest_are_both_present(monkeypatch):
-    from ori.runtime import _build_evidence_inbound_subscriber
+    from ori.runtime._evidence_wiring import (
+        build_evidence_inbound_subscriber as _build_evidence_inbound_subscriber,
+    )
 
     monkeypatch.setenv("ORI_TEST_ENVELOPE_SECRET", ENVELOPE_SECRET)
     config = _Cfg(
@@ -586,7 +592,9 @@ def test_the_route_is_built_when_a_gateway_and_ingest_are_both_present(monkeypat
 
 def test_a_development_runtime_without_gateway_auth_still_routes(monkeypatch):
     """Envelope auth is defence in depth; each artifact carries its own."""
-    from ori.runtime import _build_evidence_inbound_subscriber
+    from ori.runtime._evidence_wiring import (
+        build_evidence_inbound_subscriber as _build_evidence_inbound_subscriber,
+    )
 
     subscriber = _build_evidence_inbound_subscriber(
         cast(Any, _Cfg(auth={"enabled": False})),

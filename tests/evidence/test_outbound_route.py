@@ -818,7 +818,9 @@ class _StubAttestor:
     ],
 )
 def test_the_route_is_not_built_without_somewhere_to_carry_from(name, config, attestor):
-    from ori.runtime import _build_evidence_outbound_publisher
+    from ori.runtime._evidence_wiring import (
+        build_evidence_outbound_publisher as _build_evidence_outbound_publisher,
+    )
 
     assert (
         _build_evidence_outbound_publisher(cast(Any, config), cast(Any, attestor))
@@ -827,7 +829,9 @@ def test_the_route_is_not_built_without_somewhere_to_carry_from(name, config, at
 
 
 def test_the_route_is_built_with_envelope_auth_when_configured(monkeypatch):
-    from ori.runtime import _build_evidence_outbound_publisher
+    from ori.runtime._evidence_wiring import (
+        build_evidence_outbound_publisher as _build_evidence_outbound_publisher,
+    )
 
     monkeypatch.setenv("ORI_TEST_ENVELOPE_SECRET", ENVELOPE_SECRET)
     config = _Cfg(
@@ -843,7 +847,9 @@ def test_the_route_is_built_with_envelope_auth_when_configured(monkeypatch):
 
 
 def test_a_development_runtime_without_gateway_auth_still_carries():
-    from ori.runtime import _build_evidence_outbound_publisher
+    from ori.runtime._evidence_wiring import (
+        build_evidence_outbound_publisher as _build_evidence_outbound_publisher,
+    )
 
     publisher = _build_evidence_outbound_publisher(
         cast(Any, _Cfg(auth={"enabled": False})),
@@ -916,9 +922,9 @@ async def test_shutdown_retains_the_checkpoint_even_without_a_route():
 
 
 async def test_the_checkpoint_loop_issues_on_the_release_owned_interval(monkeypatch):
-    from ori import runtime as runtime_module
+    from tests.package_layout import patch_runtime
 
-    monkeypatch.setattr(runtime_module, "DEFAULT_CHECKPOINT_INTERVAL_S", 0.02)
+    patch_runtime(monkeypatch, "DEFAULT_CHECKPOINT_INTERVAL_S", 0.02)
     attestor = _RecordingAttestor()
     runtime = _runtime(attestor, None)
     task = asyncio.create_task(runtime._evidence_checkpoint_loop(cast(Any, attestor)))

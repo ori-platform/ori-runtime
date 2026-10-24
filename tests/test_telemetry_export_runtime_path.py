@@ -150,7 +150,7 @@ async def test_a_sensor_typed_reading_is_exported_once_like_any_other(
 async def test_a_firmware_node_reading_is_exported(
     store: StateStore, receiver: list[dict[str, Any]]
 ) -> None:
-    from ori.runtime import _build_firmware_telemetry_subscriber
+    from ori.runtime._firmware_wiring import _build_firmware_telemetry_subscriber
     from ori.security.firmware.liveness import FirmwareLivenessSupervisor
     from tests.firmware.test_liveness_composition import (
         _cfg,

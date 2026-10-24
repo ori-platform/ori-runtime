@@ -30,6 +30,7 @@ from tests.commissioning.signing import (
     public_key_b64,
     sign_envelope,
 )
+from tests.package_layout import patch_runtime
 
 SEED = EPHEMERAL_SEED
 DEVICE = "bench-runtime-01"
@@ -125,7 +126,7 @@ def _patch_environment(
     monkeypatch.setenv(COMMISSIONING_ANCHOR_ENV, public_key_b64(SEED))
     monkeypatch.chdir(tmp_path)
     if ratified:
-        monkeypatch.setattr("ori.runtime.load_shipped_profile_set", lambda: RATIFIED)
+        patch_runtime(monkeypatch, "load_shipped_profile_set", lambda: RATIFIED)
 
 
 async def _run_until(runtime: OriRuntime, probe) -> Any:
@@ -386,7 +387,9 @@ async def test_active_zone_without_executor_degrades_a_dev_start(
 
 
 def test_unbound_active_zone_refuses_a_hardened_start() -> None:
-    from ori.runtime import _refuse_unbound_active_zones
+    from ori.runtime._safety_wiring import (
+        refuse_unbound_active_zones as _refuse_unbound_active_zones,
+    )
 
     _refuse_unbound_active_zones([], hardened=True)
     _refuse_unbound_active_zones(["zone-two"], hardened=False)

@@ -36,12 +36,19 @@ from ori.actions.alert_delivery import (
     AlertSendReceipt,
 )
 from ori.actions.alert_failover import AlertFailoverSender
+from ori.actions.executor_targets import (
+    process_target_from_context as _process_target_from_context,
+)
 from ori.config import (
     Config,
     ConfigValidationError,
     GatewayConfig,
     TelemetryExportConfig,
     config_env_placeholders,
+    requires_production_posture,
+)
+from ori.gateway.envelope_auth import (
+    build_gateway_message_auth as _build_gateway_message_auth,
 )
 from ori.network.deduplicator import EventDeduplicator
 from ori.network.event_bus import EventBus
@@ -50,25 +57,36 @@ from ori.policy.device_policy import DevicePolicy
 from ori.policy.remote_fetch import FetchedRemotePolicy, RemotePolicyFetchError
 from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.reasoning.elevator import SkillContext
-from ori.runtime import (
-    OriRuntime,
-    _build_gateway_message_auth,
-    _build_gateway_message_encryptor,
-    _build_gateway_reasoner,
-    _build_local_llm,
-    _build_remote_command_verifier,
-    _build_runtime_node_heartbeat_publisher,
-    _coap_command_from_context,
-    _count_active_triggers,
-    _maybe_autoload_dotenv,
-    _message_from_context,
-    _process_target_from_context,
-    _resolve_local_model_file,
-    _resolve_setup_notification_channels,
-    _setup_success_message,
-    _validate_required_runtime_capabilities,
-    _warn_sms_webhook_security_posture,
-    requires_production_posture,
+from ori.runtime import OriRuntime
+from ori.runtime._alert_text import count_active_triggers as _count_active_triggers
+from ori.runtime._alert_text import message_from_context as _message_from_context
+from ori.runtime._alert_text import (
+    resolve_setup_notification_channels as _resolve_setup_notification_channels,
+)
+from ori.runtime._alert_text import setup_success_message as _setup_success_message
+from ori.runtime._capabilities import _resolve_local_model_file
+from ori.runtime._capabilities import build_local_llm as _build_local_llm
+from ori.runtime._capabilities import (
+    validate_required_runtime_capabilities as _validate_required_runtime_capabilities,
+)
+from ori.runtime._device_io import (
+    coap_command_from_context as _coap_command_from_context,
+)
+from ori.runtime._gateway_wiring import (
+    build_gateway_message_encryptor as _build_gateway_message_encryptor,
+)
+from ori.runtime._gateway_wiring import (
+    build_gateway_reasoner as _build_gateway_reasoner,
+)
+from ori.runtime._gateway_wiring import (
+    build_runtime_node_heartbeat_publisher as _build_runtime_node_heartbeat_publisher,
+)
+from ori.runtime._main import _maybe_autoload_dotenv
+from ori.runtime._remote_command_wiring import (
+    build_remote_command_verifier as _build_remote_command_verifier,
+)
+from ori.runtime._remote_command_wiring import (
+    warn_sms_webhook_security_posture as _warn_sms_webhook_security_posture,
 )
 from ori.security.evidence.authority_keys import ReleaseAuthorityKeys
 from ori.security.gateway_messages import (
@@ -91,6 +109,7 @@ from tests.conftest import (
     run_runtime_until,
 )
 from tests.gateway_auth_helpers import cache_for
+from tests.package_layout import patch_runtime, patched_runtime
 from tests.skill_races import POINTS as RACE_POINTS
 from tests.skill_races import swap_at as _swap_at
 from tests.waiting import DEADLINE_S, settle, wait_until
@@ -459,7 +478,7 @@ async def test_start_telemetry_export_subscribes_wildcard_handler(monkeypatch):
             served.set()
             await shutdown_event.wait()
 
-    monkeypatch.setattr("ori.runtime.HttpTelemetryExporter", FakeExporter)
+    patch_runtime(monkeypatch, "HttpTelemetryExporter", FakeExporter)
     runtime = OriRuntime()
     event_bus = EventBus()
     config: Any = SimpleNamespace(
@@ -801,7 +820,7 @@ async def test_a_sensor_that_never_connects_reaches_the_operator(
     _patch_external(monkeypatch)
     config = Config.load(str(minimal_config))
     config.actions.operator_contact = "+2348000000000"
-    monkeypatch.setattr("ori.runtime.Config.load", lambda _path: config)
+    monkeypatch.setattr("ori.config.Config.load", lambda _path: config)
 
     async def _refuse(self, config):
         raise AdapterConnectionError("simulated: device does not answer")
@@ -892,7 +911,7 @@ async def test_a_failed_connect_reaches_the_pair_that_depends_on_it(
             }
         ]
     )
-    monkeypatch.setattr("ori.runtime.load_shipped_profile_set", lambda: ratified)
+    patch_runtime(monkeypatch, "load_shipped_profile_set", lambda: ratified)
     commission_relay(
         minimal_config,
         monkeypatch,
@@ -905,9 +924,9 @@ async def test_a_failed_connect_reaches_the_pair_that_depends_on_it(
     # that pin or no zone reaches in force and there is no pair to bind.
     config.actions.relay = {"enabled": False, "gpio_pin": 26}
     config.actions.operator_contact = "+2348000000000"
-    monkeypatch.setattr("ori.runtime.Config.load", lambda _path: config)
-    monkeypatch.setattr("ori.runtime.gpio_backend_importable", lambda: True)
-    monkeypatch.setattr("ori.runtime.gpio_backend_arbitrated", lambda: True)
+    monkeypatch.setattr("ori.config.Config.load", lambda _path: config)
+    patch_runtime(monkeypatch, "gpio_backend_importable", lambda: True)
+    patch_runtime(monkeypatch, "gpio_backend_arbitrated", lambda: True)
 
     async def _refuse(self, config):
         raise AdapterConnectionError("simulated: device does not answer")
@@ -974,7 +993,7 @@ async def test_an_unconnected_sensor_notice_is_queued_when_delivery_fails(
     _patch_external(monkeypatch)
     config = Config.load(str(minimal_config))
     config.actions.operator_contact = "+2348000000000"
-    monkeypatch.setattr("ori.runtime.Config.load", lambda _path: config)
+    monkeypatch.setattr("ori.config.Config.load", lambda _path: config)
 
     async def _refuse(self, config):
         raise AdapterConnectionError("simulated: device does not answer")
@@ -1564,9 +1583,7 @@ async def test_startup_refuses_a_dotenv_loaded_before_a_hardened_document(
         """),
         encoding="utf-8",
     )
-    monkeypatch.setattr(
-        "ori.runtime.requires_production_posture", lambda **_kwargs: True
-    )
+    patch_runtime(monkeypatch, "requires_production_posture", lambda **_kwargs: True)
 
     runtime = OriRuntime(
         config_path=str(home / "ori.yaml"), dotenv_variables=frozenset()
@@ -1664,9 +1681,7 @@ async def test_a_hardened_document_without_a_dotenv_still_starts(tmp_path, monke
         """),
         encoding="utf-8",
     )
-    monkeypatch.setattr(
-        "ori.runtime.requires_production_posture", lambda **_kwargs: True
-    )
+    patch_runtime(monkeypatch, "requires_production_posture", lambda **_kwargs: True)
 
     runtime = OriRuntime(config_path=str(home / "ori.yaml"), dotenv_variables=None)
     start_task = asyncio.create_task(runtime.start())
@@ -1770,9 +1785,9 @@ def test_main_carries_the_autoload_result_into_the_runtime(monkeypatch):
         async def start(self) -> None:
             return None
 
-    monkeypatch.setattr(runtime_module, "OriRuntime", _Runtime)
-    monkeypatch.setattr(
-        runtime_module, "_maybe_autoload_dotenv", lambda _path: frozenset({"SEEN"})
+    patch_runtime(monkeypatch, "OriRuntime", _Runtime)
+    patch_runtime(
+        monkeypatch, "_maybe_autoload_dotenv", lambda _path: frozenset({"SEEN"})
     )
     monkeypatch.setattr(sys, "argv", ["ori-runtime", "--config", "/tmp/ori.yaml"])
 
@@ -1838,9 +1853,9 @@ class TestRequiredRuntimeCapabilities:
             sensors=[SimpleNamespace(protocol="coap")],
             default_tier="local",
         )
-        monkeypatch.setattr("ori.runtime.gpio_backend_importable", lambda: False)
-        monkeypatch.setattr("ori.runtime.coap_backend_available", lambda: False)
-        monkeypatch.setattr("ori.runtime.local_llm_backend_available", lambda: False)
+        patch_runtime(monkeypatch, "gpio_backend_importable", lambda: False)
+        patch_runtime(monkeypatch, "coap_backend_available", lambda: False)
+        patch_runtime(monkeypatch, "local_llm_backend_available", lambda: False)
 
         _validate_required_runtime_capabilities(config, str(tmp_path / "ori.yaml"))
 
@@ -1852,14 +1867,14 @@ class TestRequiredRuntimeCapabilities:
             profile=profile,
             relay={"enabled": False, "gpio_pin": 26},
         )
-        monkeypatch.setattr("ori.runtime.gpio_backend_importable", lambda: False)
+        patch_runtime(monkeypatch, "gpio_backend_importable", lambda: False)
 
         with pytest.raises(ConfigValidationError, match="gpiozero.*relay control"):
             _validate_required_runtime_capabilities(config, str(tmp_path / "ori.yaml"))
 
     def test_hardened_status_signaling_requires_gpiozero(self, monkeypatch, tmp_path):
         config = _capability_config(status_signaling={"enabled": True})
-        monkeypatch.setattr("ori.runtime.gpio_backend_importable", lambda: False)
+        patch_runtime(monkeypatch, "gpio_backend_importable", lambda: False)
 
         with pytest.raises(ConfigValidationError, match="gpiozero.*status signaling"):
             _validate_required_runtime_capabilities(config, str(tmp_path / "ori.yaml"))
@@ -1882,11 +1897,9 @@ class TestRequiredRuntimeCapabilities:
             profile=profile,
             relay={"enabled": True, "gpio_pin": 26},
         )
-        monkeypatch.setattr("ori.runtime.gpio_backend_importable", lambda: True)
-        monkeypatch.setattr("ori.runtime.gpio_backend_arbitrated", lambda: False)
-        monkeypatch.setattr(
-            "ori.runtime.resolved_pin_factory_name", lambda: "NativeFactory"
-        )
+        patch_runtime(monkeypatch, "gpio_backend_importable", lambda: True)
+        patch_runtime(monkeypatch, "gpio_backend_arbitrated", lambda: False)
+        patch_runtime(monkeypatch, "resolved_pin_factory_name", lambda: "NativeFactory")
 
         with pytest.raises(ConfigValidationError, match="NativeFactory"):
             _validate_required_runtime_capabilities(config, str(tmp_path / "ori.yaml"))
@@ -1896,8 +1909,8 @@ class TestRequiredRuntimeCapabilities:
             profile="production",
             relay={"enabled": True, "gpio_pin": 26},
         )
-        monkeypatch.setattr("ori.runtime.gpio_backend_importable", lambda: True)
-        monkeypatch.setattr("ori.runtime.gpio_backend_arbitrated", lambda: True)
+        patch_runtime(monkeypatch, "gpio_backend_importable", lambda: True)
+        patch_runtime(monkeypatch, "gpio_backend_arbitrated", lambda: True)
 
         _validate_required_runtime_capabilities(config, str(tmp_path / "ori.yaml"))
 
@@ -1913,8 +1926,8 @@ class TestRequiredRuntimeCapabilities:
             profile="production",
             relay={"enabled": True, "gpio_pin": 26},
         )
-        monkeypatch.setattr("ori.runtime.gpio_backend_importable", lambda: False)
-        monkeypatch.setattr("ori.runtime.gpio_backend_arbitrated", lambda: False)
+        patch_runtime(monkeypatch, "gpio_backend_importable", lambda: False)
+        patch_runtime(monkeypatch, "gpio_backend_arbitrated", lambda: False)
 
         with pytest.raises(ConfigValidationError, match="gpiozero is unavailable"):
             _validate_required_runtime_capabilities(config, str(tmp_path / "ori.yaml"))
@@ -1923,7 +1936,7 @@ class TestRequiredRuntimeCapabilities:
         self, monkeypatch, tmp_path
     ):
         config = _capability_config(relay={"enabled": False})
-        monkeypatch.setattr("ori.runtime.gpio_backend_importable", lambda: False)
+        patch_runtime(monkeypatch, "gpio_backend_importable", lambda: False)
 
         _validate_required_runtime_capabilities(config, str(tmp_path / "ori.yaml"))
 
@@ -1936,7 +1949,7 @@ class TestRequiredRuntimeCapabilities:
     )
     def test_hardened_coap_requires_aiocoap(self, coap, sensors, monkeypatch, tmp_path):
         config = _capability_config(coap=coap, sensors=sensors)
-        monkeypatch.setattr("ori.runtime.coap_backend_available", lambda: False)
+        patch_runtime(monkeypatch, "coap_backend_available", lambda: False)
 
         with pytest.raises(ConfigValidationError, match="aiocoap.*CoAP"):
             _validate_required_runtime_capabilities(config, str(tmp_path / "ori.yaml"))
@@ -1948,14 +1961,14 @@ class TestRequiredRuntimeCapabilities:
             default_tier="local",
             local_model=str(model),
         )
-        monkeypatch.setattr("ori.runtime.local_llm_backend_available", lambda: False)
+        patch_runtime(monkeypatch, "local_llm_backend_available", lambda: False)
 
         with pytest.raises(ConfigValidationError, match="llama-cpp-python"):
             _validate_required_runtime_capabilities(config, str(tmp_path / "ori.yaml"))
 
     def test_hardened_local_reasoning_requires_model(self, monkeypatch, tmp_path):
         config = _capability_config(default_tier="local")
-        monkeypatch.setattr("ori.runtime.local_llm_backend_available", lambda: True)
+        patch_runtime(monkeypatch, "local_llm_backend_available", lambda: True)
 
         with pytest.raises(ConfigValidationError, match="GGUF model"):
             _validate_required_runtime_capabilities(config, str(tmp_path / "ori.yaml"))
@@ -1977,7 +1990,7 @@ class TestRequiredRuntimeCapabilities:
             local_model=local_model,
             model_path=model_path,
         )
-        monkeypatch.setattr("ori.runtime.local_llm_backend_available", lambda: False)
+        patch_runtime(monkeypatch, "local_llm_backend_available", lambda: False)
 
         _validate_required_runtime_capabilities(config, str(tmp_path / "ori.yaml"))
 
@@ -1987,7 +2000,7 @@ class TestRequiredRuntimeCapabilities:
             enforce=True,
             coap={"enabled": True},
         )
-        monkeypatch.setattr("ori.runtime.coap_backend_available", lambda: False)
+        patch_runtime(monkeypatch, "coap_backend_available", lambda: False)
 
         with pytest.raises(ConfigValidationError, match="aiocoap"):
             _validate_required_runtime_capabilities(config, str(tmp_path / "ori.yaml"))
@@ -1996,9 +2009,9 @@ class TestRequiredRuntimeCapabilities:
         config = _capability_config(coap={"enabled": True})
         runtime = OriRuntime(config_path="/unused/ori.yaml")
         opened = AsyncMock(side_effect=AssertionError("state store must not open"))
-        monkeypatch.setattr("ori.runtime.Config.load", lambda _path: config)
-        monkeypatch.setattr("ori.runtime.coap_backend_available", lambda: False)
-        monkeypatch.setattr("ori.runtime.StateStore.open", opened)
+        monkeypatch.setattr("ori.config.Config.load", lambda _path: config)
+        patch_runtime(monkeypatch, "coap_backend_available", lambda: False)
+        monkeypatch.setattr("ori.state.store.StateStore.open", opened)
 
         with pytest.raises(ConfigValidationError, match="aiocoap"):
             await runtime.start()
@@ -2025,13 +2038,13 @@ class TestRequiredRuntimeCapabilities:
             sensor_id="cpu-sensor",
             proof_method="actuate_and_observe",
         )
-        monkeypatch.setattr("ori.runtime.Config.load", lambda _path: config)
-        monkeypatch.setattr("ori.runtime.gpio_backend_importable", lambda: True)
+        monkeypatch.setattr("ori.config.Config.load", lambda _path: config)
+        patch_runtime(monkeypatch, "gpio_backend_importable", lambda: True)
         # The posture check now also asks which factory resolved, so reaching
         # relay initialisation means claiming an arbitrated backend as well.
-        monkeypatch.setattr("ori.runtime.gpio_backend_arbitrated", lambda: True)
+        patch_runtime(monkeypatch, "gpio_backend_arbitrated", lambda: True)
         connect = AsyncMock(side_effect=RuntimeError("GPIO chip unavailable"))
-        monkeypatch.setattr("ori.runtime.RelayAction.connect", connect)
+        monkeypatch.setattr("ori.actions.relay.RelayAction.connect", connect)
         runtime = OriRuntime(config_path=str(minimal_config))
 
         try:
@@ -2118,7 +2131,7 @@ class TestLocalSLMWiring:
             def is_available(self) -> bool:
                 return True
 
-        monkeypatch.setattr("ori.runtime.LocalLLM", _FakeLocalLLM)
+        patch_runtime(monkeypatch, "LocalLLM", _FakeLocalLLM)
 
         llm = _build_local_llm(reasoning_cfg, str(cfg_path))
         assert isinstance(llm, _FakeLocalLLM)
@@ -2134,9 +2147,7 @@ class TestLocalSLMWiring:
 
         from ori.reasoning.elevator import IntelligenceElevator as _RealElevator
 
-        monkeypatch.setattr(
-            "ori.runtime._build_local_llm", lambda *_, **_kwargs: sentinel
-        )
+        patch_runtime(monkeypatch, "build_local_llm", lambda *_, **_kwargs: sentinel)
 
         def _elevator_factory(
             local_llm=None, gateway_reasoner=None, config=None, **_kw
@@ -2145,7 +2156,7 @@ class TestLocalSLMWiring:
             captured["gateway_reasoner"] = gateway_reasoner
             return _RealElevator(local_llm=local_llm, config=config)
 
-        monkeypatch.setattr("ori.runtime.IntelligenceElevator", _elevator_factory)
+        patch_runtime(monkeypatch, "IntelligenceElevator", _elevator_factory)
 
         runtime = OriRuntime(config_path=str(minimal_config))
 
@@ -2184,7 +2195,7 @@ class TestLocalSLMWiring:
                 captured["tls_config"] = tls_config
                 captured["message_auth"] = message_auth
 
-        monkeypatch.setattr("ori.runtime.MqttGatewayReasoner", _FakeGatewayReasoner)
+        patch_runtime(monkeypatch, "MqttGatewayReasoner", _FakeGatewayReasoner)
         cfg: Any = SimpleNamespace(
             gateway=SimpleNamespace(
                 enabled=True,
@@ -2251,9 +2262,7 @@ class TestLocalSLMWiring:
                 captured["tls_config"] = tls_config
                 captured["authenticator"] = authenticator
 
-        monkeypatch.setattr(
-            "ori.runtime.MqttRuntimeNodeHeartbeatPublisher", _FakePublisher
-        )
+        patch_runtime(monkeypatch, "MqttRuntimeNodeHeartbeatPublisher", _FakePublisher)
 
         def provider():
             return {"status": "healthy"}
@@ -2764,7 +2773,7 @@ async def test_stop_closes_the_adapters_through_the_concurrent_close(
         handed.append(list(adapters))
         await real(adapters)
 
-    monkeypatch.setattr("ori.runtime.close_adapters", spy)
+    patch_runtime(monkeypatch, "close_adapters", spy)
     runtime = OriRuntime(config_path=str(minimal_config))
     start_task = asyncio.create_task(runtime.start())
     await wait_until(
@@ -3418,7 +3427,7 @@ class TestWatchdog:
     ):
         """/dev/watchdog absent → warning logged, runtime continues normally."""
         _patch_external(monkeypatch)
-        monkeypatch.setattr("ori.runtime.os.path.exists", lambda p: False)
+        monkeypatch.setattr("os.path.exists", lambda p: False)
 
         runtime = OriRuntime(config_path=str(minimal_config))
 
@@ -3440,7 +3449,7 @@ class TestWatchdog:
         from unittest.mock import mock_open
 
         _patch_external(monkeypatch)
-        monkeypatch.setattr("ori.runtime.os.path.exists", lambda p: True)
+        monkeypatch.setattr("os.path.exists", lambda p: True)
 
         m_open = mock_open()
         real_open = builtins.open
@@ -4322,7 +4331,7 @@ class TestCompactionLoop:
             raise asyncio.TimeoutError
 
         with patch(
-            "ori.runtime.asyncio.wait_for",
+            "asyncio.wait_for",
             new=AsyncMock(side_effect=_fake_wait_for),
         ):
             await runtime._compaction_loop(_dedup())
@@ -4589,7 +4598,7 @@ class TestWebhookServerStartup:
 
         fake_instance = _FakeServer()
 
-        with patch("ori.runtime.SMSWebhookServer", return_value=fake_instance) as cls:
+        with patched_runtime("SMSWebhookServer", return_value=fake_instance) as cls:
             await run_runtime_until(
                 runtime,
                 lambda: cls.call_args is not None,
@@ -4690,7 +4699,7 @@ class TestWebhookServerStartup:
 
         fake_instance = _FakeServer()
 
-        with patch("ori.runtime.SMSWebhookServer", return_value=fake_instance) as cls:
+        with patched_runtime("SMSWebhookServer", return_value=fake_instance) as cls:
             await run_runtime_until(
                 runtime,
                 lambda: cls.call_args is not None,
@@ -4768,7 +4777,7 @@ class TestWebhookServerStartup:
         )
 
         runtime = OriRuntime(config_path=str(cfg))
-        with patch("ori.runtime.SMSWebhookServer") as cls:
+        with patched_runtime("SMSWebhookServer") as cls:
             # An absence cannot be waited for, so this waits for the end of
             # startup: if the webhook were going to be constructed, it would
             # have been by then.
@@ -5029,7 +5038,7 @@ class TestAlertOutbox:
         runtime._state_store = StateStore(str(tmp_path / "remote-lockout-load.db"))
         await runtime._state_store.open()
         now = 1_780_000_000_000
-        monkeypatch.setattr("ori.runtime.now_ms", lambda: now)
+        patch_runtime(monkeypatch, "now_ms", lambda: now)
         try:
             await runtime._state_store.log_remote_command_security_incident(
                 incident_id="incident-recent",
@@ -5605,7 +5614,7 @@ class TestAlertOutbox:
                 return []
 
         now = 1_780_000_000_000
-        monkeypatch.setattr("ori.runtime.now_ms", lambda: now)
+        patch_runtime(monkeypatch, "now_ms", lambda: now)
         store = _CapturingIncidentStore()
         runtime: Any = OriRuntime(config_path="ori.yaml")
         runtime._state_store = store
@@ -5673,9 +5682,7 @@ class TestRemoteDevicePolicy:
                 payload=payload,
             )
 
-        monkeypatch.setattr(
-            "ori.runtime.fetch_remote_device_policy_bundle", _fake_fetch
-        )
+        patch_runtime(monkeypatch, "fetch_remote_device_policy_bundle", _fake_fetch)
 
         cfg: Any = SimpleNamespace(
             device=SimpleNamespace(id="dev-01"),
@@ -5715,9 +5722,7 @@ class TestRemoteDevicePolicy:
                 payload_timestamp=1234567890,
             )
 
-        monkeypatch.setattr(
-            "ori.runtime.fetch_remote_device_policy_bundle", _fake_fetch
-        )
+        patch_runtime(monkeypatch, "fetch_remote_device_policy_bundle", _fake_fetch)
 
         cfg: Any = SimpleNamespace(
             device=SimpleNamespace(id="dev-02"),
@@ -5854,8 +5859,9 @@ class TestRemoteDevicePolicy:
                 payload=payload,
             )
 
-        monkeypatch.setattr(
-            "ori.runtime.fetch_remote_device_policy_bundle",
+        patch_runtime(
+            monkeypatch,
+            "fetch_remote_device_policy_bundle",
             _fake_fetch,
         )
         cfg: Any = SimpleNamespace(
@@ -5900,8 +5906,9 @@ class TestRemoteDevicePolicy:
                 "policy endpoint network error: offline",
             )
 
-        monkeypatch.setattr(
-            "ori.runtime.fetch_remote_device_policy_bundle",
+        patch_runtime(
+            monkeypatch,
+            "fetch_remote_device_policy_bundle",
             _fake_fetch,
         )
         cfg: Any = SimpleNamespace(
@@ -6226,10 +6233,10 @@ class TestEvidencePostureNeverGatesStartup:
         config.evidence.enabled = True
         config.evidence.db_path = str(tmp_path / "evidence.db")
         config.evidence.key_path = str(tmp_path / "evidence.key")
-        monkeypatch.setattr("ori.runtime.Config.load", lambda _path: config)
+        monkeypatch.setattr("ori.config.Config.load", lambda _path: config)
         # Stand in for a release that ships no authority-key registry.
-        monkeypatch.setattr(
-            "ori.runtime._load_authority_keys", lambda: ReleaseAuthorityKeys(keys={})
+        patch_runtime(
+            monkeypatch, "_load_authority_keys", lambda: ReleaseAuthorityKeys(keys={})
         )
         runtime = OriRuntime(config_path=str(minimal_config))
         observed: dict[str, Any] = {}
@@ -6288,7 +6295,7 @@ class TestEvidencePostureNeverGatesStartup:
         _patch_external(monkeypatch)
         _treat_scratch_skills_as_packaged(monkeypatch)
         config = self._hardened_gateway_config(minimal_config, monkeypatch, tmp_path)
-        monkeypatch.setattr("ori.runtime.Config.load", lambda _path: config)
+        monkeypatch.setattr("ori.config.Config.load", lambda _path: config)
         if registry == "absent":
             empty = tmp_path / "package"
             empty.mkdir()
@@ -6359,7 +6366,7 @@ class TestEvidencePostureNeverGatesStartup:
         config.evidence.enabled = True
         config.evidence.db_path = str(tmp_path / "evidence.db")
         config.evidence.key_path = str(tmp_path / "evidence.key")
-        monkeypatch.setattr("ori.runtime.Config.load", lambda _path: config)
+        monkeypatch.setattr("ori.config.Config.load", lambda _path: config)
         runtime = OriRuntime(config_path=str(minimal_config))
         observed: dict[str, Any] = {}
 
@@ -6399,9 +6406,10 @@ class TestEvidencePostureNeverGatesStartup:
         config.evidence.enabled = True
         config.evidence.db_path = str(tmp_path / "evidence.db")
         config.evidence.key_path = str(tmp_path / "evidence.key")
-        monkeypatch.setattr("ori.runtime.Config.load", lambda _path: config)
-        monkeypatch.setattr(
-            "ori.runtime._load_authority_keys",
+        monkeypatch.setattr("ori.config.Config.load", lambda _path: config)
+        patch_runtime(
+            monkeypatch,
+            "_load_authority_keys",
             lambda: ReleaseAuthorityKeys(keys=_generated_registry(*purposes)),
         )
         runtime = OriRuntime(config_path=str(minimal_config))

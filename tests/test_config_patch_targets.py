@@ -6,7 +6,7 @@
 ``ori.config`` only re-exports; the code that calls a helper runs in the
 section module that defines it. A patch on the re-export never reaches that
 caller, so the test passes whether or not the behaviour it targets holds.
-``tests/config_layout.py`` refuses every such rebinding while the suite runs,
+``tests/package_layout.py`` refuses every such rebinding while the suite runs,
 and the conftest fails a test that rebound one through the module's dict.
 These tests drive that guard through each spelling of a patch.
 """
@@ -23,7 +23,7 @@ from unittest import mock
 import pytest
 
 import ori.config
-from tests.config_layout import ReexportRebindError, bindings, bindings_of, rebound
+from tests.package_layout import ReexportRebindError, bindings, bindings_of, rebound
 
 REFUSED = "is a re-export; rebinding it reaches no caller"
 
@@ -315,19 +315,19 @@ def test_release_restores_what_was_held_and_holding_twice_wraps_once() -> None:
     """The guard lasts one test session, so an embedding process gets its own."""
     from _pytest.monkeypatch import MonkeyPatch
 
-    from tests import config_layout
+    from tests import package_layout
 
-    held = dict(config_layout._HELD)
-    config_layout.release_reexports()
+    held = dict(package_layout._HELD)
+    package_layout.release_reexports()
     try:
-        assert type(ori.config) is held["module_class"]
+        assert type(ori.config) is held["module_classes"]["ori.config"]
         assert MonkeyPatch.setitem is held["setitem"]
         assert MonkeyPatch.delitem is held["delitem"]
         assert cast(Any, mock)._patch_dict._patch_dict is held["apply"]
     finally:
-        config_layout.hold_reexports()
-        config_layout.hold_reexports()
-    assert config_layout._HELD["setitem"] is held["setitem"]
+        package_layout.hold_reexports()
+        package_layout.hold_reexports()
+    assert package_layout._HELD["setitem"] is held["setitem"]
     assert type(ori.config).__name__ == "_ReexportsHeld"
     with pytest.raises(AssertionError, match=NAMESPACE_REFUSED):
         MonkeyPatch().setitem(vars(cfg), "x", 1)

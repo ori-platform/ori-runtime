@@ -616,7 +616,7 @@ async def test_firmware_freshness_admission_stays_ahead_of_publication(
     A locked store therefore still delays a firmware reading, and a failed
     freshness write refuses it; only the history write is off its path.
     """
-    from ori.runtime import _build_firmware_telemetry_subscriber
+    from ori.runtime._firmware_wiring import _build_firmware_telemetry_subscriber
     from ori.security.firmware.liveness import FirmwareLivenessSupervisor
     from tests.firmware.test_liveness_composition import (
         _cfg,

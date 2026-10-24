@@ -29,10 +29,12 @@ from ori.gateway.firmware_commands import (
     MqttFirmwareCommandPublisher,
 )
 from ori.gateway.firmware_telemetry import MqttFirmwareTelemetrySubscriber
-from ori.runtime import (
+from ori.runtime._firmware_wiring import (
     _build_firmware_command_service,
-    _build_firmware_liveness_stack,
     _build_firmware_telemetry_subscriber,
+)
+from ori.runtime._firmware_wiring import (
+    build_firmware_liveness_stack as _build_firmware_liveness_stack,
 )
 from ori.security.firmware.ingest import FirmwareTelemetryGate
 from ori.security.firmware.liveness import (
@@ -508,7 +510,9 @@ async def test_the_gate_matches_nonces_against_the_table_the_signer_records_in(
     store, command_keys, monkeypatch
 ) -> None:
     """One table, or a reading carrying a nonce this runtime signed would match nothing."""
-    from ori.runtime import _firmware_reading_age
+    from ori.runtime._firmware_wiring import (
+        firmware_reading_age as _firmware_reading_age,
+    )
 
     monkeypatch.setattr(
         "ori.gateway.firmware_commands._default_client_factory",

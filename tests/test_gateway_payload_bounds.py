@@ -853,7 +853,9 @@ def test_the_replay_cache_holds_every_message_the_families_admit_in_a_window():
 
 def test_the_runtime_sizes_each_gateway_replay_cache_for_the_window(monkeypatch):
     from ori.config import GatewayConfig
-    from ori.runtime import _build_gateway_message_auth
+    from ori.gateway.envelope_auth import (
+        build_gateway_message_auth as _build_gateway_message_auth,
+    )
 
     monkeypatch.setenv("GATEWAY_SHARED_SECRET", SECRET)
     for persistent in (True, False):
@@ -947,7 +949,9 @@ async def test_any_replay_window_the_contract_admits_starts_and_records(
     """Through the runtime's own builder, persistent: the window is decided in
     one place, so no expiry, cache size or SQL bound leaves its range."""
     from ori.config import GatewayConfig
-    from ori.runtime import _build_gateway_message_auth
+    from ori.gateway.envelope_auth import (
+        build_gateway_message_auth as _build_gateway_message_auth,
+    )
     from ori.security.gateway_messages import replay_retention_ms, replay_window_ms
 
     monkeypatch.setenv("GATEWAY_SHARED_SECRET", SECRET)
@@ -1872,7 +1876,9 @@ def test_a_key_a_previous_release_stored_lives_until_its_envelope_is_stale(
     import sqlite3
 
     from ori.config import GatewayConfig
-    from ori.runtime import _build_gateway_message_auth
+    from ori.gateway.envelope_auth import (
+        build_gateway_message_auth as _build_gateway_message_auth,
+    )
 
     clock = [1_000_000_000]
     monkeypatch.setattr("ori.security.gateway_messages.now_ms", lambda: clock[0])
@@ -1943,7 +1949,9 @@ def test_a_key_a_previous_release_stored_lives_until_its_envelope_is_stale(
 
 def _restarting_auth(db: Any, *, skew: int, monkeypatch: Any) -> Any:
     from ori.config import GatewayConfig
-    from ori.runtime import _build_gateway_message_auth
+    from ori.gateway.envelope_auth import (
+        build_gateway_message_auth as _build_gateway_message_auth,
+    )
 
     monkeypatch.setenv("GATEWAY_SHARED_SECRET", SECRET)
     config: Any = SimpleNamespace(
@@ -2159,27 +2167,21 @@ def test_every_gateway_route_built_by_the_runtime_shares_one_envelope_state():
     the one replay cache and signing clock, so the table is held once per
     process, not once per route, and one clock signs for every signer."""
     import ast
-    import importlib
-    import inspect
+
+    from tests.package_layout import runtime_methods, runtime_tree
 
     builders = {
-        "_build_gateway_reasoner",
+        "build_gateway_reasoner",
         "_start_gateway_export_responder_if_enabled",
-        "_build_gateway_heartbeat_subscriber",
-        "_build_evidence_inbound_subscriber",
-        "_build_evidence_outbound_publisher",
-        "_build_runtime_node_heartbeat_publisher",
+        "build_gateway_heartbeat_subscriber",
+        "build_evidence_inbound_subscriber",
+        "build_evidence_outbound_publisher",
+        "build_runtime_node_heartbeat_publisher",
     }
-    tree = ast.parse(inspect.getsource(importlib.import_module("ori.runtime")))
-    (runtime,) = [
-        node
-        for node in tree.body
-        if isinstance(node, ast.ClassDef) and node.name == "OriRuntime"
-    ]
     stages = [
         node
-        for node in runtime.body
-        if isinstance(node, ast.AsyncFunctionDef) and node.name.startswith("_stage_")
+        for name, node in runtime_methods().items()
+        if isinstance(node, ast.AsyncFunctionDef) and name.startswith("_stage_")
     ]
     assert stages, "OriRuntime has no startup stages to read"
 
@@ -2218,8 +2220,8 @@ def test_every_gateway_route_built_by_the_runtime_shares_one_envelope_state():
     assert called == dict.fromkeys(builders, True)
     assert len(built) == 1
     # And every route builder hands its cache on: no authenticator in the
-    # module is built without the cache its builder was given.
-    for function in ast.walk(tree):
+    # runtime is built without the cache its builder was given.
+    for function in ast.walk(runtime_tree()):
         if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         for node in ast.walk(function):
@@ -2236,7 +2238,12 @@ def test_every_gateway_route_built_by_the_runtime_shares_one_envelope_state():
 
 def test_a_route_builder_uses_the_envelope_state_it_is_given(monkeypatch):
     from ori.config import GatewayConfig
-    from ori.runtime import _build_gateway_envelope_state, _build_gateway_message_auth
+    from ori.gateway.envelope_auth import (
+        build_gateway_envelope_state as _build_gateway_envelope_state,
+    )
+    from ori.gateway.envelope_auth import (
+        build_gateway_message_auth as _build_gateway_message_auth,
+    )
 
     monkeypatch.setenv("GATEWAY_SHARED_SECRET", SECRET)
     config: Any = SimpleNamespace(

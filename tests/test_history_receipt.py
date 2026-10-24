@@ -619,7 +619,9 @@ async def test_the_provider_template_slot_is_the_time_ori_proposed_not_the_devic
 @pytest.mark.asyncio
 async def test_the_tier_a_template_slot_is_the_time_ori_detected_the_risk() -> None:
     """ "Ori detected configured risk: {trigger} at {time}" is the runtime's clock."""
-    from ori.runtime import _format_alert_timestamp
+    from ori.runtime._alert_text import (
+        format_alert_timestamp as _format_alert_timestamp,
+    )
     from tests.test_alert_preferences import _runtime_with_policy
 
     class _Capture:
@@ -723,7 +725,9 @@ async def test_a_legacy_outbox_row_is_resent_with_the_queue_receipt_in_its_slot(
     """A row queued before template variables were stored takes the queue receipt, not the event's clock."""
     import asyncio
 
-    from ori.runtime import _format_alert_timestamp
+    from ori.runtime._alert_text import (
+        format_alert_timestamp as _format_alert_timestamp,
+    )
     from tests.test_alert_preferences import _runtime_with_policy
 
     store = StateStore(str(tmp_path / "legacy.db"))

@@ -482,9 +482,9 @@ _READERS = {
 #: name registration state: named functions, module-level assignments to the
 #: DDL, and imports.
 _SCOPED_READERS: dict[str, set[str]] = {
-    "runtime.py": {
-        "_evidence_health",
-        "_commission_from_operator",
+    "runtime/_health.py": {"_evidence_health", "<import>"},
+    "runtime/_services.py": {"_commission_from_operator", "<import>"},
+    "runtime/_evidence.py": {
         "_evidence_registration_loop",
         "_reconcile_evidence_registration",
         "_evidence_checkpoint_loop",

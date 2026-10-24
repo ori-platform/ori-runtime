@@ -151,9 +151,9 @@ def test_startup_acts_on_the_handoff_rather_than_only_calling_it() -> None:
     startup would hang the process instead of ending it. Read from the source
     because driving `start()` needs a device's worth of configuration.
     """
-    from pathlib import Path
+    from tests.package_layout import runtime_source
 
-    source = (Path(__file__).resolve().parents[1] / "ori" / "runtime.py").read_text()
+    source = runtime_source()
 
     assert (
         "if await self._complete_startup():\n            await self.stop()\n            return"
@@ -167,9 +167,9 @@ def test_the_signal_handler_is_not_wired_straight_to_stop() -> None:
     `loop.add_signal_handler(SIGTERM, lambda: create_task(self.stop()))` is
     what ran teardown concurrently with startup.
     """
-    from pathlib import Path
+    from tests.package_layout import runtime_source
 
-    source = (Path(__file__).resolve().parents[1] / "ori" / "runtime.py").read_text()
+    source = runtime_source()
 
     assert "loop.add_signal_handler(signal.SIGTERM, self._request_stop)" in source
     assert "loop.add_signal_handler(signal.SIGINT, self._request_stop)" in source

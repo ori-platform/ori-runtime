@@ -23,7 +23,8 @@ from typing import Any
 
 import pytest
 
-from ori.runtime import OriRuntime, _fold_health_status
+from ori.runtime import OriRuntime
+from ori.runtime._health_status import fold_health_status as _fold_health_status
 
 
 class _Scheduler:
@@ -266,7 +267,7 @@ def test_only_the_fold_assigns_status_and_critical() -> None:
         ("status", "snapshot['status'] = status"),
         ("critical", "snapshot['critical'] = status == 'critical'"),
     ], (
-        "status and critical are assigned once, from _fold_health_status; a "
+        "status and critical are assigned once, from fold_health_status; a "
         "condition contributes to `severities` instead. This guard reads the "
         f"builder's own `snapshot` name only. Found: {writes}"
     )
@@ -278,7 +279,7 @@ def test_only_the_fold_assigns_status_and_critical() -> None:
         and node.targets[0].id == "status"
     ]
     assert len(fold) == 1 and ast.unparse(fold[0].value) == (
-        "_fold_health_status(severities)"
+        "fold_health_status(severities)"
     ), "the builder's `status` comes from the fold alone"
 
 

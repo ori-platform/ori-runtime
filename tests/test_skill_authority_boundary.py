@@ -36,6 +36,7 @@ from ori.reasoning.elevator import SkillContext, _without_reserved_names
 from ori.reasoning.rule_engine import RESERVED_CONTEXT_NAMES, RuleEngine
 from ori.skills.loader import SkillLoader, SkillValidationError
 from ori.skills.sandbox import SkillSecurityError
+from tests.package_layout import runtime_tree
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -181,10 +182,7 @@ class TestEveryExecutableActionIsGoverned:
         credentials and a broker, and this must hold for every executor
         including those behind a `if relay_action is not None` branch.
         """
-        source = (
-            Path(__file__).resolve().parents[1] / "ori" / "runtime.py"
-        ).read_text()
-        tree = ast.parse(source)
+        tree = runtime_tree()
 
         registered: set[str] = set()
         for node in ast.walk(tree):
@@ -198,7 +196,7 @@ class TestEveryExecutableActionIsGoverned:
                 if isinstance(value, str):
                     registered.add(value)
 
-        assert registered, "no register_executor calls found — did runtime.py move?"
+        assert registered, "no register_executor calls found — did ori/runtime/ move?"
         ungoverned = sorted(registered - set(ACTION_REGISTRY))
         assert not ungoverned, (
             f"OriRuntime registers executors for {ungoverned}, which have no "
@@ -221,10 +219,7 @@ class TestEveryExecutableActionIsGoverned:
         only when a zone is accepted, and the health surface's per-pair
         protection claim is what answers it.
         """
-        source = (
-            Path(__file__).resolve().parents[1] / "ori" / "runtime.py"
-        ).read_text()
-        tree = ast.parse(source)
+        tree = runtime_tree()
 
         registered: set[str] = set()
         for node in ast.walk(tree):

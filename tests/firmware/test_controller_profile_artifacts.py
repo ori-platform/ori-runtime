@@ -35,7 +35,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from ori.gateway.firmware_telemetry import MqttFirmwareTelemetrySubscriber
-from ori.runtime import _build_firmware_telemetry_subscriber
+from ori.runtime._firmware_wiring import _build_firmware_telemetry_subscriber
 from ori.security.firmware.liveness import FirmwareLivenessSupervisor
 from ori.security.firmware.telemetry import canonical_json_bytes
 from ori.state.store import StateStore

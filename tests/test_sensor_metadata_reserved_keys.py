@@ -36,6 +36,7 @@ from ori.config._sensors import parse_sensors as _parse_sensors
 from ori.hal.base import CircuitState
 from ori.hal.psutil_adapter import PsutilAdapter
 from ori.runtime import adapter_connect_config
+from tests.package_layout import runtime_tree
 
 
 def _sensor(**overrides: Any) -> list[dict]:
@@ -308,9 +309,8 @@ def test_start_uses_the_shared_assembly_rather_than_its_own_dict() -> None:
     the call site, so the unit and its caller cannot drift apart.
     """
     import ast
-    import pathlib
 
-    tree = ast.parse(pathlib.Path("ori/runtime.py").read_text())
+    tree = runtime_tree()
     calls, literals = 0, 0
     for node in ast.walk(tree):
         if not isinstance(node, ast.Assign):

@@ -454,10 +454,8 @@ async def test_degradation_reasons_are_inside_the_signed_payload(monkeypatch):
 
 
 def test_degradation_reasons_helper_omits_and_names():
-    from ori.runtime import (
-        DEGRADATION_REASON_FIRMWARE_LIVENESS,
-        _degradation_reasons,
-    )
+    from ori.gateway.node_heartbeat import DEGRADATION_REASON_FIRMWARE_LIVENESS
+    from ori.runtime._health_status import degradation_reasons as _degradation_reasons
 
     assert _degradation_reasons(firmware_liveness_degraded=False) == []
     assert _degradation_reasons(firmware_liveness_degraded=True) == [

@@ -762,7 +762,7 @@ async def test_an_anchor_moved_during_the_advance_is_honoured_by_the_subscriber(
     import asyncio
 
     from ori.network.event_bus import EventBus
-    from ori.runtime import _build_firmware_telemetry_subscriber
+    from ori.runtime._firmware_wiring import _build_firmware_telemetry_subscriber
     from ori.security.firmware.liveness import FirmwareLivenessSupervisor
     from tests.firmware.test_liveness_composition import _cfg
 

@@ -29,6 +29,7 @@ import pytest
 from ori import operator_socket as op
 from ori.operator_socket import OperatorSocketServer
 from ori.runtime import OriRuntime
+from tests.package_layout import patch_runtime
 from tests.test_evidence_commission import run_installed_bridge
 from tests.waiting import settle
 
@@ -110,7 +111,7 @@ async def _until_status(runtime: OriRuntime, status: str) -> dict[str, Any]:
 def root(monkeypatch):
     path = Path(tempfile.mkdtemp(prefix="ori-rr-", dir="/tmp"))
     monkeypatch.setenv(SECRET_ENV, "install-secret-for-runtime-registration")
-    monkeypatch.setattr("ori.runtime.RECONCILE_INTERVAL_S", 0.1)
+    patch_runtime(monkeypatch, "RECONCILE_INTERVAL_S", 0.1)
     monkeypatch.setenv("RUNTIME_DIRECTORY", str(path / "run"))
     # This process is the installed operator. Access-control lists are
     # Linux's, and granting is the operator socket tests' concern.
@@ -118,8 +119,9 @@ def root(monkeypatch):
         "ori.operator_socket.read_operator_uid",
         lambda _root, *, service_uid: os.geteuid(),
     )
-    monkeypatch.setattr(
-        "ori.runtime.OperatorSocketServer",
+    patch_runtime(
+        monkeypatch,
+        "OperatorSocketServer",
         functools.partial(OperatorSocketServer, grant=lambda _d, _s, _u: None),
     )
     try:

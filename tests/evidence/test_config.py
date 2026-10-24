@@ -18,7 +18,9 @@ import pytest
 
 from ori.config import Config, ConfigValidationError, EvidenceConfig
 from ori.config._evidence import parse_evidence as _parse_evidence
-from ori.runtime import _build_evidence_attestor
+from ori.runtime._evidence_wiring import (
+    build_evidence_attestor as _build_evidence_attestor,
+)
 from ori.security.evidence.custody_keys import derive_custody_key_id
 
 
@@ -190,7 +192,7 @@ class TestAttestorConstruction:
         for dispositions, which no verifier here consumes. Any other set means
         the registry was replaced without a new export.
         """
-        from ori.runtime import _load_authority_keys
+        from ori.runtime._evidence_wiring import _load_authority_keys
 
         shipped = _load_authority_keys()
         assert not shipped.refused

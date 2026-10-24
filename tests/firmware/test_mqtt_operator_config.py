@@ -7,7 +7,8 @@ from ori.config import ConfigValidationError
 from ori.config._firmware_mqtt_provisioning import (
     parse_firmware_mqtt_provisioning as _parse_firmware_mqtt_provisioning,
 )
-from ori.runtime import _read_private_key_file, _read_public_pem_file
+from ori.runtime._gateway_wiring import read_private_key_file as _read_private_key_file
+from ori.runtime._gateway_wiring import read_public_pem_file as _read_public_pem_file
 
 
 def _enabled_config() -> dict:

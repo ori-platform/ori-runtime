@@ -12,7 +12,7 @@ down in prose. So the boundary is asserted here.
 Two guards, because one spelling of "reaches" is not the rule. The first
 forecloses an import. The second is an inventory of every way the runtime
 touches the exporter at all, which is what a value *passed as a parameter*
-would have to change — `ori/runtime.py` legitimately imports both telemetry and
+would have to change — `ori/runtime/` legitimately imports both telemetry and
 the whole action surface, so the import guard alone would pass while the hazard
 sat inside that module.
 
@@ -27,6 +27,8 @@ import ast
 from pathlib import Path
 
 import pytest
+
+from tests.package_layout import runtime_tree
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -61,8 +63,8 @@ CLASSIFIED_EXPORTER_USES: dict[tuple[str, str], str] = {
 _LIMIT = (
     "This guard catches one spelling of 'reaches'. It does not catch a value "
     "passed as a parameter, stored on an attribute, or returned by a helper "
-    "that both sides call. ori/runtime.py imports telemetry and the whole "
-    "action surface, so that module is where such a value would live; "
+    "that both sides call. ori/runtime/ imports telemetry and the whole "
+    "action surface, so that package is where such a value would live; "
     "test_every_use_of_the_telemetry_exporter_is_classified is the guard for "
     "it, and it is an inventory rather than a proof."
 )
@@ -110,7 +112,7 @@ def test_the_action_path_does_not_import_telemetry() -> None:
 
 def _exporter_uses() -> dict[tuple[str, str], str]:
     """Every attribute touched on a telemetry exporter, by enclosing function."""
-    tree = ast.parse((ROOT / "ori" / "runtime.py").read_text(encoding="utf-8"))
+    tree = runtime_tree()
     enclosing: dict[int, str] = {}
     for function in ast.walk(tree):
         if isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
@@ -132,14 +134,14 @@ def _exporter_uses() -> dict[tuple[str, str], str]:
 def test_every_use_of_the_telemetry_exporter_is_classified() -> None:
     """A new read of export state must be classified before it can pass.
 
-    This is the guard for the case the import test cannot see: `ori/runtime.py`
+    This is the guard for the case the import test cannot see: `ori/runtime/`
     holds both sides, so wiring a delivery count into a decision needs no
     import. It would need a new touch on the exporter, and an unclassified
     touch fails here.
     """
     found = _exporter_uses()
     assert found, (
-        "no use of the telemetry exporter was found in ori/runtime.py, so this "
+        "no use of the telemetry exporter was found in ori/runtime/, so this "
         "inventory would pass while enforcing nothing; the scan is broken or "
         "the exporter moved"
     )

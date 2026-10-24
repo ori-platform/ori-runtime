@@ -715,10 +715,10 @@ def test_export_state_reaches_nothing_outside_the_exporter_and_its_report() -> N
         if relative.parts[0] == "telemetry":
             continue
         text = path.read_text()
-        if relative.as_posix() == "runtime.py":
+        if relative.parts[0] == "runtime":
             # The runtime constructs the exporter and reports it. Everything
             # else it does with export state would be a new coupling, so the
-            # allowance is the two functions, not the file.
+            # allowance is the two functions, not the package.
             tree = ast.parse(text)
             for node in ast.walk(tree):
                 if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -744,7 +744,7 @@ def test_export_state_reaches_nothing_outside_the_exporter_and_its_report() -> N
                         != "self._telemetry_exporter: HttpTelemetryExporter | None = None"
                     ]
                 if carrying:
-                    offenders.append(f"runtime.py::{node.name}")
+                    offenders.append(f"{relative.as_posix()}::{node.name}")
             continue
         for name in names:
             if name in text:

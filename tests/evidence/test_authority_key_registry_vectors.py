@@ -253,7 +253,7 @@ def shipped(monkeypatch, tmp_path):
 
 
 def test_a_shipped_conforming_registry_is_loaded(shipped):
-    from ori.runtime import _load_authority_keys
+    from ori.runtime._evidence_wiring import _load_authority_keys
 
     document = {
         "schema": REGISTRY_SCHEMA,
@@ -282,7 +282,7 @@ def test_a_shipped_refused_registry_stops_verification_not_the_runtime(
     shipped, caplog, name
 ):
     """Refused whole and reported, never read in part and never raised into startup."""
-    from ori.runtime import _load_authority_keys
+    from ori.runtime._evidence_wiring import _load_authority_keys
 
     shipped.write_text(json.dumps(REGISTRIES[name]["document"]), encoding="utf-8")
     with caplog.at_level(logging.ERROR, logger="ori.runtime"):
@@ -295,7 +295,7 @@ def test_a_shipped_refused_registry_stops_verification_not_the_runtime(
 
 
 def test_an_absent_registry_still_fails_closed(shipped):
-    from ori.runtime import _load_authority_keys
+    from ori.runtime._evidence_wiring import _load_authority_keys
 
     assert not shipped.exists()
     loaded = _load_authority_keys()

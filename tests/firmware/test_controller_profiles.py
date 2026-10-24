@@ -895,7 +895,8 @@ async def test_the_runtime_holds_its_configured_documents_and_reports_alarms(
     an alarm word off the event bus, and health reports it as of its reading."""
     from types import SimpleNamespace
 
-    from ori.runtime import OriRuntime, _build_firmware_telemetry_subscriber
+    from ori.runtime import OriRuntime
+    from ori.runtime._firmware_wiring import _build_firmware_telemetry_subscriber
     from ori.security.firmware.liveness import FirmwareLivenessSupervisor
     from tests.firmware.test_liveness_composition import _cfg, _fakebus
 
@@ -1105,7 +1106,8 @@ async def test_runtime_health_presents_alarm_snapshots_and_readings_with_an_anch
     import re
     from types import SimpleNamespace
 
-    from ori.runtime import OriRuntime, _build_firmware_telemetry_subscriber
+    from ori.runtime import OriRuntime
+    from ori.runtime._firmware_wiring import _build_firmware_telemetry_subscriber
     from ori.security.firmware.liveness import (
         FirmwareLivenessSigner,
         FirmwareLivenessSupervisor,

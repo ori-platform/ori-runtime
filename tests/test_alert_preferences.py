@@ -32,6 +32,7 @@ from ori.policy.device_policy import DevicePolicy
 from ori.policy.remote_fetch import _alert_preferences
 from ori.reasoning.action_dispatcher import ALERT_SUPPRESSED
 from ori.runtime import OriRuntime
+from tests.package_layout import runtime_tree
 from tests.waiting import drained
 
 
@@ -484,10 +485,7 @@ def test_the_safety_path_reaches_no_policy_gate_through_any_call_it_makes() -> N
     passes it. The behavioural test above is what carries the weight; this
     catches the direct, likely form early and cheaply.
     """
-    runtime_src = (
-        Path(__file__).resolve().parents[1] / "ori" / "runtime.py"
-    ).read_text()
-    tree = ast.parse(runtime_src)
+    tree = runtime_tree()
     target = None
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
@@ -528,10 +526,7 @@ def test_no_safety_notice_names_a_trigger_the_map_can_reach() -> None:
     never connected, a measurement that stopped -- and none is a customer
     preference. This asserts no caller's trigger name is mapped.
     """
-    runtime_src = (
-        Path(__file__).resolve().parents[1] / "ori" / "runtime.py"
-    ).read_text()
-    tree = ast.parse(runtime_src)
+    tree = runtime_tree()
     safety_trigger_names = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -709,7 +704,9 @@ def test_the_identity_resolver_reads_provenance_from_the_loader() -> None:
     """
     from dataclasses import dataclass
 
-    from ori.runtime import _resolve_skill_identity
+    from ori.runtime._alert_text import (
+        resolve_skill_identity as _resolve_skill_identity,
+    )
 
     @dataclass
     class _Skill:

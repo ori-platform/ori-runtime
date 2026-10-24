@@ -513,7 +513,9 @@ def test_health_shows_the_latest_reading_and_a_heartbeat_never_replaces_it() -> 
 
 def test_a_restart_empties_the_table_and_a_stored_reading_has_no_bound() -> None:
     """Each start builds a new tracker: nothing survives it, and nothing is persisted."""
-    from ori.runtime import _firmware_reading_age
+    from ori.runtime._firmware_wiring import (
+        firmware_reading_age as _firmware_reading_age,
+    )
     from tests.firmware.test_liveness_composition import _command_cfg
 
     config = _command_cfg()
@@ -541,7 +543,9 @@ def test_a_restart_empties_the_table_and_a_stored_reading_has_no_bound() -> None
 
 
 def test_only_a_runtime_that_signs_liveness_keeps_a_table() -> None:
-    from ori.runtime import _firmware_reading_age
+    from ori.runtime._firmware_wiring import (
+        firmware_reading_age as _firmware_reading_age,
+    )
     from tests.firmware.test_liveness_composition import _cfg, _command_cfg
 
     telemetry_only = _firmware_reading_age(_cfg())
@@ -554,7 +558,9 @@ def test_only_a_runtime_that_signs_liveness_keeps_a_table() -> None:
 
 
 def test_a_short_interval_cannot_grow_the_table_without_limit() -> None:
-    from ori.runtime import _firmware_reading_age
+    from ori.runtime._firmware_wiring import (
+        firmware_reading_age as _firmware_reading_age,
+    )
     from tests.firmware.test_liveness_composition import _command_cfg
 
     config = _command_cfg()

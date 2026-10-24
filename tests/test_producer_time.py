@@ -226,7 +226,7 @@ async def _export(store: StateStore, export_type: str, **fields: Any) -> list[di
 async def test_a_firmware_reading_presents_no_measurement_time_anywhere(
     store: StateStore,
 ) -> None:
-    from ori.runtime import _build_firmware_telemetry_subscriber
+    from ori.runtime._firmware_wiring import _build_firmware_telemetry_subscriber
     from ori.security.firmware.liveness import FirmwareLivenessSupervisor
     from tests.firmware.test_liveness_composition import (
         _cfg,

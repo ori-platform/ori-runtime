@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Awaitable, Callable
-from pathlib import Path
 
 from ori.runtime import OriRuntime
 from ori.startup_stages import (
@@ -29,9 +28,7 @@ from ori.startup_stages import (
     STARTUP_STAGES,
     StartupContext,
 )
-
-ROOT = Path(__file__).resolve().parents[1]
-RUNTIME = ROOT / "ori" / "runtime.py"
+from tests.package_layout import runtime_methods
 
 #: The safety orderings between stages, as (later, earlier). Dropping one from
 #: the table fails here, so an ordering changes only by editing both.
@@ -261,16 +258,22 @@ _INVENTORY_LIMIT = (
 
 
 def _stage_methods() -> dict[str, ast.AsyncFunctionDef]:
-    tree = ast.parse(RUNTIME.read_text(encoding="utf-8"))
-    (runtime,) = [
-        node
-        for node in tree.body
-        if isinstance(node, ast.ClassDef) and node.name == "OriRuntime"
-    ]
+    """Every `_stage_*` method, read from whichever domain class defines it.
+
+    A stage that is not a coroutine is not a stage `start()` can await, so it
+    is refused rather than skipped.
+    """
+    stages = {
+        name: node
+        for name, node in runtime_methods().items()
+        if name.startswith("_stage_")
+    }
+    for name, node in stages.items():
+        assert isinstance(node, ast.AsyncFunctionDef), f"{name} is not async"
     return {
-        node.name.removeprefix("_stage_"): node
-        for node in runtime.body
-        if isinstance(node, ast.AsyncFunctionDef) and node.name.startswith("_stage_")
+        name.removeprefix("_stage_"): node
+        for name, node in stages.items()
+        if isinstance(node, ast.AsyncFunctionDef)
     }
 
 

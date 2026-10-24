@@ -29,7 +29,9 @@ import pytest
 import yaml
 
 from ori.config import Config, ConfigValidationError
-from ori.runtime import _warn_gateway_security_posture
+from ori.runtime._gateway_wiring import (
+    warn_gateway_security_posture as _warn_gateway_security_posture,
+)
 from ori.utils.net_utils import is_loopback_host
 
 # --- 1. loopback classification -------------------------------------------
@@ -245,9 +247,9 @@ def test_config_and_runtime_share_one_loopback_implementation():
     """
     import types
 
-    from ori import runtime as runtime_module
     from ori.config import installer
-    from tests.config_layout import section_modules
+    from ori.utils.net_utils import is_loopback_host
+    from tests.package_layout import RUNTIME, section_modules
 
     loopback = [
         (module.__name__, value)
@@ -257,6 +259,16 @@ def test_config_and_runtime_share_one_loopback_implementation():
     ]
     owners = {owner for owner, _ in loopback}
     assert {"ori.config._gateway", "ori.config.installer"} <= owners, owners
-    for owner, value in loopback:
+    runtime_loopback = [
+        (module.__name__, value)
+        for module in RUNTIME.modules()
+        for name, value in vars(module).items()
+        if name.lstrip("_") == "is_loopback_host"
+    ]
+    assert {owner for owner, _ in runtime_loopback} >= {
+        "ori.runtime._gateway_wiring",
+        "ori.runtime._remote_command_wiring",
+    }, runtime_loopback
+    for owner, value in loopback + runtime_loopback:
         assert isinstance(value, types.FunctionType), owner
-        assert value is runtime_module.is_loopback_host, owner
+        assert value is is_loopback_host, owner

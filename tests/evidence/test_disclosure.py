@@ -2334,7 +2334,7 @@ def test_the_audit_never_passes_what_the_runtime_refuses(tmp_path, monkeypatch):
     """Differential over the contract corpus and the hostile cases: passing review implies loading."""
     from importlib import resources
 
-    from ori.runtime import _load_authority_keys
+    from ori.runtime._evidence_wiring import _load_authority_keys
 
     corpus = json.loads(
         (
@@ -2416,7 +2416,7 @@ _INSTALLED_PROBE = """
 import json, sys
 sys.path.extend(json.loads(sys.argv[1]))
 import ori
-from ori.runtime import _load_authority_keys
+from ori.runtime._evidence_wiring import _load_authority_keys
 loaded = _load_authority_keys()
 print(json.dumps({
     "ori": ori.__file__,
@@ -2502,7 +2502,7 @@ def test_the_shipped_registry_with_an_unknown_token_is_refused(
     """The shipped text, one token changed, through the release loader and the audit."""
     from importlib import resources
 
-    from ori.runtime import _load_authority_keys
+    from ori.runtime._evidence_wiring import _load_authority_keys
 
     document = json.loads(_shipped_registry_bytes())
     document["keys"][0][member] = value

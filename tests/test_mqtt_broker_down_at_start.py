@@ -35,6 +35,7 @@ from ori.sensor_connection import (
     connected_late,
 )
 from tests.commissioning.signing import commission_relay
+from tests.package_layout import patch_runtime
 from tests.test_mqtt_adapter import _FakeClient
 from tests.test_mqtt_subscription_refused import _adapter
 from tests.test_mqtt_subscription_refused import _config as family_config
@@ -622,9 +623,9 @@ async def test_a_pair_on_a_retrying_sensor_recovers_on_its_first_reading(
             }
         ]
     )
-    monkeypatch.setattr("ori.runtime.load_shipped_profile_set", lambda: ratified)
-    monkeypatch.setattr("ori.runtime.gpio_backend_importable", lambda: True)
-    monkeypatch.setattr("ori.runtime.gpio_backend_arbitrated", lambda: True)
+    patch_runtime(monkeypatch, "load_shipped_profile_set", lambda: ratified)
+    patch_runtime(monkeypatch, "gpio_backend_importable", lambda: True)
+    patch_runtime(monkeypatch, "gpio_backend_arbitrated", lambda: True)
     commission_relay(
         tmp_path / "ori.yaml",
         monkeypatch,
@@ -816,17 +817,16 @@ async def test_a_stop_during_the_start_notice_closes_the_retrying_adapter(
 ) -> None:
     """The adapter is recorded before the start notice is awaited, so a stop
     while that send is blocked still closes it and its reconnect supervisor."""
-    from ori import runtime as runtime_module
+    from ori.hal.protocol_registry import make_adapter as real_make
 
     made: list[Any] = []
-    real_make = runtime_module.make_adapter
 
     def recording(protocol: str) -> Any:
         adapter = real_make(protocol)
         made.append(adapter)
         return adapter
 
-    monkeypatch.setattr("ori.runtime.make_adapter", recording)
+    patch_runtime(monkeypatch, "make_adapter", recording)
     broker = _Broker()
     patches = _patched(broker, lambda _a: 0.005)
     with patches[0], patches[1], patches[2]:

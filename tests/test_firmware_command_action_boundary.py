@@ -137,6 +137,7 @@ from tests.commissioning.signing import (
     sign_envelope,
 )
 from tests.conftest import _mark_startup_complete
+from tests.package_layout import runtime_methods, runtime_source_paths, runtime_tree
 from tests.store_layout import state_store_classes, state_store_modules
 from tests.waiting import drained, latency_bounds_apply, settle
 
@@ -288,7 +289,7 @@ NOT_HOLDERS = {
 
 #: Where the authority keys come from, and the builders that sign with them.
 #: Code holding any of these can sign a command or a grant with no service at
-#: all. Refused anywhere on the action path; inventoried in runtime.py.
+#: all. Refused anywhere on the action path; inventoried in ori/runtime/.
 KEY_SOURCE_NAMES = (
     "firmware_commands",
     "runtime_command_key_env",
@@ -297,14 +298,14 @@ KEY_SOURCE_NAMES = (
     "build_command_bytes",
 )
 
-#: Additional names the runtime.py inventory tracks: construction of the
+#: Additional names the ori/runtime/ inventory tracks: construction of the
 #: service and the builders that return it.
 RUNTIME_ONLY_NAMES = (
     "FirmwareCommandService",
     "FirmwareCommandSigner",
     "MqttFirmwareCommandPublisher",
     "_build_firmware_command_service",
-    "_build_firmware_liveness_stack",
+    "build_firmware_liveness_stack",
 )
 
 # ── Where the action path is ────────────────────────────────────────────────
@@ -335,11 +336,16 @@ DEFINING_MODULES = (
     "ori/security/evidence/ingest_service.py",
 )
 
-RUNTIME = "ori/runtime.py"
+#: The runtime package, which replaced ``ori/runtime.py``: every module of it is
+#: inventoried below rather than scanned with the rest of the tree.
+RUNTIME = "ori/runtime/"
+RUNTIME_MODULES = tuple(
+    path.relative_to(ROOT).as_posix() for path in runtime_source_paths()
+)
 
 # ── Touches that exist, and why each is not on the action path ─────────────
 
-#: Every touch on the surface outside runtime.py and the defining modules,
+#: Every touch on the surface outside ori/runtime/ and the defining modules,
 #: keyed ``path::qualified scope::name``. Stale entries fail.
 SURFACE_TOUCHES: dict[str, str] = {
     "ori/security/firmware/confirmation.py::FirmwareConfirmationCoordinator"
@@ -421,205 +427,228 @@ OPERATOR_INGRESS: dict[str, dict[str, str]] = {
     },
 }
 
-#: Every touch in ori/runtime.py, keyed ``qualified scope|kind|name``. Each
-#: lambda and nested function is its own scope, so an executor closure inside
-#: ``start`` is never covered by ``start``'s entry.
+#: Every touch in ori/runtime/, keyed ``module::qualified scope|kind|name``.
+#: Each lambda and nested function is its own scope, so an executor closure
+#: inside a startup stage is never covered by that stage's entry.
 RUNTIME_TOUCHES: dict[str, str] = {
-    "<module>|import|FirmwareCommandService": "imported for annotations and the builder",
-    "<module>|import|MqttFirmwareCommandPublisher": "imported for the builder",
-    "OriRuntime.__init__|store|_firmware_command_service": (
+    "_core.py::<module>|import|FirmwareCommandService": (
+        "imported for the service attribute's annotation"
+    ),
+    "_firmware_wiring.py::<module>|import|FirmwareCommandService": (
+        "imported for the builder and its annotations"
+    ),
+    "_core.py::<module>|import|MqttFirmwareCommandPublisher": (
+        "imported for the publisher attribute's annotation"
+    ),
+    "_firmware_wiring.py::<module>|import|MqttFirmwareCommandPublisher": (
+        "imported for the builder"
+    ),
+    "_core.py::RuntimeCore.__init__|store|_firmware_command_service": (
         "declares the attribute absent; constructs nothing and signs nothing"
     ),
-    "OriRuntime.__init__|load|FirmwareCommandService": "the service attribute's annotation",
-    "OriRuntime.__init__|load|MqttFirmwareCommandPublisher": (
+    "_core.py::RuntimeCore.__init__|load|FirmwareCommandService": (
+        "the service attribute's annotation"
+    ),
+    "_core.py::RuntimeCore.__init__|load|MqttFirmwareCommandPublisher": (
         "the publisher attribute's annotation"
     ),
-    "OriRuntime.approve_firmware_commands|load|_firmware_command_service": (
-        "the provisioning grant wrapper; no caller in ori/ today, and any "
-        "caller must sit in OPERATOR_INGRESS"
+    "_firmware.py::FirmwareCommands.approve_firmware_commands|load|_firmware_command_service": (
+        "the provisioning grant wrapper; no caller in ori/ today, and any caller "
+        "must sit in OPERATOR_INGRESS"
     ),
-    "OriRuntime.approve_firmware_commands|load|publish_provisioning_approval": (
+    "_firmware.py::FirmwareCommands.approve_firmware_commands|load|publish_provisioning_approval": (
         "the provisioning grant wrapper publishing the approval"
     ),
-    "OriRuntime.publish_firmware_command|load|_firmware_command_service": (
-        "the command wrapper; no caller in ori/ today, and nothing on the "
-        "action path may call it"
+    "_firmware.py::FirmwareCommands.publish_firmware_command|load|_firmware_command_service": (
+        "the command wrapper; no caller in ori/ today, and nothing on the action "
+        "path may call it"
     ),
-    "OriRuntime.publish_firmware_command|load|publish_command": (
+    "_firmware.py::FirmwareCommands.publish_firmware_command|load|publish_command": (
         "the command wrapper delegating to the service"
     ),
-    "OriRuntime._stage_services|store|_firmware_command_service": (
-        "lifecycle: stores the service built by _build_firmware_liveness_stack; "
-        "a load of the attribute in the stage is a different key and fails here, "
-        "and the local it is stored from is held by test_start_holds_the_service_"
-        "only_in_its_lifecycle_bindings"
+    "_startup.py::StartupStages._stage_services|store|_firmware_command_service": (
+        "lifecycle: stores the service built by _build_firmware_liveness_stack; a "
+        "load of the attribute in the stage is a different key and fails here, "
+        "and the local it is stored from is held by "
+        "test_start_holds_the_service_only_in_its_lifecycle_bindings"
     ),
-    "OriRuntime._stage_services|load|_build_firmware_liveness_stack": (
+    "_startup.py::StartupStages._stage_services|load|build_firmware_liveness_stack": (
         "lifecycle: composes telemetry, command egress and liveness"
     ),
-    "OriRuntime.stop|store|_firmware_command_service": (
+    "_shutdown.py::Shutdown.stop|store|_firmware_command_service": (
         "lifecycle: releases the service at shutdown"
     ),
-    "OriRuntime._stage_evidence|load|firmware_commands": (
+    "_startup_foundation.py::StartupFoundation._stage_evidence|load|firmware_commands": (
         "lifecycle: reads the command configuration to size the grant-side "
         "reconciler's retry interval"
     ),
-    "OriRuntime._start_firmware_mqtt_operator_if_enabled|load|firmware_commands": (
+    "_services.py::OperatorServices._start_firmware_mqtt_operator_if_enabled|load|firmware_commands": (
         "operator provisioning service: reads whether command egress is enabled"
     ),
-    "OriRuntime._start_firmware_mqtt_operator_if_enabled|str|firmware_commands": (
+    "_services.py::OperatorServices._start_firmware_mqtt_operator_if_enabled|str|firmware_commands": (
         "operator provisioning service: the configuration key it reads"
     ),
-    "OriRuntime._start_firmware_mqtt_operator_if_enabled|str|provisioner_key_env": (
+    "_services.py::OperatorServices._start_firmware_mqtt_operator_if_enabled|str|provisioner_key_env": (
         "operator provisioning service: loads the provisioner key it signs "
         "provisioning grants with, the grant side"
     ),
-    "_build_firmware_command_service|load|firmware_commands": (
+    "_firmware_wiring.py::_build_firmware_command_service|load|firmware_commands": (
         "the one construction site of the command service reads its configuration"
     ),
-    "_build_firmware_command_service|str|firmware_commands": (
+    "_firmware_wiring.py::_build_firmware_command_service|str|firmware_commands": (
         "the configuration key the construction site reads"
     ),
-    "_build_firmware_command_service|str|runtime_command_key_env": (
+    "_firmware_wiring.py::_build_firmware_command_service|str|runtime_command_key_env": (
         "the construction site loads the runtime command key into the service"
     ),
-    "_build_firmware_command_service|str|provisioner_key_env": (
+    "_firmware_wiring.py::_build_firmware_command_service|str|provisioner_key_env": (
         "the construction site loads the provisioner key into the service"
     ),
-    "_firmware_reading_age|load|firmware_commands": (
-        "sizes the liveness table from whether command egress is enabled and "
-        "its liveness interval; it builds nothing that signs or publishes"
+    "_firmware_wiring.py::firmware_reading_age|load|firmware_commands": (
+        "sizes the liveness table from whether command egress is enabled and its "
+        "liveness interval; it builds nothing that signs or publishes"
     ),
-    "_firmware_reading_age|str|firmware_commands": (
+    "_firmware_wiring.py::firmware_reading_age|str|firmware_commands": (
         "the configuration key the table sizing reads"
     ),
-    "_build_firmware_liveness_stack|load|firmware_commands": (
+    "_firmware_wiring.py::build_firmware_liveness_stack|load|firmware_commands": (
         "composition root: reads whether command egress is enabled"
     ),
-    "_build_firmware_liveness_stack|str|firmware_commands": (
+    "_firmware_wiring.py::build_firmware_liveness_stack|str|firmware_commands": (
         "composition root: the configuration key it reads"
     ),
-    "OriRuntime.__init__|store|_firmware_mqtt_operator_server": (
+    "_core.py::RuntimeCore.__init__|store|_firmware_mqtt_operator_server": (
         "declares the operator provisioning server absent"
     ),
-    "OriRuntime._start_firmware_mqtt_operator_if_enabled|store"
-    "|_firmware_mqtt_operator_server": (
+    "_services.py::OperatorServices._start_firmware_mqtt_operator_if_enabled|store|_firmware_mqtt_operator_server": (
         "operator provisioning ingress: holds the server it built; the grant side"
     ),
-    "OriRuntime._build_health_snapshot|load|_firmware_mqtt_operator_server": (
+    "_health.py::HealthSnapshot._build_health_snapshot|load|_firmware_mqtt_operator_server": (
         "health: reports whether the operator server is available; calls nothing"
     ),
-    "OriRuntime.stop|load|_firmware_mqtt_operator_server": (
+    "_shutdown.py::Shutdown.stop|load|_firmware_mqtt_operator_server": (
         "lifecycle: closes the operator server at shutdown"
     ),
-    "OriRuntime.stop|store|_firmware_mqtt_operator_server": (
+    "_shutdown.py::Shutdown.stop|store|_firmware_mqtt_operator_server": (
         "lifecycle: releases the operator server at shutdown"
     ),
-    "OriRuntime.__init__|store|_firmware_command_publisher": (
+    "_core.py::RuntimeCore.__init__|store|_firmware_command_publisher": (
         "declares the transport absent; connects nothing"
     ),
-    "OriRuntime.__init__|store|_firmware_liveness_scheduler": (
+    "_core.py::RuntimeCore.__init__|store|_firmware_liveness_scheduler": (
         "declares the liveness scheduler absent"
     ),
-    "OriRuntime._stage_services|store|_firmware_command_publisher": (
+    "_startup.py::StartupStages._stage_services|store|_firmware_command_publisher": (
         "lifecycle: holds the transport built by _build_firmware_liveness_stack"
     ),
-    "OriRuntime._stage_services|store|_firmware_liveness_scheduler": (
+    "_startup.py::StartupStages._stage_services|store|_firmware_liveness_scheduler": (
         "lifecycle: holds the liveness scheduler, which signs liveness only"
     ),
-    "OriRuntime.stop|load|_firmware_command_publisher": (
+    "_shutdown.py::Shutdown.stop|load|_firmware_command_publisher": (
         "lifecycle: closes the transport at shutdown"
     ),
-    "OriRuntime.stop|store|_firmware_command_publisher": (
+    "_shutdown.py::Shutdown.stop|store|_firmware_command_publisher": (
         "lifecycle: releases the transport at shutdown"
     ),
-    "OriRuntime.stop|store|_firmware_liveness_scheduler": (
+    "_shutdown.py::Shutdown.stop|store|_firmware_liveness_scheduler": (
         "lifecycle: releases the liveness scheduler at shutdown"
     ),
-    "OriRuntime._firmware_liveness_health|load|_firmware_liveness_scheduler": (
+    "_health.py::HealthSnapshot._firmware_liveness_health|load|_firmware_liveness_scheduler": (
         "health: reads the scheduler's own health report; publishes nothing"
     ),
-    "<module>|import|FirmwareConfirmationCoordinator": (
+    "_core.py::<module>|import|FirmwareConfirmationCoordinator": (
+        "imported for the coordinator attribute's annotation"
+    ),
+    "_startup_foundation.py::<module>|import|FirmwareConfirmationCoordinator": (
         "imported to build the grant-side confirmation coordinator"
     ),
-    "<module>|import|FirmwareConfirmationReconciler": (
+    "_core.py::<module>|import|FirmwareConfirmationReconciler": (
+        "imported for the reconciler attribute's annotation"
+    ),
+    "_firmware.py::<module>|import|FirmwareConfirmationReconciler": (
+        "imported to build the drain's transient grant-side reconciler"
+    ),
+    "_startup_foundation.py::<module>|import|FirmwareConfirmationReconciler": (
         "imported to build the grant-side confirmation reconciler"
     ),
-    "OriRuntime.__init__|load|FirmwareConfirmationCoordinator": (
+    "_core.py::RuntimeCore.__init__|load|FirmwareConfirmationCoordinator": (
         "the coordinator attribute's annotation"
     ),
-    "OriRuntime.__init__|load|FirmwareConfirmationReconciler": (
+    "_core.py::RuntimeCore.__init__|load|FirmwareConfirmationReconciler": (
         "the reconciler attribute's annotation"
     ),
-    "OriRuntime.__init__|store|_firmware_confirmation_coordinator": (
+    "_core.py::RuntimeCore.__init__|store|_firmware_confirmation_coordinator": (
         "declares the coordinator absent until evidence is configured"
     ),
-    "OriRuntime.__init__|store|_firmware_confirmation_reconciler": (
+    "_core.py::RuntimeCore.__init__|store|_firmware_confirmation_reconciler": (
         "declares the reconciler absent until evidence is configured"
     ),
-    "OriRuntime._stage_evidence|load|FirmwareConfirmationCoordinator": (
-        "lifecycle: builds the coordinator over the evidence confirmation "
-        "backend when evidence is configured"
+    "_startup_foundation.py::StartupFoundation._stage_evidence|load|FirmwareConfirmationCoordinator": (
+        "lifecycle: builds the coordinator over the evidence confirmation backend "
+        "when evidence is configured"
     ),
-    "OriRuntime._stage_evidence|load|FirmwareConfirmationReconciler": (
+    "_startup_foundation.py::StartupFoundation._stage_evidence|load|FirmwareConfirmationReconciler": (
         "lifecycle: builds the reconciler that retries pending grant confirmations"
     ),
-    "OriRuntime._stage_evidence|store|_firmware_confirmation_coordinator": (
+    "_startup_foundation.py::StartupFoundation._stage_evidence|store|_firmware_confirmation_coordinator": (
         "lifecycle: holds the coordinator for the grant side"
     ),
-    "OriRuntime._stage_evidence|store|_firmware_confirmation_reconciler": (
+    "_startup_foundation.py::StartupFoundation._stage_evidence|store|_firmware_confirmation_reconciler": (
         "lifecycle: holds the reconciler for the grant side"
     ),
-    "OriRuntime._stage_health_and_reconciliation|load|_firmware_confirmation_reconciler": (
-        "lifecycle: starts the reconciler's background retry loop, which "
-        "confirms new epochs and decides no action"
+    "_startup.py::StartupStages._stage_health_and_reconciliation|load|_firmware_confirmation_reconciler": (
+        "lifecycle: starts the reconciler's background retry loop, which confirms "
+        "new epochs and decides no action"
     ),
-    "OriRuntime._stage_health_and_reconciliation|load|_drain_pending_firmware_confirmations": (
+    "_startup.py::StartupStages._stage_health_and_reconciliation|load|_drain_pending_firmware_confirmations": (
         "startup: drains pending grant confirmations once, before any event is "
         "dispatched"
     ),
-    "OriRuntime._stage_health_and_reconciliation|load|_reconcile_pending_attestations": (
+    "_startup.py::StartupStages._stage_health_and_reconciliation|load|_reconcile_pending_attestations": (
         "startup: re-signs evidence rows of actions that already executed; a "
         "record of the past, never a precondition"
     ),
-    "OriRuntime._stage_services|load|_nudge_firmware_confirmations": (
+    "_startup.py::StartupStages._stage_services|load|_nudge_firmware_confirmations": (
         "lifecycle: hands the telemetry subscriber a callback that wakes the "
         "reconciler on reconnect"
     ),
-    "OriRuntime._drain_pending_firmware_confirmations|load|FirmwareConfirmationReconciler": (
+    "_firmware.py::FirmwareCommands._drain_pending_firmware_confirmations|load|FirmwareConfirmationReconciler": (
         "grant side: a transient reconciler when only a coordinator exists"
     ),
-    "OriRuntime._drain_pending_firmware_confirmations|load|_firmware_confirmation_coordinator": (
+    "_firmware.py::FirmwareCommands._drain_pending_firmware_confirmations|load|_firmware_confirmation_coordinator": (
         "grant side: the coordinator the drain confirms through"
     ),
-    "OriRuntime._drain_pending_firmware_confirmations|load|_firmware_confirmation_reconciler": (
+    "_firmware.py::FirmwareCommands._drain_pending_firmware_confirmations|load|_firmware_confirmation_reconciler": (
         "grant side: the reconciler the drain runs once"
     ),
-    "OriRuntime._firmware_source_confirmed|load|_firmware_confirmation_coordinator": (
+    "_firmware.py::FirmwareCommands._firmware_source_confirmed|load|_firmware_confirmation_coordinator": (
         "evidence reconciliation of already-executed rows, called only from "
         "_reconcile_pending_attestations"
     ),
-    "OriRuntime._nudge_firmware_confirmations|load|_firmware_confirmation_reconciler": (
+    "_firmware.py::FirmwareCommands._nudge_firmware_confirmations|load|_firmware_confirmation_reconciler": (
         "grant side: wakes the reconciler; decides no action"
     ),
-    "OriRuntime._reconcile_pending_attestations|load|_firmware_source_confirmed": (
+    "_evidence.py::EvidenceLoops._reconcile_pending_attestations|load|_firmware_source_confirmed": (
         "startup evidence repair of rows whose actions already executed"
     ),
-    "_build_firmware_command_service|load|MqttFirmwareCommandPublisher": (
+    "_firmware_wiring.py::_build_firmware_command_service|load|MqttFirmwareCommandPublisher": (
         "the one construction site of the command transport"
     ),
-    "_build_firmware_command_service|load|FirmwareCommandService": (
+    "_firmware_wiring.py::_build_firmware_command_service|load|FirmwareCommandService": (
         "the one construction site of the command service"
     ),
-    "_build_firmware_liveness_stack|load|_build_firmware_command_service": (
+    "_firmware_wiring.py::build_firmware_liveness_stack|load|_build_firmware_command_service": (
         "composition root handing the one service to start and the liveness "
         "scheduler, which only signs liveness"
     ),
-    "_build_firmware_liveness_stack|load|MqttFirmwareCommandPublisher": (
+    "_firmware_wiring.py::build_firmware_liveness_stack|load|MqttFirmwareCommandPublisher": (
         "return annotation of the composition root"
     ),
-    "_build_firmware_liveness_stack|load|FirmwareCommandService": (
+    "_firmware_wiring.py::build_firmware_liveness_stack|load|FirmwareCommandService": (
         "return annotation of the composition root"
+    ),
+    "_startup.py::<module>|import|build_firmware_liveness_stack": (
+        "imported for the services stage, the composition root's one caller"
     ),
 }
 
@@ -627,15 +656,15 @@ RUNTIME_TOUCHES: dict[str, str] = {
 #: other key holds exactly one, so a second touch under a classified key fails
 #: until it is looked at.
 RUNTIME_TOUCH_COUNTS: dict[str, int] = {
-    "OriRuntime._start_firmware_mqtt_operator_if_enabled|str|provisioner_key_env": 2,
-    "OriRuntime.approve_firmware_commands|load|_firmware_command_service": 2,
-    "OriRuntime.publish_firmware_command|load|_firmware_command_service": 2,
-    "OriRuntime._stage_health_and_reconciliation|load|_firmware_confirmation_reconciler": 2,
-    "OriRuntime._stage_evidence|load|firmware_commands": 2,
-    "OriRuntime.stop|load|_firmware_command_publisher": 2,
-    "OriRuntime.stop|load|_firmware_mqtt_operator_server": 2,
-    "_build_firmware_command_service|load|FirmwareCommandService": 2,
-    "_build_firmware_command_service|load|MqttFirmwareCommandPublisher": 2,
+    "_firmware.py::FirmwareCommands.approve_firmware_commands|load|_firmware_command_service": 2,
+    "_firmware.py::FirmwareCommands.publish_firmware_command|load|_firmware_command_service": 2,
+    "_firmware_wiring.py::_build_firmware_command_service|load|MqttFirmwareCommandPublisher": 2,
+    "_firmware_wiring.py::_build_firmware_command_service|load|FirmwareCommandService": 2,
+    "_services.py::OperatorServices._start_firmware_mqtt_operator_if_enabled|str|provisioner_key_env": 2,
+    "_shutdown.py::Shutdown.stop|load|_firmware_command_publisher": 2,
+    "_shutdown.py::Shutdown.stop|load|_firmware_mqtt_operator_server": 2,
+    "_startup.py::StartupStages._stage_health_and_reconciliation|load|_firmware_confirmation_reconciler": 2,
+    "_startup_foundation.py::StartupFoundation._stage_evidence|load|firmware_commands": 2,
 }
 
 #: What ``start`` may do with a local holding the command pair, the service,
@@ -829,7 +858,7 @@ def _resolved_imports(tree: ast.AST, path: Path) -> Iterator[tuple[str, int]]:
 def _defined_in(dotted: str) -> str | None:
     """Where the object an ``ori`` dotted name resolves to is defined.
 
-    A name re-exported by another module (``from ori.runtime import
+    A name re-exported by another module (``from ori.runtime._core import
     FirmwareCommandService``) is judged by the object, not by the path.
     """
     if not dotted.startswith("ori."):
@@ -1201,7 +1230,7 @@ def _runtime_gate_names() -> tuple[str, ...]:
     deep, the methods naming the gate query: its fixpoint is the whole dispatch
     path, whose post-execution attestation read is held by ordering instead.
     """
-    methods = _class_methods(RUNTIME, "OriRuntime")
+    methods: dict[str, ast.AST] = dict(runtime_methods())
     reaching = {*SURFACE_NAMES, *CONFIRMATION_OBJECTS}
     found: set[str] = set()
     changed = True
@@ -2570,9 +2599,9 @@ def test_the_action_path_does_not_import_firmware_authority() -> None:
 
 
 def _whole_tree_touches() -> dict[str, list[str]]:
-    """Every surface touch in ori/ outside runtime.py and the definitions."""
+    """Every surface touch in ori/ outside ori/runtime/ and the definitions."""
     found: dict[str, list[str]] = {}
-    skip = {RUNTIME, *DEFINING_MODULES}
+    skip = {*RUNTIME_MODULES, *DEFINING_MODULES}
     surface = _all_surface_names()
     for path in _python_files("ori", "skills"):
         rel = _rel(path)
@@ -2589,7 +2618,7 @@ def _on_action_path(rel: str) -> bool:
 
 
 def test_every_touch_on_the_firmware_surface_is_classified() -> None:
-    """Outside runtime.py: classified by exact scope, or permitted operator ingress."""
+    """Outside ori/runtime/: classified by exact scope, or permitted operator ingress."""
     unclassified: list[str] = []
     for key, where in sorted(_whole_tree_touches().items()):
         if key in SURFACE_TOUCHES:
@@ -2666,7 +2695,7 @@ def test_operator_ingress_is_off_the_action_path_and_grant_only() -> None:
     wrong = [
         f"{rel}: {sorted(names)}"
         for rel, names in OPERATOR_INGRESS.items()
-        if _on_action_path(rel) or rel == RUNTIME or not set(names) <= grant
+        if _on_action_path(rel) or rel.startswith(RUNTIME) or not set(names) <= grant
     ]
     missing = [rel for rel in OPERATOR_INGRESS if not (ROOT / rel).is_file()]
     assert not wrong, (
@@ -2676,12 +2705,12 @@ def test_operator_ingress_is_off_the_action_path_and_grant_only() -> None:
 
 
 def _runtime_touches() -> dict[str, list[int]]:
-    tree = ast.parse((ROOT / RUNTIME).read_text(encoding="utf-8"))
+    names = (*_all_surface_names(), *RUNTIME_ONLY_NAMES, *KEY_SOURCE_NAMES)
     found: dict[str, list[int]] = {}
-    for scope, kind, name, line in _surface_touches(
-        tree, (*_all_surface_names(), *RUNTIME_ONLY_NAMES, *KEY_SOURCE_NAMES)
-    ):
-        found.setdefault(f"{scope}|{kind}|{name}", []).append(line)
+    for path in runtime_source_paths():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for scope, kind, name, line in _surface_touches(tree, names):
+            found.setdefault(f"{path.name}::{scope}|{kind}|{name}", []).append(line)
     return found
 
 
@@ -2726,24 +2755,20 @@ def test_the_runtime_classification_describes_touches_that_exist() -> None:
 
 def _startup_stage_functions() -> list[ast.AsyncFunctionDef]:
     """The methods `OriRuntime.start` runs, in `STARTUP_STAGES` order."""
-    tree = ast.parse((ROOT / RUNTIME).read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef) and node.name == "OriRuntime":
-            methods = {
-                item.name: item
-                for item in node.body
-                if isinstance(item, ast.AsyncFunctionDef)
-            }
-            names = [f"_stage_{stage.name}" for stage in STARTUP_STAGES]
-            missing = [name for name in names if name not in methods]
-            assert not missing, f"startup stages not found in {RUNTIME}: {missing}"
-            return [methods[name] for name in names]
-    raise AssertionError(f"OriRuntime not found in {RUNTIME}")
+    methods = {
+        name: item
+        for name, item in runtime_methods().items()
+        if isinstance(item, ast.AsyncFunctionDef)
+    }
+    names = [f"_stage_{stage.name}" for stage in STARTUP_STAGES]
+    missing = [name for name in names if name not in methods]
+    assert not missing, f"startup stages not found in {RUNTIME}: {missing}"
+    return [methods[name] for name in names]
 
 
 def test_every_firmware_attribute_of_the_runtime_is_named() -> None:
     """A new holder of firmware authority is scanned the day it is added."""
-    tree = ast.parse((ROOT / RUNTIME).read_text(encoding="utf-8"))
+    tree = runtime_tree()
     stored = {
         node.attr
         for node in ast.walk(tree)
@@ -2801,10 +2826,10 @@ def test_start_holds_the_service_only_in_its_lifecycle_bindings() -> None:
         if isinstance(node, ast.Assign)
         and isinstance(node.value, ast.Call)
         and isinstance(node.value.func, ast.Name)
-        and node.value.func.id == "_build_firmware_liveness_stack"
+        and node.value.func.id == "build_firmware_liveness_stack"
     ]
     assert unpacked, (
-        "no startup stage unpacks _build_firmware_liveness_stack into locals, so "
+        "no startup stage unpacks build_firmware_liveness_stack into locals, so "
         "this guard would pass while tracking nothing"
     )
     offenders: list[str] = []
@@ -2830,7 +2855,7 @@ def _service_holder_offenders(start: ast.AsyncFunctionDef) -> list[str]:
             isinstance(node, ast.Assign)
             and isinstance(node.value, ast.Call)
             and isinstance(node.value.func, ast.Name)
-            and node.value.func.id == "_build_firmware_liveness_stack"
+            and node.value.func.id == "build_firmware_liveness_stack"
         ):
             for target in node.targets:
                 elements = target.elts if isinstance(target, ast.Tuple) else [target]

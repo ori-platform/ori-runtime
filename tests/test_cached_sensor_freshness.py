@@ -37,6 +37,7 @@ from ori.hal.zigbee_adapter import ZigbeeAdapter
 from ori.network.event_bus import EventBus
 from ori.runtime import OriRuntime
 from ori.state.store import StateStore
+from tests.package_layout import patch_runtime, patched_runtime
 from tests.test_lorawan_adapter import _config as lorawan_config
 from tests.test_mqtt_adapter import _config as mqtt_config
 from tests.test_mqtt_adapter import _FakeClient, _FakeTopic
@@ -731,7 +732,7 @@ async def test_the_health_stale_flag_uses_the_same_silence_bound(poll_ms: int) -
     ]
     seen_at = 1_700_000_000_000
     runtime._sensor_last_seen_ms = {"inside": seen_at + 1, "past": seen_at}
-    with patch("ori.runtime.now_ms", return_value=seen_at + bound + 1):
+    with patched_runtime("now_ms", return_value=seen_at + bound + 1):
         snapshot = await runtime._build_health_snapshot()
     stale = {s["id"]: s["stale"] for s in snapshot["sensors"]}
     assert stale == {"inside": False, "past": True}
@@ -807,8 +808,8 @@ async def _watch(runtime: OriRuntime) -> None:
 def _alerting(
     harness: _Harness, monkeypatch: pytest.MonkeyPatch, clock: _Clock
 ) -> AsyncMock:
-    monkeypatch.setattr("ori.runtime.now_ms", _WallClock(clock))
-    monkeypatch.setattr("ori.runtime.STALE_SENSOR_MIN_CHECK_INTERVAL_S", 0.001)
+    patch_runtime(monkeypatch, "now_ms", _WallClock(clock))
+    patch_runtime(monkeypatch, "STALE_SENSOR_MIN_CHECK_INTERVAL_S", 0.001)
     runtime = harness.runtime
     runtime._operator_contact = "+2340000000000"
     runtime._sensor_poll_interval_ms = {SENSOR: POLL_MS}
@@ -902,7 +903,7 @@ async def test_the_read_warning_interval_is_what_limits_the_log(
 ) -> None:
     import logging
 
-    monkeypatch.setattr("ori.runtime.READ_FAILURE_LOG_INTERVAL_S", 0.0)
+    patch_runtime(monkeypatch, "READ_FAILURE_LOG_INTERVAL_S", 0.0)
     caplog.set_level(logging.DEBUG, logger="ori.runtime")
     async with _runtime(tmp_path) as harness, _running(_mqtt) as source:
         await source.send(12.0)

@@ -373,7 +373,7 @@ def test_runtime_callback_resolves_the_reconciler_when_it_fires():
 def test_liveness_stack_forwards_the_callback_to_the_subscriber():
     """A stack that wires each half correctly and connects neither is the
     mistake this construction site exists to prevent."""
-    from ori import runtime as runtime_module
+    from ori.runtime import _firmware_wiring as runtime_module
 
     captured: dict = {}
 
@@ -385,7 +385,7 @@ def test_liveness_stack_forwards_the_callback_to_the_subscriber():
     runtime_module._build_firmware_telemetry_subscriber = _fake_builder
     try:
         sentinel = object()
-        runtime_module._build_firmware_liveness_stack(
+        runtime_module.build_firmware_liveness_stack(
             _stubconfig(), cast(Any, None), cast(Any, None), None, cast(Any, sentinel)
         )
     finally:

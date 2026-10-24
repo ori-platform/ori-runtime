@@ -22,7 +22,6 @@ from unittest.mock import patch
 
 import pytest
 
-from ori import runtime as runtime_module
 from ori.hal.base import AdapterReadError
 from ori.hal.mqtt_adapter import MqttAdapter
 from ori.network.deduplicator import EventDeduplicator
@@ -319,7 +318,7 @@ async def test_each_suppressed_duplicate_sleeps_once_and_cancels_promptly_in_the
                 in_sleep_after_third_read.set()
         return await real_sleep(delay, result)
 
-    with patch.object(runtime_module.asyncio, "sleep", observed_sleep):
+    with patch.object(asyncio, "sleep", observed_sleep):
         task = asyncio.create_task(
             runtime._poll_sensor(
                 adapter,

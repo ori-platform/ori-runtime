@@ -26,6 +26,7 @@ from ori.security.remote_commands.policy import (
 from ori.security.threshold_guard import tier_d_config_keys
 from ori.skills.loader import Skill, Trigger
 from ori.state.store import StateStore
+from tests.package_layout import patch_runtime
 
 
 @pytest.fixture
@@ -274,9 +275,7 @@ async def test_executable_policy_without_handler_is_logged_as_mismatch(
     runtime._config = SimpleNamespace(device_policy={"enabled": True})
     runtime._dispatcher = object()
     runtime._refresh_remote_device_policy_once = AsyncMock(return_value=True)  # type: ignore[method-assign]
-    monkeypatch.setattr(
-        "ori.runtime.classify_remote_command", lambda _: STATUS_EXECUTED
-    )
+    patch_runtime(monkeypatch, "classify_remote_command", lambda _: STATUS_EXECUTED)
 
     result = await runtime._handle_remote_command(_command("NEW_EXECUTABLE"))
 
@@ -793,8 +792,9 @@ async def test_apply_policy_fetches_hash_verifies_and_applies(store, monkeypatch
         payload={"timestamp": 1_780_000_000},
     )
     fetch_policy = AsyncMock(return_value=fetched)
-    monkeypatch.setattr(
-        "ori.runtime.fetch_remote_device_policy_bundle_by_reference",
+    patch_runtime(
+        monkeypatch,
+        "fetch_remote_device_policy_bundle_by_reference",
         fetch_policy,
     )
     command = _command(
@@ -837,8 +837,9 @@ async def test_apply_policy_dry_run_does_not_fetch_or_apply(store, monkeypatch):
     )
     runtime._dispatcher = ActionDispatcher()
     fetch_policy = AsyncMock()
-    monkeypatch.setattr(
-        "ori.runtime.fetch_remote_device_policy_bundle_by_reference",
+    patch_runtime(
+        monkeypatch,
+        "fetch_remote_device_policy_bundle_by_reference",
         fetch_policy,
     )
     command = _command(
@@ -878,8 +879,9 @@ async def test_apply_policy_dry_run_validates_reference_args(store, monkeypatch)
     )
     runtime._dispatcher = ActionDispatcher()
     fetch_policy = AsyncMock()
-    monkeypatch.setattr(
-        "ori.runtime.fetch_remote_device_policy_bundle_by_reference",
+    patch_runtime(
+        monkeypatch,
+        "fetch_remote_device_policy_bundle_by_reference",
         fetch_policy,
     )
 
@@ -919,8 +921,9 @@ async def test_apply_policy_hash_mismatch_is_rejected_and_logged(store, monkeypa
     fetch_policy = AsyncMock(
         side_effect=RemotePolicyFetchError("hash_mismatch", "hash mismatch")
     )
-    monkeypatch.setattr(
-        "ori.runtime.fetch_remote_device_policy_bundle_by_reference",
+    patch_runtime(
+        monkeypatch,
+        "fetch_remote_device_policy_bundle_by_reference",
         fetch_policy,
     )
     command = _command(

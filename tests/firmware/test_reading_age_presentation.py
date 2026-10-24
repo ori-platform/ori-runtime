@@ -203,7 +203,9 @@ def test_a_statement_that_cannot_be_composed_claims_no_time() -> None:
 
 def test_the_runtime_wires_the_statement_into_its_dispatcher() -> None:
     """The dispatcher reads no provenance; the runtime hands it the firmware statement."""
-    source = Path(__file__).resolve().parents[2].joinpath("ori/runtime.py").read_text()
+    from tests.package_layout import runtime_source
+
+    source = runtime_source()
     assert "functools.partial(measured_statement, reading_age)" in source
 
 

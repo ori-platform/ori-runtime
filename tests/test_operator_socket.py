@@ -34,6 +34,7 @@ from ori.operator_socket import (
 )
 from ori.runtime import OriRuntime
 from ori.utils.platform import runtime_platform
+from tests.package_layout import patch_runtime
 
 REPO = Path(__file__).resolve().parents[1]
 VALID = {
@@ -916,8 +917,9 @@ async def test_the_runtime_answers_through_its_dispatcher(
 
     monkeypatch.setattr("ori.operator_socket.read_operator_uid", operator_uid)
     # Access-control lists are Linux's; this proves the wiring, not the grant.
-    monkeypatch.setattr(
-        "ori.runtime.OperatorSocketServer",
+    patch_runtime(
+        monkeypatch,
+        "OperatorSocketServer",
         functools.partial(
             OperatorSocketServer,
             grant=lambda _d, _s, _u: None,

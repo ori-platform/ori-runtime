@@ -11,7 +11,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import math
-import sys
 from typing import Any, cast
 
 import pytest
@@ -19,28 +18,20 @@ import pytest
 from ori.actions.alert_failover import AlertFailoverSender
 from ori.hal.ac_measurement import WindowRefusedError, WindowSpec, summarise_window
 from ori.state.deferred_writer import DeferredWriter
+from tests.package_layout import patch_runtime
 from tests.waiting import wait_until
 
 
 @contextlib.contextmanager
 def _frozen_at(elapsed_ms: int):
-    """Hold `ori.runtime.now_ms` at one instant.
+    """Hold the runtime's `now_ms` at one instant, in every module that reads it.
 
     The schedule is a function of elapsed time, so every escalation test has
-    to say what time it is. The module is resolved through `sys.modules`
-    rather than imported a second time under an alias, since this file
-    already imports from it.
+    to say what time it is.
     """
-    # `sys.modules` is typed as a plain module, so the attribute this needs to
-    # swap is invisible to the checker; resolved through it rather than
-    # imported a second time under an alias.
-    module = cast(Any, sys.modules["ori.runtime"])
-    original = module.now_ms
-    module.now_ms = lambda: int(elapsed_ms)
-    try:
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        patch_runtime(monkeypatch, "now_ms", lambda: int(elapsed_ms))
         yield
-    finally:
-        module.now_ms = original
 
 
 SPEC = WindowSpec(
