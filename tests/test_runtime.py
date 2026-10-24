@@ -12,6 +12,7 @@ import base64
 import json
 import logging
 import os
+import shutil
 import sys
 import textwrap
 import time
@@ -75,7 +76,12 @@ from ori.security.gateway_messages import (
     GatewayMessageAuthenticator,
 )
 from ori.security.remote_commands.throttle import RemoteCommandThrottleDecision
-from ori.skills.loader import CommunitySkillAdmission, SkillLoader
+from ori.skills.loader import (
+    CommunitySkillAdmission,
+    SkillLoader,
+    SkillSelectionError,
+    SkillValidationError,
+)
 from ori.skills.signing import canonical_signed_payload
 from ori.state.store import StateStore
 from tests.commissioning.signing import commission_relay
@@ -85,6 +91,8 @@ from tests.conftest import (
     run_runtime_until,
 )
 from tests.gateway_auth_helpers import cache_for
+from tests.skill_races import POINTS as RACE_POINTS
+from tests.skill_races import swap_at as _swap_at
 from tests.waiting import DEADLINE_S, settle, wait_until
 
 
@@ -1245,6 +1253,182 @@ async def test_the_runtime_opens_the_store_beside_its_config(tmp_path, monkeypat
             f"{start_task.exception() if start_task.done() else ''}"
         )
         assert not (elsewhere / "ori_state.db").exists()
+    finally:
+        await _stop_and_join(runtime, start_task)
+
+
+def _config_naming_skills(home: Path, skills_block: str) -> Path:
+    """An installed layout: the deployment's skills directory is empty."""
+    (home / "skills").mkdir(parents=True)
+    path = home / "ori.yaml"
+    path.write_text(
+        textwrap.dedent("""\
+            device:
+              id: test-device-01
+              name: Test Device
+              location: Test Lab
+            sensors:
+              - id: cpu-sensor
+                type: cpu_percent
+                protocol: psutil
+                poll_interval_ms: 100
+            skills:
+            {skills}
+            reasoning:
+              default_tier: rule
+            gateway:
+              enabled: false
+              broker_url: ""
+            actions:
+              primary_alert_channel: sms
+              whatsapp:
+                enabled: false
+              sms:
+                enabled: false
+              relay:
+                enabled: false
+            database:
+              path: ori_state.db
+        """).format(skills=skills_block),
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.mark.asyncio
+async def test_a_listed_packaged_skill_loads_without_skills_dir(tmp_path, monkeypatch):
+    """Installed, the packaged skills are not beside ori.yaml; naming one loads it."""
+    _patch_external(monkeypatch)
+    path = _config_naming_skills(tmp_path / "data", "  - name: pc-system-health")
+    runtime = OriRuntime(config_path=str(path))
+    start_task = asyncio.create_task(runtime.start())
+    try:
+        await wait_until(
+            lambda: bool(runtime._loaded_skills) or start_task.done(),
+            what="the listed skill to load, or startup to end",
+        )
+        assert [skill.name for skill in runtime._loaded_skills] == [
+            "pc-system-health"
+        ], f"{start_task.exception() if start_task.done() else ''}"
+        assert runtime._loaded_skills[0].first_party
+    finally:
+        await _stop_and_join(runtime, start_task)
+
+
+@pytest.mark.asyncio
+async def test_a_listed_packaged_skill_that_does_not_load_refuses_the_start(
+    tmp_path, monkeypatch
+):
+    _patch_external(monkeypatch)
+    original = SkillLoader.load_one
+
+    def refuse_one(self, skill_dir, **kwargs):
+        if Path(skill_dir).name == "pc-system-health":
+            raise SkillValidationError("broken in the package")
+        return original(self, skill_dir, **kwargs)
+
+    monkeypatch.setattr(SkillLoader, "load_one", refuse_one)
+    path = _config_naming_skills(tmp_path / "data", "  - name: pc-system-health")
+    runtime = OriRuntime(config_path=str(path))
+    start_task = asyncio.create_task(runtime.start())
+    try:
+        await settle({start_task}, what="startup to refuse")
+        with pytest.raises(SkillSelectionError, match="'pc-system-health' ships"):
+            start_task.result()
+    finally:
+        await _stop_and_join(runtime, start_task)
+
+
+@pytest.mark.asyncio
+async def test_a_reload_that_cannot_resolve_keeps_the_running_skills(
+    tmp_path, monkeypatch
+):
+    _patch_external(monkeypatch)
+    path = _config_naming_skills(tmp_path / "data", "  - name: pc-system-health")
+    runtime = OriRuntime(config_path=str(path))
+    start_task = asyncio.create_task(runtime.start())
+    try:
+        await wait_until(
+            lambda: bool(runtime._loaded_skills) or start_task.done(),
+            what="the listed skill to load, or startup to end",
+        )
+        running = list(runtime._skill_subscriptions)
+        assert running
+        runtime._skill_selection = (("no-such-skill", ""),)
+        assert await runtime.reload_skills() is False
+        assert runtime._skill_subscriptions == running
+        assert [skill.name for skill in runtime._loaded_skills] == ["pc-system-health"]
+    finally:
+        await _stop_and_join(runtime, start_task)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("swap_point", RACE_POINTS)
+async def test_a_reload_raced_out_of_a_packaged_skill_keeps_the_running_graph(
+    tmp_path, monkeypatch, swap_point
+):
+    """A packaged directory swapped mid-reload is refused, never degraded."""
+    import ori.skills.loader as loader_module
+
+    _patch_external(monkeypatch)
+    shipped = Path(__file__).resolve().parents[1] / "skills"
+    root = tmp_path / "packaged"
+    for name in ("energy-anomaly-detector", "pc-system-health"):
+        shutil.copytree(shipped / name, root / name)
+    external = tmp_path / "external" / "energy-anomaly-detector"
+    shutil.copytree(shipped / "energy-anomaly-detector", external)
+    monkeypatch.setattr(
+        loader_module, "first_party_skill_roots", lambda: (root.resolve(),)
+    )
+    path = _config_naming_skills(
+        tmp_path / "data",
+        "  - name: energy-anomaly-detector\n  - name: pc-system-health",
+    )
+    runtime = OriRuntime(config_path=str(path))
+    start_task = asyncio.create_task(runtime.start())
+    try:
+        await wait_until(
+            lambda: len(runtime._loaded_skills) == 2 or start_task.done(),
+            what="both packaged skills to load, or startup to end",
+        )
+        running = list(runtime._skill_subscriptions)
+
+        def swap() -> None:
+            target = root / "energy-anomaly-detector"
+            if not target.is_symlink():
+                shutil.rmtree(target)
+                target.symlink_to(external, target_is_directory=True)
+
+        _swap_at(monkeypatch, swap_point, swap)
+        assert await runtime.reload_skills() is False
+        assert runtime._skill_subscriptions == running
+        assert {skill.name for skill in runtime._loaded_skills} == {
+            "energy-anomaly-detector",
+            "pc-system-health",
+        }
+        assert any(
+            trigger.action_tier == "D"
+            for skill in runtime._loaded_skills
+            for trigger in skill.triggers
+        )
+    finally:
+        await _stop_and_join(runtime, start_task)
+
+
+@pytest.mark.asyncio
+async def test_a_listed_skill_that_does_not_exist_refuses_the_start(
+    tmp_path, monkeypatch
+):
+    """A missing skill can be missing Tier D coverage; it is never a quiet start."""
+    _patch_external(monkeypatch)
+    path = _config_naming_skills(tmp_path / "data", "  - name: no-such-skill")
+    runtime = OriRuntime(config_path=str(path))
+    start_task = asyncio.create_task(runtime.start())
+    try:
+        await settle({start_task}, what="startup to refuse")
+        with pytest.raises(SkillSelectionError, match="'no-such-skill'"):
+            start_task.result()
+        assert runtime._loaded_skills == []
     finally:
         await _stop_and_join(runtime, start_task)
 
@@ -2706,9 +2890,14 @@ class TestSkillReload:
             await runtime.stop()
             await asyncio.wait_for(start_task, timeout=10)
 
-    async def test_reload_skills_registers_new_handlers(
+    async def test_reload_refreshes_the_listed_skills_and_loads_no_other(
         self, minimal_config: Path, monkeypatch
     ):
+        """A reload re-reads what ``skills:`` named at start, and nothing else.
+
+        The list is read once, with the rest of ori.yaml and its signature; a
+        directory dropped in beside the listed ones is not loaded.
+        """
         _patch_external(monkeypatch)
         _treat_scratch_skills_as_packaged(monkeypatch)
         runtime = OriRuntime(config_path=str(minimal_config))
@@ -2751,9 +2940,21 @@ class TestSkillReload:
                 encoding="utf-8",
             )
 
-            ok = await runtime.reload_skills()
-            assert ok is True
-            assert runtime._event_bus.subscriber_count("cpu_percent") == 2
+            assert await runtime.reload_skills() is True
+            assert runtime._event_bus.subscriber_count("cpu_percent") == 1
+            assert [skill.name for skill in runtime._loaded_skills] == ["test-skill"]
+
+            (skills_root / "test-skill" / "skill.yaml").write_text(
+                (skill_dir / "skill.yaml")
+                .read_text(encoding="utf-8")
+                .replace("name: second-skill", "name: test-skill")
+                .replace("high_cpu_secondary", "replaced_trigger"),
+                encoding="utf-8",
+            )
+            assert await runtime.reload_skills() is True
+            assert [trigger.name for trigger in runtime._loaded_skills[0].triggers] == [
+                "replaced_trigger"
+            ]
         finally:
             await runtime.stop()
             await start_task

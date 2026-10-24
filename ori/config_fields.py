@@ -15,6 +15,12 @@ class ConfigValidationError(Exception):
     pass
 
 
+# A skill's name is also the name of its directory, so ori.yaml and skill.yaml
+# share one rule: no separator, no leading dot, nothing that leaves the root.
+SKILL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+MAX_SKILL_NAME_LENGTH = 64
+
+
 def require_str(data: dict, key: str, context: str) -> str:
     value = data.get(key)
     if value is None:

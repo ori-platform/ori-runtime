@@ -3,10 +3,15 @@
 
 import asyncio
 import base64
+import json
 import logging
 import secrets
+import shutil
 import textwrap
+import unicodedata
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -26,6 +31,7 @@ from ori.skills.loader import (
     _TRIGGER_ALLOWED_KEYS,
     Skill,
     SkillLoader,
+    SkillSelectionError,
     SkillValidationError,
     Trigger,
     _CooldownTracker,
@@ -35,6 +41,8 @@ from ori.skills.signing import (
     canonical_skill_payload,
     verify_community_skill_signature,
 )
+from tests.skill_races import POINTS as RACE_POINTS
+from tests.skill_races import swap_at as _swap_at
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -1460,6 +1468,490 @@ class TestLoadAll:
 
         assert len(skills) == 1
         assert skills[0].name == "good-skill"
+
+
+@pytest.mark.parametrize(
+    "example",
+    sorted(Path(__file__).resolve().parents[1].glob("ori*.yaml*example")),
+    ids=lambda path: path.name,
+)
+def test_every_example_configuration_names_skills_that_resolve(
+    example: Path, tmp_path: Path
+) -> None:
+    entries = yaml.safe_load(example.read_text(encoding="utf-8")).get("skills") or []
+    selection = [(entry["name"], str(entry.get("version") or "")) for entry in entries]
+    assert selection, f"{example.name} names no skill"
+    skills = SkillLoader().load_selected(selection, str(tmp_path))
+    assert [skill.name for skill in skills] == [name for name, _ in selection]
+
+
+def _layout(
+    tmp_path: Path, monkeypatch, *, pyproject: str | None, site: str = "site-packages"
+) -> Path:
+    """A package directory with a planted ``skills`` beside it, nothing installed."""
+    import ori.skills.loader as loader_module
+
+    parent = tmp_path / unicodedata.normalize("NFC", site)
+    packaged = Path(__file__).resolve().parents[1] / "skills"
+    shutil.copytree(
+        packaged / "energy-anomaly-detector",
+        parent / "skills" / "energy-anomaly-detector",
+    )
+    if pyproject is not None:
+        (parent / "pyproject.toml").write_text(pyproject)
+    module = parent / "ori" / "skills" / "loader.py"
+    module.parent.mkdir(parents=True)
+    (parent / "ori" / "__init__.py").write_text("")
+    module.write_text("")
+    monkeypatch.setattr(loader_module, "__file__", str(module))
+    monkeypatch.setattr(
+        loader_module.importlib.metadata, "distributions", lambda **_: []
+    )
+    loader_module._source_checkout.cache_clear()
+    return parent
+
+
+class _Dist:
+    """An installed ``ori-runtime`` as importlib.metadata describes one."""
+
+    def __init__(self, site: Path, *, record: list[str], direct_url: str | None):
+        self._site = site
+        self._record = record
+        self._direct_url = direct_url
+
+    @property
+    def files(self) -> list[Any]:
+        from importlib.metadata import PackagePath
+
+        return [PackagePath(entry) for entry in self._record]
+
+    def locate_file(self, entry: Any) -> Path:
+        return self._site / str(entry)
+
+    def read_text(self, name: str) -> str | None:
+        if name == "RECORD":
+            return "\n".join(self._record) if self._record else None
+        if name == "direct_url.json":
+            return self._direct_url
+        return None
+
+
+@pytest.mark.parametrize(
+    "pyproject",
+    [None, "", '[project]\nname = "someone-else"\n', "not toml ["],
+)
+def test_nothing_beside_a_package_without_its_declaration_is_first_party(
+    tmp_path: Path, monkeypatch, pyproject: str | None
+) -> None:
+    import ori.skills.loader as loader_module
+
+    parent = _layout(tmp_path, monkeypatch, pyproject=pyproject)
+    assert (parent / "skills").resolve() not in loader_module.first_party_skill_roots()
+    with pytest.raises(SkillSelectionError, match="is neither"):
+        SkillLoader(require_signed=True).load_selected(
+            [("energy-anomaly-detector", "")], str(tmp_path / "absent")
+        )
+    # Named from skills_dir it is community content: unsigned, so not admitted.
+    loader = SkillLoader(require_signed=True)
+    assert (
+        loader.load_selected([("energy-anomaly-detector", "")], str(parent / "skills"))
+        == []
+    )
+    assert loader.community_admission().refused_skills == 1
+
+
+def _folds_names(directory: Path) -> bool:
+    """Whether *directory*'s filesystem finds a file under another case."""
+    probe = directory / "Case-Probe"
+    probe.write_text("")
+    try:
+        return (directory / "case-probe").exists()
+    finally:
+        probe.unlink()
+
+
+_SPELLINGS = ["relative", "absolute", "parent-relative"]
+_ALIASES = ["upper-basename", "upper-parent", "nfd-parent"]
+
+
+@pytest.mark.parametrize("spelling", _SPELLINGS + _ALIASES)
+@pytest.mark.parametrize("editable_first", [False, True])
+def test_a_wheel_installation_has_no_checkout_whatever_sits_beside_it(
+    tmp_path: Path, monkeypatch, spelling: str, editable_first: bool
+) -> None:
+    """RECORD names a file however it likes; the file is what decides.
+
+    The aliases name the module only on a case- and normalisation-insensitive
+    filesystem, as macOS's is; elsewhere they name nothing, and are skipped.
+    """
+    import ori.skills.loader as loader_module
+
+    parent = _layout(
+        tmp_path,
+        monkeypatch,
+        pyproject='[project]\nname = "ori-runtime"\n',
+        site="site-packagés",
+    )
+    if spelling in _ALIASES and not _folds_names(parent):
+        pytest.skip("this filesystem tells names apart by case and normalisation")
+    absolute = (parent / "ori" / "skills" / "loader.py").resolve()
+    entry = {
+        "relative": "ori/skills/loader.py",
+        "absolute": str(absolute),
+        "parent-relative": f"../{parent.name}/ori/skills/loader.py",
+        "upper-basename": "ori/skills/LOADER.PY",
+        "upper-parent": "ori/SKILLS/loader.py",
+        "nfd-parent": unicodedata.normalize("NFD", str(absolute)),
+    }[spelling]
+    assert spelling != "nfd-parent" or entry != str(absolute)
+    wheel = _Dist(parent, record=["ori/__init__.py", entry], direct_url=None)
+    editable = _Dist(
+        tmp_path / "venv",
+        record=["__editable__.ori_runtime.pth"],
+        direct_url=json.dumps(
+            {"url": parent.resolve().as_uri(), "dir_info": {"editable": True}}
+        ),
+    )
+    found = [editable, wheel] if editable_first else [wheel, editable]
+    monkeypatch.setattr(
+        loader_module.importlib.metadata, "distributions", lambda **_: found
+    )
+    assert (parent / "skills").resolve() not in loader_module.first_party_skill_roots()
+    with pytest.raises(SkillSelectionError, match="is neither"):
+        SkillLoader(require_signed=True).load_selected(
+            [("energy-anomaly-detector", "")], str(tmp_path / "absent")
+        )
+
+
+def test_an_editable_record_with_a_repeated_member_names_no_checkout(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import ori.skills.loader as loader_module
+
+    parent = _layout(tmp_path, monkeypatch, pyproject=None)
+    here = parent.resolve().as_uri()
+    elsewhere = (tmp_path / "elsewhere").resolve().as_uri()
+    repeated = (
+        f'{{"url": "{elsewhere}", "url": "{here}", "dir_info": {{"editable": true}}}}'
+    )
+    editable = _Dist(
+        tmp_path / "venv", record=["__editable__.ori_runtime.pth"], direct_url=repeated
+    )
+    monkeypatch.setattr(
+        loader_module.importlib.metadata, "distributions", lambda **_: [editable]
+    )
+    assert (parent / "skills").resolve() not in loader_module.first_party_skill_roots()
+
+
+@pytest.mark.parametrize(
+    ("pyproject", "editable_at", "trusted"),
+    [
+        ('[project]\nname = "ori-runtime"\n', None, True),
+        (None, "site-packages", True),
+        (None, "elsewhere", False),
+    ],
+)
+def test_a_checkout_declares_itself_or_is_installed_editable(
+    tmp_path: Path,
+    monkeypatch,
+    pyproject: str | None,
+    editable_at: str | None,
+    trusted: bool,
+) -> None:
+    import ori.skills.loader as loader_module
+
+    parent = _layout(tmp_path, monkeypatch, pyproject=pyproject)
+    if editable_at is not None:
+        url = (tmp_path / editable_at).resolve().as_uri()
+        editable = _Dist(
+            tmp_path / "venv",
+            record=["__editable__.ori_runtime.pth"],
+            direct_url=json.dumps({"url": url, "dir_info": {"editable": True}}),
+        )
+        monkeypatch.setattr(
+            loader_module.importlib.metadata, "distributions", lambda **_: [editable]
+        )
+    roots = loader_module.first_party_skill_roots()
+    assert ((parent / "skills").resolve() in roots) is trusted
+
+
+class TestLoadSelected:
+    """``skills:`` names what runs, wherever the runtime is installed."""
+
+    def test_a_packaged_skill_loads_from_an_empty_deployment_directory(self, tmp_path):
+        skills = SkillLoader().load_selected([("pc-system-health", "")], str(tmp_path))
+        assert [skill.name for skill in skills] == ["pc-system-health"]
+        assert skills[0].first_party
+
+    def test_a_packaged_skill_loads_with_no_deployment_directory(self, tmp_path):
+        skills = SkillLoader().load_selected(
+            [("pc-system-health", "")], str(tmp_path / "absent")
+        )
+        assert [skill.name for skill in skills] == ["pc-system-health"]
+
+    def test_only_listed_deployment_skills_load(self, tmp_path):
+        _write_skill_yaml(tmp_path / "skill-a", _minimal_yaml(name="skill-a"))
+        _write_skill_yaml(tmp_path / "skill-b", _minimal_yaml(name="skill-b"))
+        skills = _first_party_loader().load_selected([("skill-a", "")], str(tmp_path))
+        assert [skill.name for skill in skills] == ["skill-a"]
+
+    def test_an_empty_list_loads_nothing(self, tmp_path):
+        _write_skill_yaml(tmp_path / "skill-a", _minimal_yaml(name="skill-a"))
+        assert _first_party_loader().load_selected([], str(tmp_path)) == []
+
+    def test_an_unlisted_deployment_skill_is_named(self, tmp_path, caplog):
+        _community_skill_dir(tmp_path, "left-out")
+        with caplog.at_level(logging.WARNING, logger="ori.skills.loader"):
+            SkillLoader().load_selected([("pc-system-health", "")], str(tmp_path))
+        assert any(
+            "left-out" in record.getMessage() and "not loaded" in record.getMessage()
+            for record in caplog.records
+        )
+
+    @pytest.mark.parametrize(
+        ("name", "refusal"),
+        [("no-such-skill", "is neither"), ("template", "is a scaffold")],
+    )
+    def test_a_name_that_resolves_to_nothing_is_refused(self, tmp_path, name, refusal):
+        with pytest.raises(SkillSelectionError, match=f"{name!r} {refusal}"):
+            SkillLoader().load_selected([(name, "")], str(tmp_path))
+
+    def test_a_template_directory_is_never_a_skill(self, tmp_path):
+        _write_skill_yaml(tmp_path / "template", _minimal_yaml(name="template"))
+        with pytest.raises(SkillSelectionError, match="'template' is a scaffold"):
+            _first_party_loader().load_selected([("template", "")], str(tmp_path))
+
+    def test_every_unresolved_name_is_named_at_once(self, tmp_path):
+        with pytest.raises(SkillSelectionError) as raised:
+            SkillLoader().load_selected(
+                [
+                    ("first-missing", ""),
+                    ("pc-system-health", ""),
+                    ("second-missing", ""),
+                ],
+                str(tmp_path),
+            )
+        assert "'first-missing'" in str(raised.value)
+        assert "'second-missing'" in str(raised.value)
+
+    def test_a_deployment_directory_shadowing_a_packaged_skill_is_refused(
+        self, tmp_path
+    ):
+        _write_skill_yaml(
+            tmp_path / "pc-system-health", _minimal_yaml(name="pc-system-health")
+        )
+        with pytest.raises(SkillSelectionError, match="both a skill that ships"):
+            SkillLoader().load_selected([("pc-system-health", "")], str(tmp_path))
+
+    def test_a_symlinked_directory_does_not_resolve(self, tmp_path):
+        real = tmp_path / "elsewhere" / "linked"
+        _write_skill_yaml(real, _minimal_yaml(name="linked"))
+        root = tmp_path / "skills"
+        root.mkdir()
+        (root / "linked").symlink_to(real, target_is_directory=True)
+        with pytest.raises(SkillSelectionError, match="'linked'"):
+            _first_party_loader().load_selected([("linked", "")], str(root))
+
+    def test_a_manifest_declaring_another_name_is_refused(self, tmp_path):
+        _write_skill_yaml(tmp_path / "listed", _minimal_yaml(name="declared"))
+        with pytest.raises(SkillSelectionError, match="declares the name 'declared'"):
+            _first_party_loader().load_selected([("listed", "")], str(tmp_path))
+
+    def test_a_packaged_root_as_skills_dir_names_what_it_leaves_out(self, caplog):
+        packaged = Path(__file__).resolve().parents[1] / "skills"
+        with caplog.at_level(logging.WARNING, logger="ori.skills.loader"):
+            skills = SkillLoader().load_selected(
+                [("pc-system-health", "")], str(packaged)
+            )
+        assert [skill.name for skill in skills] == ["pc-system-health"]
+        named = [
+            r.getMessage() for r in caplog.records if "not loaded" in r.getMessage()
+        ]
+        assert named and "energy-anomaly-detector" in named[0]
+        assert "pc-system-health," not in named[0]
+
+    def test_a_symlink_to_the_packaged_root_resolves_once(self, tmp_path):
+        packaged = Path(__file__).resolve().parents[1] / "skills"
+        (tmp_path / "skills").symlink_to(packaged, target_is_directory=True)
+        skills = SkillLoader().load_selected(
+            [("pc-system-health", "")], str(tmp_path / "skills")
+        )
+        assert [skill.name for skill in skills] == ["pc-system-health"]
+
+    def test_an_empty_list_is_named(self, tmp_path, caplog):
+        with caplog.at_level(logging.WARNING, logger="ori.skills.loader"):
+            assert SkillLoader().load_selected([], str(tmp_path)) == []
+        assert any("names no skill" in r.getMessage() for r in caplog.records)
+
+    def test_a_listed_packaged_skill_that_does_not_load_refuses(
+        self, tmp_path, monkeypatch
+    ):
+        original = SkillLoader.load_one
+
+        def refuse_one(self, skill_dir, **kwargs):
+            if Path(skill_dir).name == "pc-system-health":
+                raise SkillValidationError("broken in the package")
+            return original(self, skill_dir, **kwargs)
+
+        monkeypatch.setattr(SkillLoader, "load_one", refuse_one)
+        with pytest.raises(SkillSelectionError, match="'pc-system-health' ships"):
+            SkillLoader().load_selected(
+                [("pc-system-health", ""), ("energy-anomaly-detector", "")],
+                str(tmp_path),
+            )
+
+    def test_a_listed_community_skill_not_admitted_degrades(self, tmp_path):
+        _community_skill_dir(tmp_path, "community-skill")
+        loader = SkillLoader()
+        skills = loader.load_selected(
+            [("pc-system-health", ""), ("community-skill", "")], str(tmp_path)
+        )
+        assert [skill.name for skill in skills] == ["pc-system-health"]
+        assert loader.community_admission().refused_skills == 1
+
+    @pytest.mark.parametrize(
+        ("selection", "refusal"),
+        [
+            ([("../skills/pc-system-health", "")], "is not a skill name"),
+            ([("/abs/pc-system-health", "")], "is not a skill name"),
+            ([("x" * 65, "")], "is not a skill name"),
+            ([("pc-system-health", ""), ("pc-system-health", "")], "second time"),
+            ([("pc-system-health", ""), ("PC-System-Health", "")], "second time"),
+        ],
+    )
+    def test_the_loader_checks_names_before_reading_any(
+        self, tmp_path, selection, refusal
+    ):
+        read: list[Path] = []
+        loader = SkillLoader()
+        loader.load_one = lambda skill_dir, **_: read.append(skill_dir)  # type: ignore[method-assign,assignment,func-returns-value,return-value]
+        with pytest.raises(SkillSelectionError, match=refusal):
+            loader.load_selected(selection, str(tmp_path))
+        assert read == []
+
+    @pytest.mark.parametrize("order", [("a", "b"), ("b", "a")])
+    def test_two_entries_declaring_one_name_are_refused_in_any_order(
+        self, tmp_path, order
+    ):
+        _write_skill_yaml(tmp_path / "a", _minimal_yaml(name="b"))
+        _write_skill_yaml(tmp_path / "b", _minimal_yaml(name="b"))
+        with pytest.raises(SkillSelectionError, match="'a' resolves to .* 'b'"):
+            _first_party_loader().load_selected(
+                [(name, "") for name in order], str(tmp_path)
+            )
+
+    def test_two_packaged_roots_resolve_to_the_first(self, tmp_path, monkeypatch):
+        import ori.skills.loader as loader_module
+
+        checkout = Path(__file__).resolve().parents[1] / "skills"
+        installed = tmp_path / "share" / "skills"
+        shutil.copytree(checkout / "pc-system-health", installed / "pc-system-health")
+        monkeypatch.setattr(
+            loader_module,
+            "first_party_skill_roots",
+            lambda: (checkout.resolve(), installed.resolve()),
+        )
+        skills = SkillLoader().load_selected(
+            [("pc-system-health", "")], str(tmp_path / "absent")
+        )
+        assert [skill.name for skill in skills] == ["pc-system-health"]
+
+    @staticmethod
+    def _unsigned_community_loader(monkeypatch) -> SkillLoader:
+        """Scratch skills are community content, admitted without a signature."""
+        packaged = (Path(__file__).resolve().parents[1] / "skills").resolve()
+        monkeypatch.setattr(
+            SkillLoader,
+            "_is_core_bundled_skill",
+            lambda self, skill_dir: Path(skill_dir).resolve().is_relative_to(packaged),
+        )
+        monkeypatch.setattr(
+            SkillLoader,
+            "_verify_community_signature",
+            lambda self, raw, skill_dir: None,
+        )
+        return SkillLoader()
+
+    def test_community_skills_cannot_spend_a_packaged_skills_budget(
+        self, tmp_path, monkeypatch
+    ):
+        import ori.skills.loader as loader_module
+
+        loader = self._unsigned_community_loader(monkeypatch)
+        packaged = loader.load_selected([("pc-system-health", "")], str(tmp_path))
+        monkeypatch.setattr(
+            loader_module,
+            "_MAX_TOTAL_SUBSCRIPTIONS",
+            loader._subscription_cost(packaged[0]),
+        )
+        _write_skill_yaml(tmp_path / "community", _minimal_yaml(name="community"))
+        skills = loader.load_selected(
+            [("community", ""), ("pc-system-health", "")], str(tmp_path)
+        )
+        assert [skill.name for skill in skills] == ["pc-system-health"]
+        assert loader.community_admission().refused_skills == 1
+
+    def test_a_community_duplicate_is_counted(self, tmp_path, monkeypatch):
+        loader = self._unsigned_community_loader(monkeypatch)
+        _write_skill_yaml(tmp_path / "a", _minimal_yaml(name="same"))
+        _write_skill_yaml(tmp_path / "b", _minimal_yaml(name="same"))
+        assert [skill.name for skill in loader.load_all(str(tmp_path))] == ["same"]
+        assert loader.community_admission().refused_skills == 1
+
+    @pytest.mark.parametrize("swap_point", RACE_POINTS)
+    def test_a_packaged_skill_swapped_out_before_its_load_is_refused(
+        self, tmp_path, monkeypatch, swap_point
+    ):
+        import ori.skills.loader as loader_module
+
+        packaged = Path(__file__).resolve().parents[1] / "skills"
+        root = tmp_path / "packaged"
+        for name in ("energy-anomaly-detector", "pc-system-health"):
+            shutil.copytree(packaged / name, root / name)
+        external = tmp_path / "external" / "energy-anomaly-detector"
+        shutil.copytree(packaged / "energy-anomaly-detector", external)
+        monkeypatch.setattr(
+            loader_module, "first_party_skill_roots", lambda: (root.resolve(),)
+        )
+
+        def swap() -> None:
+            target = root / "energy-anomaly-detector"
+            if not target.is_symlink():
+                shutil.rmtree(target)
+                target.symlink_to(external, target_is_directory=True)
+
+        _swap_at(monkeypatch, swap_point, swap)
+        selection = [("energy-anomaly-detector", ""), ("pc-system-health", "")]
+        with pytest.raises(SkillSelectionError, match="'energy-anomaly-detector'"):
+            SkillLoader().load_selected(selection, str(tmp_path / "absent"))
+
+    def test_a_skill_loaded_with_other_provenance_is_refused_once(
+        self, tmp_path, monkeypatch
+    ):
+        original = SkillLoader.load_one
+
+        def as_community(self, skill_dir, **kwargs):
+            return replace(original(self, skill_dir, **kwargs), first_party=False)
+
+        monkeypatch.setattr(SkillLoader, "load_one", as_community)
+        with pytest.raises(SkillSelectionError) as raised:
+            SkillLoader().load_selected([("pc-system-health", "")], str(tmp_path))
+        assert str(raised.value) == (
+            "'pc-system-health' changed provenance between resolution and load"
+        )
+
+    def test_a_pinned_version_must_match(self, tmp_path):
+        with pytest.raises(SkillSelectionError, match="pins version '0.2.1'"):
+            SkillLoader().load_selected([("pc-system-health", "0.2.1")], str(tmp_path))
+        skills = SkillLoader().load_selected(
+            [("pc-system-health", "0.1.0")], str(tmp_path)
+        )
+        assert [skill.version for skill in skills] == ["0.1.0"]
+
+    def test_more_names_than_one_load_reads_are_refused(self, tmp_path):
+        selection = [(f"skill-{i}", "") for i in range(65)]
+        with pytest.raises(SkillSelectionError, match="limit per load is 64"):
+            _first_party_loader().load_selected(selection, str(tmp_path))
 
 
 # ─── SkillLoader.register — EventBus handler ─────────────────────────────────

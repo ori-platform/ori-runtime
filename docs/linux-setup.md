@@ -187,6 +187,10 @@ Any in-flight `reason_and_dispatch` tasks continue under the skill/config snapsh
 started with. This is intentional for safety consistency (for example, a Tier C approval
 flow already in progress is not rewritten mid-flight).
 
+A reload re-reads the skills `skills:` named at start, and loads no others; the
+list is read with the rest of `ori.yaml`, and its signature, only at start. To
+add or remove a skill, edit `skills:` and restart the runtime.
+
 You should see output like:
 
 ```bash

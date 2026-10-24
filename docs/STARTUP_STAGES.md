@@ -104,7 +104,7 @@ above. A dash means none.
 | dispatcher | `_binding_seq_in_force`, `_commissioned_actuator`, `_state_store` | `_dispatcher` | `_load_cached_device_policy`, `_maybe_refresh_remote_device_policy_once`, `_send_or_queue_alert` |
 | reasoning | `_config_path` | `_capability_posture_tracker` | - |
 | event path | - | `_deduplicator`, `_event_bus`, `_skill_reload_lock` | - |
-| skills | `_config_path`, `_loaded_skills`, `_state_store` | `_dispatch_coordinator`, `_skill_loader`, `_skills_dir` | `_binding_view`, `reload_skills` |
+| skills | `_config_path`, `_loaded_skills`, `_state_store` | `_dispatch_coordinator`, `_skill_loader`, `_skill_selection`, `_skills_dir` | `_binding_view`, `reload_skills` |
 | signals | `_request_stop` | - | `reload_skills` |
 | sensors | `_adapters`, `_background_tasks`, `_connected_sensor_ids`, `_deduplicator`, `_safety_registry`, `_unconnected_sensors` | `_configured_sensors`, `_connected_sensor_ids`, `_last_alert_timestamps_by_channel`, `_last_alert_timestamps_by_trigger`, `_measurement_refusals`, `_measurement_valid_streak`, `_sensor_last_seen_ms`, `_sensor_poll_interval_ms`, `_stale_sensor_active`, `_unconnected_sensors` | `_emit_unconnected_sensor_warning`, `_poll_sensor`, `_restore_measurement_state` |
 | loops | `_background_tasks`, `_deduplicator`, `_sensor_poll_interval_ms` | - | `_alert_delivery_loop`, `_capability_posture_loop`, `_compaction_loop`, `_device_policy_refresh_loop`, `_external_watchdog_loop`, `_heartbeat_loop`, `_sensor_staleness_loop`, `_status_signaling_loop`, `_stop_if_requested_during_startup`, `_watchdog_loop` |

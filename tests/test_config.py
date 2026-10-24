@@ -181,7 +181,7 @@ class TestLoadExample:
         assert len(cfg.skills) == 1
         skill = cfg.skills[0]
         assert skill.name == "energy-anomaly-detector"
-        assert skill.version == "0.2.1"
+        assert skill.version == "0.1.0"
 
     def test_skill_config_fields(self):
         cfg = Config.load(EXAMPLE_YAML)
@@ -3813,12 +3813,16 @@ actions:
         message = str(caught.value)
         assert f"skills[0] (skill-x).config.{key}" in message
         assert "on its trigger in skill.yaml" in message
-        from ori.config import _TRIGGER_OWNED_SKILL_KEYS
+        from ori.config_skill_entry import (
+            TRIGGER_OWNED_SKILL_KEYS as _TRIGGER_OWNED_SKILL_KEYS,
+        )
 
         assert f"`{_TRIGGER_OWNED_SKILL_KEYS[key]}`" in message
 
     def test_each_trigger_owned_key_names_a_real_trigger_key(self):
-        from ori.config import _TRIGGER_OWNED_SKILL_KEYS
+        from ori.config_skill_entry import (
+            TRIGGER_OWNED_SKILL_KEYS as _TRIGGER_OWNED_SKILL_KEYS,
+        )
         from ori.skills.loader import _TRIGGER_ALLOWED_KEYS
 
         assert set(_TRIGGER_OWNED_SKILL_KEYS.values()) <= _TRIGGER_ALLOWED_KEYS
@@ -3859,6 +3863,21 @@ actions:
     def test_a_skill_entry_carries_no_config(self, tmp_path, body):
         with pytest.raises(ConfigValidationError, match="config is not accepted"):
             Config.load(self._skill(tmp_path, body))
+
+    @pytest.mark.parametrize(
+        "name",
+        ["'../escape'", "a/b", "'.hidden'", "''", "-dash", "'a b'", "x" * 65],
+    )
+    def test_a_skill_entry_names_a_directory(self, tmp_path, name):
+        path = _write_yaml(tmp_path, self._base_yaml(f"  - name: {name}\n"))
+        with pytest.raises(ConfigValidationError, match="is not a skill name"):
+            Config.load(path)
+
+    @pytest.mark.parametrize("again", ["skill-x", "SKILL-X", "Skill-X"])
+    def test_a_skill_is_named_once(self, tmp_path, again):
+        path = self._skill(tmp_path, f"  - name: {again}\n")
+        with pytest.raises(ConfigValidationError, match=f"'{again}' a second time"):
+            Config.load(path)
 
     def test_a_skill_entry_is_name_and_version(self, tmp_path):
         cfg = Config.load(self._skill(tmp_path, ""))

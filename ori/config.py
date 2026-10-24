@@ -17,10 +17,17 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
-from ori.config_fields import ConfigValidationError, checked_device_id, checked_site_id
+from ori.config_fields import (
+    MAX_SKILL_NAME_LENGTH,
+    SKILL_NAME_RE,
+    ConfigValidationError,
+    checked_device_id,
+    checked_site_id,
+)
 from ori.config_fields import checked_device_endpoint as _checked_device_endpoint
 from ori.config_fields import require_optional_str as _require_optional_str
 from ori.config_fields import require_str as _require_str
+from ori.config_skill_entry import refuse_skill_config as _refuse_skill_config
 from ori.hal.config_schema import (
     DocumentError,
     SchemaError,
@@ -1420,14 +1427,6 @@ def _refuse_wildcard_mqtt_topic(sensor_id: str, metadata: dict[str, Any]) -> Non
 
 
 _SKILL_ENTRY_KEYS = frozenset({"name", "version"})
-# Deployment keys that look like trigger authority -> the skill.yaml trigger
-# key that actually holds it (a test ties each target to the trigger grammar).
-_TRIGGER_OWNED_SKILL_KEYS: dict[str, str] = {
-    "safe_default_action": "safe_default_action",
-    "action_tier": "action_tier",
-    "requires_approval_for_soft_actions": "requires_approval",
-    "approval_timeout_seconds": "approval_timeout_seconds",
-}
 
 
 def _parse_skills(data: Any) -> list[SkillConfig]:
@@ -1435,10 +1434,21 @@ def _parse_skills(data: Any) -> list[SkillConfig]:
         raise ConfigValidationError("'skills' must be a list.")
 
     skills = []
+    seen: set[str] = set()
     for i, item in enumerate(data):
         if not isinstance(item, dict):
             raise ConfigValidationError(f"skills[{i}] must be a mapping.")
         name = _require_str(item, "name", f"skills[{i}]")
+        if len(name) > MAX_SKILL_NAME_LENGTH or not SKILL_NAME_RE.fullmatch(name):
+            raise ConfigValidationError(
+                f"skills[{i}].name {name!r} is not a skill name: at most "
+                f"{MAX_SKILL_NAME_LENGTH} characters, starting with a letter or "
+                "digit and using only letters, digits, dot, underscore and hyphen."
+            )
+        # Folded: a case-insensitive filesystem resolves both to one directory.
+        if name.casefold() in seen:
+            raise ConfigValidationError(f"skills[{i}] names {name!r} a second time.")
+        seen.add(name.casefold())
         context = f"skills[{i}] ({name})"
         if "config" in item:
             _refuse_skill_config(item["config"], context)
@@ -1463,32 +1473,6 @@ def _parse_skills(data: Any) -> list[SkillConfig]:
             )
         )
     return skills
-
-
-def _refuse_skill_config(cfg: Any, context: str) -> None:
-    """A skill entry carries no settings; name where each one actually lives."""
-    if isinstance(cfg, dict):
-        for key in sorted(str(k) for k in cfg):
-            if key in _TRIGGER_OWNED_SKILL_KEYS:
-                raise ConfigValidationError(
-                    f"{context}.config.{key} is not a deployment setting: a "
-                    f"skill declares it as `{_TRIGGER_OWNED_SKILL_KEYS[key]}` on "
-                    "its trigger in skill.yaml, and ori.yaml cannot set it."
-                )
-            if key == "secondary_contact_number":
-                raise ConfigValidationError(
-                    f"{context}.config.{key} is read by nothing; the escalation "
-                    "contact is actions.secondary_contact."
-                )
-            raise ConfigValidationError(
-                f"{context}.config.{key} is read by nothing; every skill setting "
-                "is the skill's own, in its skill.yaml."
-            )
-    raise ConfigValidationError(
-        f"{context}.config is not accepted: a skill entry names the skill and its "
-        "version only, and every skill setting is the skill's own, in its "
-        "skill.yaml."
-    )
 
 
 def _parse_reasoning(data: Any) -> ReasoningConfig:

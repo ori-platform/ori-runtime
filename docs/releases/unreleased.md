@@ -5,6 +5,23 @@ release is cut.
 
 ## Upgrade notes
 
+- `skills:` in `ori.yaml` is now the list of skills that run. Each name
+  resolves to the skill of that name that ships with the runtime, or to that
+  directory under `skills_dir` (default: `skills` beside `ori.yaml`). A
+  directory under `skills_dir` that no entry names is no longer loaded, and
+  is named in a WARNING at load. A name that resolves to neither, or to both,
+  or to a skill whose `skill.yaml` declares another name, or whose `version`
+  differs from the entry's, refuses the start; on a reload it keeps the
+  running skills. A listed skill that ships with the runtime and fails to load
+  also refuses the start. Before upgrading, list every skill the device should
+  run, and correct or drop each `version` that does not match the skill's own:
+  `ori.yaml.example` shipped `energy-anomaly-detector` pinned at `0.2.1`, which
+  the skill has never been, so a configuration copied from it refuses the start
+  until the pin is `0.1.0` or removed. This includes a source checkout, or a
+  `skills_dir` pointed at the packaged directory, which used to load every
+  packaged skill; each one `skills:` leaves out is named in the WARNING, and an
+  empty `skills:` is warned about too. `skills[].name` must be a skill
+  directory name, named once in any letter case.
 - Firmware commands and runtime liveness are now signed in separate signing
   domains (`firmware-commands/v2` Signing Domains): a command over
   `ori.firmware_command.v2`, a NUL and its object bytes, liveness over
@@ -264,6 +281,10 @@ release is cut.
 
 ## Fixed
 
+- A `skills:` entry naming a skill that ships with the runtime loads it on an
+  installed runtime. Before, the loader read only `skills` beside `ori.yaml`,
+  which an installed runtime does not populate, so the runtime started with no
+  skills and no error unless `skills_dir` pointed at the packaged directory.
 - The rebuild of a commissioning proof table from an earlier build is one
   transaction. A failure partway leaves the store as it was. A store that an
   earlier, non-atomic rebuild left with its rows stranded in
@@ -434,6 +455,23 @@ release is cut.
 
 ## Security
 
+- A `skills` directory beside the installed `ori` package is no longer
+  first-party. On a wheel install that directory is `site-packages/skills`,
+  where any distribution can install files, and a skill there loaded with
+  first-party provenance, Tier D triggers and hooks included. That root now
+  counts only for a source checkout, decided from the runtime's own
+  installation record rather than any file beside the package: a wheel whose
+  RECORD lists the running module, judged by the file each entry names and
+  not by its spelling, case or Unicode form, has no checkout, whatever other
+  records say; an editable install counts only the directory it names; and an
+  uninstalled tree must declare `ori-runtime` in its own `pyproject.toml`. The record is read once per process, so an
+  installation changed in place takes effect at the next start. An installed
+  runtime's packaged skills are under `share/ori-runtime/skills`.
+- Whether a listed skill ships with the runtime is decided once, when its
+  name resolves. A packaged directory replaced between resolution and load,
+  by a symlink to other content for example, refuses the start, or keeps the
+  running skills on a reload, instead of counting as a community skill that
+  was not admitted and dropping its triggers.
 - The gateway replay store no longer falls back to memory when it fails.
   Under gateway-api/v2 as amended, a store that cannot be read or written, at
   the start or later, refuses every gateway envelope that passes the freshness

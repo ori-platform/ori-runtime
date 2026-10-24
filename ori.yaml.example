@@ -277,10 +277,13 @@ sensors:
 
 skills:
   - name: energy-anomaly-detector
-    version: '0.2.1'
-    # A skill entry names the skill and its version. Everything a skill reads,
-    # its Tier C approval timeout and safe default included, is in its own
-    # skill.yaml.
+    version: '0.1.0'
+    # A skill entry names the skill and, optionally, the version it must be.
+    # Only the skills listed here run: a name resolves to the skill that ships
+    # with the runtime, or to that directory under skills_dir (default: the
+    # skills directory beside this file), and a name that resolves to neither
+    # refuses the start. Everything a skill reads, its Tier C approval timeout
+    # and safe default included, is in its own skill.yaml.
 
 
 reasoning:

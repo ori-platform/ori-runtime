@@ -56,7 +56,6 @@ from ori.config import (
     Config,
     ConfigValidationError,
     SensorConfig,
-    anchor_to_config,
     config_env_placeholders,
     hardened_posture_declared,
     requires_production_posture,
@@ -269,6 +268,11 @@ from ori.skills.loader import (
 )
 from ori.skills.loader import (
     SkillLoader,
+)
+from ori.skills.selection import (
+    load_selection,
+    log_tier_configuration,
+    skills_dir_for,
 )
 from ori.skills.signing import verify_signed_payload
 from ori.state.deferred_writer import DeferredWriter
@@ -499,6 +503,7 @@ class OriRuntime:
         self._elevator: IntelligenceElevator | None = None
         self._skill_loader: SkillLoader | None = None
         self._skills_dir: str | None = None
+        self._skill_selection: tuple[tuple[str, str], ...] = ()
         self._loaded_skills: list[Any] = []
         self._skill_subscriptions: list[tuple[str, Any]] = []
         self._dispatch_coordinator: DispatchCoordinator | None = None
@@ -600,8 +605,13 @@ class OriRuntime:
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    async def reload_skills(self) -> bool:
-        """Reload skills from ``skills_dir`` without restarting the runtime.
+    async def reload_skills(self, *, refuse_unresolved: bool = False) -> bool:
+        """Reload the skills ``skills:`` names without restarting the runtime.
+
+        A ``skills:`` entry that names no skill, or names one whose manifest
+        disagrees with it, keeps the existing handlers; with
+        *refuse_unresolved*, as at startup, it raises
+        :class:`SkillSelectionError` instead.
 
         This method preserves the same validation and sandbox rules as startup:
         it reuses :class:`ori.skills.loader.SkillLoader` and only swaps handlers
@@ -623,11 +633,15 @@ class OriRuntime:
                 )
                 return False
 
-            skills_dir = self._skills_dir or str(
-                Path(self._config_path).parent / "skills"
+            skills_dir = skills_dir_for(self._skills_dir, self._config_path)
+            loaded = load_selection(
+                self._skill_loader,
+                self._skill_selection,
+                skills_dir,
+                refuse_unresolved=refuse_unresolved,
             )
-            skills_dir = anchor_to_config(skills_dir, self._config_path)
-            loaded = self._skill_loader.load_all(skills_dir)
+            if loaded is None:
+                return False
 
             # Safety-first fallback: do not replace a working handler graph
             # with an empty one due to a transient load issue.
@@ -1480,20 +1494,13 @@ class OriRuntime:
         self._deduplicator = EventDeduplicator()
 
         # ── Step F: Load skills and register handlers ─────────────────────────
-        # A relative value would otherwise resolve against the working
-        # directory, which the unit points at a runtime directory systemd
-        # empties on every stop. Skills that vanish take their triggers with
-        # them, and a skill can carry Tier D coverage.
-        skills_dir: str = anchor_to_config(
-            str(
-                config.raw.get(
-                    "skills_dir",
-                    str(Path(self._config_path).parent / "skills"),
-                )
-            ),
-            self._config_path,
+        declared = config.raw.get("skills_dir")
+        self._skills_dir = skills_dir_for(
+            None if declared is None else str(declared), self._config_path
         )
-        self._skills_dir = skills_dir
+        self._skill_selection = tuple(
+            (entry.name, entry.version) for entry in config.skills
+        )
         skills_security = config.security.get("skills")
         skills_require_signed = is_truthy(
             skills_security.get("require_signed", False)
@@ -1525,19 +1532,9 @@ class OriRuntime:
             coordinator=dispatch_coordinator,
         )
         self._skill_loader = loader
-        await self.reload_skills()
+        await self.reload_skills(refuse_unresolved=True)
 
-        # ── Step G: Log startup tier configuration ────────────────────────────
-        for skill in self._loaded_skills:
-            logger.info("[skill] %s v%s loaded", skill.name, skill.version)
-            for trigger in skill.triggers:
-                escalation = "bypass_llm" if trigger.bypass_llm else trigger.escalate_to
-                logger.info(
-                    "  trigger: %s → Tier %s → %s",
-                    trigger.name,
-                    trigger.action_tier,
-                    escalation,
-                )
+        log_tier_configuration(self._loaded_skills)
 
         logger.info(
             "[runtime] event loop ready — device=%s skills=%d triggers=%d",

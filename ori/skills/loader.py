@@ -6,7 +6,7 @@
 Usage::
 
     loader = SkillLoader(elevator, state_store, dispatcher)
-    skills = loader.load_all("/path/to/skills")
+    skills = loader.load_selected([("pc-system-health", "")], "/path/to/skills")
     for skill in skills:
         loader.register(skill, event_bus)
 
@@ -26,8 +26,11 @@ import base64
 import binascii
 import datetime
 import errno
+import functools
+import importlib.metadata
 import importlib.util
 import inspect
+import json
 import logging
 import math
 import os
@@ -35,14 +38,17 @@ import re
 import stat
 import sysconfig
 import time
+import tomllib
 import unicodedata
-from collections.abc import Awaitable, Callable
+import urllib.parse
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from ori.config_fields import MAX_SKILL_NAME_LENGTH, SKILL_NAME_RE
 from ori.network.events import OriEvent
 from ori.reasoning.action_registry import (
     capability,
@@ -60,6 +66,7 @@ from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
 from ori.skills.sandbox import SkillAnchorError, SkillSecurityError
 from ori.skills.signing import verify_community_skill_signature
 from ori.utils.path_utils import shown
+from ori.utils.strict_json import unique_members
 
 logger = logging.getLogger(__name__)
 
@@ -233,10 +240,10 @@ _MAX_DIRECTORY_ENTRIES = 4096
 # Identity fields appear in logs, operator alerts and audit records, so they are
 # bounded and stripped of control characters — a name carrying an escape
 # sequence can rewrite what an operator sees a decision attributed to.
-_MAX_NAME_LENGTH = 64
+_MAX_NAME_LENGTH = MAX_SKILL_NAME_LENGTH
 _MAX_AUTHOR_LENGTH = 128
 _MAX_VERSION_LENGTH = 32
-_SKILL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+_SKILL_NAME_RE = SKILL_NAME_RE
 
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
@@ -244,6 +251,30 @@ _SKILL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
 class SkillValidationError(Exception):
     """Raised when a skill.yaml violates the Action Tier Framework rules."""
+
+
+@dataclass(frozen=True)
+class _Selected:
+    """One ``skills:`` entry as resolution decided it, read by everything after."""
+
+    name: str
+    version: str
+    path: Path
+    packaged: bool
+
+
+class SkillSelectionError(Exception):
+    """Raised when a deployment's ``skills:`` list names a skill that cannot run."""
+
+
+def _is_skill_directory(path: Path) -> bool:
+    """A real directory holding a manifest, as discovery counts one."""
+    try:
+        return (
+            path.is_dir() and not path.is_symlink() and (path / "skill.yaml").exists()
+        )
+    except OSError:
+        return False
 
 
 def _packaged_skill_names() -> frozenset[str]:
@@ -479,6 +510,83 @@ def _anchor_fault(trust_anchor_b64: str, source: str) -> str | None:
 # package; an installed wheel puts them under the interpreter's data path.
 # Both are shipped with the runtime and reviewed with it.
 _SKILLS_DATA_DIR = Path("share") / "ori-runtime" / "skills"
+_DISTRIBUTION = "ori-runtime"
+
+
+@functools.cache
+def _source_checkout(module_file: str) -> Path | None:
+    """The source checkout this module runs from, or None when it is installed.
+
+    Beside an installed package is site-packages, where any distribution can
+    install a ``skills`` directory or a ``pyproject.toml``, so no file found
+    there is evidence. The runtime's own installation record decides first: a
+    distribution whose RECORD owns this module was installed from a wheel and
+    has no checkout, whatever any other record says and in whatever order the
+    records are found; an editable one names its source directory. Only a
+    module no installation owns falls back to the checkout's own declaration.
+
+    Read once per process: an installation changed in place takes effect at
+    the next start, which is how the installer applies one.
+    """
+    module = Path(module_file)
+    root = module.parents[2]
+    dists = list(importlib.metadata.distributions(name=_DISTRIBUTION))
+    if any(_record_owns(dist, module) for dist in dists):
+        return None
+    if any(_editable_source(dist) == root for dist in dists):
+        return root
+    return root if _declares_distribution(root / "pyproject.toml") else None
+
+
+def _record_owns(dist: importlib.metadata.Distribution, module: Path) -> bool:
+    """Whether a wheel installation's RECORD lists *module* as installed.
+
+    Compared by the file each entry locates, as the filesystem identifies it
+    (device and inode), never by how the entry is spelled. RECORD may name a
+    file relative to site-packages, by an absolute path, or relative with
+    ``..``, and on a case- or normalisation-insensitive filesystem in any case
+    or Unicode form; each of those names the same file. Only RECORD counts. A
+    legacy ``.egg-info`` in a checkout lists the checkout's own sources, which
+    is not an installation.
+    """
+    try:
+        if dist.read_text("RECORD") is None:
+            return False
+        target = os.stat(module)
+    except (OSError, ValueError):
+        return False
+    identity = (target.st_dev, target.st_ino)
+    for entry in dist.files or ():
+        try:
+            located = os.stat(str(dist.locate_file(entry)))
+        except (OSError, ValueError):
+            continue
+        if (located.st_dev, located.st_ino) == identity:
+            return True
+    return False
+
+
+def _editable_source(dist: importlib.metadata.Distribution) -> Path | None:
+    try:
+        raw = dist.read_text("direct_url.json")
+        record = json.loads(raw, object_pairs_hook=unique_members()) if raw else {}
+        if record.get("dir_info", {}).get("editable") is True:
+            url = urllib.parse.urlparse(str(record["url"]))
+            if url.scheme == "file":
+                return Path(urllib.parse.unquote(url.path)).resolve()
+    except (OSError, ValueError, KeyError, AttributeError, TypeError):
+        pass
+    return None
+
+
+def _declares_distribution(pyproject: Path) -> bool:
+    try:
+        with pyproject.open("rb") as handle:
+            data = tomllib.loads(handle.read(_MAX_MANIFEST_BYTES).decode("utf-8"))
+    except (OSError, ValueError):
+        return False
+    project = data.get("project")
+    return isinstance(project, dict) and project.get("name") == _DISTRIBUTION
 
 
 def first_party_skill_roots() -> tuple[Path, ...]:
@@ -494,10 +602,10 @@ def first_party_skill_roots() -> tuple[Path, ...]:
     Only roots that exist are returned, so a layout that does not apply cannot
     contribute a directory an attacker might otherwise create.
     """
-    candidates = (
-        Path(__file__).resolve().parents[2] / "skills",
-        Path(sysconfig.get_path("data")) / _SKILLS_DATA_DIR,
-    )
+    candidates = [Path(sysconfig.get_path("data")) / _SKILLS_DATA_DIR]
+    checkout = _source_checkout(str(Path(__file__).resolve()))
+    if checkout is not None:
+        candidates.insert(0, checkout / "skills")
     roots: list[Path] = []
     for candidate in candidates:
         try:
@@ -736,7 +844,7 @@ class SkillLoader:
         return _anchor_fault(anchor, self._community_anchor_source())
 
     def community_admission(self) -> CommunitySkillAdmission:
-        """What the last :meth:`load_all` made of the community anchor."""
+        """What the last load made of the community anchor."""
         return self._admission
 
     def _community_anchor_source(self) -> str:
@@ -780,7 +888,181 @@ class SkillLoader:
             )
             return []
 
+        loaded = self._load_candidates(self._discover_candidates(root), anchor_fault)
+        return [skill for _, skill in loaded]
+
+    def load_selected(
+        self, selection: Sequence[tuple[str, str]], skills_dir: str
+    ) -> list[Skill]:
+        """Load exactly the skills a deployment's ``skills:`` list names.
+
+        Each name resolves to ``<skills_dir>/<name>`` or to the packaged skill
+        of that name, wherever the runtime is installed. A directory in
+        *skills_dir* that no entry names is not loaded.
+
+        Args:
+            selection: ``(name, version)`` per entry; an empty version accepts
+                whatever version the skill declares.
+            skills_dir: The deployment's skills directory.
+
+        Raises:
+            SkillSelectionError: Naming every entry that is not a skill name,
+                is named twice, resolves to no skill or to two, names a skill
+                whose manifest declares a different name or version, or names
+                a packaged skill that did not load. A community skill that
+                resolves and then is not admitted is reported as
+                :meth:`load_all` reports it and counted in
+                :meth:`community_admission`; it cannot hold Tier D.
+        """
+        anchor_fault = self.community_anchor_fault()
+        self._admission = self._admission_report(fault=anchor_fault)
+
+        root = Path(skills_dir)
+        # Resolution is the one place a selection's identity is decided: its
+        # path and whether it ships with the runtime, from one snapshot of the
+        # packaged roots. Everything after reads that record. Asked of the
+        # filesystem again later, a directory swapped in between would turn a
+        # packaged skill that failed into a community one that is merely not
+        # admitted, and the start or reload would go ahead without it.
+        entries = {
+            entry.path: entry for entry in self._resolve_selection(selection, root)
+        }
+        faults: list[str] = []
+        disagreeing: set[Path] = set()
+
+        # Checked as each skill is read, before anything else can skip it: a
+        # manifest that disagrees with its entry is refused whatever loaded
+        # first, never shadowed by the duplicate-name rule.
+        def against_entry(child: Path, skill: Skill) -> bool:
+            entry = entries[child]
+            if skill.first_party != entry.packaged:
+                fault = f"{entry.name!r} changed provenance between resolution and load"
+            elif skill.name != entry.name:
+                fault = (
+                    f"{entry.name!r} resolves to {shown(child)}, whose skill.yaml "
+                    f"declares the name {skill.name!r}"
+                )
+            elif entry.version and skill.version != entry.version:
+                fault = (
+                    f"{entry.name!r} pins version {entry.version!r}, and the "
+                    f"skill it resolves to is version {skill.version!r}"
+                )
+            else:
+                return True
+            faults.append(fault)
+            disagreeing.add(child)
+            return False
+
+        # Packaged skills are read first, so community skills cannot spend the
+        # subscription budget a packaged one needs.
+        ordered = sorted(entries, key=lambda path: not entries[path].packaged)
+        loaded = dict(self._load_candidates(ordered, anchor_fault, against_entry))
+        self._note_unselected(root, set(entries))
+
         skills: list[Skill] = []
+        for path, entry in entries.items():
+            skill = loaded.get(path)
+            if skill is not None:
+                skills.append(skill)
+            elif path not in disagreeing and entry.packaged:
+                faults.append(
+                    f"{entry.name!r} ships with the runtime and did not load; "
+                    "the reason is logged above"
+                )
+        if faults:
+            raise SkillSelectionError("; ".join(faults))
+        return skills
+
+    def _resolve_selection(
+        self, selection: Sequence[tuple[str, str]], root: Path
+    ) -> list[_Selected]:
+        if len(selection) > _MAX_SKILLS_PER_LOAD:
+            raise SkillSelectionError(
+                f"skills: names {len(selection)} skills; the limit per load is "
+                f"{_MAX_SKILLS_PER_LOAD}"
+            )
+        roots = first_party_skill_roots()
+        resolved: list[_Selected] = []
+        faults: list[str] = []
+        folded: set[str] = set()
+        for name, version in selection:
+            # Config refuses these too; this layer does not rely on it. Names
+            # are folded because a case-insensitive filesystem resolves two
+            # spellings to one directory.
+            if len(name) > MAX_SKILL_NAME_LENGTH or not SKILL_NAME_RE.fullmatch(name):
+                faults.append(f"{name!r} is not a skill name")
+                continue
+            if name.casefold() in folded:
+                faults.append(f"{name!r} is named a second time")
+                continue
+            folded.add(name.casefold())
+            if name == "template":
+                faults.append(f"{name!r} is a scaffold, not a skill")
+                continue
+            local = (
+                (root / name).resolve() if _is_skill_directory(root / name) else None
+            )
+            # The first packaged root holding the name, as bundled_skill_path
+            # finds it: a checkout with the package also installed has two.
+            packaged = next(
+                (
+                    (base / name).resolve()
+                    for base in roots
+                    if _is_skill_directory(base / name)
+                ),
+                None,
+            )
+            if local is not None and self._is_core_bundled_skill(local):
+                resolved.append(_Selected(name, version, local, packaged=True))
+            elif local is not None and packaged is not None:
+                faults.append(
+                    f"{name!r} is both a skill that ships with the runtime and "
+                    f"a directory in {shown(root)}; rename or remove the directory"
+                )
+            elif local is not None:
+                resolved.append(_Selected(name, version, local, packaged=False))
+            elif packaged is not None:
+                resolved.append(_Selected(name, version, packaged, packaged=True))
+            else:
+                faults.append(
+                    f"{name!r} is neither a directory in {shown(root)} nor a "
+                    "skill that ships with the runtime"
+                )
+        if faults:
+            raise SkillSelectionError("; ".join(faults))
+        return resolved
+
+    def _note_unselected(self, root: Path, selected: set[Path]) -> None:
+        """Name the skill directories in *skills_dir* that ``skills:`` leaves out.
+
+        Every directory there used to load, so one that stops loading on
+        upgrade is named rather than lost without a word. That includes a
+        *skills_dir* that is the packaged directory, as in a source checkout.
+        """
+        if not selected:
+            logger.warning("SkillLoader: skills: names no skill, so no skill is loaded")
+        if not root.is_dir():
+            return
+        unselected = sorted(
+            child.name
+            for child in self._discover_candidates(root)
+            if child.resolve() not in selected
+        )
+        if unselected:
+            logger.warning(
+                "SkillLoader: %s holds skills that skills: does not name, which "
+                "are not loaded: %s",
+                shown(root),
+                ", ".join(shown(name) for name in unselected),
+            )
+
+    def _load_candidates(
+        self,
+        candidates: Sequence[Path],
+        anchor_fault: str | None,
+        admit: Callable[[Path, Skill], bool] | None = None,
+    ) -> list[tuple[Path, Skill]]:
+        skills: list[tuple[Path, Skill]] = []
         seen_names: dict[str, Path] = {}
         subscription_total = 0
         refused_by_anchor: list[Path] = []
@@ -794,9 +1076,11 @@ class SkillLoader:
             if not self._is_core_bundled_skill(child):
                 community_not_admitted.add(child)
 
-        for child in self._discover_candidates(root):
+        for child in candidates:
             try:
                 skill = self.load_one(child)
+                if admit is not None and not admit(child, skill):
+                    continue
 
                 # Names identify skills in logs, action records and operator
                 # messages. Two skills answering to one name makes those records
@@ -812,6 +1096,7 @@ class SkillLoader:
                         skill.name,
                         shown(previous),
                     )
+                    _note_not_admitted(child)
                     continue
 
                 # Per-skill caps are a per-file courtesy without this: sixty
@@ -828,11 +1113,12 @@ class SkillLoader:
                         _MAX_TOTAL_SUBSCRIPTIONS,
                         subscription_total,
                     )
+                    _note_not_admitted(child)
                     continue
                 subscription_total += cost
 
                 seen_names[skill.name] = child
-                skills.append(skill)
+                skills.append((child, skill))
                 logger.info(
                     "SkillLoader: loaded skill %r v%s from %s",
                     skill.name,

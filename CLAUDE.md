@@ -673,7 +673,7 @@ Auto-cancel in {timeout} seconds if no response.
 
 ```yaml
 name: energy-anomaly-detector
-version: 0.2.1
+version: 0.1.0
 author: wasiubakare
 license: MIT
 signature: ed25519:...
@@ -839,7 +839,7 @@ sensors:
 
 skills:
   - name: energy-anomaly-detector
-    version: "0.2.1"
+    version: "0.1.0"
 
 security:
   enforce_production_posture: false # staging/production profiles cannot opt out
