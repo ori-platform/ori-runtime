@@ -46,7 +46,25 @@ from typing import Any
 # is committed to a public repository, and a checkout path is neither portable
 # nor anyone else's business.
 RUNTIME = pathlib.Path(__file__).resolve().parents[2]
-CONFIG = RUNTIME / "ori" / "config.py"
+CONFIG_PACKAGE = RUNTIME / "ori" / "config"
+
+
+class _ConfigSource:
+    """The configuration package, read as the one module it was split from.
+
+    The section parsers live one module per section under ``ori/config/``.
+    Their source is joined in path order, so ``ast.parse(CONFIG.read_text())``
+    finds every ``_parse_*`` function wherever it lives, and no parser can
+    fall out of the walk by moving between modules.
+    """
+
+    def read_text(self) -> str:
+        return "\n".join(
+            path.read_text() for path in sorted(CONFIG_PACKAGE.glob("*.py"))
+        )
+
+
+CONFIG = _ConfigSource()
 EXAMPLE = RUNTIME / "ori.yaml.example"
 HAL = RUNTIME / "ori" / "hal"
 
@@ -395,7 +413,7 @@ def in_example_exact(path: str, example: set[str]) -> bool:
 def coverage(entries: list[dict[str, Any]], in_example: set[str]) -> dict[str, Any]:
     """What this inventory does not cover, stated rather than implied.
 
-    The walk covers ori/config.py's parse functions. Keys read elsewhere are
+    The walk covers the parse functions under ori/config/. Keys read elsewhere are
     not covered: runtime.py assembles the dict handed to adapter.connect(), and
     adapters read from it directly.
 

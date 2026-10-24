@@ -278,6 +278,14 @@ release is cut.
   `ori.state.store` still exports every name imported from it. A new test
   holds every module under `ori/` to 2,500 lines, and the five already over
   it, `ori/runtime.py` among them, to their current size.
+- The configuration loader is split by section. `ori/config.py` is now the
+  package `ori/config/`, with one private module per top-level section of
+  `ori.yaml` (device, sensors, skills, reasoning, gateway, actions, hal,
+  state, security, evidence and the rest), document admission in
+  `_document.py`, `Config` in `_config.py` and production posture in
+  `_posture.py`. The code moved unchanged: every section is parsed and
+  refused as before, log records still carry the `ori.config` logger name, and
+  `ori.config` still binds every name it bound before, which a test holds.
 
 ## Fixed
 

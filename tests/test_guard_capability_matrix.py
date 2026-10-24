@@ -82,6 +82,7 @@ def _guard(repo: Path, *refs: str, body: str = "") -> subprocess.CompletedProces
         "ori/runtime.py",
         "ori/skills/loader.py",
         "ori/config.py",
+        "ori/config/_gateway.py",
     ],
 )
 def test_a_capability_change_without_the_matrix_fails(repo: Path, path: str) -> None:

@@ -3130,7 +3130,7 @@ class TestDeviceValidation:
     def test_timezone_falls_back_to_utc_when_config_and_host_unavailable(
         self, tmp_path, monkeypatch
     ):
-        monkeypatch.setattr("ori.config._detect_host_timezone", lambda: None)
+        monkeypatch.setattr("ori.config._device._detect_host_timezone", lambda: None)
         yaml_path = _write_yaml(
             tmp_path,
             """
