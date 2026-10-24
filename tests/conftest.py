@@ -70,17 +70,10 @@ def _real_gpio_allowed() -> bool:
     return os.environ.get(ALLOW_GPIO_ENV, "").strip().lower() in {"1", "true", "yes"}
 
 
-_REEXPORT_BINDINGS = pytest.StashKey[dict[str, int]]()
-_SESSION_REEXPORT_BINDINGS = pytest.StashKey[dict[str, int]]()
-_SHARED_BINDINGS = pytest.StashKey[Any]()
-
-
 def pytest_configure(config: pytest.Config) -> None:
-    from tests.package_layout import bindings, hold_reexports, shared_binding_state
+    from tests.package_layout import hold_reexports
 
     hold_reexports()
-    config.stash[_SESSION_REEXPORT_BINDINGS] = bindings()
-    config.stash[_SHARED_BINDINGS] = shared_binding_state()
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
@@ -91,34 +84,44 @@ def pytest_unconfigure(config: pytest.Config) -> None:
 
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_setup(item: pytest.Item) -> Iterator[None]:
-    """Refuse to start a test once an ``ori.config`` or ``ori.runtime`` re-export
-    was rebound.
+    """Refuse to start a test while ``ori.config`` or ``ori.runtime`` holds a
+    binding the session did not start with.
 
-    The bindings are compared with those taken when the session started, so a
-    write made while a test module was collected is caught at its first test.
+    A write made while a test module was collected is caught at its first test.
     """
-    from tests.package_layout import bindings, rebound
+    from tests.package_layout import check_bindings
 
-    problems = rebound(item.config.stash[_SESSION_REEXPORT_BINDINGS])
+    problems = check_bindings()
     if problems:
         pytest.fail("\n".join(problems))
-    item.stash[_REEXPORT_BINDINGS] = bindings()
     return (yield)
 
 
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_call(item: pytest.Item) -> Iterator[None]:
-    """Fail a test whose fixtures or body left a split package's re-export
-    rebound, or patched one module's binding of an object others also read.
+    """Fail a test that bound, in a split package, what reaches no caller or
+    only some of them.
 
     This runs before teardown, so a fixture's or the body's patches are still
-    in place when the bindings are compared.
+    in place when the bindings are checked; a patch the test undid itself was
+    checked as it was undone.
     """
-    from tests.package_layout import rebound, split_bindings
+    from tests.package_layout import check_bindings
 
     result = yield
-    problems = rebound(item.stash[_REEXPORT_BINDINGS])
-    problems += split_bindings(item.config.stash[_SHARED_BINDINGS])
+    problems = check_bindings()
+    if problems:
+        pytest.fail("\n".join(problems))
+    return result
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_teardown(item: pytest.Item) -> Iterator[None]:
+    """Fail a test whose fixture teardown undid such a binding."""
+    from tests.package_layout import take_found
+
+    result = yield
+    problems = take_found()
     if problems:
         pytest.fail("\n".join(problems))
     return result

@@ -13,10 +13,12 @@ These tests drive that guard through each spelling of a patch.
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import sys
+import types
 from collections import ChainMap
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any, cast
 from unittest import mock
@@ -24,13 +26,17 @@ from unittest import mock
 import pytest
 
 import ori.config
+import ori.runtime
 from tests.package_layout import (
+    CONFIG,
+    RUNTIME,
     ReexportRebindError,
     bindings,
     bindings_of,
+    check_bindings,
+    patched_runtime,
     rebound,
-    shared_binding_state,
-    split_bindings,
+    take_found,
 )
 
 REFUSED = "is a re-export; rebinding it reaches no caller"
@@ -249,7 +255,7 @@ def _reassigned() -> None:
 
 
 def _shadowed(cfg: object) -> None:
-    with mock.patch.dict(vars(cfg), {"a": 1}):
+    with mock.patch.dict(vars(cfg), {"datetime": vars(cfg)["datetime"]}):
         pass
 
 
@@ -266,7 +272,8 @@ def _shadowed(cfg: object) -> None:
             id="section-namespace",
         ),
         pytest.param(
-            lambda mp: mp.setitem(vars(_device), "x", 1), id="section-setitem"
+            lambda mp: mp.setitem(vars(_device), "_detect_host_timezone", str),
+            id="section-setitem",
         ),
         pytest.param(lambda mp: mp.setitem({}, "x", 1), id="other-mapping"),
         pytest.param(
@@ -316,19 +323,13 @@ def test_patching_only_where_it_is_defined_does_not(
 ) -> None:
     """Why the advice names callers: the defining module's binding is not read.
 
-    The suite refuses this partial patch once the test body returns, so the
-    test reads the refusal itself and undoes the patch before then.
+    The suite refuses this partial patch as it is undone, so the test takes
+    the refusal itself.
     """
-    state = shared_binding_state()
     monkeypatch.setattr("ori.config._actions.parse_actions", _reached)
     ori.config.Config.load(str(EXAMPLE))
-    assert split_bindings(state) == [
-        "patched or deleted ori.config._actions.parse_actions but not "
-        "ori.config._config.parse_actions; each is read by the code in its own "
-        "module, so patch them all."
-    ]
     monkeypatch.undo()
-    assert split_bindings(state) == []
+    assert take_found() == [PARTIAL]
 
 
 @pytest.mark.parametrize(
@@ -372,17 +373,164 @@ def test_the_import_system_still_binds_a_submodule_on_first_import(
     imported = importlib.import_module("ori.config.installer")
     assert vars(cfg)["installer"] is imported
     monkeypatch.undo()
+    assert take_found() == []
 
 
 def test_deleting_one_binding_of_a_shared_object_is_reported(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    state = shared_binding_state()
     monkeypatch.delitem(vars(_device), "logger")
-    [report] = split_bindings(state)
-    assert report.startswith("patched or deleted ori.config._device.logger but not ")
     monkeypatch.undo()
-    assert split_bindings(state) == []
+    [report] = take_found()
+    assert report.startswith("patched or deleted ori.config._device.logger but not ")
+
+
+PARTIAL = (
+    "patched or deleted ori.config._actions.parse_actions but not "
+    "ori.config._config.parse_actions; each is read by the code in its own "
+    "module, so patch them all."
+)
+NEVER_BOUND = (
+    "ori.runtime._startup never bound no_such, so binding it reaches no caller"
+)
+ON_PACKAGE = "ori.runtime._startup was rebound on its package"
+
+
+def _fake_module() -> types.ModuleType:
+    return types.ModuleType("fake")
+
+
+@pytest.mark.parametrize(
+    ("undone", "expected"),
+    [
+        pytest.param(
+            lambda: mock.patch("ori.config._actions.parse_actions", _reached),
+            PARTIAL,
+            id="mock-patch",
+        ),
+        pytest.param(
+            lambda: _context(
+                lambda mp: mp.setattr("ori.config._actions.parse_actions", _reached)
+            ),
+            PARTIAL,
+            id="monkeypatch-context",
+        ),
+        pytest.param(
+            lambda: mock.patch("ori.runtime._startup.no_such", 1, create=True),
+            NEVER_BOUND,
+            id="create-true-on-a-private-module",
+        ),
+        pytest.param(
+            lambda: _context(
+                lambda mp: mp.setattr("ori.runtime._startup.no_such", 1, raising=False)
+            ),
+            NEVER_BOUND,
+            id="raising-false-on-a-private-module",
+        ),
+        pytest.param(
+            lambda: mock.patch.dict("ori.runtime._startup.__dict__", {"no_such": 1}),
+            NEVER_BOUND,
+            id="patch-dict-on-a-private-module",
+        ),
+        pytest.param(
+            lambda: _context(
+                lambda mp: mp.setattr(ori.runtime, "_startup", _fake_module())
+            ),
+            ON_PACKAGE,
+            id="a-submodule-rebound-on-its-package",
+        ),
+    ],
+)
+def test_a_patch_undone_before_the_test_returns_is_still_checked(
+    undone, expected: str
+) -> None:
+    with undone():
+        pass
+    [report] = take_found()
+    assert report.startswith(expected)
+
+
+def test_a_patch_stopped_before_the_test_returns_is_still_checked() -> None:
+    patcher = mock.patch("ori.config._actions.parse_actions", _reached)
+    patcher.start()
+    patcher.stop()
+    assert take_found() == [PARTIAL]
+
+
+@contextlib.contextmanager
+def _context(patch) -> Iterator[None]:
+    with pytest.MonkeyPatch.context() as mp:
+        patch(mp)
+        yield
+
+
+def test_every_binding_patched_together_unwinds_without_a_report() -> None:
+    """An ExitStack undoes its patches one by one; only the first undo checks."""
+    with patched_runtime("EXTERNAL_WATCHDOG_GPIO", 99):
+        pass
+    with mock.patch("ori.config._actions.parse_actions", _reached):
+        with mock.patch("ori.config._config.parse_actions", _reached):
+            pass
+    assert take_found() == []
+
+
+@pytest.mark.parametrize(
+    ("left", "name", "expected"),
+    [
+        pytest.param(
+            lambda: setattr(
+                importlib.import_module("ori.runtime._startup"), "no_such", 1
+            ),
+            "ori.runtime._startup",
+            NEVER_BOUND,
+            id="plain-assignment-on-a-private-module",
+        ),
+        pytest.param(
+            lambda: vars(ori.runtime).__setitem__("no_such", 1),
+            "ori.runtime",
+            "ori.runtime never bound no_such",
+            id="a-write-to-the-package-namespace",
+        ),
+    ],
+)
+def test_a_binding_left_in_place_is_checked_when_the_test_returns(
+    left, name: str, expected: str
+) -> None:
+    left()
+    try:
+        [report] = check_bindings()
+    finally:
+        del vars(importlib.import_module(name))["no_such"]
+    assert report.startswith(expected)
+    assert check_bindings() == []
+
+
+def test_equal_values_under_different_names_are_not_one_binding() -> None:
+    """Numbers are grouped by name and identity: two equal constants can be one
+    object, and patching one is not a partial patch of the other."""
+    from ori.runtime import _constants
+
+    first = vars(_constants)["TIER_D_DRAIN_TIMEOUT"]
+    assert first is vars(_constants)["EVIDENCE_SHUTDOWN_FLUSH_TIMEOUT_S"]
+    for group in (*CONFIG.shared_bindings(), *RUNTIME.shared_bindings()):
+        assert not {
+            "ori.runtime._constants.TIER_D_DRAIN_TIMEOUT",
+            "ori.runtime._constants.EVIDENCE_SHUTDOWN_FLUSH_TIMEOUT_S",
+        } <= set(group)
+
+
+def test_a_function_is_one_binding_under_every_local_name() -> None:
+    assert any(
+        {"ori.config._device._require_str", "ori.config._fields.require_str"}
+        <= set(group)
+        for group in CONFIG.shared_bindings()
+    )
+
+
+def test_a_module_named_like_a_submodule_is_not_one() -> None:
+    impostor = types.ModuleType("ori.config.impostor")
+    with pytest.raises(ReexportRebindError, match="does not bind impostor"):
+        setattr(cfg, "impostor", impostor)
 
 
 def test_release_restores_what_was_held_and_holding_twice_wraps_once() -> None:
@@ -398,6 +546,8 @@ def test_release_restores_what_was_held_and_holding_twice_wraps_once() -> None:
         assert MonkeyPatch.setitem is held["setitem"]
         assert MonkeyPatch.delitem is held["delitem"]
         assert cast(Any, mock)._patch_dict._patch_dict is held["apply"]
+        for (owner, name), original in held["watched"].items():
+            assert vars(owner)[name] is original, name
     finally:
         package_layout.hold_reexports()
         package_layout.hold_reexports()
@@ -405,3 +555,32 @@ def test_release_restores_what_was_held_and_holding_twice_wraps_once() -> None:
     assert type(ori.config).__name__ == "_ReexportsHeld"
     with pytest.raises(AssertionError, match=NAMESPACE_REFUSED):
         MonkeyPatch().setitem(vars(cfg), "x", 1)
+
+
+def test_a_module_imported_on_first_use_is_checked_with_the_rest() -> None:
+    """``ori.config.installer`` is imported on first use, after the guard is
+    installed, and reads its own binding all the same."""
+    from ori.config._document import read_config_bytes
+
+    targets = bindings_of(read_config_bytes)
+    assert "ori.config.installer.read_config_bytes" in targets
+    with contextlib.ExitStack() as stack:
+        for target in targets:
+            if not target.startswith("ori.config.installer."):
+                stack.enter_context(mock.patch(target, _reached))
+    [report] = take_found()
+    assert report.endswith(
+        "but not ori.config.installer.read_config_bytes; each is read by the code "
+        "in its own module, so patch them all."
+    )
+
+
+def test_a_refused_namespace_write_is_not_reported_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The refusal undoes the write; checking it as it is undone would report
+    a rebinding the test never kept."""
+    monkeypatch.setattr(_device, "_detect_host_timezone", str)
+    with pytest.raises(AssertionError, match=NAMESPACE_REFUSED):
+        mock.patch.dict("ori.config.__dict__", anchor_to_config=None).start()
+    assert take_found() == []
