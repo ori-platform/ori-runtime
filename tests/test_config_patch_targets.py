@@ -480,8 +480,8 @@ def test_a_plain_assignment_is_checked_however_soon_it_is_undone() -> None:
     original = _actions.parse_actions
     startup.no_such = 1  # type: ignore[attr-defined]
     del startup.no_such  # type: ignore[attr-defined]
-    _actions.parse_actions = _reached
-    _actions.parse_actions = original
+    setattr(_actions, "parse_actions", _reached)
+    setattr(_actions, "parse_actions", original)
     assert sorted(take_problems()) == sorted([NEVER_BOUND_REPORT, PARTIAL])
 
 
@@ -494,11 +494,11 @@ NEVER_BOUND_REPORT = (
 def test_a_write_to_a_namespace_is_checked_while_it_is_in_place() -> None:
     """A write straight into a namespace passes no class, so it is seen by the
     next check: one undone before then is the stated limit."""
-    vars(ori.runtime)["no_such"] = 1
+    ori.runtime.__dict__["no_such"] = 1
     try:
         [report] = take_problems()
     finally:
-        del vars(ori.runtime)["no_such"]
+        del ori.runtime.__dict__["no_such"]
     assert report.startswith("ori.runtime never bound no_such")
     assert take_problems() == []
 
@@ -525,12 +525,12 @@ def test_a_leftover_is_reported_once_and_then_held_as_the_start() -> None:
     """``begin_phase`` runs before each test: a binding left changed is
     reported against the next test only, not against every test after it."""
     original = _actions.parse_actions
-    _actions.parse_actions = _reached
+    setattr(_actions, "parse_actions", _reached)
     try:
         assert begin_phase("Left") == [f"Left: {PARTIAL}"]
         assert begin_phase("Left") == []
     finally:
-        _actions.parse_actions = original
+        setattr(_actions, "parse_actions", original)
     assert begin_phase("Left") == []
     # Which modules bind one object is kept, so the next partial is seen.
     with mock.patch("ori.config._config.parse_actions", _reached):
@@ -584,7 +584,7 @@ DEVICE_ID_PARTIAL = (
 def test_equal_values_under_different_names_are_not_one_binding() -> None:
     """Numbers are grouped by name and identity: two equal constants can be one
     object, and patching one is not a partial patch of the other."""
-    from ori.runtime import _constants
+    _constants = importlib.import_module("ori.runtime._constants")
 
     first = vars(_constants)["TIER_D_DRAIN_TIMEOUT"]
     assert first is vars(_constants)["EVIDENCE_SHUTDOWN_FLUSH_TIMEOUT_S"]
@@ -665,11 +665,11 @@ def test_a_refused_namespace_write_is_not_reported_again(
 def test_a_problem_is_reported_once_per_test() -> None:
     """The call and its teardown are both checked; the second does not repeat
     what the first reported."""
-    vars(ori.runtime)["no_such"] = 1
+    ori.runtime.__dict__["no_such"] = 1
     try:
         first, second = check_bindings(), check_bindings()
     finally:
-        del vars(ori.runtime)["no_such"]
+        del ori.runtime.__dict__["no_such"]
         take_problems()
     assert len(first) == 1
     assert second == []
@@ -685,11 +685,11 @@ def test_a_binding_deleted_through_delattr_is_checked(
 
 def test_a_reexport_written_into_the_namespace_is_refused() -> None:
     original = vars(cfg)["anchor_to_config"]
-    vars(cfg)["anchor_to_config"] = _reached
+    cfg.__dict__["anchor_to_config"] = _reached
     try:
         [report] = take_problems()
     finally:
-        vars(cfg)["anchor_to_config"] = original
+        cfg.__dict__["anchor_to_config"] = original
         take_problems()
     assert REFUSED in report
 
@@ -729,14 +729,14 @@ def test_a_partial_override_of_a_complete_patch_is_checked() -> None:
 
 def test_the_test_that_mends_a_leftover_split_is_not_blamed() -> None:
     original = _actions.parse_actions
-    _actions.parse_actions = _reached
+    setattr(_actions, "parse_actions", _reached)
     try:
         assert begin_phase("Left") == [f"Left: {PARTIAL}"]
         with mock.patch("ori.config._config.parse_actions", _reached):
             pass
         assert take_problems() == []
     finally:
-        _actions.parse_actions = original
+        setattr(_actions, "parse_actions", original)
         begin_phase("")
 
 

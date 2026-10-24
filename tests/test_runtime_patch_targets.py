@@ -22,7 +22,6 @@ from unittest import mock
 import pytest
 
 import ori.runtime
-from ori.runtime import OriRuntime
 from ori.utils import time_utils
 from tests.package_layout import (
     ReexportRebindError,
@@ -224,4 +223,4 @@ def test_patching_a_method_on_the_class_is_allowed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("ori.runtime.OriRuntime._watchdog_loop", _reached)
-    monkeypatch.setattr(OriRuntime, "_heartbeat_loop", _reached)
+    monkeypatch.setattr(ori.runtime.OriRuntime, "_heartbeat_loop", _reached)

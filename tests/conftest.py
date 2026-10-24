@@ -20,7 +20,7 @@ import asyncio
 import os
 import shutil
 import tempfile
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -215,7 +215,7 @@ def pytest_runtest_teardown(item: pytest.Item) -> Iterator[None]:
 @pytest.hookimpl(wrapper=True, tryfirst=True)
 def pytest_runtest_makereport(
     item: pytest.Item, call: pytest.CallInfo[None]
-) -> Iterator[pytest.TestReport]:
+) -> Generator[None, pytest.TestReport, pytest.TestReport]:
     """Fail the phase whose bindings reach no caller, or only some.
 
     Set on the finished report, outside every other wrapper, so neither
