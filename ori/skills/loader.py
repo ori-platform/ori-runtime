@@ -575,7 +575,9 @@ def _editable_source(dist: importlib.metadata.Distribution) -> Path | None:
             if url.scheme == "file":
                 return Path(urllib.parse.unquote(url.path)).resolve()
     except (OSError, ValueError, KeyError, AttributeError, TypeError):
-        pass
+        # An unreadable or malformed record names no checkout, so the module
+        # falls back to the stricter declaration check.
+        return None
     return None
 
 

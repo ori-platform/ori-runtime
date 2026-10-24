@@ -1520,9 +1520,7 @@ class _Dist:
 
     @property
     def files(self) -> list[Any]:
-        from importlib.metadata import PackagePath
-
-        return [PackagePath(entry) for entry in self._record]
+        return [importlib.metadata.PackagePath(entry) for entry in self._record]
 
     def locate_file(self, entry: Any) -> Path:
         return self._site / str(entry)
