@@ -1,7 +1,7 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for ori/runtime.py, the event loop that ties the layers together.
+"""Tests for ori/runtime/, the event loop that ties the layers together.
 
 All external dependencies (HAL adapters, WhatsApp, SMS, relay, LocalLLM)
 are mocked.  No real hardware, credentials, or network calls are made.

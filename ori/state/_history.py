@@ -87,7 +87,7 @@ class HistoryStore(StoreCore):
     async def compact_history(self, max_backward_skew_ms: int = 3600000) -> None:
         """Compact raw sensor history into time-bucketed averages.
 
-        Call from runtime.py via asyncio.create_task() on a 5-minute
+        Called from ori/runtime/_loops.py via asyncio.create_task() on a 5-minute
         schedule using asyncio periodic task pattern.
         """
         current_ms = now_ms()

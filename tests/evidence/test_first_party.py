@@ -238,7 +238,7 @@ class TestRegistrationRemainsPending:
 class TestHealthReadingSurface:
     """The health payload reads these; a missing one crashes the whole report.
 
-    `runtime.py` calls both without a guard, so an absent method raises
+    `ori/runtime/_health.py` calls both without a guard, so an absent method raises
     `AttributeError` while building health — taking down the parts that were
     fine along with the part that was not. The full suite passed while both
     methods were missing, because nothing exercised the health path with an

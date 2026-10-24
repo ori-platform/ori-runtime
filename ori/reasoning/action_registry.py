@@ -33,7 +33,7 @@ The two cannot drift.
 refuses an action with no entry here, so an action becomes capable of actuation
 and becomes governed in the same change — registering an executor without adding
 a capability raises rather than silently producing an ungoverned physical
-action. A test additionally parses ``runtime.py`` and asserts every executor it
+action. A test additionally parses ``ori/runtime/`` and asserts every executor it
 registers appears below.
 """
 

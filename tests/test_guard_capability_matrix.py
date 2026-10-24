@@ -79,10 +79,9 @@ def _guard(repo: Path, *refs: str, body: str = "") -> subprocess.CompletedProces
         "ori/security/x.py",
         "ori/safety/x.py",
         "ori/policy/x.py",
-        "ori/runtime.py",
         "ori/runtime/_startup.py",
+        "ori/startup_stages.py",
         "ori/skills/loader.py",
-        "ori/config.py",
         "ori/config/_gateway.py",
     ],
 )
@@ -116,7 +115,7 @@ def test_a_change_outside_capability_code_passes(repo: Path) -> None:
 def test_the_token_without_a_reasoned_line_does_not_bypass(
     repo: Path, body: str
 ) -> None:
-    result = _guard(repo, *_change(repo, "ori/runtime.py"), body=body)
+    result = _guard(repo, *_change(repo, "ori/runtime/_startup.py"), body=body)
     assert result.returncode == 1, result.stdout
 
 
@@ -126,7 +125,7 @@ def test_the_token_without_a_reasoned_line_does_not_bypass(
     ids=["alone", "among-paragraphs", "crlf"],
 )
 def test_a_reasoned_bypass_line_passes_and_is_echoed(repo: Path, body: str) -> None:
-    result = _guard(repo, *_change(repo, "ori/runtime.py"), body=body)
+    result = _guard(repo, *_change(repo, "ori/runtime/_startup.py"), body=body)
     assert result.returncode == 0, result.stdout
     assert f"  {REASONED}\n" in result.stdout
 

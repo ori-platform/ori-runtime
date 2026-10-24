@@ -1555,7 +1555,7 @@ class TestAds1115ChannelSelection:
     async def test_a_refused_duplicate_does_not_pin_the_shared_bus(self, monkeypatch):
         """A refused connect is dropped by the runtime without a close().
 
-        `ori/runtime.py` logs the failure and continues to the next sensor, so
+        `ori/runtime/_startup.py` logs the failure and continues to the next sensor, so
         nothing calls the refused adapter's teardown. If connect() took a
         reference on the shared bus before refusing, that reference is never
         given back: the cached handle outlives its last real user, and the

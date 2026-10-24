@@ -378,7 +378,10 @@ def example_paths() -> set[str]:
 
 
 def adapter_metadata() -> dict[str, dict[str, Any]]:
-    """What each adapter reads from the dict runtime.py hands to connect()."""
+    """What each adapter reads from the dict the runtime hands to connect().
+
+    ori/runtime/_device_io.py assembles that dict.
+    """
     out: dict[str, dict[str, Any]] = {}
     for path in sorted(HAL.glob("*.py")):
         tree = ast.parse(path.read_text())
@@ -422,8 +425,8 @@ def coverage(entries: list[dict[str, Any]], in_example: set[str]) -> dict[str, A
     """What this inventory does not cover, stated rather than implied.
 
     The walk covers the parse functions under ori/config/. Keys read elsewhere are
-    not covered: runtime.py assembles the dict handed to adapter.connect(), and
-    adapters read from it directly.
+    not covered: ori/runtime/_device_io.py assembles the dict handed to
+    adapter.connect(), and adapters read from it directly.
 
     Adapter correlation applies to ``sensors[]`` paths only. An earlier version
     matched any path whose final segment appeared in any adapter, which credited
@@ -446,10 +449,11 @@ def coverage(entries: list[dict[str, Any]], in_example: set[str]) -> dict[str, A
             readers = sorted(name for name, keys in adapters.items() if key in keys)
             entry: dict[str, Any] = {"path": path, "read_by_adapters": readers}
             if ".calibration." in path:
-                # runtime.py passes calibration as its own nested block rather
-                # than merging it into metadata, so its inner keys are read from
-                # config["calibration"] and never appear as top-level adapter
-                # reads. An empty reader list here is expected, not a finding.
+                # ori/runtime/_device_io.py passes calibration as its own nested
+                # block rather than merging it into metadata, so its inner keys
+                # are read from config["calibration"] and never appear as
+                # top-level adapter reads. An empty reader list here is
+                # expected, not a finding.
                 entry["nested_block"] = "calibration"
             sensor_metadata.append(entry)
             continue
@@ -534,10 +538,10 @@ def main() -> None:
             "sensor_metadata_note": (
                 "sensors[] is open by construction. _parse_sensors keeps id, type, "
                 "protocol, poll_interval_ms and calibration, and routes every other "
-                "key into metadata, validated only for protocol coap. runtime.py "
-                "merges metadata into the dict passed to adapter.connect(), so the "
-                "accepted metadata surface is whatever each adapter reads. "
-                "adapter_metadata is that surface."
+                "key into metadata, validated only for protocol coap. "
+                "ori/runtime/_device_io.py merges metadata into the dict passed "
+                "to adapter.connect(), so the accepted metadata surface is "
+                "whatever each adapter reads. adapter_metadata is that surface."
             ),
             "entries": entries,
             "coverage": coverage(entries, in_example),

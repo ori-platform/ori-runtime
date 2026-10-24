@@ -3,10 +3,10 @@
 
 """A sensor entry must not displace what the runtime supplies to an adapter.
 
-`runtime.py` injects the sensor's identity and the HAL circuit-breaker settings
-into the dict handed to `adapter.connect()`. Those names were not in the
-first-class set `_parse_sensors` withholds, and metadata was spread last, so a
-sensor entry could overwrite them.
+`ori/runtime/_device_io.py` injects the sensor's identity and the HAL
+circuit-breaker settings into the dict handed to `adapter.connect()`. Those
+names were not in the first-class set `_parse_sensors` withholds, and metadata
+was spread last, so a sensor entry could overwrite them.
 
 Two consequences made this a safety defect rather than an untidiness. A sensor
 could raise `failure_threshold` to a value its adapter would never reach,

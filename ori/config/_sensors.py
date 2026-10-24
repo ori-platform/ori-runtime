@@ -35,9 +35,10 @@ _SENSOR_ENVELOPE_SCHEMA = validate_schema(
     name="sensors[] envelope",
 )
 
-# Supplied by runtime.py when it assembles an adapter's connect() config, and
-# therefore not settable on a sensor. `calibration` is absent because it is
-# already a first-class sensor key and never reaches metadata.
+# Supplied by ori/runtime/_device_io.py when it assembles an adapter's
+# connect() config, and therefore not settable on a sensor. `calibration` is
+# absent because it is already a first-class sensor key and never reaches
+# metadata.
 RESERVED_SENSOR_METADATA_KEYS = frozenset(
     {"sensor_id", "sensor_type", "circuit_breaker"}
 )
@@ -163,10 +164,10 @@ def _refuse_reserved_sensor_metadata(
 ) -> None:
     """Refuse a sensor key that would displace a value the runtime supplies.
 
-    `runtime.py` builds the adapter's config by injecting the sensor's identity
-    and the HAL circuit-breaker settings, then spreading metadata over the top.
-    Metadata therefore wins, and these three names are not in the first-class
-    set, so a sensor entry could set them.
+    `ori/runtime/_device_io.py` builds the adapter's config by injecting the
+    sensor's identity and the HAL circuit-breaker settings, then spreading
+    metadata over the top. Metadata therefore wins, and these three names are
+    not in the first-class set, so a sensor entry could set them.
 
     Both consequences are severe enough to refuse rather than resolve by
     precedence. `circuit_breaker` makes hardware recovery configurable per
