@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib
+import os
 import sys
 import types
 from collections import ChainMap
@@ -36,7 +37,9 @@ from tests.package_layout import (
     check_bindings,
     patched_runtime,
     rebound,
-    take_found,
+    settle,
+    take_problems,
+    take_snapshot,
 )
 
 REFUSED = "is a re-export; rebinding it reaches no caller"
@@ -329,7 +332,7 @@ def test_patching_only_where_it_is_defined_does_not(
     monkeypatch.setattr("ori.config._actions.parse_actions", _reached)
     ori.config.Config.load(str(EXAMPLE))
     monkeypatch.undo()
-    assert take_found() == [PARTIAL]
+    assert take_problems() == [PARTIAL]
 
 
 @pytest.mark.parametrize(
@@ -373,7 +376,7 @@ def test_the_import_system_still_binds_a_submodule_on_first_import(
     imported = importlib.import_module("ori.config.installer")
     assert vars(cfg)["installer"] is imported
     monkeypatch.undo()
-    assert take_found() == []
+    assert take_problems() == []
 
 
 def test_deleting_one_binding_of_a_shared_object_is_reported(
@@ -381,7 +384,7 @@ def test_deleting_one_binding_of_a_shared_object_is_reported(
 ) -> None:
     monkeypatch.delitem(vars(_device), "logger")
     monkeypatch.undo()
-    [report] = take_found()
+    [report] = take_problems()
     assert report.startswith("patched or deleted ori.config._device.logger but not ")
 
 
@@ -446,7 +449,7 @@ def test_a_patch_undone_before_the_test_returns_is_still_checked(
 ) -> None:
     with undone():
         pass
-    [report] = take_found()
+    [report] = take_problems()
     assert report.startswith(expected)
 
 
@@ -454,7 +457,7 @@ def test_a_patch_stopped_before_the_test_returns_is_still_checked() -> None:
     patcher = mock.patch("ori.config._actions.parse_actions", _reached)
     patcher.start()
     patcher.stop()
-    assert take_found() == [PARTIAL]
+    assert take_problems() == [PARTIAL]
 
 
 @contextlib.contextmanager
@@ -471,38 +474,74 @@ def test_every_binding_patched_together_unwinds_without_a_report() -> None:
     with mock.patch("ori.config._actions.parse_actions", _reached):
         with mock.patch("ori.config._config.parse_actions", _reached):
             pass
-    assert take_found() == []
+    assert take_problems() == []
 
 
-@pytest.mark.parametrize(
-    ("left", "name", "expected"),
-    [
-        pytest.param(
-            lambda: setattr(
-                importlib.import_module("ori.runtime._startup"), "no_such", 1
-            ),
-            "ori.runtime._startup",
-            NEVER_BOUND,
-            id="plain-assignment-on-a-private-module",
-        ),
-        pytest.param(
-            lambda: vars(ori.runtime).__setitem__("no_such", 1),
-            "ori.runtime",
-            "ori.runtime never bound no_such",
-            id="a-write-to-the-package-namespace",
-        ),
-    ],
+def test_a_plain_assignment_is_checked_however_soon_it_is_undone() -> None:
+    startup = importlib.import_module("ori.runtime._startup")
+    original = _actions.parse_actions
+    startup.no_such = 1  # type: ignore[attr-defined]
+    del startup.no_such  # type: ignore[attr-defined]
+    _actions.parse_actions = _reached
+    _actions.parse_actions = original
+    assert sorted(take_problems()) == sorted([NEVER_BOUND_REPORT, PARTIAL])
+
+
+NEVER_BOUND_REPORT = (
+    "ori.runtime._startup never bound no_such, so binding it reaches no caller. "
+    "Patch each binding a caller reads, in the modules under ori/runtime/."
 )
-def test_a_binding_left_in_place_is_checked_when_the_test_returns(
-    left, name: str, expected: str
-) -> None:
-    left()
+
+
+def test_a_write_to_a_namespace_is_checked_while_it_is_in_place() -> None:
+    """A write straight into a namespace passes no class, so it is seen by the
+    next check: one undone before then is the stated limit."""
+    vars(ori.runtime)["no_such"] = 1
     try:
-        [report] = check_bindings()
+        [report] = take_problems()
     finally:
-        del vars(importlib.import_module(name))["no_such"]
-    assert report.startswith(expected)
-    assert check_bindings() == []
+        del vars(ori.runtime)["no_such"]
+    assert report.startswith("ori.runtime never bound no_such")
+    assert take_problems() == []
+
+
+def test_patching_every_binding_passes_in_any_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unrelated undos between the steps of one complete patch, nested blocks
+    and patches stopped out of order are all a complete list of targets."""
+    monkeypatch.setattr("ori.config._actions.parse_actions", _reached)
+    with mock.patch.dict(os.environ, {"ORI_UNRELATED": "1"}):
+        pass
+    monkeypatch.setattr("ori.config._config.parse_actions", _reached)
+    first = mock.patch("ori.config._actions.parse_actions", _reached)
+    second = mock.patch("ori.config._config.parse_actions", _reached)
+    first.start()
+    second.start()
+    first.stop()
+    second.stop()
+    assert take_problems() == []
+
+
+def test_a_leftover_is_reported_once_and_then_held_as_the_start() -> None:
+    """``settle`` runs before each test: a binding left changed is reported
+    against the next test only, not against every test after it."""
+    from tests import package_layout
+
+    original = _actions.parse_actions
+    _actions.parse_actions = _reached
+    try:
+        assert settle() == [PARTIAL]
+        assert settle() == []
+        # Which modules bind one object is kept, so the next partial is seen.
+        with mock.patch("ori.config._config.parse_actions", _reached):
+            pass
+        [report] = take_problems()
+        assert report.startswith("patched or deleted ori.config._config.parse_actions")
+    finally:
+        _actions.parse_actions = original
+        package_layout._HELD["snapshot"] = take_snapshot()
+        take_problems()
 
 
 def test_equal_values_under_different_names_are_not_one_binding() -> None:
@@ -546,8 +585,8 @@ def test_release_restores_what_was_held_and_holding_twice_wraps_once() -> None:
         assert MonkeyPatch.setitem is held["setitem"]
         assert MonkeyPatch.delitem is held["delitem"]
         assert cast(Any, mock)._patch_dict._patch_dict is held["apply"]
-        for (owner, name), original in held["watched"].items():
-            assert vars(owner)[name] is original, name
+        for name, original in held["module_classes"].items():
+            assert type(sys.modules[name]) is original, name
     finally:
         package_layout.hold_reexports()
         package_layout.hold_reexports()
@@ -568,7 +607,7 @@ def test_a_module_imported_on_first_use_is_checked_with_the_rest() -> None:
         for target in targets:
             if not target.startswith("ori.config.installer."):
                 stack.enter_context(mock.patch(target, _reached))
-    [report] = take_found()
+    [report] = take_problems()
     assert report.endswith(
         "but not ori.config.installer.read_config_bytes; each is read by the code "
         "in its own module, so patch them all."
@@ -583,4 +622,37 @@ def test_a_refused_namespace_write_is_not_reported_again(
     monkeypatch.setattr(_device, "_detect_host_timezone", str)
     with pytest.raises(AssertionError, match=NAMESPACE_REFUSED):
         mock.patch.dict("ori.config.__dict__", anchor_to_config=None).start()
-    assert take_found() == []
+    assert take_problems() == []
+
+
+def test_a_problem_is_reported_once_per_test() -> None:
+    """The call and its teardown are both checked; the second does not repeat
+    what the first reported."""
+    vars(ori.runtime)["no_such"] = 1
+    try:
+        first, second = check_bindings(), check_bindings()
+    finally:
+        del vars(ori.runtime)["no_such"]
+        take_problems()
+    assert len(first) == 1
+    assert second == []
+
+
+def test_a_binding_deleted_through_delattr_is_checked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delattr(_device, "logger")
+    monkeypatch.undo()
+    [report] = take_problems()
+    assert report.startswith("patched or deleted ori.config._device.logger but not ")
+
+
+def test_a_reexport_written_into_the_namespace_is_refused() -> None:
+    original = vars(cfg)["anchor_to_config"]
+    vars(cfg)["anchor_to_config"] = _reached
+    try:
+        [report] = take_problems()
+    finally:
+        vars(cfg)["anchor_to_config"] = original
+        take_problems()
+    assert REFUSED in report

@@ -14,10 +14,12 @@ for each re-export, and `runtime_bindings` for any name the runtime's modules
 read.
 
 While the suite runs, `hold_reexports` refuses every rebinding of a
-re-export, and the conftest fails a test that left a binding no caller reads,
-or patched an object in some of the modules that bind it: `binding_problems`
-checks every module of both packages while the patches are still in place,
-as each is undone and when the test returns.
+re-export and observes every binding a test changes in any module of either
+package, however soon the change is undone. The conftest fails a test that
+changed a binding no caller reads, or an object's binding in some of the
+modules that read it and never in the others; `binding_problems` says which.
+A write straight into a private module's namespace, past its class and the
+mapping writers, is seen only if it is still in place at the next check.
 """
 
 from __future__ import annotations
@@ -306,14 +308,26 @@ def _is_own_submodule(package: types.ModuleType, name: str, value: object) -> bo
     )
 
 
-class _ReexportsHeld(types.ModuleType):
+class _BindingsWatched(types.ModuleType):
+    """A module of a split package while the suite runs: every attribute write
+    to it is observed, from ``monkeypatch.setattr`` and ``mock.patch`` to plain
+    assignment and ``delattr``, however briefly it lasts."""
+
+    def __setattr__(self, name: str, value: object) -> None:
+        super().__setattr__(name, value)
+        _observe(self, name)
+
+    def __delattr__(self, name: str) -> None:
+        super().__delattr__(name)
+        _observe(self, name)
+
+
+class _ReexportsHeld(_BindingsWatched):
     """A split package while the suite runs: a re-export cannot be rebound.
 
-    Every attribute spelling of a patch, from ``monkeypatch.setattr`` and
-    ``mock.patch`` to plain assignment and ``delattr``, rebinds through here,
-    inside a ``with`` block or a fixture as much as in a test body. Binding the
-    same object again, or a name the package does not re-export, such as a
-    private module the import system binds on first import, is allowed.
+    Binding the same object again, or a name the package does not re-export,
+    such as a private module the import system binds on first import, is
+    allowed.
     """
 
     def __setattr__(self, name: str, value: object) -> None:
@@ -369,7 +383,7 @@ def _hold_namespace_writers() -> None:
         if layout is not None:
             unapply(self)  # the refused write, undone before it is checked
             raise AssertionError(layout.namespace_refusal())
-        _patched()
+        _observe_mapping(self.in_dict)
         return result
 
     def guarded_setitem(self: MonkeyPatch, dic: Any, name: Any, value: Any) -> None:
@@ -377,7 +391,7 @@ def _hold_namespace_writers() -> None:
         if layout is not None:
             raise AssertionError(layout.namespace_refusal())
         setitem(self, dic, name, value)
-        _patched()
+        _observe_mapping(dic)
 
     def guarded_delitem(
         self: MonkeyPatch, dic: Any, name: Any, raising: bool = True
@@ -386,7 +400,7 @@ def _hold_namespace_writers() -> None:
         if layout is not None:
             raise AssertionError(layout.namespace_refusal())
         delitem(self, dic, name, raising)
-        _patched()
+        _observe_mapping(dic)
 
     patch_dict_class._patch_dict = patch_dict
     MonkeyPatch.setitem = guarded_setitem  # type: ignore[method-assign]
@@ -394,28 +408,30 @@ def _hold_namespace_writers() -> None:
 
 
 def hold_reexports() -> None:
-    """Refuse every rebinding of a split package's re-export for a test session.
+    """Refuse every rebinding of a split package's re-export for a test session,
+    and observe every binding a test changes in any of its modules.
 
-    Attribute spellings go through the module's class; ``patch.dict``,
-    ``setitem`` and ``delitem`` are refused by the mapping they target. A
-    plain dict operation on the namespace that the same test undoes, and a
-    write through a mapping that delegates to it, are outside both; the
-    session and per-test snapshots catch any that persist. Installing twice
-    is a no-op, and `release_reexports` restores what this replaced.
+    Attribute spellings go through each module's class; ``patch.dict``,
+    ``setitem`` and ``delitem`` are refused on a package's namespace and
+    observed on a private module's. A plain dict operation on a namespace that
+    the same test undoes before a check is outside both. Installing twice is a
+    no-op, and `release_reexports` restores what this replaced.
     """
     if _HELD:
         return
-    module_classes: dict[str, type] = {}
     for layout in LAYOUTS:
         layout.owners()  # computed before the class swap, from the real bindings
-        module_classes[layout.name] = type(layout.package)
-    _HELD["module_classes"] = module_classes
-    for layout in LAYOUTS:
+    held = [
+        module for layout in LAYOUTS for module in (layout.package, *layout.modules())
+    ]
+    _HELD["module_classes"] = {module.__name__: type(module) for module in held}
+    for module in held:
         # A module's class may be swapped for a ModuleType subclass; pyright
         # does not model that, so the assignment goes through Any.
-        cast(Any, layout.package).__class__ = _ReexportsHeld
+        cast(Any, module).__class__ = (
+            _ReexportsHeld if module.__name__ in _BY_NAME else _BindingsWatched
+        )
     _hold_namespace_writers()
-    _watch_patches()
     _HELD["snapshot"] = take_snapshot()
 
 
@@ -425,18 +441,14 @@ def release_reexports() -> None:
         return
     from _pytest.monkeypatch import MonkeyPatch
 
-    for layout in LAYOUTS:
+    for name, original in _HELD["module_classes"].items():
         # Past the trap, which refuses every name the package never bound.
-        types.ModuleType.__setattr__(
-            layout.package, "__class__", _HELD["module_classes"][layout.name]
-        )
+        types.ModuleType.__setattr__(sys.modules[name], "__class__", original)
     cast(Any, mock)._patch_dict._patch_dict = _HELD["apply"]
     MonkeyPatch.setitem = _HELD["setitem"]  # type: ignore[method-assign]
     MonkeyPatch.delitem = _HELD["delitem"]  # type: ignore[method-assign]
-    for (owner, name), original in _HELD["watched"].items():
-        setattr(owner, name, original)
     _HELD.clear()
-    _WATCH.update(dirty=False, found=[])
+    _forget()
 
 
 def bindings() -> dict[str, int]:
@@ -497,58 +509,97 @@ def take_snapshot() -> BindingSnapshot:
     )
 
 
-def binding_problems(snapshot: BindingSnapshot) -> list[str]:
-    """What a test bound that reaches no caller, or reaches only some.
+#: What a binding a test deleted resolves to.
+_DELETED = object()
 
-    Three cases, whatever spelling made them: a name a module never bound,
-    which ``raising=False``, ``create=True`` or a write to the namespace makes
-    of a stale target; a package's binding of its own submodule replaced,
-    which no caller reads; and an object bound in several modules patched or
-    deleted in some of them, which leaves the rest on the original. A
-    re-export rebound is the fourth, refused with its owners as advice.
-    """
-    problems: list[str] = []
-    for layout in LAYOUTS:
-        before = snapshot.modules[layout.name]
-        problems += layout.rebound(
-            {name: ident for name, ident in before.items() if name in layout.owners()}
-        )
-        namespace = vars(layout.package)
-        for name in before:
-            full = f"{layout.name}.{name}"
-            if full in snapshot.modules and namespace.get(name) is not sys.modules.get(
-                full
-            ):
-                problems.append(
-                    f"{full} was rebound on its package; no caller reads that "
-                    "binding. Patch each binding a caller reads, in the module."
-                )
-    for module_name, before in snapshot.modules.items():
+#: What the current test changed: every binding it rebound or deleted at any
+#: moment, the ones among them that reached no caller while they held, and the
+#: problems already reported.
+_WATCH: dict[str, set[str]] = {"touched": set(), "stray": set(), "reported": set()}
+
+
+def _forget() -> None:
+    for seen in _WATCH.values():
+        seen.clear()
+
+
+def _observe(module: types.ModuleType, name: str) -> None:
+    snapshot: BindingSnapshot | None = _HELD.get("snapshot")
+    if snapshot is None or name.startswith("__"):
+        return
+    before = snapshot.modules.get(module.__name__)
+    value = vars(module).get(name, _DELETED)
+    if before is None or before.get(name) == id(value):
+        return
+    target = f"{module.__name__}.{name}"
+    _WATCH["touched"].add(target)
+    if value is _DELETED:
+        return
+    if target in snapshot.modules:
+        # A package's binding of its own submodule: only the module itself is
+        # one, as the import system binds it on a first import.
+        if value is not sys.modules.get(target):
+            _WATCH["stray"].add(target)
+    elif name not in before and not (
+        module.__name__ in _BY_NAME and _is_own_submodule(module, name, value)
+    ):
+        _WATCH["stray"].add(target)
+
+
+def _observe_mapping(mapping: object) -> None:
+    """Observe a write made to a module's namespace directly, past its class."""
+    for module_name in _HELD.get("snapshot", BindingSnapshot({}, ())).modules:
         module = sys.modules.get(module_name)
-        if module is None:
-            continue
-        package = sys.modules[module_name.rpartition(".")[0]]
-        for name, value in vars(module).items():
-            if name.startswith("__") or name in before:
-                continue
-            if module_name in _BY_NAME and _is_own_submodule(module, name, value):
-                continue
+        if module is not None and vars(module) is mapping:
+            _observe_module(module)
+
+
+def _observe_module(module: types.ModuleType) -> None:
+    before = _HELD["snapshot"].modules[module.__name__]
+    for name in before.keys() | _namespace(module).keys():
+        _observe(module, name)
+
+
+def binding_problems(snapshot: BindingSnapshot) -> list[str]:
+    """What the current test bound that reached no caller, or only some.
+
+    A binding counts from the moment it changes, however soon it is restored:
+    a name a module never bound, which ``raising=False``, ``create=True`` or a
+    write to the namespace makes of a stale target; a package's binding of its
+    own submodule replaced; a re-export rebound; and an object bound in
+    several modules that the test changed in some of them and never in the
+    others. A test that patches every binding of an object passes, in whatever
+    order it patches and restores them: what this refuses is a list of
+    targets missing a caller, not a sequence.
+    """
+    touched, stray = _WATCH["touched"], _WATCH["stray"]
+    problems: list[str] = []
+    for target in sorted(stray):
+        module_name, _, name = target.rpartition(".")
+        if target in snapshot.modules:
             problems.append(
-                f"{module_name} never bound {name}, so binding it reaches no "
-                "caller. Patch each binding a caller reads, in the modules under "
-                f"{package.__name__.replace('.', '/')}/."
+                f"{target} was rebound on its package; no caller reads that "
+                "binding. Patch each binding a caller reads, in the module."
             )
+            continue
+        package = (
+            module_name if module_name in _BY_NAME else module_name.rpartition(".")[0]
+        )
+        problems.append(
+            f"{module_name} never bound {name}, so binding it reaches no "
+            "caller. Patch each binding a caller reads, in the modules under "
+            f"{package.replace('.', '/')}/."
+        )
+    for layout in LAYOUTS:
+        problems += [
+            layout.refusal(name)
+            for name in layout.owners()
+            if f"{layout.name}.{name}" in touched
+        ]
     for group in snapshot.groups:
-        now = {target: id(_resolve(target)) for target in group}
-        if len(set(now.values())) > 1:
-            originals = {
-                target: snapshot.modules[target.rpartition(".")[0]][
-                    target.rpartition(".")[2]
-                ]
-                for target in group
-            }
-            patched = [t for t in group if now[t] != originals[t]]
-            missed = [t for t in group if now[t] == originals[t]]
+        patched = [target for target in group if target in touched]
+        if patched and len(patched) < len(group):
+            missed = [target for target in group if target not in touched]
             problems.append(
                 f"patched or deleted {', '.join(patched)} but not "
                 f"{', '.join(missed)}; "
@@ -557,92 +608,42 @@ def binding_problems(snapshot: BindingSnapshot) -> list[str]:
     return problems
 
 
-#: What a binding a test deleted resolves to.
-_DELETED = object()
-
-
-def _resolve(target: str) -> object:
-    module, _, name = target.rpartition(".")
-    return getattr(sys.modules.get(module), name, _DELETED)
-
-
-#: Whether a patch was applied since bindings were last checked, and what the
-#: checks made while patches were undone found.
-_WATCH: dict[str, Any] = {"dirty": False, "found": []}
-
-
-def _patched() -> None:
-    _WATCH["dirty"] = True
-
-
-def _before_undo() -> None:
-    """Check bindings once, while every patch is still in place.
-
-    A ``with`` block, ``monkeypatch.context()`` or ``patch.stop()`` undoes its
-    patch before the test returns, so a check made only then sees nothing.
-    Checking at the first undo after a patch, and not again until another
-    patch, sees the patches together, as an ``ExitStack`` unwinding them one by
-    one does not.
-    """
-    if _WATCH["dirty"] and "snapshot" in _HELD:
-        _WATCH["dirty"] = False
-        _WATCH["found"] += binding_problems(_HELD["snapshot"])
-
-
-def take_found() -> list[str]:
-    """What the checks made since the last call found, now cleared."""
-    found, _WATCH["found"] = _WATCH["found"], []
-    return found
-
-
 def check_bindings() -> list[str]:
-    """Everything found so far, and what a check now finds."""
-    _WATCH["dirty"] = False
-    found = take_found()
-    if "snapshot" in _HELD:
-        found += binding_problems(_HELD["snapshot"])
+    """What the current test changed so far that reaches no caller, or only
+    some, not already reported."""
+    snapshot: BindingSnapshot | None = _HELD.get("snapshot")
+    if snapshot is None:
+        return []
+    for module_name in snapshot.modules:
+        module = sys.modules.get(module_name)
+        if module is not None:
+            _observe_module(module)
+    found = [p for p in binding_problems(snapshot) if p not in _WATCH["reported"]]
+    _WATCH["reported"].update(found)
     return found
 
 
-def _watch_patches() -> None:
-    """Mark every patch applied, and check bindings before one is undone."""
-    from _pytest.monkeypatch import MonkeyPatch
+def take_problems() -> list[str]:
+    """Check now, then forget what the test changed: for a test of the guard,
+    which makes a refused patch on purpose and reads the refusal itself."""
+    found = check_bindings()
+    _forget()
+    return found
 
-    patch_class: Any = mock._patch  # type: ignore[attr-defined]
-    patch_dict_class: Any = mock._patch_dict  # type: ignore[attr-defined]
-    originals = {
-        (patch_class, "__enter__"): patch_class.__enter__,
-        (patch_class, "__exit__"): patch_class.__exit__,
-        (patch_dict_class, "_unpatch_dict"): patch_dict_class._unpatch_dict,
-        (MonkeyPatch, "setattr"): MonkeyPatch.setattr,
-        (MonkeyPatch, "delattr"): MonkeyPatch.delattr,
-        (MonkeyPatch, "undo"): MonkeyPatch.undo,
-    }
-    _HELD["watched"] = originals
 
-    def applies(original: Any) -> Any:
-        @functools.wraps(original)
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
-            try:
-                return original(*args, **kwargs)
-            finally:
-                _patched()
+def settle() -> list[str]:
+    """Report what was left since the last check, then start a test afresh.
 
-        return wrapper
-
-    def undoes(original: Any) -> Any:
-        @functools.wraps(original)
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
-            _before_undo()
-            return original(*args, **kwargs)
-
-        return wrapper
-
-    patch_class.__enter__ = applies(originals[(patch_class, "__enter__")])
-    patch_class.__exit__ = undoes(originals[(patch_class, "__exit__")])
-    patch_dict_class._unpatch_dict = undoes(
-        originals[(patch_dict_class, "_unpatch_dict")]
-    )
-    MonkeyPatch.setattr = applies(originals[(MonkeyPatch, "setattr")])  # type: ignore[method-assign]
-    MonkeyPatch.delattr = applies(originals[(MonkeyPatch, "delattr")])  # type: ignore[method-assign]
-    MonkeyPatch.undo = undoes(originals[(MonkeyPatch, "undo")])  # type: ignore[method-assign]
+    A binding still changed is observed again at the next test's first check,
+    so a leftover that is itself a problem becomes the snapshot once reported,
+    rather than failing every test after it.
+    """
+    found = take_problems()
+    if check_bindings():
+        # The bindings start from where they are now; which modules bind one
+        # object stays what the package itself does.
+        _HELD["snapshot"] = BindingSnapshot(
+            take_snapshot().modules, _HELD["snapshot"].groups
+        )
+    _forget()
+    return found

@@ -84,14 +84,14 @@ def pytest_unconfigure(config: pytest.Config) -> None:
 
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_setup(item: pytest.Item) -> Iterator[None]:
-    """Refuse to start a test while ``ori.config`` or ``ori.runtime`` holds a
-    binding the session did not start with.
+    """Refuse to start a test after a binding in ``ori.config`` or
+    ``ori.runtime`` was left that reaches no caller, or only some.
 
     A write made while a test module was collected is caught at its first test.
     """
-    from tests.package_layout import check_bindings
+    from tests.package_layout import settle
 
-    problems = check_bindings()
+    problems = settle()
     if problems:
         pytest.fail("\n".join(problems))
     return (yield)
@@ -99,13 +99,9 @@ def pytest_runtest_setup(item: pytest.Item) -> Iterator[None]:
 
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_call(item: pytest.Item) -> Iterator[None]:
-    """Fail a test that bound, in a split package, what reaches no caller or
-    only some of them.
-
-    This runs before teardown, so a fixture's or the body's patches are still
-    in place when the bindings are checked; a patch the test undid itself was
-    checked as it was undone.
-    """
+    """Fail a test whose fixtures or body changed, in a split package, a
+    binding that reaches no caller, or an object's binding in only some of the
+    modules that read it, however soon the change was undone."""
     from tests.package_layout import check_bindings
 
     result = yield
@@ -117,11 +113,12 @@ def pytest_runtest_call(item: pytest.Item) -> Iterator[None]:
 
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_teardown(item: pytest.Item) -> Iterator[None]:
-    """Fail a test whose fixture teardown undid such a binding."""
-    from tests.package_layout import take_found
+    """The same, for what fixture teardown changed, a module- or session-scope
+    fixture's included, since the last test of its scope runs its teardown."""
+    from tests.package_layout import check_bindings
 
     result = yield
-    problems = take_found()
+    problems = check_bindings()
     if problems:
         pytest.fail("\n".join(problems))
     return result
