@@ -6,7 +6,7 @@
 from pathlib import Path
 from typing import Any
 
-from ori.skills.loader import SkillLoader
+from ori.skills.loader import SkillLoader, _is_skill_directory
 
 POINTS = ["inside_resolution", "after_resolution", "before_load"]
 
@@ -19,9 +19,7 @@ def swap_at(monkeypatch, point: str, swap: Any) -> None:
     returned; ``before_load`` is just before that skill is read.
     """
     if point == "inside_resolution":
-        import ori.skills.loader as loader_module
-
-        found = loader_module._is_skill_directory
+        found = _is_skill_directory
 
         def found_then_swap(path: Path) -> bool:
             answer = found(path)
@@ -29,7 +27,7 @@ def swap_at(monkeypatch, point: str, swap: Any) -> None:
                 swap()
             return answer
 
-        monkeypatch.setattr(loader_module, "_is_skill_directory", found_then_swap)
+        monkeypatch.setattr("ori.skills.loader._is_skill_directory", found_then_swap)
     elif point == "after_resolution":
         resolve = SkillLoader._resolve_selection
 

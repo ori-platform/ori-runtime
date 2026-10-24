@@ -3,6 +3,7 @@
 
 import asyncio
 import base64
+import importlib.metadata
 import json
 import logging
 import secrets
@@ -35,6 +36,8 @@ from ori.skills.loader import (
     SkillValidationError,
     Trigger,
     _CooldownTracker,
+    _source_checkout,
+    first_party_skill_roots,
 )
 from ori.skills.sandbox import SkillAnchorError, SkillSecurityError
 from ori.skills.signing import (
@@ -1489,8 +1492,6 @@ def _layout(
     tmp_path: Path, monkeypatch, *, pyproject: str | None, site: str = "site-packages"
 ) -> Path:
     """A package directory with a planted ``skills`` beside it, nothing installed."""
-    import ori.skills.loader as loader_module
-
     parent = tmp_path / unicodedata.normalize("NFC", site)
     packaged = Path(__file__).resolve().parents[1] / "skills"
     shutil.copytree(
@@ -1503,11 +1504,9 @@ def _layout(
     module.parent.mkdir(parents=True)
     (parent / "ori" / "__init__.py").write_text("")
     module.write_text("")
-    monkeypatch.setattr(loader_module, "__file__", str(module))
-    monkeypatch.setattr(
-        loader_module.importlib.metadata, "distributions", lambda **_: []
-    )
-    loader_module._source_checkout.cache_clear()
+    monkeypatch.setattr("ori.skills.loader.__file__", str(module))
+    monkeypatch.setattr(importlib.metadata, "distributions", lambda **_: [])
+    _source_checkout.cache_clear()
     return parent
 
 
@@ -1543,10 +1542,8 @@ class _Dist:
 def test_nothing_beside_a_package_without_its_declaration_is_first_party(
     tmp_path: Path, monkeypatch, pyproject: str | None
 ) -> None:
-    import ori.skills.loader as loader_module
-
     parent = _layout(tmp_path, monkeypatch, pyproject=pyproject)
-    assert (parent / "skills").resolve() not in loader_module.first_party_skill_roots()
+    assert (parent / "skills").resolve() not in first_party_skill_roots()
     with pytest.raises(SkillSelectionError, match="is neither"):
         SkillLoader(require_signed=True).load_selected(
             [("energy-anomaly-detector", "")], str(tmp_path / "absent")
@@ -1584,8 +1581,6 @@ def test_a_wheel_installation_has_no_checkout_whatever_sits_beside_it(
     The aliases name the module only on a case- and normalisation-insensitive
     filesystem, as macOS's is; elsewhere they name nothing, and are skipped.
     """
-    import ori.skills.loader as loader_module
-
     parent = _layout(
         tmp_path,
         monkeypatch,
@@ -1613,10 +1608,8 @@ def test_a_wheel_installation_has_no_checkout_whatever_sits_beside_it(
         ),
     )
     found = [editable, wheel] if editable_first else [wheel, editable]
-    monkeypatch.setattr(
-        loader_module.importlib.metadata, "distributions", lambda **_: found
-    )
-    assert (parent / "skills").resolve() not in loader_module.first_party_skill_roots()
+    monkeypatch.setattr(importlib.metadata, "distributions", lambda **_: found)
+    assert (parent / "skills").resolve() not in first_party_skill_roots()
     with pytest.raises(SkillSelectionError, match="is neither"):
         SkillLoader(require_signed=True).load_selected(
             [("energy-anomaly-detector", "")], str(tmp_path / "absent")
@@ -1626,8 +1619,6 @@ def test_a_wheel_installation_has_no_checkout_whatever_sits_beside_it(
 def test_an_editable_record_with_a_repeated_member_names_no_checkout(
     tmp_path: Path, monkeypatch
 ) -> None:
-    import ori.skills.loader as loader_module
-
     parent = _layout(tmp_path, monkeypatch, pyproject=None)
     here = parent.resolve().as_uri()
     elsewhere = (tmp_path / "elsewhere").resolve().as_uri()
@@ -1637,10 +1628,8 @@ def test_an_editable_record_with_a_repeated_member_names_no_checkout(
     editable = _Dist(
         tmp_path / "venv", record=["__editable__.ori_runtime.pth"], direct_url=repeated
     )
-    monkeypatch.setattr(
-        loader_module.importlib.metadata, "distributions", lambda **_: [editable]
-    )
-    assert (parent / "skills").resolve() not in loader_module.first_party_skill_roots()
+    monkeypatch.setattr(importlib.metadata, "distributions", lambda **_: [editable])
+    assert (parent / "skills").resolve() not in first_party_skill_roots()
 
 
 @pytest.mark.parametrize(
@@ -1658,8 +1647,6 @@ def test_a_checkout_declares_itself_or_is_installed_editable(
     editable_at: str | None,
     trusted: bool,
 ) -> None:
-    import ori.skills.loader as loader_module
-
     parent = _layout(tmp_path, monkeypatch, pyproject=pyproject)
     if editable_at is not None:
         url = (tmp_path / editable_at).resolve().as_uri()
@@ -1668,10 +1655,8 @@ def test_a_checkout_declares_itself_or_is_installed_editable(
             record=["__editable__.ori_runtime.pth"],
             direct_url=json.dumps({"url": url, "dir_info": {"editable": True}}),
         )
-        monkeypatch.setattr(
-            loader_module.importlib.metadata, "distributions", lambda **_: [editable]
-        )
-    roots = loader_module.first_party_skill_roots()
+        monkeypatch.setattr(importlib.metadata, "distributions", lambda **_: [editable])
+    roots = first_party_skill_roots()
     assert ((parent / "skills").resolve() in roots) is trusted
 
 
@@ -1841,14 +1826,11 @@ class TestLoadSelected:
             )
 
     def test_two_packaged_roots_resolve_to_the_first(self, tmp_path, monkeypatch):
-        import ori.skills.loader as loader_module
-
         checkout = Path(__file__).resolve().parents[1] / "skills"
         installed = tmp_path / "share" / "skills"
         shutil.copytree(checkout / "pc-system-health", installed / "pc-system-health")
         monkeypatch.setattr(
-            loader_module,
-            "first_party_skill_roots",
+            "ori.skills.loader.first_party_skill_roots",
             lambda: (checkout.resolve(), installed.resolve()),
         )
         skills = SkillLoader().load_selected(
@@ -1875,13 +1857,10 @@ class TestLoadSelected:
     def test_community_skills_cannot_spend_a_packaged_skills_budget(
         self, tmp_path, monkeypatch
     ):
-        import ori.skills.loader as loader_module
-
         loader = self._unsigned_community_loader(monkeypatch)
         packaged = loader.load_selected([("pc-system-health", "")], str(tmp_path))
         monkeypatch.setattr(
-            loader_module,
-            "_MAX_TOTAL_SUBSCRIPTIONS",
+            "ori.skills.loader._MAX_TOTAL_SUBSCRIPTIONS",
             loader._subscription_cost(packaged[0]),
         )
         _write_skill_yaml(tmp_path / "community", _minimal_yaml(name="community"))
@@ -1902,8 +1881,6 @@ class TestLoadSelected:
     def test_a_packaged_skill_swapped_out_before_its_load_is_refused(
         self, tmp_path, monkeypatch, swap_point
     ):
-        import ori.skills.loader as loader_module
-
         packaged = Path(__file__).resolve().parents[1] / "skills"
         root = tmp_path / "packaged"
         for name in ("energy-anomaly-detector", "pc-system-health"):
@@ -1911,7 +1888,7 @@ class TestLoadSelected:
         external = tmp_path / "external" / "energy-anomaly-detector"
         shutil.copytree(packaged / "energy-anomaly-detector", external)
         monkeypatch.setattr(
-            loader_module, "first_party_skill_roots", lambda: (root.resolve(),)
+            "ori.skills.loader.first_party_skill_roots", lambda: (root.resolve(),)
         )
 
         def swap() -> None:

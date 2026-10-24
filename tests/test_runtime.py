@@ -1368,8 +1368,6 @@ async def test_a_reload_raced_out_of_a_packaged_skill_keeps_the_running_graph(
     tmp_path, monkeypatch, swap_point
 ):
     """A packaged directory swapped mid-reload is refused, never degraded."""
-    import ori.skills.loader as loader_module
-
     _patch_external(monkeypatch)
     shipped = Path(__file__).resolve().parents[1] / "skills"
     root = tmp_path / "packaged"
@@ -1378,7 +1376,7 @@ async def test_a_reload_raced_out_of_a_packaged_skill_keeps_the_running_graph(
     external = tmp_path / "external" / "energy-anomaly-detector"
     shutil.copytree(shipped / "energy-anomaly-detector", external)
     monkeypatch.setattr(
-        loader_module, "first_party_skill_roots", lambda: (root.resolve(),)
+        "ori.skills.loader.first_party_skill_roots", lambda: (root.resolve(),)
     )
     path = _config_naming_skills(
         tmp_path / "data",
