@@ -294,6 +294,11 @@ release is cut.
 
 ## Fixed
 
+- The signed config installer judged loopback for `--allow-insecure-loopback`
+  with its own fixed set (`localhost`, `127.0.0.1`, `::1`). It now uses the
+  same helper as the configuration and the runtime, so any loopback address,
+  `127.0.0.2` or a bracketed `[::1]` among them, is admitted, and a hostname
+  that only resembles one, such as `127.0.0.1.nip.io`, is still refused.
 - A `skills:` entry naming a skill that ships with the runtime loads it on an
   installed runtime. Before, the loader read only `skills` beside `ori.yaml`,
   which an installed runtime does not populate, so the runtime started with no

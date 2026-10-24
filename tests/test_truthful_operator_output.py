@@ -243,7 +243,20 @@ def test_config_and_runtime_share_one_loopback_implementation():
     Import identity is the assertion because a copied-but-equivalent helper
     would drift again, which is exactly what happened the first time.
     """
-    from ori import config as config_module
-    from ori import runtime as runtime_module
+    import types
 
-    assert config_module.is_loopback_host is runtime_module.is_loopback_host
+    from ori import runtime as runtime_module
+    from ori.config import installer
+    from tests.config_layout import section_modules
+
+    loopback = [
+        (module.__name__, value)
+        for module in (*section_modules(), installer)
+        for name, value in vars(module).items()
+        if name.lstrip("_") == "is_loopback_host"
+    ]
+    owners = {owner for owner, _ in loopback}
+    assert {"ori.config._gateway", "ori.config.installer"} <= owners, owners
+    for owner, value in loopback:
+        assert isinstance(value, types.FunctionType), owner
+        assert value is runtime_module.is_loopback_host, owner
