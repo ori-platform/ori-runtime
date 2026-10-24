@@ -504,6 +504,8 @@ class _ConnectWatch:
             try:
                 sock.close()
             except OSError:
+                # Already closed by the peer side or the OS; nothing is left
+                # to release, and paho no longer holds it.
                 pass
 
     def _settle(self) -> None:

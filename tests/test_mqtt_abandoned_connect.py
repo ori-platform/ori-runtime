@@ -190,8 +190,9 @@ def test_the_reaper_starts_again_after_going_idle() -> None:
 
 
 async def test_attempts_abandoned_before_they_started_leave_nothing_pending() -> None:
-    """Queued behind a saturated executor, an abandoned attempt never starts, so
-    there is nothing to wait for; only the running ones are pending."""
+    """Queued behind a saturated executor, an abandoned attempt that never
+    starts leaves nothing to wait for. A worker may still take a queued one
+    before its cancellation lands; that one is then owned like any other."""
     paho = pytest.importorskip("paho.mqtt.client")
     loop = asyncio.get_running_loop()
     executor = ThreadPoolExecutor(max_workers=2)
@@ -209,8 +210,10 @@ async def test_attempts_abandoned_before_they_started_leave_nothing_pending() ->
         return sock
 
     peers: list[asyncio.StreamWriter] = []
+    readers: list[asyncio.StreamReader] = []
 
-    async def hold(_reader: Any, writer: asyncio.StreamWriter) -> None:
+    async def hold(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        readers.append(reader)
         peers.append(writer)
 
     server = await asyncio.start_server(hold, "127.0.0.1", 0)
@@ -234,18 +237,21 @@ async def test_attempts_abandoned_before_they_started_leave_nothing_pending() ->
                 )
                 for index, adapter in enumerate(adapters)
             ]
-            await wait_until(lambda: len(entered) == 2, what="both workers to connect")
+            await wait_until(lambda: len(entered) >= 2, what="both workers to connect")
             for task in tasks:
                 task.cancel()
             release.set()
-            # Each cancelled connect awaits only the attempts it abandoned
-            # while running; a queued one that it waited on would hold its
-            # close for the whole bound.
+            # Each cancelled connect awaits only the attempts that started; a
+            # queued one it waited on would hold it for the whole bound.
             await settle(tasks, what="the cancelled connects", deadline_s=DEADLINE_S)
-            await asyncio.gather(*(adapter.close() for adapter in adapters))
-        assert len(entered) == 2, "an abandoned queued attempt still started"
+            closing = asyncio.gather(*(adapter.close() for adapter in adapters))
+            await settle({closing}, what="every close", deadline_s=DEADLINE_S)
+        assert len(entered) <= len(adapters)
         assert not any(adapter._abandoned_connects for adapter in adapters)
-        assert all(sock.fileno() == -1 for sock in built)
+        assert all(sock.fileno() == -1 for sock in built), "a started socket is open"
+        await wait_until(lambda: len(readers) == len(built), what="every connection")
+        for reader in readers:
+            await wait_until(lambda r=reader: _closed_by_peer(r), what="peer EOF")
     finally:
         release.set()
         await asyncio.gather(*(adapter.close() for adapter in adapters))
@@ -380,17 +386,18 @@ def test_an_abandon_reentered_under_the_watch_lock_does_not_deadlock() -> None:
         loop.close()
 
 
-def _close_inside_a_running_loop(coro: Any) -> BaseException | None:
+def _close_inside_a_running_loop(coro: Any) -> RuntimeError | None:
     """Close *coro* as a finalizer would while another loop runs in the thread.
 
     A coroutine that awaits during its close suspends there, and `close()`
     raises `RuntimeError: coroutine ignored GeneratorExit` at once.
     """
 
-    async def close() -> BaseException | None:
+    async def close() -> RuntimeError | None:
         try:
             coro.close()
-        except BaseException as exc:  # noqa: BLE001 - reported, not handled
+        except RuntimeError as exc:
+            # "coroutine ignored GeneratorExit": reported for the assertion.
             return exc
         return None
 

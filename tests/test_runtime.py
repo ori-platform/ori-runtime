@@ -30,7 +30,6 @@ from cryptography.hazmat.primitives.serialization import (
     PublicFormat,
 )
 
-import ori.runtime
 from ori.actions.alert_delivery import (
     AlertDeliveryReceipt,
     AlertIntent,
@@ -2759,13 +2758,13 @@ async def test_stop_closes_the_adapters_through_the_concurrent_close(
     _patch_external(monkeypatch)
     _treat_scratch_skills_as_packaged(monkeypatch)
     handed: list[list[Any]] = []
-    real = ori.runtime.close_adapters
+    from ori.sensor_connection import close_adapters as real
 
     async def spy(adapters):
         handed.append(list(adapters))
         await real(adapters)
 
-    monkeypatch.setattr(ori.runtime, "close_adapters", spy)
+    monkeypatch.setattr("ori.runtime.close_adapters", spy)
     runtime = OriRuntime(config_path=str(minimal_config))
     start_task = asyncio.create_task(runtime.start())
     await wait_until(

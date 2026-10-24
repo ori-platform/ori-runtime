@@ -1624,9 +1624,13 @@ class OriRuntime:
                 )
                 connected = False
             retrying = connected and adapter.connection_retrying
+            if connected:
+                # Before any await, so a stop during the notice still closes it.
+                self._adapters.append(adapter)
+                self._sensor_poll_interval_ms[sensor_cfg.id] = (
+                    sensor_cfg.poll_interval_ms
+                )
             if not connected or retrying:
-                # Skipped, or polled with no last-seen time until its first
-                # reading: absent, not late, so no staleness watch covers it.
                 await note_unconnected_sensor(
                     str(sensor_cfg.id),
                     retrying=retrying,
@@ -1637,10 +1641,6 @@ class OriRuntime:
                 )
             if not connected:
                 continue
-            self._adapters.append(adapter)
-            self._sensor_poll_interval_ms[sensor_cfg.id] = int(
-                sensor_cfg.poll_interval_ms
-            )
             if not retrying:
                 self._connected_sensor_ids.add(sensor_cfg.id)
                 self._sensor_last_seen_ms[sensor_cfg.id] = now_ms()

@@ -27,7 +27,9 @@ CONNECTED_TRIGGER = "sensor_connected_notice"
 
 
 class UnavailabilityRegistry(Protocol):
-    async def note_sensor_unavailable(self, sensor_id: str, reason: str) -> bool: ...
+    async def note_sensor_unavailable(self, sensor_id: str, reason: str) -> bool:
+        """Record *sensor_id* unavailable; whether an affected pair was told."""
+        raise NotImplementedError
 
 
 async def note_unconnected_sensor(
@@ -140,7 +142,9 @@ async def announce_late_connection(
 
 
 class Closeable(Protocol):
-    async def close(self) -> None: ...
+    async def close(self) -> None:
+        """Release what the adapter holds."""
+        raise NotImplementedError
 
 
 async def close_adapters(adapters: Iterable[Closeable]) -> None:

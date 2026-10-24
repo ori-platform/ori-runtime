@@ -325,8 +325,11 @@ async def test_the_runtime_connects_a_sensor_whose_broker_starts_late(
         start_task = asyncio.create_task(runtime.start())
         try:
             await wait_until(
-                lambda: (broker.refused >= 3 and sent) or start_task.done(),
-                what="the broker to be retried and the operator told",
+                lambda: (
+                    (runtime._adapters and broker.refused >= 3 and sent)
+                    or start_task.done()
+                ),
+                what="the adapter recorded, retried, and the operator told",
             )
             assert not start_task.done(), "startup ended instead of retrying"
             assert runtime._unconnected_sensors == {SENSOR_ID}
@@ -806,3 +809,43 @@ async def test_a_dead_listener_is_unhealthy_with_the_link_up() -> None:
             assert adapter._link_up and not await adapter.health_check()
         finally:
             await adapter.close()
+
+
+async def test_a_stop_during_the_start_notice_closes_the_retrying_adapter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The adapter is recorded before the start notice is awaited, so a stop
+    while that send is blocked still closes it and its reconnect supervisor."""
+    from ori import runtime as runtime_module
+
+    made: list[Any] = []
+    real_make = runtime_module.make_adapter
+
+    def recording(protocol: str) -> Any:
+        adapter = real_make(protocol)
+        made.append(adapter)
+        return adapter
+
+    monkeypatch.setattr("ori.runtime.make_adapter", recording)
+    broker = _Broker()
+    patches = _patched(broker, lambda _a: 0.005)
+    with patches[0], patches[1], patches[2]:
+        running, start_task = await _start(
+            tmp_path, monkeypatch, broker, hang="sensor_unconnected_warning"
+        )
+        try:
+            await wait_until(
+                lambda: running.sent("sensor_unconnected_warning") or start_task.done(),
+                what="the start notice to be held mid-send",
+            )
+            assert not start_task.done()
+        finally:
+            await _stop_and_join(running.runtime, start_task)
+        (adapter,) = made
+        assert not adapter.is_connected, "the retrying adapter was never closed"
+        assert adapter._listener_task is None
+        assert not [
+            task
+            for task in asyncio.all_tasks()
+            if task.get_name().startswith("mqtt-listener") and not task.done()
+        ], "a reconnect supervisor outlived the stop"
