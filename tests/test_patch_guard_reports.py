@@ -133,8 +133,11 @@ def pytest_runtest_teardown(item):
 @pytest.hookimpl(wrapper=True)
 def pytest_sessionfinish(session):
     result = yield
-    with mock.patch("ori.config._fields.require_str", print):
-        pass
+    # In a serial run, or on an xdist worker: never on the xdist controller,
+    # so a worker's finding must reach the controller to fail the run.
+    if not session.config.pluginmanager.hasplugin("dsession"):
+        with mock.patch("ori.config._fields.require_str", print):
+            pass
     return result
 """
 
@@ -145,7 +148,7 @@ AFTER_THE_LAST_TEST = (
 
 
 def _run_probe(
-    tmp_path: Path, probe: str, *args: str
+    tmp_path: Path, probe: str, *args: str, xdist: bool = False
 ) -> subprocess.CompletedProcess[str]:
     """Run pytest on *probe* with this conftest and the outer plugin loaded.
 
@@ -174,8 +177,7 @@ def _run_probe(
             "outer_plugin",
             "-p",
             "no:cacheprovider",
-            "-p",
-            "no:xdist",
+            *(["-n", "2"] if xdist else ["-p", "no:xdist"]),
             "-p",
             "no:randomly",
             "-rA",
@@ -232,12 +234,35 @@ def test_a_refused_patch_fails_its_report_whatever_else_the_test_does(
     assert recorded["test_partial_under_xfail"] == ["failure"], recorded
 
 
-def test_a_patch_after_the_last_test_fails_the_run(tmp_path: Path) -> None:
-    """No test's report is left to carry it, so the exit status does."""
-    run = _run_probe(tmp_path, "def test_passes():\n    pass\n")
+@pytest.mark.parametrize("xdist", [False, True], ids=["serial", "xdist"])
+def test_a_patch_after_the_last_test_fails_the_run(tmp_path: Path, xdist: bool) -> None:
+    """No test's report is left to carry it, so the exit status does; an xdist
+    worker's finding reaches the controller's."""
+    run = _run_probe(tmp_path, "def test_passes():\n    pass\n", xdist=xdist)
     assert run.returncode == pytest.ExitCode.TESTS_FAILED, run.stdout + run.stderr
     assert "1 passed" in run.stdout
     assert AFTER_THE_LAST_TEST in run.stdout, run.stdout
+
+
+def test_an_interrupted_run_keeps_its_exit_status(tmp_path: Path) -> None:
+    probe = (
+        "import pytest\n\n\n"
+        "def test_stops():\n"
+        "    pytest.exit('stopped', returncode=pytest.ExitCode.INTERRUPTED)\n"
+    )
+    run = _run_probe(tmp_path, probe)
+    assert run.returncode == pytest.ExitCode.INTERRUPTED, run.stdout + run.stderr
+    assert AFTER_THE_LAST_TEST in run.stdout, run.stdout
+
+
+def test_the_late_check_is_the_outermost_sessionfinish_wrapper(
+    request: pytest.FixtureRequest,
+) -> None:
+    """Registered when the session starts, after the plugins pytest registers
+    while it configures, its logging plugin's wrapper among them."""
+    outermost = request.config.hook.pytest_sessionfinish.get_hookimpls()[-1]
+    assert outermost.plugin_name == "ori-late-patch-check"
+    assert outermost.tryfirst and outermost.wrapper
 
 
 def test_the_reporter_is_the_outermost_makereport_wrapper(

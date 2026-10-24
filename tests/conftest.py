@@ -18,7 +18,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
+import tempfile
 from collections.abc import Callable, Iterator
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -76,22 +79,66 @@ def pytest_configure(config: pytest.Config) -> None:
     hold_reexports()
 
 
-@pytest.hookimpl(wrapper=True, tryfirst=True)
-def pytest_sessionfinish(session: pytest.Session) -> Iterator[None]:
-    """Fail the run for what changed after the last test's teardown check,
-    where no test's report is left to carry it."""
-    from tests.package_layout import begin_phase
+_LATE_PATCHES_DIR = pytest.StashKey[Path]()
+_LATE_PATCHES_KEY = "ori_late_patch_findings"
 
-    result = yield
-    problems = begin_phase("After the last test")
-    if problems:
-        writer = session.config.get_terminal_writer()
-        writer.line()
-        writer.sep("=", "patch targets", red=True)
-        for problem in problems:
-            writer.line(problem, red=True)
-        session.exitstatus = pytest.ExitCode.TESTS_FAILED
-    return result
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_configure_node(node: Any) -> None:
+    """Give each xdist worker a place to leave what it found after its last
+    test: by then it has already sent the controller its exit status."""
+    config = node.config
+    if _LATE_PATCHES_DIR not in config.stash:
+        config.stash[_LATE_PATCHES_DIR] = Path(tempfile.mkdtemp(prefix="ori-late-"))
+    node.workerinput[_LATE_PATCHES_KEY] = str(config.stash[_LATE_PATCHES_DIR])
+
+
+class _LateCheck:
+    """The check after the last test, as a plugin registered when the session
+    starts: after every plugin pytest registers while it configures, so its
+    wrapper is outside theirs."""
+
+    @pytest.hookimpl(wrapper=True, tryfirst=True)
+    def pytest_sessionfinish(self, session: pytest.Session) -> Iterator[None]:
+        """Fail the run for what changed after the last test's teardown check,
+        where no test's report is left to carry it.
+
+        A worker leaves its findings for the controller, which reads them here,
+        after every worker has stopped.
+        """
+        from tests.package_layout import begin_phase
+
+        result = yield
+        config = session.config
+        problems = begin_phase("After the last test")
+        workerinput = getattr(config, "workerinput", None)
+        if workerinput is not None and _LATE_PATCHES_KEY in workerinput:
+            if problems:
+                found = Path(workerinput[_LATE_PATCHES_KEY]) / workerinput["workerid"]
+                found.write_text("\n".join(problems), encoding="utf-8")
+            return result
+        if _LATE_PATCHES_DIR in config.stash:
+            left = config.stash[_LATE_PATCHES_DIR]
+            for found in sorted(left.iterdir()):
+                problems += found.read_text(encoding="utf-8").splitlines()
+            shutil.rmtree(left)
+        if problems:
+            writer = config.get_terminal_writer()
+            writer.line()
+            writer.sep("=", "patch targets", red=True)
+            for problem in problems:
+                writer.line(problem, red=True)
+            # An interrupted or broken run keeps the status that says so.
+            if session.exitstatus in (
+                pytest.ExitCode.OK,
+                pytest.ExitCode.NO_TESTS_COLLECTED,
+            ):
+                session.exitstatus = pytest.ExitCode.TESTS_FAILED
+        return result
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    session.config.pluginmanager.register(_LateCheck(), "ori-late-patch-check")
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
