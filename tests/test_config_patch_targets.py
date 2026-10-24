@@ -39,7 +39,6 @@ from tests.package_layout import (
     rebound,
     settle,
     take_problems,
-    take_snapshot,
 )
 
 REFUSED = "is a re-export; rebinding it reaches no caller"
@@ -382,10 +381,9 @@ def test_the_import_system_still_binds_a_submodule_on_first_import(
 def test_deleting_one_binding_of_a_shared_object_is_reported(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delitem(vars(_device), "logger")
+    monkeypatch.delitem(vars(_device), "checked_device_id")
     monkeypatch.undo()
-    [report] = take_problems()
-    assert report.startswith("patched or deleted ori.config._device.logger but not ")
+    assert take_problems() == [DEVICE_ID_PARTIAL]
 
 
 PARTIAL = (
@@ -526,12 +524,10 @@ def test_patching_every_binding_passes_in_any_order(
 def test_a_leftover_is_reported_once_and_then_held_as_the_start() -> None:
     """``settle`` runs before each test: a binding left changed is reported
     against the next test only, not against every test after it."""
-    from tests import package_layout
-
     original = _actions.parse_actions
     _actions.parse_actions = _reached
     try:
-        assert settle() == [PARTIAL]
+        assert settle() == [f"Left before this test started: {PARTIAL}"]
         assert settle() == []
         # Which modules bind one object is kept, so the next partial is seen.
         with mock.patch("ori.config._config.parse_actions", _reached):
@@ -540,8 +536,49 @@ def test_a_leftover_is_reported_once_and_then_held_as_the_start() -> None:
         assert report.startswith("patched or deleted ori.config._config.parse_actions")
     finally:
         _actions.parse_actions = original
-        package_layout._HELD["snapshot"] = take_snapshot()
-        take_problems()
+        settle()
+
+
+def test_a_complete_patch_left_in_place_hides_no_later_partial() -> None:
+    """A complete patch a module-scope fixture holds, or an earlier test left,
+    is where the next test starts; patching one of its bindings is partial."""
+    every = [
+        mock.patch(target, _reached) for target in bindings_of(_actions.parse_actions)
+    ]
+    for patcher in every:
+        patcher.start()
+    try:
+        assert settle() == []
+        with mock.patch("ori.config._config.parse_actions", _other):
+            pass
+        [report] = take_problems()
+        assert report.startswith("patched or deleted ori.config._config.parse_actions")
+    finally:
+        for patcher in every:
+            patcher.stop()
+        settle()
+
+
+def _other(*args: object, **kwargs: object) -> None:
+    raise _ReachedError
+
+
+def test_one_module_own_import_may_be_patched_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``os`` and each module's logger are the module's own, not an object the
+    package's modules pass between them."""
+    monkeypatch.setattr(_device, "os", mock.Mock())
+    monkeypatch.setattr(_device, "logger", mock.Mock())
+    monkeypatch.undo()
+    assert take_problems() == []
+
+
+DEVICE_ID_PARTIAL = (
+    "patched or deleted ori.config._device.checked_device_id but not "
+    "ori.config._fields.checked_device_id; each is read by the code in its own "
+    "module, so patch them all."
+)
 
 
 def test_equal_values_under_different_names_are_not_one_binding() -> None:
@@ -641,10 +678,9 @@ def test_a_problem_is_reported_once_per_test() -> None:
 def test_a_binding_deleted_through_delattr_is_checked(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.delattr(_device, "logger")
+    monkeypatch.delattr(_device, "checked_device_id")
     monkeypatch.undo()
-    [report] = take_problems()
-    assert report.startswith("patched or deleted ori.config._device.logger but not ")
+    assert take_problems() == [DEVICE_ID_PARTIAL]
 
 
 def test_a_reexport_written_into_the_namespace_is_refused() -> None:
@@ -656,3 +692,10 @@ def test_a_reexport_written_into_the_namespace_is_refused() -> None:
         vars(cfg)["anchor_to_config"] = original
         take_problems()
     assert REFUSED in report
+
+
+def test_an_import_through_the_package_is_an_import_from_it() -> None:
+    imported = CONFIG.package_imports()
+    assert "ori.config.installer.Config" in imported  # from ori.config import
+    assert "ori.config._device.checked_device_id" in imported
+    assert "ori.config._device.os" not in imported
