@@ -148,7 +148,7 @@ AFTER_THE_LAST_TEST = (
 
 
 def _run_probe(
-    tmp_path: Path, probe: str, *args: str, xdist: bool = False
+    tmp_path: Path, probe: str, *args: str, xdist: bool = False, outer: bool = True
 ) -> subprocess.CompletedProcess[str]:
     """Run pytest on *probe* with this conftest and the outer plugin loaded.
 
@@ -173,8 +173,7 @@ def _run_probe(
             str(tmp_path / "test_probe.py"),
             "-p",
             "tests.conftest",
-            "-p",
-            "outer_plugin",
+            *(["-p", "outer_plugin"] if outer else []),
             "-p",
             "no:cacheprovider",
             *(["-n", "2"] if xdist else ["-p", "no:xdist"]),
@@ -242,6 +241,30 @@ def test_a_patch_after_the_last_test_fails_the_run(tmp_path: Path, xdist: bool) 
     assert run.returncode == pytest.ExitCode.TESTS_FAILED, run.stdout + run.stderr
     assert "1 passed" in run.stdout
     assert AFTER_THE_LAST_TEST in run.stdout, run.stdout
+
+
+def test_a_clean_run_under_xdist_passes(tmp_path: Path) -> None:
+    run = _run_probe(
+        tmp_path, "def test_passes():\n    pass\n", xdist=True, outer=False
+    )
+    assert run.returncode == pytest.ExitCode.OK, run.stdout + run.stderr
+    assert "patch targets" not in run.stdout
+
+
+def test_a_worker_that_stops_before_its_check_fails_the_run(tmp_path: Path) -> None:
+    """A worker that never reports is not a clean one."""
+    probe = (
+        "import os\n\n"
+        "import pytest\n\n\n"
+        "@pytest.hookimpl(trylast=True)\n"
+        "def pytest_sessionfinish(session):\n"
+        "    if hasattr(session.config, 'workerinput'):\n"
+        "        os._exit(0)\n"
+    )
+    (tmp_path / "conftest.py").write_text(probe, encoding="utf-8")
+    run = _run_probe(tmp_path, "def test_passes():\n    pass\n", xdist=True)
+    assert run.returncode == pytest.ExitCode.TESTS_FAILED, run.stdout + run.stderr
+    assert "stopped before its check of the bindings finished" in run.stdout
 
 
 def test_an_interrupted_run_keeps_its_exit_status(tmp_path: Path) -> None:

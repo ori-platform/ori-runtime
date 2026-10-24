@@ -81,6 +81,8 @@ def pytest_configure(config: pytest.Config) -> None:
 
 _LATE_PATCHES_DIR = pytest.StashKey[Path]()
 _LATE_PATCHES_KEY = "ori_late_patch_findings"
+#: Every worker the controller configured, each of which must leave a file.
+_LATE_PATCHES_WORKERS = pytest.StashKey[set[str]]()
 
 
 @pytest.hookimpl(optionalhook=True)
@@ -89,7 +91,11 @@ def pytest_configure_node(node: Any) -> None:
     test: by then it has already sent the controller its exit status."""
     config = node.config
     if _LATE_PATCHES_DIR not in config.stash:
-        config.stash[_LATE_PATCHES_DIR] = Path(tempfile.mkdtemp(prefix="ori-late-"))
+        left = Path(tempfile.mkdtemp(prefix="ori-late-"))
+        config.stash[_LATE_PATCHES_DIR] = left
+        config.stash[_LATE_PATCHES_WORKERS] = set()
+        config.add_cleanup(lambda: shutil.rmtree(left, ignore_errors=True))
+    config.stash[_LATE_PATCHES_WORKERS].add(node.workerinput["workerid"])
     node.workerinput[_LATE_PATCHES_KEY] = str(config.stash[_LATE_PATCHES_DIR])
 
 
@@ -113,15 +119,22 @@ class _LateCheck:
         problems = begin_phase("After the last test")
         workerinput = getattr(config, "workerinput", None)
         if workerinput is not None and _LATE_PATCHES_KEY in workerinput:
-            if problems:
-                found = Path(workerinput[_LATE_PATCHES_KEY]) / workerinput["workerid"]
-                found.write_text("\n".join(problems), encoding="utf-8")
+            # Written even when clean: a missing file is a worker that stopped
+            # before its check finished, never one that found nothing.
+            found = Path(workerinput[_LATE_PATCHES_KEY]) / workerinput["workerid"]
+            found.write_text("\n".join(problems), encoding="utf-8")
             return result
         if _LATE_PATCHES_DIR in config.stash:
             left = config.stash[_LATE_PATCHES_DIR]
-            for found in sorted(left.iterdir()):
+            for worker in sorted(config.stash[_LATE_PATCHES_WORKERS]):
+                found = left / worker
+                if not found.exists():
+                    problems.append(
+                        f"After the last test: worker {worker} stopped before its "
+                        "check of the bindings finished, so what it left is unknown."
+                    )
+                    continue
                 problems += found.read_text(encoding="utf-8").splitlines()
-            shutil.rmtree(left)
         if problems:
             writer = config.get_terminal_writer()
             writer.line()
