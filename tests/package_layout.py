@@ -20,14 +20,16 @@ changed a binding no caller reads, or an Ori object's binding in some of the
 modules that read it and never in the others; `binding_problems` says which.
 Setup, the call and teardown are each judged from the bindings as they find
 them, so a fixture's complete patch is where the call starts.
-Three limits. A phase is judged on which bindings it changed, not when, so
+Four limits. A phase is judged on which bindings it changed, not when, so
 patching every binding of an object in turn, never all at once, passes; and
 a fixture that patches some bindings, with the test body patching the rest,
 is refused as partial in setup. A write past a module's class and the
 mapping writers, straight into its namespace or through
 ``types.ModuleType.__setattr__``, is seen only if it is still in place at the
-next check. And a patch on a stand-in put in ``sys.modules`` for one of the
-modules lands on the stand-in, which is no module the guard watches.
+next check. A patch on a stand-in put in ``sys.modules`` for one of the
+modules lands on the stand-in, which is no module the guard watches. And a
+run that ``pytest.exit`` or an interrupt ends before a phase is reported
+loses that phase's findings with its report.
 """
 
 from __future__ import annotations
