@@ -273,11 +273,11 @@ deduplication behaviour.
 
 ## 5. The startup notification
 
-`_setup_success_message` in `ori/runtime.py` sends a notification once the
-runtime has connected sensors, loaded and registered skills, started background
-services, completed reconciliation and reached normal health. Failed delivery
-is queued in the durable alert outbox, so a provider outage does not block
-startup.
+`setup_success_message` in `ori/runtime/_alert_text.py` builds the notification
+the runtime sends once it has connected sensors, loaded and registered skills,
+started background services, completed reconciliation and reached normal
+health. Failed delivery is queued in the durable alert outbox, so a provider
+outage does not block startup.
 
 The notification is deliberately limited to facts the runtime has established:
 

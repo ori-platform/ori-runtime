@@ -1,36 +1,20 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
 
-"""Ori Runtime — main entry point.
-
-Wires every component built into a running system:
-
-    runtime = OriRuntime(config_path="ori.yaml")
-    asyncio.run(runtime.start())
-
-Or via the CLI entry point::
-
-    ori-runtime --config /path/to/ori.yaml
-"""
+"""``OriRuntime``: wires every component into a running system and runs it."""
 
 import asyncio
-import datetime as dt
 import functools
-import hashlib
 import hmac
 import json
 import logging
-import math
 import os
 import signal
-import stat
 import sys
 from collections.abc import Awaitable, Callable
-from importlib import resources
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ori.actions.alert_delivery import (
     AlertIntent,
@@ -39,7 +23,7 @@ from ori.actions.alert_delivery import (
     build_outbound_alert,
 )
 from ori.actions.alert_failover import AlertFailoverSender
-from ori.actions.coap import CoAPAction, coap_backend_available
+from ori.actions.coap import CoAPAction
 from ori.actions.commissioned_actuator import CommissionedActuator
 from ori.actions.executor_targets import (
     kernel_subsystem_from_context as _kernel_subsystem_from_context,
@@ -49,21 +33,14 @@ from ori.actions.executor_targets import (
 )
 from ori.actions.logger import LoggerAction
 from ori.actions.process_manager import ProcessManagerAction
-from ori.actions.relay import (
-    RelayAction,
-    gpio_backend_arbitrated,
-    gpio_backend_importable,
-    resolved_pin_factory_name,
-)
+from ori.actions.relay import RelayAction, gpio_backend_importable
 from ori.actions.sms import SMSAction
 from ori.actions.system_control import SystemControlAction
 from ori.actions.whatsapp import TwilioProvider, WhatsAppAction
 from ori.config import (
     Config,
     ConfigValidationError,
-    SensorConfig,
     config_env_placeholders,
-    hardened_posture_declared,
     requires_production_posture,
 )
 from ori.firmware_mqtt_operator import (
@@ -76,31 +53,16 @@ from ori.gateway.envelope_auth import (
 from ori.gateway.envelope_auth import (
     build_gateway_message_auth as _build_gateway_message_auth,
 )
-from ori.gateway.evidence_inbound import (
-    EvidenceInboundRouter,
-    MqttEvidenceInboundSubscriber,
-)
-from ori.gateway.evidence_outbound import (
-    EvidenceOutboundAckRouter,
-    MqttEvidenceOutboundPublisher,
-)
+from ori.gateway.evidence_inbound import MqttEvidenceInboundSubscriber
+from ori.gateway.evidence_outbound import MqttEvidenceOutboundPublisher
 from ori.gateway.export import GatewayExportResponder, MqttGatewayExportServer
 from ori.gateway.firmware_commands import (
     FirmwareCommandService,
     MqttFirmwareCommandPublisher,
     load_raw_ed25519_seed_from_env,
 )
-from ori.gateway.firmware_liveness_publisher import (
-    MIN_LIVENESS_PUBLISH_INTERVAL_S,
-    FirmwareLivenessScheduler,
-)
-from ori.gateway.firmware_telemetry import MqttFirmwareTelemetrySubscriber
-from ori.gateway.heartbeat import MqttGatewayHeartbeatSubscriber
-from ori.gateway.node_heartbeat import (
-    DEGRADATION_REASON_FIRMWARE_LIVENESS,
-    MqttRuntimeNodeHeartbeatPublisher,
-)
-from ori.gateway.reasoning import MqttGatewayReasoner
+from ori.gateway.firmware_liveness_publisher import FirmwareLivenessScheduler
+from ori.gateway.node_heartbeat import MqttRuntimeNodeHeartbeatPublisher
 from ori.hal.base import (
     AdapterReadError,
     BaseAdapter,
@@ -112,19 +74,13 @@ from ori.hal.base import (
 from ori.hal.protocol_registry import UnknownProtocolError, make_adapter
 from ori.hardware.led_indicator import (
     LEDIndicator,
-    NetworkState,
     PolicyLEDState,
-    PowerState,
     RuntimeHealthState,
     StatusSignalingConfig,
 )
 from ori.network.deduplicator import EventDeduplicator
 from ori.network.event_bus import EventBus
-from ori.network.events import (
-    OriEvent,
-    SensorReading,
-    event_received_at_ms,
-)
+from ori.network.events import OriEvent, SensorReading, event_received_at_ms
 from ori.network.sms_webhook import SMSWebhookServer
 from ori.operator_socket import (
     CommissionRequest,
@@ -146,8 +102,7 @@ from ori.reasoning.action_dispatcher import (
     ALERT_SUPPRESSED,
     ActionDispatcher,
 )
-from ori.reasoning.capability_posture import CapabilityPosture, CapabilityPostureTracker
-from ori.reasoning.context_enricher import ContextEnricher, ContextEnricherConfig
+from ori.reasoning.capability_posture import CapabilityPostureTracker
 from ori.reasoning.dispatch_coordinator import DispatchCoordinator
 from ori.reasoning.dispatch_plan import (
     CLOSE_PROTECTED_CIRCUIT,
@@ -155,9 +110,98 @@ from ori.reasoning.dispatch_plan import (
     BindingView,
 )
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext
-from ori.reasoning.local_llm import LocalLLM, local_llm_backend_available
+from ori.reasoning.local_llm import LocalLLM
 from ori.reasoning.resource_gate import ResourceGate
 from ori.reasoning.tier_c_admission import TierCAuthorityFacts
+from ori.runtime._alert_text import (
+    alert_policy_count_key,
+    build_alert_id,
+    coerce_alert_send_receipt,
+    count_active_triggers,
+    format_alert_timestamp,
+    message_from_context,
+    preference_disabled_key,
+    resolve_action_declared_tier,
+    resolve_original_ts,
+    resolve_setup_notification_channels,
+    resolve_skill_identity,
+    resolve_trigger_name,
+    setup_success_message,
+)
+from ori.runtime._capabilities import (
+    build_local_llm,
+    is_local_slm_available,
+    local_llm_requested,
+    validate_required_runtime_capabilities,
+)
+from ori.runtime._constants import (
+    ALERT_OUTBOX_BATCH_SIZE,
+    ALERT_OUTBOX_MAX_ATTEMPTS_NON_TIER_D,
+    ALERT_OUTBOX_RETRY_INTERVAL_S,
+    ALERT_OUTBOX_TIER_D_CRITICAL_THRESHOLD,
+    CAPABILITY_POSTURE_UPDATE_INTERVAL_S,
+    DEVICE_POLICY_REFRESH_DEFAULT_S,
+    DEVICE_POLICY_TRANSIENT_AUDIT_SUPPRESS_MS,
+    EVIDENCE_SHUTDOWN_FLUSH_TIMEOUT_S,
+    EXTERNAL_WATCHDOG_GPIO,
+    EXTERNAL_WATCHDOG_PING_S,
+    HEALTH_SOCKET_DEFAULT_PATH,
+    READ_FAILURE_LOG_INTERVAL_S,
+    RECORD_STALL_MS,
+    STALE_SENSOR_MAX_CHECK_INTERVAL_S,
+    STALE_SENSOR_MIN_CHECK_INTERVAL_S,
+    TIER_D_DRAIN_TIMEOUT,
+    WATCHDOG_DEVICE,
+    WATCHDOG_PING_INTERVAL,
+    WATCHDOG_TIMEOUT,
+)
+from ori.runtime._device_io import (
+    adapter_connect_config,
+    coap_command_from_context,
+    sync_network_state_from_posture,
+    sync_power_state_from_reading,
+)
+from ori.runtime._evidence_wiring import (
+    build_evidence_attestor,
+    build_evidence_inbound_subscriber,
+    build_evidence_outbound_publisher,
+    evidence_posture_problems,
+)
+from ori.runtime._firmware_wiring import (
+    build_firmware_liveness_stack,
+    firmware_profile_library,
+    firmware_reading_age,
+    firmware_telemetry_config,
+    provisioning_anchor_bytes,
+)
+from ori.runtime._gateway_wiring import (
+    build_context_enricher,
+    build_gateway_heartbeat_subscriber,
+    build_gateway_message_encryptor,
+    build_gateway_reasoner,
+    build_runtime_node_heartbeat_publisher,
+    read_private_key_file,
+    read_public_pem_file,
+    warn_gateway_security_posture,
+)
+from ori.runtime._health_status import degradation_reasons, fold_health_status
+from ori.runtime._measurement_policy import (
+    MEASUREMENT_CLOSE_GRACE_S,
+    MEASUREMENT_NOTIFY_MAX_ATTEMPTS,
+    MEASUREMENT_REFUSALS_BEFORE_DEGRADED,
+    MEASUREMENT_WINDOWS_TO_RECOVER,
+    MEASUREMENT_WRITER_CEILING,
+    measurement_notice_stage_due,
+)
+from ori.runtime._remote_command_wiring import (
+    build_offline_token_verifier,
+    build_remote_command_verifier,
+    build_sms_allowed_senders,
+    remote_command_lockout_config,
+    validate_remote_policy_reference_args,
+    warn_sms_webhook_security_posture,
+)
+from ori.runtime._safety_wiring import SafetyAlertAdapter, refuse_unbound_active_zones
 from ori.runtime_health_socket import RuntimeHealthSocketServer
 from ori.safety.commander import ActuatorOutcomeCommander
 from ori.safety.registry import SafetyRegistry
@@ -167,7 +211,6 @@ from ori.security.commissioning.anchors import (
     CommissioningAnchors,
     anchor_collision,
     load_commissioning_anchors,
-    provisioning_anchor,
 )
 from ori.security.commissioning.loader import (
     CommissioningState,
@@ -178,17 +221,7 @@ from ori.security.commissioning.profiles import (
     ProfileSetError,
     load_shipped_profile_set,
 )
-from ori.security.evidence.authority_keys import (
-    VERIFIED_PURPOSES,
-    AuthorityKeyError,
-    ReleaseAuthorityKeys,
-    load_release_authority_key_registry,
-)
 from ori.security.evidence.chain import SCHEMA_VERSION as EVIDENCE_SCHEMA_VERSION
-from ori.security.evidence.custody_keys import (
-    CustodyKeyRegistry,
-    CustodyKeyRegistryError,
-)
 from ori.security.evidence.first_party import (
     AUTHORITY_UNAVAILABLE_REASON,
     AuthorityUnavailableError,
@@ -203,44 +236,22 @@ from ori.security.evidence.registration import (
     RegistrationStatus,
     status_after_recording,
 )
-from ori.security.firmware.confirmation import (
-    CONFIRMED as _FIRMWARE_CONFIRMED,
-)
-from ori.security.firmware.confirmation import (
-    FirmwareConfirmationCoordinator,
-)
+from ori.security.firmware.confirmation import CONFIRMED as _FIRMWARE_CONFIRMED
+from ori.security.firmware.confirmation import FirmwareConfirmationCoordinator
 from ori.security.firmware.controller_profiles import (
     ControllerAlarmTracker,
     ControllerProfileLibrary,
 )
-from ori.security.firmware.ingest import FirmwareTelemetryGate
-from ori.security.firmware.liveness import (
-    LIVENESS_PUBLISH_INTERVAL_S,
-    FirmwareLivenessSupervisor,
-)
 from ori.security.firmware.mqtt_certificate import FirmwareMqttCertificateAuthority
 from ori.security.firmware.mqtt_provisioning import FirmwareMqttProvisioningService
 from ori.security.firmware.mqtt_workflow import FirmwareMqttProvisioningWorkflow
-from ori.security.firmware.reading_age import (
-    DEFAULT_TOTAL_BOUND,
-    LivenessTable,
-    ReadingAgeTracker,
-    default_per_device_bound,
-    measured_statement,
-)
+from ori.security.firmware.reading_age import ReadingAgeTracker, measured_statement
 from ori.security.firmware.reconciliation import (
     DEFAULT_INTERVAL_S as CONFIRMATION_RETRY_INTERVAL_S,
 )
-from ori.security.firmware.reconciliation import (
-    FirmwareConfirmationReconciler,
-)
-from ori.security.gateway_messages import (
-    GatewayEnvelopeState,
-    GatewayMessageEncryptionConfig,
-    GatewayMessageEncryptor,
-)
-from ori.security.offline_tokens import OfflineTierCTokenVerifier
-from ori.security.remote_commands.commands import RemoteCommand, RemoteCommandVerifier
+from ori.security.firmware.reconciliation import FirmwareConfirmationReconciler
+from ori.security.gateway_messages import GatewayEnvelopeState
+from ori.security.remote_commands.commands import RemoteCommand
 from ori.security.remote_commands.lockout import (
     default_remote_command_lockout_config,
     evaluate_remote_command_lockout,
@@ -276,207 +287,20 @@ from ori.sensor_connection import (
     connected_late,
     note_unconnected_sensor,
 )
-from ori.skills.loader import (
-    MAX_TOTAL_SUBSCRIPTIONS as SKILL_SUBSCRIPTION_BUDGET,
-)
-from ori.skills.loader import (
-    SkillLoader,
-)
-from ori.skills.selection import (
-    load_selection,
-    log_tier_configuration,
-    skills_dir_for,
-)
+from ori.skills.loader import MAX_TOTAL_SUBSCRIPTIONS as SKILL_SUBSCRIPTION_BUDGET
+from ori.skills.loader import SkillLoader
+from ori.skills.selection import load_selection, log_tier_configuration, skills_dir_for
 from ori.skills.signing import verify_signed_payload
 from ori.startup_stages import STARTUP_CHECKPOINTS, STARTUP_STAGES, StartupContext
 from ori.state.deferred_writer import DeferredWriter
 from ori.state.store import StateStore, TripJournal
 from ori.telemetry.http_export import HttpTelemetryExporter
 from ori.utils.bool_utils import is_truthy
-from ori.utils.net_utils import is_loopback_host
 from ori.utils.path_utils import path_is_relative_to, shown
 from ori.utils.strict_json import unique_members
 from ori.utils.time_utils import now_ms
 
-logger = logging.getLogger(__name__)
-
-
-class _SafetyAlertAdapter:
-    """The registry's alert sink: straight to the runtime's deliver-or-queue
-    path, never the dispatcher, never anything DevicePolicy can gate. The
-    sender arrives late in startup; a notice raised before then is refused
-    and the registry logs it."""
-
-    def __init__(self, runtime: "OriRuntime") -> None:
-        self._runtime = runtime
-        self.sender: AlertFailoverSender | None = None
-
-    async def send(
-        self, *, kind: str, zone_id: str, profile_id: str, message: str
-    ) -> bool:
-        if self.sender is None:
-            return False
-        return await self._runtime._send_or_queue_safety_alert(
-            message=f"SAFETY {kind}: {message}",
-            trigger_name=f"safety_{kind}",
-            alert_sender=self.sender,
-        )
-
-
-def _refuse_unbound_active_zones(unbound: list[str], *, hardened: bool) -> None:
-    """Active protection needs a physical executor. A zone with an active
-    profile and no bound actuator refuses a hardened start; a development
-    start degrades it explicitly rather than reporting protection."""
-    if not unbound:
-        return
-    if hardened:
-        raise ConfigValidationError(
-            "hardened posture refuses to start: zones with active safety "
-            f"profiles have no bound executor: {', '.join(unbound)}"
-        )
-    logger.warning(
-        "[safety] starting degraded: zones %s have active profiles and no "
-        "bound executor; their profiles cannot actuate",
-        unbound,
-    )
-
-
-WATCHDOG_DEVICE = "/dev/watchdog"
-WATCHDOG_PING_INTERVAL = 10  # seconds — kernel expects a ping at least this often
-WATCHDOG_TIMEOUT = 60  # seconds — kernel reboots if no ping within this window
-EXTERNAL_WATCHDOG_GPIO = 17  # BCM pin for optional external watchdog heartbeat
-EXTERNAL_WATCHDOG_PING_S = 30  # heartbeat interval for external watchdog devices
-TIER_D_DRAIN_TIMEOUT = 5.0  # seconds — wait for in-flight Tier D tasks on shutdown
-# An action record waiting this long means the store is not answering; health
-# degrades rather than report a stalled record queue as healthy.
-RECORD_STALL_MS = 30_000
-EVIDENCE_SHUTDOWN_FLUSH_TIMEOUT_S = 5.0
-ALERT_OUTBOX_RETRY_INTERVAL_S = 30.0
-ALERT_OUTBOX_BATCH_SIZE = 50
-ALERT_OUTBOX_MAX_ATTEMPTS_NON_TIER_D = 10
-ALERT_OUTBOX_TIER_D_CRITICAL_THRESHOLD = 3
-SETUP_NOTIFICATION_MAX_CHARS = 320
-CAPABILITY_POSTURE_UPDATE_INTERVAL_S = 30.0
-DEVICE_POLICY_REFRESH_DEFAULT_S = 21600.0
-DEVICE_POLICY_TRANSIENT_AUDIT_SUPPRESS_MS = 900_000
-STALE_SENSOR_MIN_CHECK_INTERVAL_S = 1.0
-# A sensor failing every poll logs one WARNING per this interval, the rest DEBUG.
-READ_FAILURE_LOG_INTERVAL_S = 60.0
-
-# How many consecutive refused measurement windows mark a sensor degraded. One
-# refusal is a transient the poll cadence will retry; a run of them means the
-# signal, the wiring or the timing has changed and the reading is not coming
-# back on its own.
-MEASUREMENT_REFUSALS_BEFORE_DEGRADED = 3
-
-# And how many consecutive good windows clear it. Recovery is deliberately
-# slower than failure: a measurement path that alternates is not trustworthy,
-# and flapping between degraded and healthy would produce an alert stream that
-# operators learn to ignore.
-MEASUREMENT_WINDOWS_TO_RECOVER = 5
-#: Measurement-state writes that may wait for a busy store before one is lost.
-MEASUREMENT_WRITER_CEILING = 256
-#: The store's busy timeout: how long a closing writer lets a write in flight land.
-MEASUREMENT_CLOSE_GRACE_S = 5.0
-
-# How many times a degradation warning is retried when it could not be
-# delivered or durably queued. Paced by the poll interval, and bounded so a
-# broken alert path does not retry forever on every refused window.
-MEASUREMENT_NOTIFY_MAX_ATTEMPTS = 5
-
-# The escalation schedule for a measurement loss that does not resolve, in
-# elapsed milliseconds since the degradation began.
-#
-# A device that cannot establish a trustworthy measurement said so once and
-# then waited indefinitely for a person. The first notice is not the problem;
-# the silence after it is, because a channel that is not being measured is a
-# channel nothing is protecting, and the operator has no reminder that it is
-# still in that state.
-#
-#   immediate   the primary contact, on the transition into degraded
-#   6 hours     the primary contact again
-#   12 hours    the secondary contact, or the primary where none is configured
-#   daily       the same escalation contact, indefinitely
-#
-# **There is no give-up.** A still-unprotected channel must not become
-# permanently silent, so nothing here stops on a message count or a delivery
-# cost. It stops when the sensor produces credible measurements again. Two
-# further stop conditions are sanctioned and neither is implemented: removal
-# of the affected safety pair, which belongs with the active-pair supervision
-# design, and a locally audited maintenance acknowledgement with a short
-# expiry, which needs an inbound, audited authority surface of its own. Until
-# they exist, recovery is the only way this stops, and an operator who has
-# accepted the fault keeps being reminded of it.
-#
-# Release-owned rather than site-configurable, deliberately. A setting here
-# would let a deployment configure a persistent measurement loss into silence,
-# which is the condition this schedule exists to prevent. Measure real pilot
-# message volume first; any later configuration must be a surface that cannot
-# disable, indefinitely defer, or remove the escalation.
-#
-# The cadence keeps message volume to two primary messages and then one daily
-# escalation, rather than repeating to everybody every day.
-#
-# `docs/MEASUREMENT_SUPERVISION.md` carries what this schedule is part of and
-# what it deliberately is not: the pair-scoped supervision this precedes, the
-# connect-time contention case, and what a reset-based response would have to
-# prove first.
-MEASUREMENT_REMINDER_AFTER_MS = 6 * 60 * 60 * 1000
-MEASUREMENT_ESCALATE_AFTER_MS = 12 * 60 * 60 * 1000
-MEASUREMENT_ESCALATION_REPEAT_MS = 24 * 60 * 60 * 1000
-
-
-def measurement_notice_stage_due(elapsed_ms: int) -> int:
-    """Which notice the schedule owes at this point in a degradation.
-
-    Stage 0 is the notice sent on the transition itself. The schedule is a
-    function of elapsed time alone, never of what was delivered, so a reminder
-    that could not be sent is superseded by the next stage rather than
-    cancelling it.
-    """
-    if elapsed_ms < MEASUREMENT_REMINDER_AFTER_MS:
-        return 0
-    if elapsed_ms < MEASUREMENT_ESCALATE_AFTER_MS:
-        return 1
-    repeats = (elapsed_ms - MEASUREMENT_ESCALATE_AFTER_MS) // (
-        MEASUREMENT_ESCALATION_REPEAT_MS
-    )
-    return 2 + int(repeats)
-
-
-STALE_SENSOR_MAX_CHECK_INTERVAL_S = 30.0
-HEALTH_SOCKET_DEFAULT_PATH = "/run/ori/health.sock"
-
-
-def adapter_connect_config(sensor_cfg: SensorConfig, config: Config) -> dict[str, Any]:
-    """Build the dict handed to an adapter's ``connect()``.
-
-    Metadata is spread first and the runtime's own values are applied over it,
-    never the reverse. Config load already refuses a sensor that names one of
-    these, and this ordering means the boundary does not depend on that check
-    having run: a metadata key reaching here cannot displace the sensor's
-    declared identity or the circuit breaker, which would make hardware
-    recovery settable per sensor.
-
-    Extracted from ``start()`` so the boundary is a unit a test can drive with
-    a real adapter, rather than ten lines inside an eight-hundred-line method.
-    """
-    connect_cfg: dict[str, Any] = {
-        **sensor_cfg.metadata,
-        "sensor_id": sensor_cfg.id,
-        "sensor_type": sensor_cfg.type,
-        "circuit_breaker": config.hal.circuit_breaker,
-        # Adapters that run their own poll loop refresh a cache the runtime then
-        # reads on the same schedule. Without this the cache refreshed at the
-        # adapter's default while the runtime read at the operator's rate,
-        # serving one stale reading repeatedly as though it were fresh.
-        "poll_interval_ms": sensor_cfg.poll_interval_ms,
-        # Calibration is passed as its own block rather than flattened into the
-        # same namespace. Flattening is what let a documented `sensitivity` sit
-        # unread beside the adapter's own default.
-        "calibration": dict(sensor_cfg.calibration),
-    }
-    return connect_cfg
+logger = logging.getLogger("ori.runtime")
 
 
 class OriRuntime:
@@ -591,7 +415,7 @@ class OriRuntime:
         self._commissioning_state: CommissioningState | None = None
         self._safety_registry: SafetyRegistry | None = None
         self._safety_commander: ActuatorOutcomeCommander | None = None
-        self._safety_alert_sink: _SafetyAlertAdapter | None = None
+        self._safety_alert_sink: SafetyAlertAdapter | None = None
         self._commissioned_actuator: CommissionedActuator | None = None
         self._firmware_confirmation_coordinator: (
             FirmwareConfirmationCoordinator | None
@@ -764,7 +588,7 @@ class OriRuntime:
                     "configuration declared hardened posture; its values may "
                     "have supplied signed fields. Use the unit's EnvironmentFile."
                 )
-            _validate_required_runtime_capabilities(context.config, self._config_path)
+            validate_required_runtime_capabilities(context.config, self._config_path)
             self._config_env_placeholders = config_env_placeholders(self._config_path)
         except ConfigValidationError:
             logger.exception("[runtime] config validation failed — aborting")
@@ -779,7 +603,7 @@ class OriRuntime:
             logger.error("[commissioning] %s — aborting", exc)
             raise ConfigValidationError(f"commissioning anchors: {exc}") from exc
         if anchor_collision(
-            context.commissioning_anchors, _provisioning_anchor_bytes(context.config)
+            context.commissioning_anchors, provisioning_anchor_bytes(context.config)
         ):
             logger.error(
                 "[commissioning] anchor_collision: a commissioning anchor is the "
@@ -840,7 +664,7 @@ class OriRuntime:
         self._device_policy_enabled = bool(
             (context.config.device_policy or {}).get("enabled", False)
         )
-        self._remote_command_lockout_config = _remote_command_lockout_config(
+        self._remote_command_lockout_config = remote_command_lockout_config(
             context.config
         )
 
@@ -876,7 +700,7 @@ class OriRuntime:
         await self._load_remote_command_lockout_state()
 
     async def _stage_actions(self, context: StartupContext) -> None:
-        remote_command_verifier = _build_remote_command_verifier(context.config)
+        remote_command_verifier = build_remote_command_verifier(context.config)
         context.whatsapp_action = WhatsAppAction(
             provider=TwilioProvider(),
             templates=context.config.actions.whatsapp.get("templates") or {},
@@ -891,7 +715,7 @@ class OriRuntime:
             remote_command_verifier=remote_command_verifier,
             remote_command_handler=self._handle_remote_command,
             remote_command_incident_handler=self._handle_remote_command_incident,
-            allowed_senders=_build_sms_allowed_senders(context.config),
+            allowed_senders=build_sms_allowed_senders(context.config),
         )
         context.coap_action = CoAPAction(config=context.config.actions.coap)
         self._sms_action = context.sms_action
@@ -945,7 +769,7 @@ class OriRuntime:
         )
         assert self._state_store is not None
         self._safety_commander = ActuatorOutcomeCommander()
-        self._safety_alert_sink = _SafetyAlertAdapter(self)
+        self._safety_alert_sink = SafetyAlertAdapter(self)
         shipped_profiles = load_shipped_profile_set()
         # The digest a governed Tier C proposal binds as the profile in force.
         self._shipped_profile_digest = str(shipped_profiles.digest or "")
@@ -1003,7 +827,7 @@ class OriRuntime:
                 if context.has_relay_config and zone is not None
                 else frozenset()
             )
-            _refuse_unbound_active_zones(
+            refuse_unbound_active_zones(
                 sorted(
                     self._safety_registry.zones_with_active_pairs - prospective_bound
                 ),
@@ -1144,14 +968,14 @@ class OriRuntime:
         context.rejection_expiry_days = int(causal_cfg.get("rejection_expiry_days", 30))
 
     async def _stage_evidence(self, context: StartupContext) -> None:
-        context.evidence_attestor = _build_evidence_attestor(context.config)
+        context.evidence_attestor = build_evidence_attestor(context.config)
         if context.evidence_attestor is not None:
             await context.evidence_attestor.start()
             # Evidence trust that cannot be established fails closed for
             # evidence — ingest refuses, health reports the posture — and
             # never for the runtime: Tier D is never gated on evidence, so the
             # deterministic safety path starts regardless of profile.
-            self._evidence_posture_problems = _evidence_posture_problems(
+            self._evidence_posture_problems = evidence_posture_problems(
                 context.config, context.evidence_attestor
             )
             for problem in self._evidence_posture_problems:
@@ -1215,7 +1039,7 @@ class OriRuntime:
         # Built before the dispatcher, which reads reading-age bounds when it
         # composes an operator message, and fresh on every start: the table
         # and the signing starts it matches are memory only.
-        self._firmware_reading_age = _firmware_reading_age(context.config)
+        self._firmware_reading_age = firmware_reading_age(context.config)
         reading_age = self._firmware_reading_age
         context.dispatcher = ActionDispatcher(
             # What Measured may say is decided here, off the action path: the
@@ -1228,9 +1052,7 @@ class OriRuntime:
             state_store=self._state_store,
             alert_sender=context.alert_sender,
             emergency_sms_sender=context.sms_action,
-            offline_token_verifier=_build_offline_token_verifier(
-                context.config.actions
-            ),
+            offline_token_verifier=build_offline_token_verifier(context.config.actions),
             status_indicator=context.status_indicator,
             evidence_attestor=context.evidence_attestor,
             binding_seq_in_force=self._binding_seq_in_force,
@@ -1269,11 +1091,11 @@ class OriRuntime:
 
         # alert_whatsapp executor
         async def _exec_alert_whatsapp(action: str, ctx: SkillContext) -> bool | str:
-            msg = _message_from_context(ctx, action, channel="whatsapp")
-            action_tier = _resolve_action_declared_tier(ctx, action)
-            trigger_name = _resolve_trigger_name(ctx)
-            skill_name, first_party = _resolve_skill_identity(ctx)
-            original_ts = _resolve_original_ts(ctx)
+            msg = message_from_context(ctx, action, channel="whatsapp")
+            action_tier = resolve_action_declared_tier(ctx, action)
+            trigger_name = resolve_trigger_name(ctx)
+            skill_name, first_party = resolve_skill_identity(ctx)
+            original_ts = resolve_original_ts(ctx)
             return await self._send_or_queue_alert(
                 channel="whatsapp",
                 skill_name=skill_name,
@@ -1291,11 +1113,11 @@ class OriRuntime:
 
         # alert_sms executor
         async def _exec_alert_sms(action: str, ctx: SkillContext) -> bool | str:
-            msg = _message_from_context(ctx, action, channel="sms")
-            action_tier = _resolve_action_declared_tier(ctx, action)
-            trigger_name = _resolve_trigger_name(ctx)
-            skill_name, first_party = _resolve_skill_identity(ctx)
-            original_ts = _resolve_original_ts(ctx)
+            msg = message_from_context(ctx, action, channel="sms")
+            action_tier = resolve_action_declared_tier(ctx, action)
+            trigger_name = resolve_trigger_name(ctx)
+            skill_name, first_party = resolve_skill_identity(ctx)
+            original_ts = resolve_original_ts(ctx)
             return await self._send_or_queue_alert(
                 channel="sms",
                 skill_name=skill_name,
@@ -1375,7 +1197,7 @@ class OriRuntime:
         )
 
         async def _exec_coap_command(action: str, ctx: SkillContext) -> bool:
-            command_name, payload_override = _coap_command_from_context(ctx)
+            command_name, payload_override = coap_command_from_context(ctx)
             if not command_name:
                 logger.warning(
                     "[runtime] coap_command requested but no command was resolved from trigger=%r "
@@ -1405,7 +1227,7 @@ class OriRuntime:
             one resource, and the second of two different commands coalesced
             into the first.
             """
-            command_name, payload_override = _coap_command_from_context(ctx)
+            command_name, payload_override = coap_command_from_context(ctx)
             if not command_name:
                 return {}
             command = (context.config.actions.coap.get("commands") or {}).get(
@@ -1510,7 +1332,7 @@ class OriRuntime:
             )
             self._capability_posture_tracker = context.posture_tracker
 
-        context.local_llm = _build_local_llm(
+        context.local_llm = build_local_llm(
             context.config.reasoning,
             self._config_path,
             required=bool(
@@ -1518,7 +1340,7 @@ class OriRuntime:
                     device=context.config.device,
                     security=context.config.security,
                 )
-                and _local_llm_requested(context.config.reasoning)
+                and local_llm_requested(context.config.reasoning)
             ),
         )
         # One envelope state for every gateway route; see
@@ -1526,14 +1348,14 @@ class OriRuntime:
         # owns this state database's replay store, which refuses the start.
         context.gateway_envelope_state = _build_gateway_envelope_state(context.config)
         self._gateway_envelope_state = context.gateway_envelope_state
-        gateway_reasoner = _build_gateway_reasoner(
+        gateway_reasoner = build_gateway_reasoner(
             context.config, context.gateway_envelope_state
         )
         context.elevator = IntelligenceElevator(
             local_llm=context.local_llm,
             gateway_reasoner=gateway_reasoner,
             config=context.config.reasoning,
-            context_enricher=_build_context_enricher(context.config),
+            context_enricher=build_context_enricher(context.config),
         )
 
     async def _stage_event_path(self, context: StartupContext) -> None:
@@ -1550,14 +1372,14 @@ class OriRuntime:
                 whatsapp_available=is_truthy(
                     context.config.actions.whatsapp.get("enabled", False)
                 ),
-                local_slm_loaded=_is_local_slm_available(context.local_llm),
+                local_slm_loaded=is_local_slm_available(context.local_llm),
                 relay_connected=context.relay_action is not None,
             )
             context.elevator.update_capability_posture(posture)
             context.dispatcher.update_capability_posture(posture)
             context.alert_sender.update_capability_posture(posture)
             if context.status_indicator is not None:
-                _sync_network_state_from_posture(context.status_indicator, posture)
+                sync_network_state_from_posture(context.status_indicator, posture)
 
         self._skill_reload_lock = asyncio.Lock()
         self._deduplicator = EventDeduplicator()
@@ -1865,8 +1687,8 @@ class OriRuntime:
         if telemetry_export_task is not None:
             self._background_tasks.append(telemetry_export_task)
 
-        _warn_gateway_security_posture(context.config)
-        _warn_sms_webhook_security_posture(context.config)
+        warn_gateway_security_posture(context.config)
+        warn_sms_webhook_security_posture(context.config)
 
         gateway_export_task = self._start_gateway_export_responder_if_enabled(
             context.config, context.gateway_envelope_state
@@ -1875,7 +1697,7 @@ class OriRuntime:
             self._background_tasks.append(gateway_export_task)
 
         hb_subscriber = (
-            _build_gateway_heartbeat_subscriber(
+            build_gateway_heartbeat_subscriber(
                 context.config, context.posture_tracker, context.gateway_envelope_state
             )
             if context.posture_tracker is not None
@@ -1889,7 +1711,7 @@ class OriRuntime:
                 )
             )
 
-        evidence_inbound_subscriber = _build_evidence_inbound_subscriber(
+        evidence_inbound_subscriber = build_evidence_inbound_subscriber(
             context.config, context.evidence_attestor, context.gateway_envelope_state
         )
         self._evidence_inbound_subscriber = evidence_inbound_subscriber
@@ -1916,7 +1738,7 @@ class OriRuntime:
             )
             logger.info("[runtime] evidence anchor registration reconciler started")
 
-        evidence_outbound_publisher = _build_evidence_outbound_publisher(
+        evidence_outbound_publisher = build_evidence_outbound_publisher(
             context.config, context.evidence_attestor, context.gateway_envelope_state
         )
         self._evidence_outbound_publisher = evidence_outbound_publisher
@@ -1942,9 +1764,9 @@ class OriRuntime:
 
         # Built here, not read back from the subscriber, so health reaches the
         # documents and alarm snapshots without holding anything of the stack.
-        firmware_telemetry_cfg = _firmware_telemetry_config(context.config)
+        firmware_telemetry_cfg = firmware_telemetry_config(context.config)
         if firmware_telemetry_cfg is not None:
-            self._firmware_profile_library = _firmware_profile_library(
+            self._firmware_profile_library = firmware_profile_library(
                 firmware_telemetry_cfg
             )
             self._firmware_alarm_tracker = ControllerAlarmTracker()
@@ -1953,7 +1775,7 @@ class OriRuntime:
             firmware_telemetry_subscriber,
             firmware_command_pair,
             firmware_liveness_scheduler,
-        ) = _build_firmware_liveness_stack(
+        ) = build_firmware_liveness_stack(
             context.config,
             context.event_bus,
             self._state_store,  # type: ignore[arg-type]
@@ -2004,7 +1826,7 @@ class OriRuntime:
     async def _stage_operator_services(self, context: StartupContext) -> None:
         await self._start_firmware_mqtt_operator_if_enabled(context.config)
 
-        node_heartbeat = _build_runtime_node_heartbeat_publisher(
+        node_heartbeat = build_runtime_node_heartbeat_publisher(
             context.config,
             self._build_health_snapshot,
             context.gateway_envelope_state,
@@ -2469,7 +2291,7 @@ class OriRuntime:
                     detail="APPLY_POLICY requires args.url and args.sha256",
                     executed=False,
                 )
-            reference_error = _validate_remote_policy_reference_args(
+            reference_error = validate_remote_policy_reference_args(
                 reference_url,
                 expected_sha256,
             )
@@ -2968,7 +2790,7 @@ class OriRuntime:
                 state_store=self._state_store,
                 health_snapshot_provider=self._build_health_snapshot,
                 message_auth=_build_gateway_message_auth(config, envelope_state),
-                message_encryptor=_build_gateway_message_encryptor(config),
+                message_encryptor=build_gateway_message_encryptor(config),
             )
             server = MqttGatewayExportServer(
                 broker_url=config.gateway.broker_url,
@@ -3189,12 +3011,12 @@ class OriRuntime:
             ca_private_key_pem,
             broker_ca_certificate_pem,
         ) = await asyncio.gather(
-            asyncio.to_thread(_read_public_pem_file, str(cfg["client_ca_certfile"])),
+            asyncio.to_thread(read_public_pem_file, str(cfg["client_ca_certfile"])),
             asyncio.to_thread(
-                _read_private_key_file,
+                read_private_key_file,
                 str(cfg["client_ca_keyfile"]),
             ),
-            asyncio.to_thread(_read_public_pem_file, str(cfg["broker_ca_certfile"])),
+            asyncio.to_thread(read_public_pem_file, str(cfg["broker_ca_certfile"])),
         )
         password_env = str(cfg.get("client_ca_key_password_env", "")).strip()
         ca_password: bytes | None = None
@@ -3601,7 +3423,7 @@ class OriRuntime:
             data_path=Path(self._config_path).resolve().parent,
             device_id=str(config.device.id),
             anchors=anchors,
-            provisioning_anchor=_provisioning_anchor_bytes(config),
+            provisioning_anchor=provisioning_anchor_bytes(config),
             inventory=inventory,
             posture="production" if hardened else "development",
             profiles=profiles,
@@ -4101,12 +3923,12 @@ class OriRuntime:
         # local: fleet counts reveal deployment topology and per-device
         # identity is a disclosure this contract does not make. Only closed,
         # non-sensitive tokens cross the boundary.
-        status = _fold_health_status(severities)
+        status = fold_health_status(severities)
         if status is not None:
             snapshot["status"] = status
         snapshot["critical"] = status == "critical"
 
-        snapshot["degradation_reasons"] = _degradation_reasons(
+        snapshot["degradation_reasons"] = degradation_reasons(
             firmware_liveness_degraded=bool(firmware_liveness_health["degraded"]),
         )
         return snapshot
@@ -4511,7 +4333,7 @@ class OriRuntime:
                 else:
                     await event_bus.publish(event)
                     if self._status_indicator is not None:
-                        _sync_power_state_from_reading(self._status_indicator, reading)
+                        sync_power_state_from_reading(self._status_indicator, reading)
             except AdapterReadError as exc:
                 self._log_read_failure(str(sensor_cfg.id), exc)
                 if isinstance(exc, MeasurementRefusedError):
@@ -5496,7 +5318,7 @@ class OriRuntime:
                 posture = await tracker.refresh(
                     sms_available=sms_enabled,
                     whatsapp_available=whatsapp_enabled,
-                    local_slm_loaded=_is_local_slm_available(local_llm),
+                    local_slm_loaded=is_local_slm_available(local_llm),
                     relay_connected=relay_connected,
                 )
                 elevator.update_capability_posture(posture)
@@ -5505,7 +5327,7 @@ class OriRuntime:
                 if self._alert_sender is not None:
                     self._alert_sender.update_capability_posture(posture)
                 if self._status_indicator is not None:
-                    _sync_network_state_from_posture(self._status_indicator, posture)
+                    sync_network_state_from_posture(self._status_indicator, posture)
             except Exception:
                 logger.exception("[runtime] capability posture refresh failed")
 
@@ -5620,10 +5442,10 @@ class OriRuntime:
             template_variables=(
                 trigger_name or "configured risk",
                 self._device_location or self._device_id or "site",
-                _format_alert_timestamp(received_at_ms, self._device_timezone),
+                format_alert_timestamp(received_at_ms, self._device_timezone),
             ),
         )
-        alert_id = _build_alert_id(
+        alert_id = build_alert_id(
             channel=channel,
             recipient=recipient,
             alert=alert,
@@ -5664,7 +5486,7 @@ class OriRuntime:
 
         try:
             if allow_failover:
-                receipt = _coerce_alert_send_receipt(
+                receipt = coerce_alert_send_receipt(
                     await alert_sender.send(
                         alert=alert,
                         to_number=recipient,
@@ -5681,7 +5503,7 @@ class OriRuntime:
                     # so a non-callable attribute still falls through to
                     # `send()` rather than being invoked.
                     send_exact = cast("Callable[..., Awaitable[object]]", exact_sender)
-                    receipt = _coerce_alert_send_receipt(
+                    receipt = coerce_alert_send_receipt(
                         await send_exact(
                             alert=alert,
                             to_number=recipient,
@@ -5690,7 +5512,7 @@ class OriRuntime:
                         fallback_channel=channel,
                     )
                 else:
-                    receipt = _coerce_alert_send_receipt(
+                    receipt = coerce_alert_send_receipt(
                         await alert_sender.send(
                             alert=alert,
                             to_number=recipient,
@@ -5783,10 +5605,10 @@ class OriRuntime:
             template_variables=(
                 trigger_name or "configured risk",
                 self._device_location or self._device_id or "site",
-                _format_alert_timestamp(alert_ts, self._device_timezone),
+                format_alert_timestamp(alert_ts, self._device_timezone),
             ),
         )
-        alert_id = _build_alert_id(
+        alert_id = build_alert_id(
             channel=channel,
             recipient=recipient,
             alert=alert,
@@ -5813,7 +5635,7 @@ class OriRuntime:
         self._last_alert_timestamps_by_channel[channel] = alert_ts
         self._last_alert_timestamps_by_trigger[trigger_name] = alert_ts
         try:
-            receipt = _coerce_alert_send_receipt(
+            receipt = coerce_alert_send_receipt(
                 await alert_sender.send(
                     alert=alert,
                     to_number=recipient,
@@ -5888,7 +5710,7 @@ class OriRuntime:
         """
         if self._state_store is None:
             return
-        key = _preference_disabled_key(channel, alert_class, original_ts)
+        key = preference_disabled_key(channel, alert_class, original_ts)
         try:
             raw = await self._state_store.get_skill_state(
                 "__runtime_alert_preferences__", key
@@ -5942,7 +5764,7 @@ class OriRuntime:
             return 0
         raw = await self._state_store.get_skill_state(
             "__runtime_alert_policy__",
-            _alert_policy_count_key(channel, now_ms()),
+            alert_policy_count_key(channel, now_ms()),
         )
         try:
             return max(0, int(raw or "0"))
@@ -5960,7 +5782,7 @@ class OriRuntime:
         if self._state_store is None:
             return
         try:
-            key = _alert_policy_count_key(channel, now_ms())
+            key = alert_policy_count_key(channel, now_ms())
             current = await self._current_policy_counted_alerts(channel)
             await self._state_store.set_skill_state(
                 "__runtime_alert_policy__",
@@ -5993,7 +5815,7 @@ class OriRuntime:
             )
             return
 
-        channels = _resolve_setup_notification_channels(
+        channels = resolve_setup_notification_channels(
             setup_cfg.get("channels", ["primary"]),
             config.actions.primary_alert_channel,
         )
@@ -6006,12 +5828,12 @@ class OriRuntime:
             "whatsapp": is_truthy(config.actions.whatsapp.get("enabled", False)),
         }
         connected_sensor_count = len(self._connected_sensor_ids)
-        active_trigger_count = _count_active_triggers(
+        active_trigger_count = count_active_triggers(
             configured_sensors=config.sensors,
             connected_sensor_ids=self._connected_sensor_ids,
             loaded_skills=self._loaded_skills,
         )
-        message = _setup_success_message(
+        message = setup_success_message(
             config=config,
             connected_sensor_count=connected_sensor_count,
             active_trigger_count=active_trigger_count,
@@ -6099,7 +5921,7 @@ class OriRuntime:
                         template_variables = (
                             trigger_name or "configured risk",
                             self._device_location or self._device_id or "site",
-                            _format_alert_timestamp(
+                            format_alert_timestamp(
                                 queued_at if queued_at > 0 else now_ms(),
                                 self._device_timezone,
                             ),
@@ -6131,7 +5953,7 @@ class OriRuntime:
                         # stall notification delivery.
                         preferred_channel = "whatsapp" if channel == "sms" else "sms"
 
-                    receipt = _coerce_alert_send_receipt(
+                    receipt = coerce_alert_send_receipt(
                         await alert_sender.send(
                             alert=outbound_alert,
                             to_number=recipient,
@@ -6282,1618 +6104,3 @@ class OriRuntime:
                         channel,
                         attempts_after,
                     )
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-
-def _cap_sms_message(message: str, limit: int = 160) -> str:
-    compact = " ".join(message.split())
-    if len(compact) <= limit:
-        return compact
-    return compact[: max(limit - 3, 0)].rstrip() + "..."
-
-
-def _message_from_context(
-    ctx: SkillContext,
-    fallback: str,
-    channel: str = "sms",
-) -> str:
-    """Build a channel-aware alert message string from a SkillContext."""
-    event_ctx = (
-        ctx.event.context if ctx.event and isinstance(ctx.event.context, dict) else {}
-    )
-    channel_key = str(channel or "").strip().lower()
-
-    msg = ""
-    channel_messages = event_ctx.get("channel_messages")
-    if isinstance(channel_messages, dict):
-        raw_channel = channel_messages.get(channel_key) or channel_messages.get(
-            "default"
-        )
-        if isinstance(raw_channel, str) and raw_channel.strip():
-            msg = raw_channel.strip()
-    if not msg:
-        raw_operator = event_ctx.get("operator_message")
-        if isinstance(raw_operator, str) and raw_operator.strip():
-            msg = raw_operator.strip()
-
-    # Fallback for raw sensor alerts that did not pass through a skill composer.
-    if not msg and ctx.event and ctx.event.reading:
-        r = ctx.event.reading
-        if channel_key == "whatsapp":
-            msg = (
-                f"[{ctx.event.device_id}] {r.sensor_id} ({r.sensor_type})\n"
-                f"Value: {r.value} {r.unit}"
-            )
-        else:
-            msg = f"[{ctx.event.device_id}] {r.sensor_id} ({r.sensor_type}): {r.value} {r.unit}"
-
-    if not msg:
-        msg = str(fallback)
-
-    if channel_key == "sms":
-        return _cap_sms_message(msg)
-    return msg
-
-
-def _resolve_setup_notification_channels(
-    raw_channels: Any,
-    primary_alert_channel: str,
-) -> list[str]:
-    if isinstance(raw_channels, str):
-        candidates = [raw_channels]
-    elif isinstance(raw_channels, list):
-        candidates = raw_channels
-    else:
-        candidates = ["primary"]
-
-    primary = str(primary_alert_channel or "sms").strip().lower()
-    if primary not in {"sms", "whatsapp"}:
-        primary = "sms"
-
-    resolved: list[str] = []
-    for raw in candidates:
-        channel = str(raw).strip().lower()
-        if channel == "primary":
-            channel = primary
-        if channel in {"sms", "whatsapp"} and channel not in resolved:
-            resolved.append(channel)
-    return resolved
-
-
-def _setup_success_message(
-    *,
-    config: Config,
-    connected_sensor_count: int,
-    active_trigger_count: int,
-) -> str:
-    """Describe only the notification posture established at startup.
-
-    The safety disclaimer is fixed text and must never be removed by a generic
-    tail truncation.  ``device.location`` is operator-controlled and unbounded
-    by the config schema, so only that field is compacted and shortened to fit.
-    """
-    location = " ".join(str(config.device.location or "").split()) or "site"
-    sensor_label = "sensor" if connected_sensor_count == 1 else "sensors"
-    rule_label = "rule" if active_trigger_count == 1 else "rules"
-    prefix = "Ori is online at "
-    suffix = (
-        f": {connected_sensor_count} {sensor_label} connected and "
-        f"{active_trigger_count} {rule_label} active. "
-        "Ori will notify you when it detects a configured risk. "
-        "No safety cutoff is commissioned, so Ori can warn but cannot intervene."
-    )
-    location_budget = max(
-        SETUP_NOTIFICATION_MAX_CHARS - len(prefix) - len(suffix),
-        0,
-    )
-    if len(location) > location_budget:
-        if location_budget <= 3:
-            location = "." * location_budget
-        else:
-            location = location[: location_budget - 3].rstrip() + "..."
-    return prefix + location + suffix
-
-
-def _count_active_triggers(
-    *,
-    configured_sensors: list[Any],
-    connected_sensor_ids: set[str],
-    loaded_skills: list[Any],
-) -> int:
-    """Count registered rules with at least one connected declared input.
-
-    A skill's triggers are registered for every type in ``sensors_required``.
-    Matching more than one connected type therefore makes a trigger reachable
-    through more than one subscription, but it remains one rule and is counted
-    once.  Skills without a declared type are excluded conservatively: a
-    wildcard subscription is not a declared operator-facing input contract.
-    """
-    connected_types: set[str] = set()
-    for sensor in configured_sensors:
-        sensor_id = str(getattr(sensor, "id", ""))
-        sensor_type = getattr(sensor, "type", "")
-        if (
-            sensor_id in connected_sensor_ids
-            and isinstance(sensor_type, str)
-            and sensor_type
-        ):
-            connected_types.add(sensor_type)
-
-    active_count = 0
-    for skill in loaded_skills:
-        required = getattr(skill, "sensors_required", [])
-        if not isinstance(required, list):
-            continue
-        declared_types: set[str] = set()
-        for item in required:
-            if not isinstance(item, dict):
-                continue
-            sensor_type = item.get("type")
-            if isinstance(sensor_type, str) and sensor_type:
-                declared_types.add(sensor_type)
-        if not connected_types.intersection(declared_types):
-            continue
-        triggers = getattr(skill, "triggers", [])
-        if isinstance(triggers, list):
-            active_count += len(triggers)
-    return active_count
-
-
-def _resolve_skill_identity(ctx: SkillContext) -> tuple[str, bool]:
-    """The skill's name and whether the loader marked it first-party.
-
-    `first_party` is set by the loader from the packaged roots and never read
-    from `skill.yaml`, so a skill cannot claim it. Anything that cannot be
-    resolved reads as community, which resolves to no class.
-    """
-    skill = getattr(ctx, "skill", None) if ctx else None
-    name = getattr(skill, "name", "") if skill is not None else ""
-    first_party = bool(getattr(skill, "first_party", False))
-    return (str(name or "").strip(), first_party)
-
-
-def _resolve_trigger_name(ctx: SkillContext) -> str:
-    if ctx and isinstance(getattr(ctx, "trigger_name", ""), str):
-        trigger_name = ctx.trigger_name.strip()
-        if trigger_name:
-            return trigger_name
-    if ctx and ctx.event and isinstance(getattr(ctx.event, "sensor_id", ""), str):
-        return ctx.event.sensor_id
-    return ""
-
-
-def _resolve_original_ts(ctx: SkillContext) -> int:
-    if ctx and ctx.event:
-        try:
-            return int(ctx.event.timestamp)
-        except Exception:
-            pass
-    return now_ms()
-
-
-def _resolve_action_declared_tier(ctx: SkillContext, action_name: str) -> str:
-    """Resolve declared tier for an action from skill capability metadata."""
-    if ctx and hasattr(ctx, "skill") and hasattr(ctx.skill, "actions"):
-        available = None
-        if isinstance(ctx.skill.actions, dict):
-            available = ctx.skill.actions.get("available")
-        if isinstance(available, list):
-            for item in available:
-                if not isinstance(item, dict):
-                    continue
-                if str(item.get("name", "")) != action_name:
-                    continue
-                tier = str(item.get("tier", "")).upper().strip()
-                if tier in {"A", "B", "C", "D"}:
-                    return tier
-    return "A"
-
-
-def _build_alert_id(
-    *,
-    channel: str,
-    recipient: str,
-    alert: OutboundAlert,
-    action_tier: str,
-    trigger_name: str,
-    original_ts: int,
-) -> str:
-    variables = json.dumps(
-        list(alert.template_variables), separators=(",", ":"), ensure_ascii=False
-    )
-    raw = (
-        f"{channel}|{recipient}|{action_tier}|{trigger_name}|{original_ts}|"
-        f"{alert.intent.value}|{variables}|{alert.sms_body}"
-    )
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
-def _format_alert_timestamp(timestamp_ms: int, timezone_name: str) -> str:
-    try:
-        timezone: dt.tzinfo = ZoneInfo(str(timezone_name or "UTC"))
-    except ZoneInfoNotFoundError:
-        timezone = dt.UTC
-    return dt.datetime.fromtimestamp(
-        max(0, int(timestamp_ms)) / 1000,
-        tz=timezone,
-    ).strftime("%Y-%m-%d %H:%M %Z")
-
-
-def _coerce_alert_send_receipt(
-    value: object,
-    *,
-    fallback_channel: str,
-) -> AlertSendReceipt:
-    """Keep legacy test doubles safe while production senders use receipts."""
-
-    if isinstance(value, AlertSendReceipt):
-        return value
-    if value is True:
-        return AlertSendReceipt.accepted_without_provider_receipt(
-            channel=fallback_channel
-        )
-    return AlertSendReceipt.refused(channel=fallback_channel, error="sender_refused")
-
-
-def _preference_disabled_key(
-    channel: str, alert_class: str | None, timestamp_ms: int
-) -> str:
-    month = dt.datetime.fromtimestamp(
-        max(0, int(timestamp_ms)) / 1000,
-        tz=dt.UTC,
-    ).strftime("%Y-%m")
-    normalized = str(channel or "").strip().lower() or "unknown"
-    return f"disabled:{normalized}:{alert_class or 'unclassified'}:{month}"
-
-
-def _alert_policy_count_key(channel: str, timestamp_ms: int) -> str:
-    month = dt.datetime.fromtimestamp(
-        max(0, int(timestamp_ms)) / 1000,
-        tz=dt.UTC,
-    ).strftime("%Y-%m")
-    normalized = str(channel or "").strip().lower() or "unknown"
-    return f"external_alert_count:{normalized}:{month}"
-
-
-def _validate_remote_policy_reference_args(
-    reference_url: str,
-    expected_sha256: str,
-) -> str | None:
-    """Return a precondition error for invalid APPLY_POLICY reference args."""
-    if not str(reference_url or "").strip().startswith("https://"):
-        return "policy reference URL must start with https://"
-    digest = str(expected_sha256 or "").strip().lower()
-    if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
-        return "policy reference sha256 must be a 64-character hex digest"
-    return None
-
-
-def _build_offline_token_verifier(actions_cfg: Any) -> OfflineTierCTokenVerifier | None:
-    offline_cfg = {}
-    if actions_cfg is not None and hasattr(actions_cfg, "offline_tokens"):
-        candidate = getattr(actions_cfg, "offline_tokens", {}) or {}
-        if isinstance(candidate, dict):
-            offline_cfg = candidate
-    if not is_truthy(offline_cfg.get("enabled", False)):
-        return None
-    return OfflineTierCTokenVerifier(
-        public_key_b64=str(offline_cfg.get("public_key_b64", "")),
-        max_clock_skew_s=int(offline_cfg.get("max_clock_skew_s", 300)),
-    )
-
-
-def _build_remote_command_verifier(config: Config) -> RemoteCommandVerifier | None:
-    security_cfg = config.security if isinstance(config.security, dict) else {}
-    remote_cfg = security_cfg.get("remote_commands") or {}
-    if not isinstance(remote_cfg, dict):
-        return None
-    if not is_truthy(remote_cfg.get("enabled", False)):
-        return None
-
-    secret_env = str(
-        remote_cfg.get("hmac_secret_env", "ORI_REMOTE_COMMAND_HMAC_SECRET")
-    ).strip()
-    shared_secret = os.environ.get(secret_env, "")
-    if not shared_secret:
-        logger.warning(
-            "[runtime] remote commands enabled but configured HMAC secret "
-            "environment variable is not set; commands will fail closed."
-        )
-    previous_secret_env = str(remote_cfg.get("previous_hmac_secret_env", "") or "")
-    previous_shared_secret = (
-        os.environ.get(previous_secret_env, "") if previous_secret_env else ""
-    )
-    if previous_secret_env and not previous_shared_secret:
-        logger.warning(
-            "[runtime] remote command previous HMAC secret environment variable "
-            "is configured but empty; previous-secret verification disabled."
-        )
-    max_skew_ms = int(remote_cfg.get("max_skew_seconds", 300)) * 1000
-    return RemoteCommandVerifier(
-        device_id=str(config.device.id),
-        shared_secret=shared_secret,
-        previous_shared_secret=previous_shared_secret,
-        max_skew_ms=max_skew_ms,
-        allowed_senders=remote_cfg.get("allowed_senders"),
-        allow_unlisted_senders=is_truthy(
-            remote_cfg.get("allow_unlisted_senders", False)
-        ),
-    )
-
-
-def _remote_command_lockout_config(config: Config | None) -> dict[str, Any]:
-    if config is None or not isinstance(config.security, dict):
-        return default_remote_command_lockout_config()
-    remote_cfg = config.security.get("remote_commands") or {}
-    if not isinstance(remote_cfg, dict):
-        return default_remote_command_lockout_config()
-    lockout_cfg = remote_cfg.get("lockout")
-    if not isinstance(lockout_cfg, dict):
-        return default_remote_command_lockout_config()
-    return {**default_remote_command_lockout_config(), **lockout_cfg}
-
-
-def _is_local_slm_available(local_llm: Any) -> bool:
-    """Safely resolve local SLM availability from any LocalLLM-like object."""
-    if local_llm is None:
-        return False
-    return bool(getattr(local_llm, "is_available", False))
-
-
-def _sync_network_state_from_posture(
-    indicator: LEDIndicator, posture: CapabilityPosture
-) -> None:
-    if posture.internet_available:
-        indicator.set_network_state(NetworkState.INTERNET)
-        return
-    if posture.sms_available:
-        indicator.set_network_state(NetworkState.GSM_ONLY)
-        return
-    indicator.set_network_state(NetworkState.NONE)
-
-
-def _sync_power_state_from_reading(indicator: LEDIndicator, reading: Any) -> None:
-    sensor_type = str(getattr(reading, "sensor_type", ""))
-    if sensor_type not in {"battery_percent", "growatt_battery_soc"}:
-        return
-    try:
-        value = float(getattr(reading, "value", 0.0))
-    except (TypeError, ValueError):
-        return
-    if value < 10.0:
-        indicator.set_power_state(PowerState.BATTERY_CRITICAL)
-    elif value < 20.0:
-        indicator.set_power_state(PowerState.BATTERY_LOW)
-    else:
-        indicator.set_power_state(PowerState.MAINS)
-
-
-def _maybe_autoload_dotenv(config_path: str) -> frozenset[str] | None:
-    """Load .env when explicitly enabled via ORI_AUTOLOAD_DOTENV=true.
-
-    This is a development convenience toggle. Production remains explicit-env
-    by default (no implicit .env loading).
-
-    Returns ``None`` when no file was loaded, and otherwise the variable names
-    this file actually introduced — which is not the same as the names it
-    contains, because `override=False` leaves anything the environment already
-    carries alone. A report that treated the file's existence as a supplied
-    value degraded a device whose `.env` decided nothing.
-    """
-    if not is_truthy(os.environ.get("ORI_AUTOLOAD_DOTENV", "")):
-        return None
-
-    # A signature covers the document before expansion, so a file that supplies
-    # what `${VAR}` fields expand to decides the value of a signed field
-    # without invalidating the signature. The data directory is writable by the
-    # service; the unit's EnvironmentFile is not, which is where a hardened
-    # deployment's environment belongs.
-    if hardened_posture_declared(config_path):
-        logger.warning(
-            "[runtime] ORI_AUTOLOAD_DOTENV is refused under staging or "
-            "production posture: a .env beside the configuration would supply "
-            "values for signed fields. Use the unit's EnvironmentFile."
-        )
-        return None
-
-    try:
-        from dotenv import load_dotenv
-    except ImportError:
-        logger.warning(
-            "[runtime] ORI_AUTOLOAD_DOTENV is enabled but python-dotenv is not installed"
-        )
-        return None
-
-    # Beside the configuration only. The unit works in a runtime directory
-    # systemd empties on every stop, so a file found there is not this
-    # installation's environment, and these values are expanded into the
-    # configuration the runtime then trusts.
-    candidate = Path(config_path).resolve().parent / ".env"
-    if candidate.is_file():
-        before = frozenset(os.environ)
-        load_dotenv(dotenv_path=candidate, override=False)
-        supplied = frozenset(os.environ) - before
-        logger.info("[runtime] loaded environment from %s", shown(candidate))
-        return supplied
-    logger.info(
-        "[runtime] ORI_AUTOLOAD_DOTENV enabled but no .env file beside %s",
-        shown(config_path),
-    )
-    return None
-
-
-def _local_llm_requested(reasoning_cfg: Any) -> bool:
-    """Return whether configuration asks this runtime to provide local inference."""
-    return (
-        str(getattr(reasoning_cfg, "default_tier", "") or "").strip().lower() == "local"
-    )
-
-
-def _validate_required_runtime_capabilities(
-    config: Config,
-    config_path: str,
-) -> None:
-    """Fail before host mutation when hardened configuration cannot be served.
-
-    Development deliberately retains simulation and graceful degradation for
-    laptops and CI. Staging, production, and explicit posture enforcement must
-    never report a healthy runtime while a requested physical/protocol/reasoning
-    backend is absent.
-    """
-    if not requires_production_posture(
-        device=config.device,
-        security=config.security,
-    ):
-        return
-
-    missing: list[str] = []
-    status_cfg = (
-        config.hal.status_signaling
-        if isinstance(config.hal.status_signaling, dict)
-        else {}
-    )
-    relay_requested = bool(
-        config.device.deployment_type != "phone" and "gpio_pin" in config.actions.relay
-    )
-    status_signaling_requested = is_truthy(status_cfg.get("enabled", False))
-    if relay_requested or status_signaling_requested:
-        requested_by = (
-            "relay control and status signaling"
-            if relay_requested and status_signaling_requested
-            else "relay control"
-            if relay_requested
-            else "status signaling"
-        )
-        if not gpio_backend_importable():
-            missing.append(f"gpiozero is unavailable but {requested_by} is configured")
-        elif not gpio_backend_arbitrated():
-            # The dependency is present and pins would move, so the import check
-            # passes. gpiozero fell back to a factory that drives /dev/gpiomem
-            # without claiming the line, so the kernel refuses no second writer.
-            # A hardened runtime must not report a physical capability it cannot
-            # hold exclusively.
-            factory = resolved_pin_factory_name() or "none"
-            missing.append(
-                f"{requested_by} is configured but the resolved GPIO backend "
-                f"({factory}) does not claim its lines through the kernel"
-            )
-
-    coap_requested = is_truthy(config.actions.coap.get("enabled", False)) or any(
-        sensor.protocol == "coap" for sensor in config.sensors
-    )
-    if coap_requested and not coap_backend_available():
-        missing.append(
-            "aiocoap is unavailable but a CoAP action or sensor is configured"
-        )
-
-    if _local_llm_requested(config.reasoning):
-        if not local_llm_backend_available():
-            missing.append(
-                "llama-cpp-python is unavailable but local reasoning is configured"
-            )
-        if (
-            _resolve_local_model_file(
-                str(config.reasoning.local_model or ""),
-                str(config.reasoning.model_path or ""),
-                config_path,
-            )
-            is None
-        ):
-            missing.append(
-                "a readable GGUF model file could not be resolved for local reasoning"
-            )
-
-    if missing:
-        raise ConfigValidationError(
-            "production posture requires every configured host capability to be "
-            "available; "
-            + "; ".join(missing)
-            + ". Install the required signed runtime target/dependencies or disable "
-            "the capability explicitly before startup."
-        )
-
-
-def _resolve_local_model_file(
-    local_model: str,
-    model_path: str,
-    config_path: str,
-) -> str | None:
-    """Resolve local model config to an existing GGUF file path.
-
-    Resolution supports:
-    - `local_model` as an absolute/relative file path (with or without `.gguf`)
-    - `model_path` as a directory containing `local_model` (with optional `.gguf`)
-    - `model_path` itself as a direct model file path
-    """
-    config_dir = Path(config_path).resolve().parent
-    local_model = (local_model or "").strip()
-    model_path = (model_path or "").strip()
-
-    candidates: list[Path] = []
-
-    def _to_abs(path_text: str) -> Path:
-        p = Path(path_text)
-        return p if p.is_absolute() else (config_dir / p)
-
-    if local_model:
-        local_model_path = _to_abs(local_model)
-        candidates.append(local_model_path)
-        if local_model_path.suffix.lower() != ".gguf":
-            candidates.append(local_model_path.with_suffix(".gguf"))
-
-        if model_path:
-            model_base = _to_abs(model_path)
-            local_name = Path(local_model).name
-            candidates.append(model_base / local_name)
-            if not local_name.endswith(".gguf"):
-                candidates.append(model_base / f"{local_name}.gguf")
-    elif model_path:
-        candidates.append(_to_abs(model_path))
-
-    deduped: list[Path] = []
-    seen: set[str] = set()
-    for c in candidates:
-        key = str(c.resolve(strict=False))
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(c)
-
-    for candidate in deduped:
-        if candidate.is_file():
-            return str(candidate.resolve())
-    return None
-
-
-def _build_local_llm(
-    reasoning_cfg: Any,
-    config_path: str,
-    *,
-    required: bool = False,
-) -> LocalLLM | None:
-    """Instantiate LocalLLM from config when a valid local model is available."""
-    local_model = str(getattr(reasoning_cfg, "local_model", "") or "")
-    model_path = str(getattr(reasoning_cfg, "model_path", "") or "")
-    context_window = int(getattr(reasoning_cfg, "local_context_window", 2048) or 2048)
-
-    model_file = _resolve_local_model_file(local_model, model_path, config_path)
-    if model_file is None:
-        if required:
-            raise ConfigValidationError(
-                "production posture requires a readable GGUF model file when "
-                "local reasoning is configured"
-            )
-        logger.warning(
-            "[runtime] local SLM disabled — could not resolve a model file from "
-            "reasoning.local_model=%r and reasoning.model_path=%r",
-            local_model,
-            model_path,
-        )
-        return None
-
-    local_llm = LocalLLM(model_path=model_file, context_window=context_window)
-    if not local_llm.is_available:
-        if required:
-            raise ConfigValidationError(
-                "production posture requires llama-cpp-python and an accessible "
-                f"local model file; local reasoning is unavailable for {model_file}"
-            )
-        logger.warning(
-            "[runtime] local SLM unavailable for model=%s. Ensure llama-cpp-python "
-            "is installed and model file is accessible.",
-            shown(model_file),
-        )
-        return None
-
-    logger.info(
-        "[runtime] local SLM enabled — model=%s n_ctx=%d",
-        shown(model_file),
-        context_window,
-    )
-    return local_llm
-
-
-def _build_gateway_reasoner(
-    config: Config, envelope_state: GatewayEnvelopeState | None = None
-) -> MqttGatewayReasoner | None:
-    """Instantiate the MQTT Tier 3 gateway reasoner when configured."""
-    if not bool(config.gateway.enabled):
-        return None
-    reasoning_cfg = (
-        config.gateway.reasoning if isinstance(config.gateway.reasoning, dict) else {}
-    )
-    if not bool(reasoning_cfg.get("enabled", True)):
-        return None
-    try:
-        reasoner = MqttGatewayReasoner(
-            broker_url=config.gateway.broker_url,
-            device_id=config.device.id,
-            timeout_ms=int(reasoning_cfg.get("timeout_ms", 10_000)),
-            tls_config=getattr(config.gateway, "tls", {}),
-            message_auth=_build_gateway_message_auth(config, envelope_state),
-        )
-    except Exception:
-        logger.exception("[runtime] invalid gateway reasoning configuration")
-        return None
-    logger.info(
-        "[runtime] MQTT gateway reasoning enabled on ori/%s/reasoning/request",
-        config.device.id,
-    )
-    return reasoner
-
-
-def _build_evidence_attestor(config: Config) -> FirstPartyEvidenceAttestor | None:
-    """Build the optional Tier C/D evidence attestor.
-
-    Evidence signing is opt-in via ``evidence.enabled``. A configured but
-    missing device secret fails startup loudly -- a silently unkeyed evidence
-    chain would defeat the point of enabling it.
-
-    The epoch and key selector are not read from configuration. They are derived
-    from the device identity and the evidence key once that key exists, because
-    they are sealed into immutable envelopes and recomputed by the evidence
-    authority: a configured value would eventually be set wrongly on some device
-    and could not be corrected afterwards.
-    """
-    evidence = getattr(config, "evidence", None)
-    if evidence is None or not bool(evidence.enabled):
-        return None
-    secret = os.environ.get(evidence.device_secret_env, "")
-    if not secret:
-        raise ValueError(
-            "evidence signing is enabled but the configured device-secret "
-            f"environment variable ({evidence.device_secret_env}) is empty; "
-            "provision a random install secret (not just the device serial)"
-        )
-    shipped = _load_authority_keys()
-    return FirstPartyEvidenceAttestor(
-        db_path=evidence.db_path,
-        key_path=evidence.key_path,
-        device_secret=secret,
-        device_id=config.device.id,
-        custody_keys=_custody_key_registry(config),
-        authority_keys=shipped.keys,
-        authority_keys_refused=shipped.refused,
-    )
-
-
-#: Closed vocabulary for `evidence.posture_problems` in runtime health.
-EVIDENCE_POSTURE_SIGNING_UNAVAILABLE = "signing_unavailable"
-EVIDENCE_POSTURE_AUTHORITY_KEYS_MISSING = "authority_keys_missing"
-EVIDENCE_POSTURE_AUTHORITY_KEYS_REFUSED = "authority_keys_refused"
-EVIDENCE_POSTURE_AUTHORITY_KEYS_INCOMPLETE = "authority_keys_incomplete"
-EVIDENCE_POSTURE_CUSTODY_UNCONFIGURED = "custody_unconfigured"
-
-
-def _evidence_posture_problems(
-    config: Config, attestor: FirstPartyEvidenceAttestor
-) -> list[str]:
-    """What stops evidence trust being established, from local, knowable facts.
-
-    The ledger and device key opened, the signed release shipped an
-    authority-key registry that was accepted and holds a verifying key for
-    every purpose this release verifies, and custody can be verified when a
-    gateway carries evidence. Each missing piece is reported, never used to
-    refuse startup:
-    evidence records what happened and must not decide whether the runtime may
-    run. With any of these missing, ingest refuses what it cannot verify and
-    health says why.
-    """
-    problems: list[str] = []
-    if not attestor.available:
-        problems.append(EVIDENCE_POSTURE_SIGNING_UNAVAILABLE)
-    held = attestor.verifying_authority_purposes
-    if attestor.authority_keys_refused:
-        problems.append(EVIDENCE_POSTURE_AUTHORITY_KEYS_REFUSED)
-    elif not held:
-        problems.append(EVIDENCE_POSTURE_AUTHORITY_KEYS_MISSING)
-    elif not VERIFIED_PURPOSES <= held:
-        problems.append(EVIDENCE_POSTURE_AUTHORITY_KEYS_INCOMPLETE)
-    if bool(config.gateway.enabled) and not attestor.custody_configured:
-        problems.append(EVIDENCE_POSTURE_CUSTODY_UNCONFIGURED)
-    return problems
-
-
-def _load_authority_keys() -> ReleaseAuthorityKeys:
-    """Resolve the authority key registry from the signed release.
-
-    Packaged inside the wheel, so it is covered by the release signature and
-    arrives only through an activated release -- the same path the installer
-    already uses for release keys. It is deliberately not a configurable path:
-    an operator who could point the runtime at a registry of their choosing
-    could make arbitrary receipts and epoch confirmations trusted, which is the
-    entire property this registry exists to provide.
-
-    A release that ships none yields an empty registry, so inbound authority
-    artifacts are refused as unknown-key rather than accepted unverified. A
-    registry that is present but refused is never read in part: it yields no
-    keys and is marked refused, which stops evidence verification and reports
-    `authority_keys_refused`, and never stops the runtime, because Tier D is
-    never gated on evidence.
-    """
-    resource = resources.files("ori.security").joinpath("evidence-authority-keys.json")
-    try:
-        with resources.as_file(resource) as path:
-            if not path.exists():
-                return ReleaseAuthorityKeys(keys={})
-            return ReleaseAuthorityKeys(keys=load_release_authority_key_registry(path))
-    except (FileNotFoundError, ModuleNotFoundError):
-        return ReleaseAuthorityKeys(keys={})
-    except AuthorityKeyError as exc:
-        logger.error(
-            "[evidence] the release's authority keys are refused (%s); "
-            "no authority artifact will verify",
-            exc.rule,
-        )
-        return ReleaseAuthorityKeys(keys={}, refused=True)
-
-
-def _envelope_secrets(config: Config) -> tuple[str, ...]:
-    """Every runtime-gateway envelope secret currently resolvable.
-
-    Handed to the custody registry so reuse is refused on the bytes. Two
-    environment variables can hold the same value, so comparing the names an
-    operator wrote would report that configuration as correct.
-
-    Each value is contributed both as provisioned and stripped of surrounding
-    whitespace. A custody secret differing from an envelope secret only by a
-    trailing newline is the same secret to any peer that trims one of them, and
-    treating those as distinct key material would let a stray keystroke defeat
-    the separation rather than report it.
-    """
-    raw_auth = getattr(config.gateway, "auth", {})
-    auth_cfg = raw_auth if isinstance(raw_auth, dict) else {}
-    names = (
-        str(auth_cfg.get("shared_secret_env", "") or "").strip(),
-        str(auth_cfg.get("previous_shared_secret_env", "") or "").strip(),
-    )
-    resolved: list[str] = []
-    for name in names:
-        if not name:
-            continue
-        value = os.environ.get(name, "")
-        for candidate in (value, value.strip()):
-            if candidate and candidate not in resolved:
-                resolved.append(candidate)
-    return tuple(resolved)
-
-
-def _custody_key_registry(config: Config) -> CustodyKeyRegistry | None:
-    """The custody generations acknowledgements are verified against.
-
-    Built from `gateway.custody`, which is a **different secret** from
-    `gateway.auth.shared_secret_env`. Custody previously read the envelope
-    secret here, which every conformance test contradicted and no running
-    system exercised, because nothing routes an acknowledgement inbound yet.
-
-    None when no custody secret is configured. Custody is then refused at
-    ingest rather than accepted unauthenticated, since an unauthenticated
-    acknowledgement is forgeable by anything on the site network and the
-    runtime uses custody state to manage its queue.
-    """
-    raw = getattr(config.gateway, "custody", {})
-    custody_cfg = raw if isinstance(raw, dict) else {}
-    env_name = str(custody_cfg.get("secret_env", "") or "").strip()
-
-    # Not configured at all is a choice; configured and empty is a broken
-    # credential. Collapsing the second into the first would report a
-    # deployment whose custody secret never reached the process as one that
-    # deliberately runs without custody, and the operator would see a healthy
-    # runtime silently refusing every acknowledgement.
-    if not env_name:
-        return None
-    # Read exactly as provisioned. The custody MAC keys from these bytes, so
-    # trimming would key from bytes the operator did not set; the registry
-    # refuses surrounding whitespace instead of silently deriving a different
-    # identifier from the one the gateway holds.
-    active = os.environ.get(env_name, "")
-    if not active:
-        raise ValueError(
-            f"gateway.custody.secret_env names {env_name}, but that environment "
-            "variable is empty or unset; provision the custody secret or remove "
-            "the setting to run without custody verification"
-        )
-
-    previous_env = str(custody_cfg.get("previous_secret_env", "") or "").strip()
-    previous = ""
-    if previous_env:
-        previous = os.environ.get(previous_env, "")
-        if not previous:
-            raise ValueError(
-                f"gateway.custody.previous_secret_env names {previous_env}, but "
-                "that environment variable is empty or unset; a rotation window "
-                "needs the outgoing secret, so remove the setting to close it"
-            )
-
-    retired = tuple(str(v) for v in (custody_cfg.get("retired_key_ids") or ()))
-    try:
-        return CustodyKeyRegistry(
-            active_secret=active,
-            previous_secret=previous or None,
-            retired_key_ids=retired,
-            forbidden_secrets=_envelope_secrets(config),
-        )
-    except CustodyKeyRegistryError as exc:
-        # Fail closed and loudly. A registry that cannot be built is a
-        # misconfiguration an operator must fix, and silently continuing
-        # without custody verification would look like a working deployment.
-        raise ValueError(f"gateway.custody is misconfigured: {exc}") from exc
-
-
-def _build_gateway_message_encryptor(config: Config) -> GatewayMessageEncryptor | None:
-    """Build optional AES-GCM encryption for sensitive export payloads."""
-    raw_encryption = getattr(config.gateway, "encryption", {})
-    encryption_cfg = raw_encryption if isinstance(raw_encryption, dict) else {}
-    if not bool(encryption_cfg.get("enabled", False)):
-        return None
-    raw_auth = getattr(config.gateway, "auth", {})
-    auth_cfg = raw_auth if isinstance(raw_auth, dict) else {}
-    if not bool(auth_cfg.get("enabled", False)):
-        raise ValueError("gateway encryption requires gateway auth")
-    env_name = str(auth_cfg.get("shared_secret_env", "") or "").strip()
-    secret = os.environ.get(env_name, "") if env_name else ""
-    if not secret:
-        raise ValueError(
-            "gateway encryption is enabled but configured shared-secret "
-            "environment variable is empty"
-        )
-    return GatewayMessageEncryptor(GatewayMessageEncryptionConfig(shared_secret=secret))
-
-
-def _build_gateway_heartbeat_subscriber(
-    config: Config,
-    posture_tracker: CapabilityPostureTracker,
-    envelope_state: GatewayEnvelopeState | None = None,
-) -> MqttGatewayHeartbeatSubscriber | None:
-    """Instantiate the MQTT gateway heartbeat subscriber when configured."""
-    if not bool(config.gateway.enabled):
-        return None
-    auth_cfg = getattr(config.gateway, "auth", {}) or {}
-    auth_enabled = bool(auth_cfg.get("enabled", False))
-    if not auth_enabled:
-        logger.warning(
-            "[gateway-heartbeat] gateway.auth.enabled is false — heartbeat "
-            "payloads are accepted without HMAC verification. A spoofed "
-            "heartbeat can corrupt gateway liveness state and cause the "
-            "elevator to burn escalation timeout budget on a non-existent "
-            "gateway. Enable gateway.auth for all production deployments."
-        )
-    try:
-        subscriber = MqttGatewayHeartbeatSubscriber(
-            broker_url=config.gateway.broker_url,
-            posture_tracker=posture_tracker,
-            device_id=config.device.id,
-            tls_config=getattr(config.gateway, "tls", {}),
-            authenticator=_build_gateway_message_auth(config, envelope_state),
-        )
-    except Exception:
-        logger.exception("[runtime] invalid gateway heartbeat configuration")
-        return None
-    logger.info(
-        "[runtime] MQTT gateway heartbeat subscriber enabled on %s (auth=%s)",
-        "ori/gateway/health",
-        "enabled" if auth_enabled else "disabled",
-    )
-    return subscriber
-
-
-def _build_evidence_inbound_subscriber(
-    config: Config,
-    attestor: FirstPartyEvidenceAttestor | None,
-    envelope_state: GatewayEnvelopeState | None = None,
-) -> MqttEvidenceInboundSubscriber | None:
-    """Instantiate the inbound authority-artifact route when configured.
-
-    Requires a gateway and a started attestor. Without the attestor there is no
-    ledger to apply anything to, and subscribing anyway would leave a runtime
-    acknowledging receipt of artifacts it cannot record -- which is worse than
-    not listening, because the gateway would stop retrying.
-
-    Envelope authentication is defense in depth rather than the proof. Every
-    artifact carries its own authenticator, verified under key material this
-    transport never sees: custody under the dedicated custody secret, receipts
-    and epoch confirmations under authority keys from the signed release. An
-    unauthenticated envelope therefore degrades the route rather than opening
-    it, which is why development may run without one while staging and
-    production reject an auth-disabled gateway broker at config load.
-    """
-    if not bool(config.gateway.enabled):
-        return None
-    if attestor is None or not attestor.available:
-        return None
-    ingest = attestor.ingest
-    if ingest is None:
-        return None
-
-    auth_cfg = getattr(config.gateway, "auth", {}) or {}
-    auth_enabled = bool(auth_cfg.get("enabled", False))
-    if not auth_enabled:
-        logger.warning(
-            "[evidence-inbound] gateway.auth.enabled is false — inbound "
-            "authority artifacts are accepted without envelope verification. "
-            "Each artifact is still verified under its own key material, so "
-            "nothing is trusted on arrival, but anything on the site network "
-            "can then spend this runtime's ingest path. Enable gateway.auth "
-            "for all production deployments."
-        )
-    try:
-        router = EvidenceInboundRouter(
-            device_id=config.device.id,
-            ingest=ingest,
-            message_auth=_build_gateway_message_auth(config, envelope_state),
-        )
-        subscriber = MqttEvidenceInboundSubscriber(
-            broker_url=config.gateway.broker_url,
-            router=router,
-            device_id=config.device.id,
-            tls_config=getattr(config.gateway, "tls", {}),
-        )
-    except Exception:
-        logger.exception("[runtime] invalid inbound evidence route configuration")
-        return None
-    logger.info(
-        "[runtime] inbound evidence route enabled on %s (envelope auth=%s)",
-        subscriber.topic,
-        "enabled" if auth_enabled else "disabled",
-    )
-    return subscriber
-
-
-def _build_evidence_outbound_publisher(
-    config: Config,
-    attestor: FirstPartyEvidenceAttestor | None,
-    envelope_state: GatewayEnvelopeState | None = None,
-) -> MqttEvidenceOutboundPublisher | None:
-    """Instantiate the outbound carriage route when configured.
-
-    Requires a gateway and a started attestor: without a ledger there is
-    nothing to carry. Envelope authentication covers the courier's
-    acknowledgements only; the artifacts themselves are device-signed end to
-    end, so an unauthenticated development gateway degrades what a queued
-    acknowledgement is worth rather than what the courier receives.
-    """
-    if not bool(config.gateway.enabled):
-        return None
-    if attestor is None or not attestor.available:
-        return None
-    outbox = attestor.outbound
-    if outbox is None:
-        return None
-    auth_cfg = getattr(config.gateway, "auth", {}) or {}
-    auth_enabled = bool(auth_cfg.get("enabled", False))
-    if not auth_enabled:
-        logger.warning(
-            "[evidence-outbound] gateway.auth.enabled is false — courier "
-            "acknowledgements are applied without envelope verification, so "
-            "anything on the site network can retire a queued checkpoint. "
-            "Enable gateway.auth for all production deployments."
-        )
-    try:
-        router = EvidenceOutboundAckRouter(
-            device_id=config.device.id,
-            outbox=outbox,
-            message_auth=_build_gateway_message_auth(config, envelope_state),
-        )
-        publisher = MqttEvidenceOutboundPublisher(
-            broker_url=config.gateway.broker_url,
-            router=router,
-            device_id=config.device.id,
-            outbox=outbox,
-            tls_config=getattr(config.gateway, "tls", {}),
-        )
-    except Exception:
-        logger.exception("[runtime] invalid outbound evidence route configuration")
-        return None
-    logger.info(
-        "[runtime] outbound evidence route enabled on %s (envelope auth=%s)",
-        publisher.topic,
-        "enabled" if auth_enabled else "disabled",
-    )
-    return publisher
-
-
-def _firmware_telemetry_config(config: Config) -> dict[str, Any] | None:
-    """The firmware telemetry section when the subscriber is enabled, else None."""
-    if not bool(config.gateway.enabled):
-        return None
-    firmware_cfg = (
-        config.gateway.firmware_telemetry
-        if isinstance(getattr(config.gateway, "firmware_telemetry", {}), dict)
-        else {}
-    )
-    if not bool(firmware_cfg.get("enabled", False)):
-        return None
-    return firmware_cfg
-
-
-def _firmware_profile_library(
-    firmware_cfg: dict[str, Any],
-) -> ControllerProfileLibrary:
-    """The controller profile documents held, read once at start."""
-    return ControllerProfileLibrary.from_directory(
-        str(firmware_cfg.get("controller_profiles_dir", "") or "") or None
-    )
-
-
-def _build_firmware_telemetry_subscriber(
-    config: Config,
-    event_bus: EventBus,
-    state_store: StateStore,
-    deduplicator: EventDeduplicator | None,
-    liveness_supervisor: FirmwareLivenessSupervisor,
-    on_connected: Callable[[], None] | None = None,
-    profiles: ControllerProfileLibrary | None = None,
-    alarms: ControllerAlarmTracker | None = None,
-    reading_age: ReadingAgeTracker | None = None,
-) -> MqttFirmwareTelemetrySubscriber | None:
-    """Instantiate the signed firmware telemetry subscriber when configured."""
-    firmware_cfg = _firmware_telemetry_config(config)
-    if firmware_cfg is None:
-        return None
-    if profiles is None:
-        profiles = _firmware_profile_library(firmware_cfg)
-    try:
-        subscriber = MqttFirmwareTelemetrySubscriber(
-            broker_url=config.gateway.broker_url,
-            telemetry_gate=FirmwareTelemetryGate(
-                state_store, profiles=profiles, alarms=alarms, reading_age=reading_age
-            ),
-            event_bus=event_bus,
-            state_store=state_store,
-            runtime_device_id=config.device.id,
-            topic=str(firmware_cfg.get("topic", "ori/fw/+/telemetry")),
-            qos=int(firmware_cfg.get("qos", 1)),
-            tls_config=getattr(config.gateway, "tls", {}),
-            deduplicator=deduplicator,
-            liveness_supervisor=liveness_supervisor,
-            on_connected=on_connected,
-        )
-    except Exception:
-        logger.exception("[runtime] invalid firmware telemetry MQTT configuration")
-        return None
-    logger.info(
-        "[runtime] MQTT firmware telemetry subscriber enabled on %s",
-        firmware_cfg.get("topic", "ori/fw/+/telemetry"),
-    )
-    return subscriber
-
-
-def _firmware_reading_age(config: Config) -> ReadingAgeTracker | None:
-    """The reading-age tracker, with a liveness table only where this runtime signs liveness.
-
-    None when no firmware telemetry is accepted. The per-device bound holds an
-    hour of a device's ``v`` 2 messages at the configured interval
-    (firmware-telemetry/v2 The bound); the total bound is fixed, so a short
-    interval cannot grow the table without limit.
-    """
-    if _firmware_telemetry_config(config) is None:
-        return None
-    command_cfg = (
-        config.gateway.firmware_commands
-        if isinstance(getattr(config.gateway, "firmware_commands", {}), dict)
-        else {}
-    )
-    if not (bool(config.gateway.enabled) and bool(command_cfg.get("enabled", False))):
-        # No v 2 nonce is signed, so nothing could match a table.
-        return ReadingAgeTracker(None)
-    interval = command_cfg.get("liveness_interval_s", LIVENESS_PUBLISH_INTERVAL_S)
-    if (
-        isinstance(interval, bool)
-        or not isinstance(interval, (int, float))
-        or not math.isfinite(interval)
-        or interval < MIN_LIVENESS_PUBLISH_INTERVAL_S
-    ):
-        # The scheduler refuses this interval itself; the table still needs a size.
-        interval = LIVENESS_PUBLISH_INTERVAL_S
-    per_device = default_per_device_bound(float(interval))
-    return ReadingAgeTracker(
-        LivenessTable(
-            per_device_bound=per_device,
-            total_bound=max(per_device, DEFAULT_TOTAL_BOUND),
-        )
-    )
-
-
-def _build_firmware_command_service(
-    config: Config,
-    state_store: StateStore,
-    liveness_supervisor: FirmwareLivenessSupervisor,
-    liveness_table: LivenessTable | None = None,
-) -> tuple[MqttFirmwareCommandPublisher, FirmwareCommandService] | None:
-    """Instantiate firmware command egress when explicitly configured."""
-    if not bool(config.gateway.enabled):
-        return None
-    command_cfg = (
-        config.gateway.firmware_commands
-        if isinstance(getattr(config.gateway, "firmware_commands", {}), dict)
-        else {}
-    )
-    if not bool(command_cfg.get("enabled", False)):
-        return None
-    try:
-        runtime_key = load_raw_ed25519_seed_from_env(
-            str(command_cfg.get("runtime_command_key_env", "")),
-            label="runtime command key",
-        )
-        provisioner_key = load_raw_ed25519_seed_from_env(
-            str(command_cfg.get("provisioner_key_env", "")),
-            label="firmware provisioner key",
-        )
-        publisher = MqttFirmwareCommandPublisher(
-            broker_url=config.gateway.broker_url,
-            runtime_device_id=config.device.id,
-            qos=int(command_cfg.get("qos", 1)),
-            tls_config=getattr(config.gateway, "tls", {}),
-            publish_timeout_s=float(command_cfg.get("publish_timeout_s", 10.0)),
-        )
-        service = FirmwareCommandService(
-            store=state_store,
-            publisher=publisher,
-            runtime_command_key_bytes=runtime_key,
-            provisioner_key_bytes=provisioner_key,
-            liveness_supervisor=liveness_supervisor,
-            liveness_table=liveness_table,
-        )
-    except Exception:
-        logger.exception("[runtime] invalid firmware command egress configuration")
-        raise
-    return publisher, service
-
-
-def _provisioning_anchor_bytes(config: Config) -> bytes | None:
-    """The provisioning anchor as raw key material, from the environment it names.
-
-    The reading lives with the other anchors so the CLI bridge resolves the
-    same value from the same document; two readings of one anchor is one
-    reading too many.
-    """
-    return provisioning_anchor(config.security)
-
-
-_HEALTH_SEVERITY_RANK = {"degraded": 1, "critical": 2}
-
-
-def _fold_health_status(severities: list[str]) -> str | None:
-    """The most severe condition that holds, or None when none does.
-
-    An unrecognised severity raises rather than ranking as either.
-    """
-    return max(severities, key=_HEALTH_SEVERITY_RANK.__getitem__, default=None)
-
-
-def _degradation_reasons(*, firmware_liveness_degraded: bool) -> list[str]:
-    """Named degradation reasons for the node heartbeat.
-
-    Returns an empty list when nothing is degraded; the heartbeat omits the
-    field entirely in that case. An empty array on the wire is malformed —
-    absent and present-empty are different states, and encoding one as the
-    other is the ambiguity the contract exists to remove.
-
-    The vocabulary is owned by ``ori.gateway.node_heartbeat``, the wire
-    boundary that enforces it, so a token cannot be named here without also
-    being publishable there.
-    """
-    reasons: list[str] = []
-    if firmware_liveness_degraded:
-        reasons.append(DEGRADATION_REASON_FIRMWARE_LIVENESS)
-    return sorted(set(reasons))
-
-
-def _build_firmware_liveness_stack(
-    config: Config,
-    event_bus: EventBus,
-    state_store: StateStore,
-    deduplicator: EventDeduplicator | None,
-    on_telemetry_connected: Callable[[], None] | None = None,
-    profiles: ControllerProfileLibrary | None = None,
-    alarms: ControllerAlarmTracker | None = None,
-    reading_age: ReadingAgeTracker | None = None,
-) -> tuple[
-    FirmwareLivenessSupervisor,
-    MqttFirmwareTelemetrySubscriber | None,
-    tuple[MqttFirmwareCommandPublisher, FirmwareCommandService] | None,
-    FirmwareLivenessScheduler | None,
-]:
-    """Compose both firmware liveness halves around ONE supervisor.
-
-    The telemetry subscriber is the only thing that can establish
-    supervision and the command service is the only thing that can act on
-    it, so they must hold the same object. Two instances leave the service
-    refusing every device forever while the subscriber records into a map
-    nobody reads — production indistinguishable from the feature being
-    absent, with every unit test still green.
-
-    This exists as a function rather than as three statements inside
-    ``start`` because that is what makes the shared instance assertable.
-    Wiring each half correctly while connecting neither to the other is a
-    mistake no unit test can see; with exactly one construction site and one
-    name to pass, it has nowhere to happen.
-    """
-    supervisor = FirmwareLivenessSupervisor()
-    subscriber = _build_firmware_telemetry_subscriber(
-        config,
-        event_bus,
-        state_store,
-        deduplicator,
-        supervisor,
-        on_connected=on_telemetry_connected,
-        profiles=profiles,
-        alarms=alarms,
-        reading_age=reading_age,
-    )
-    # The same table the gate matches nonces against, for the same reason as
-    # the shared supervisor: a second one would bound nothing.
-    command_pair = _build_firmware_command_service(
-        config,
-        state_store,
-        supervisor,
-        None if reading_age is None else reading_age.table,
-    )
-
-    # The scheduler is composed here rather than in ``start`` for the same
-    # reason as the rest: it must drive the command SERVICE, whose signing
-    # refusal is the supervision obligation, and never the transport
-    # publisher beside it. Building it next to both makes the wrong one
-    # visibly wrong.
-    scheduler = None
-    if command_pair is not None:
-        command_cfg = (
-            config.gateway.firmware_commands
-            if isinstance(getattr(config.gateway, "firmware_commands", {}), dict)
-            else {}
-        )
-        # No separate enable flag: command authority and its supervision
-        # assertion are one operational posture, not two switches. A runtime
-        # that commands a device but never asserts it is watching is the
-        # exact condition this signal exists to make visible.
-        #
-        # It does not by itself orphan anything. A device is orphaned only
-        # when neither the runtime nor a gateway is reachable, and firmware
-        # today still derives runtime_reachable from broker connectivity —
-        # so an expired assertion changes nothing until the edge firmware
-        # derives reachability from the liveness assertion instead.
-        scheduler = FirmwareLivenessScheduler(
-            command_pair[1],
-            interval_s=float(
-                command_cfg.get("liveness_interval_s", LIVENESS_PUBLISH_INTERVAL_S)
-            ),
-        )
-    return supervisor, subscriber, command_pair, scheduler
-
-
-def _read_private_key_file(path: str) -> bytes:
-    """Read one root/runtime-owned private-key file without following symlinks."""
-    if not hasattr(os, "O_NOFOLLOW"):
-        raise RuntimeError("secure private-key file opening is unsupported")
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | os.O_NOFOLLOW
-    try:
-        fd = os.open(path, flags)
-    except OSError as exc:
-        raise RuntimeError("cannot open firmware MQTT client CA private key") from exc
-    try:
-        file_stat = os.fstat(fd)
-        if not stat.S_ISREG(file_stat.st_mode):
-            raise RuntimeError(
-                "firmware MQTT client CA private key must be a regular file"
-            )
-        if file_stat.st_uid not in {0, os.geteuid()}:
-            raise RuntimeError(
-                "firmware MQTT client CA private key has an invalid owner"
-            )
-        if file_stat.st_mode & 0o077:
-            raise RuntimeError(
-                "firmware MQTT client CA private key must have mode 0o600 or stricter"
-            )
-        with os.fdopen(fd, "rb", closefd=False) as handle:
-            value = handle.read(64 * 1024 + 1)
-    finally:
-        os.close(fd)
-    if not value or len(value) > 64 * 1024:
-        raise RuntimeError("firmware MQTT client CA private key size is invalid")
-    return value
-
-
-def _read_public_pem_file(path: str) -> bytes:
-    """Read bounded public PEM material without accepting a private key."""
-    if not hasattr(os, "O_NOFOLLOW"):
-        raise RuntimeError("secure certificate file opening is unsupported")
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | os.O_NOFOLLOW
-    try:
-        fd = os.open(path, flags)
-    except OSError as exc:
-        raise RuntimeError("cannot open firmware MQTT public certificate file") from exc
-    try:
-        file_stat = os.fstat(fd)
-        if not stat.S_ISREG(file_stat.st_mode):
-            raise RuntimeError(
-                "firmware MQTT public certificate must be a regular file"
-            )
-        with os.fdopen(fd, "rb", closefd=False) as handle:
-            value = handle.read(64 * 1024 + 1)
-    finally:
-        os.close(fd)
-    if not value or len(value) > 64 * 1024 or b"PRIVATE KEY" in value.upper():
-        raise RuntimeError("firmware MQTT public certificate material is invalid")
-    return value
-
-
-def _build_runtime_node_heartbeat_publisher(
-    config: Config,
-    health_snapshot_provider: Callable[[], dict[str, Any] | Awaitable[dict[str, Any]]],
-    envelope_state: GatewayEnvelopeState | None = None,
-) -> MqttRuntimeNodeHeartbeatPublisher | None:
-    """Instantiate the runtime-to-gateway node heartbeat publisher when configured."""
-    if not bool(config.gateway.enabled):
-        return None
-    heartbeat_cfg = (
-        config.gateway.node_heartbeat
-        if isinstance(getattr(config.gateway, "node_heartbeat", {}), dict)
-        else {}
-    )
-    if not bool(heartbeat_cfg.get("enabled", True)):
-        return None
-    auth_cfg = getattr(config.gateway, "auth", {}) or {}
-    auth_enabled = bool(auth_cfg.get("enabled", False))
-    if not auth_enabled:
-        logger.warning(
-            "[runtime-heartbeat] gateway.auth.enabled is false — node heartbeat "
-            "payloads are published without HMAC. Enable gateway.auth for "
-            "production deployments."
-        )
-    try:
-        publisher = MqttRuntimeNodeHeartbeatPublisher(
-            broker_url=config.gateway.broker_url,
-            device_id=config.device.id,
-            health_snapshot_provider=health_snapshot_provider,
-            interval_seconds=float(heartbeat_cfg.get("interval_seconds", 30)),
-            tls_config=getattr(config.gateway, "tls", {}),
-            authenticator=_build_gateway_message_auth(config, envelope_state),
-        )
-    except Exception:
-        logger.exception("[runtime] invalid runtime node heartbeat configuration")
-        return None
-    logger.info(
-        "[runtime] MQTT runtime node heartbeat publisher enabled on ori/%s/runtime/heartbeat (auth=%s)",
-        config.device.id,
-        "enabled" if auth_enabled else "disabled",
-    )
-    return publisher
-
-
-def _build_context_enricher(config: Config) -> ContextEnricher | None:
-    """Build ContextEnricher from reasoning.context_enricher config block."""
-    enricher_raw = getattr(config.reasoning, "context_enricher", {}) or {}
-    if not bool(enricher_raw.get("enabled", False)):
-        return None
-    try:
-        cfg = ContextEnricherConfig(
-            enabled=True,
-            staleness_window_ms=int(enricher_raw.get("staleness_window_ms", 60_000)),
-            max_entries=int(enricher_raw.get("max_entries", 5)),
-            include_sources=list(enricher_raw.get("include_sources") or []),
-        )
-        return ContextEnricher(cfg)
-    except Exception:
-        logger.exception(
-            "[runtime] failed to construct ContextEnricher — enrichment disabled"
-        )
-        return None
-
-
-def _coap_command_from_context(ctx: SkillContext) -> tuple[str, str | None]:
-    """Resolve CoAP command from event metadata and skill config.
-
-    Resolution order:
-    1. event.context["coap_command"] / ["coap_payload"]
-    2. reading.metadata["coap_command"] / ["coap_payload"]
-    3. skill.config.coap.trigger_commands[trigger_name]
-    4. skill.config.coap.default_command
-    """
-    if not ctx or not ctx.event:
-        return "", None
-
-    command_name = ""
-    payload_override: str | None = None
-
-    event_ctx = ctx.event.context if isinstance(ctx.event.context, dict) else {}
-    if isinstance(event_ctx.get("coap_command"), str):
-        command_name = str(event_ctx["coap_command"]).strip()
-    if event_ctx.get("coap_payload") is not None:
-        payload_override = str(event_ctx.get("coap_payload"))
-
-    reading = ctx.event.reading
-    metadata = reading.metadata if reading is not None else {}
-    if not command_name and isinstance(metadata.get("coap_command"), str):
-        command_name = str(metadata["coap_command"]).strip()
-    if payload_override is None and metadata.get("coap_payload") is not None:
-        payload_override = str(metadata.get("coap_payload"))
-
-    skill_cfg = getattr(getattr(ctx, "skill", None), "config", {}) or {}
-    if isinstance(skill_cfg, dict):
-        coap_cfg = skill_cfg.get("coap") or {}
-        if isinstance(coap_cfg, dict):
-            trigger_commands = coap_cfg.get("trigger_commands") or {}
-            if (
-                not command_name
-                and isinstance(trigger_commands, dict)
-                and isinstance(getattr(ctx, "trigger_name", ""), str)
-            ):
-                trigger_name = ctx.trigger_name.strip()
-                mapped = trigger_commands.get(trigger_name)
-                if isinstance(mapped, str) and mapped.strip():
-                    command_name = mapped.strip()
-            if not command_name:
-                default_command = coap_cfg.get("default_command")
-                if isinstance(default_command, str) and default_command.strip():
-                    command_name = default_command.strip()
-
-    return command_name, payload_override
-
-
-def _build_sms_allowed_senders(config: Config) -> set[str]:
-    """Return the normalized set of phone numbers permitted to send inbound SMS.
-
-    Built from ``actions.operator_contact`` and ``actions.secondary_contact``.
-    An empty set admits no approval reply from anyone.
-    """
-    senders: set[str] = set()
-    for raw in (config.actions.operator_contact, config.actions.secondary_contact):
-        normalized = "".join(ch for ch in str(raw or "") if ch.isdigit() or ch == "+")
-        if normalized:
-            senders.add(normalized)
-    return senders
-
-
-def _warn_gateway_security_posture(config: Config) -> None:
-    """Emit startup warnings for gateway security posture gaps.
-
-    Called once during runtime startup after all gateway components are built.
-    Does not raise — posture issues are warnings, not startup failures, because
-    loopback-only sites are intentionally configured without TLS or auth.
-    """
-    if not bool(config.gateway.enabled):
-        return
-
-    auth_cfg = getattr(config.gateway, "auth", {}) or {}
-    tls_cfg = getattr(config.gateway, "tls", {}) or {}
-    broker_url = str(getattr(config.gateway, "broker_url", "") or "")
-
-    auth_enabled = bool(auth_cfg.get("enabled", False))
-    tls_enabled = bool(tls_cfg.get("enabled", False))
-    # Parse the host out rather than prefix-matching the URL. Production
-    # posture requires broker credentials, so the very configuration this
-    # runtime asks for — `mqtt://user:pass@127.0.0.1:1883` — carries userinfo
-    # ahead of the host and matches no prefix. Classifying that as a public
-    # broker made the runtime log, at ERROR, that traffic was unauthenticated
-    # while it was in fact authenticated. A security channel that cries wolf
-    # is worse than a silent one: the operator either acts on a false alarm or
-    # learns to ignore it.
-    parsed = urlparse(broker_url if "://" in broker_url else f"mqtt://{broker_url}")
-    is_loopback = is_loopback_host(parsed.hostname)
-
-    if not auth_enabled:
-        if not is_loopback:
-            logger.error(
-                "[runtime-security] GATEWAY: gateway.auth.enabled is false and broker "
-                "is not loopback — MQTT traffic is unauthenticated. "
-                "Set gateway.auth.enabled: true and provide GATEWAY_SHARED_SECRET."
-            )
-        else:
-            logger.warning(
-                "[runtime-security] gateway.auth.enabled is false — HMAC envelope "
-                "authentication disabled. Acceptable for loopback-only deployments only."
-            )
-
-    if not tls_enabled and not is_loopback:
-        logger.warning(
-            "[runtime-security] GATEWAY: gateway.tls.enabled is false and broker is "
-            "not loopback — MQTT payloads are unencrypted on the network. "
-            "Enable TLS for any non-loopback gateway deployment."
-        )
-
-    if auth_enabled and not tls_enabled and not is_loopback:
-        logger.warning(
-            "[runtime-security] GATEWAY: HMAC auth is enabled but TLS is not. "
-            "Payloads are authenticated but visible in transit on the LAN. "
-            "Enable gateway.tls for defense-in-depth."
-        )
-
-
-def _warn_sms_webhook_security_posture(config: Config) -> None:
-    """Emit startup warnings for public SMS webhook ingress gaps.
-
-    Production/staging posture fails config load for these conditions. This
-    warning path exists for development configs that bind the webhook on a
-    non-loopback interface before production posture is enabled.
-    """
-    sms_cfg = config.actions.sms if isinstance(config.actions.sms, dict) else {}
-    webhook_cfg = sms_cfg.get("incoming_webhook") or {}
-    if not isinstance(webhook_cfg, dict):
-        return
-    if not is_truthy(webhook_cfg.get("enabled", False)):
-        return
-
-    host = str(webhook_cfg.get("host", "127.0.0.1") or "").strip()
-    if is_loopback_host(host):
-        return
-
-    signature_cfg = webhook_cfg.get("signature") or {}
-    signature_mode = (
-        str(signature_cfg.get("mode", "token_only") or "token_only").strip().lower()
-        if isinstance(signature_cfg, dict)
-        else "token_only"
-    )
-    if signature_mode == "token_only":
-        logger.error(
-            "[runtime-security] SMS_WEBHOOK: incoming_webhook.host=%r is not "
-            "loopback and signature.mode=token_only. Public SMS webhook ingress "
-            "must be fronted by a signing bridge or configured with "
-            "signature.mode=token_and_hmac/hmac_required.",
-            host,
-        )
-
-    source_cidrs = webhook_cfg.get("allowed_source_cidrs") or []
-    if not source_cidrs:
-        logger.warning(
-            "[runtime-security] SMS_WEBHOOK: incoming_webhook.host=%r is not "
-            "loopback and allowed_source_cidrs is empty. Restrict ingress to "
-            "Africa's Talking provider IP ranges or a trusted reverse proxy.",
-            host,
-        )
-
-
-# ── Entry point ───────────────────────────────────────────────────────────────
-
-
-def main() -> None:
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Ori Runtime")
-    parser.add_argument(
-        "--config",
-        default="ori.yaml",
-        help="Path to ori.yaml config file",
-    )
-    parser.add_argument(
-        "--log-level",
-        default="INFO",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-    )
-    args = parser.parse_args()
-
-    logging.basicConfig(
-        level=getattr(logging, args.log_level),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        datefmt="%Y-%m-%dT%H:%M:%S",
-    )
-
-    dotenv_variables = _maybe_autoload_dotenv(args.config)
-
-    runtime = OriRuntime(config_path=args.config, dotenv_variables=dotenv_variables)
-    asyncio.run(runtime.start())
-
-
-if __name__ == "__main__":
-    main()
