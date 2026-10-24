@@ -150,7 +150,7 @@ class DevicePolicyRefresh(RuntimeCore):
                 await asyncio.wait_for(self._shutdown_event.wait(), timeout=interval)
                 break
             except asyncio.TimeoutError:
-                pass
+                pass  # the refresh interval elapsed: fetch the policy again
             await self._refresh_remote_device_policy_once(
                 config=config,
                 dispatcher=dispatcher,

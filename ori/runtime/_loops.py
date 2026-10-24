@@ -56,7 +56,7 @@ class BackgroundLoops(RuntimeCore):
                                 timeout=WATCHDOG_PING_INTERVAL,
                             )
                         except asyncio.TimeoutError:
-                            pass
+                            pass  # the ping interval elapsed: ping again
                 finally:
                     # Clean shutdown — magic V tells the kernel this was intentional
                     # Runs even if the task is cancelled (CancelledError)
@@ -100,7 +100,7 @@ class BackgroundLoops(RuntimeCore):
                         timeout=ping_interval_s,
                     )
                 except asyncio.TimeoutError:
-                    pass
+                    pass  # the ping interval elapsed: toggle the pin again
         except Exception:
             logger.exception("[runtime] external watchdog loop failed")
         finally:
@@ -108,12 +108,12 @@ class BackgroundLoops(RuntimeCore):
                 try:
                     pin.off()
                 except Exception:
-                    pass
+                    pass  # best effort on the way out; the loop has already ended
                 if hasattr(pin, "close"):
                     try:
                         pin.close()
                     except Exception:
-                        pass
+                        pass  # best effort on the way out, as for off() above
 
     async def _heartbeat_loop(self, device_id: str) -> None:
         """Log a heartbeat every 5 minutes to confirm the runtime is alive.
@@ -168,7 +168,7 @@ class BackgroundLoops(RuntimeCore):
                 )
                 break  # shutdown was signalled
             except asyncio.TimeoutError:
-                pass
+                pass  # five minutes elapsed: log the heartbeat
             if self._state_store is not None:
                 try:
                     await self._state_store.compact_history(

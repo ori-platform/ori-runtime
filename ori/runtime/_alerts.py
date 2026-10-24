@@ -200,7 +200,7 @@ class AlertDelivery(RuntimeCore):
                     # duck-typed sender must satisfy; the guard is unchanged,
                     # so a non-callable attribute still falls through to
                     # `send()` rather than being invoked.
-                    send_exact = cast("Callable[..., Awaitable[object]]", exact_sender)
+                    send_exact = cast(Callable[..., Awaitable[object]], exact_sender)
                     receipt = coerce_alert_send_receipt(
                         await send_exact(
                             alert=alert,
@@ -585,7 +585,7 @@ class AlertDelivery(RuntimeCore):
                 )
                 break
             except asyncio.TimeoutError:
-                pass
+                pass  # the retry interval elapsed: drain the outbox again
 
             if self._state_store is None:
                 continue
