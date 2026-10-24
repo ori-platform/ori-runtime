@@ -76,6 +76,24 @@ def pytest_configure(config: pytest.Config) -> None:
     hold_reexports()
 
 
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_sessionfinish(session: pytest.Session) -> Iterator[None]:
+    """Fail the run for what changed after the last test's teardown check,
+    where no test's report is left to carry it."""
+    from tests.package_layout import begin_phase
+
+    result = yield
+    problems = begin_phase("After the last test")
+    if problems:
+        writer = session.config.get_terminal_writer()
+        writer.line()
+        writer.sep("=", "patch targets", red=True)
+        for problem in problems:
+            writer.line(problem, red=True)
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+    return result
+
+
 def pytest_unconfigure(config: pytest.Config) -> None:
     from tests.package_layout import release_reexports
 

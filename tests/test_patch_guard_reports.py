@@ -128,32 +128,46 @@ def pytest_runtest_teardown(item):
         with mock.patch("ori.config._actions.parse_actions", print):
             pass
     return (yield)
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_sessionfinish(session):
+    result = yield
+    with mock.patch("ori.config._fields.require_str", print):
+        pass
+    return result
 """
 
 
-def test_a_refused_patch_fails_its_report_whatever_else_the_test_does(
-    tmp_path: Path,
-) -> None:
-    # Outside tests/, where the suite's own scanners read every file, with this
-    # conftest loaded as a plugin and nothing inherited that changes the run.
-    probe = tmp_path / "test_probe.py"
-    probe.write_text(PROBE, encoding="utf-8")
+AFTER_THE_LAST_TEST = (
+    "After the last test: patched or deleted ori.config._fields.require_str"
+)
+
+
+def _run_probe(
+    tmp_path: Path, probe: str, *args: str
+) -> subprocess.CompletedProcess[str]:
+    """Run pytest on *probe* with this conftest and the outer plugin loaded.
+
+    Outside tests/, where the suite's own scanners read every file, and with
+    nothing inherited that changes the run.
+    """
+    (tmp_path / "test_probe.py").write_text(probe, encoding="utf-8")
     (tmp_path / "outer_plugin.py").write_text(OUTER_PLUGIN, encoding="utf-8")
     (tmp_path / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
-    junit = tmp_path / "report.xml"
     env = {
         name: value
         for name, value in os.environ.items()
         if not name.startswith("PYTEST_")
     }
     env["PYTHONPATH"] = os.pathsep.join([str(TESTS.parent), str(tmp_path)])
-    run = subprocess.run(
+    return subprocess.run(
         [
             sys.executable,
             "-B",
             "-m",
             "pytest",
-            str(probe),
+            str(tmp_path / "test_probe.py"),
             "-p",
             "tests.conftest",
             "-p",
@@ -165,7 +179,7 @@ def test_a_refused_patch_fails_its_report_whatever_else_the_test_does(
             "-p",
             "no:randomly",
             "-rA",
-            f"--junitxml={junit}",
+            *args,
         ],
         cwd=tmp_path,
         env=env,
@@ -173,6 +187,13 @@ def test_a_refused_patch_fails_its_report_whatever_else_the_test_does(
         text=True,
         timeout=120,
     )
+
+
+def test_a_refused_patch_fails_its_report_whatever_else_the_test_does(
+    tmp_path: Path,
+) -> None:
+    junit = tmp_path / "report.xml"
+    run = _run_probe(tmp_path, PROBE, f"--junitxml={junit}")
     outcomes = {
         (line.split("::")[1].split()[0], line.split()[0])
         for line in run.stdout.splitlines()
@@ -195,14 +216,28 @@ def test_a_refused_patch_fails_its_report_whatever_else_the_test_does(
         ("test_clean", "PASSED"),
         ("test_clean_xfail", "XFAIL"),
     }, run.stdout + run.stderr
+    assert AFTER_THE_LAST_TEST in run.stdout, run.stdout
     # Added beside the body's and the fixture's own failures.
-    assert run.stdout.count("patch targets") == 2, run.stdout
+    sections = [
+        line
+        for line in run.stdout.splitlines()
+        if line.startswith("-") and " patch targets " in line
+    ]
+    assert len(sections) == 2, run.stdout
     recorded = {
         case.get("name"): [child.tag for child in case]
         for case in ET.parse(junit).getroot().iter("testcase")
     }
     # A failed report still marked xfail would be written as skipped.
     assert recorded["test_partial_under_xfail"] == ["failure"], recorded
+
+
+def test_a_patch_after_the_last_test_fails_the_run(tmp_path: Path) -> None:
+    """No test's report is left to carry it, so the exit status does."""
+    run = _run_probe(tmp_path, "def test_passes():\n    pass\n")
+    assert run.returncode == pytest.ExitCode.TESTS_FAILED, run.stdout + run.stderr
+    assert "1 passed" in run.stdout
+    assert AFTER_THE_LAST_TEST in run.stdout, run.stdout
 
 
 def test_the_reporter_is_the_outermost_makereport_wrapper(
