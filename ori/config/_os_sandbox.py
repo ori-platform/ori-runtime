@@ -11,7 +11,7 @@ from ori.config._fields import ConfigValidationError
 logger = logging.getLogger("ori.config")
 
 
-def _parse_os_sandbox(data: Any) -> dict:
+def parse_os_sandbox(data: Any) -> dict:
     """Parse community skill OS sandbox settings."""
     defaults = {
         "enabled": True,

@@ -32,7 +32,7 @@ class GatewayConfig:
     broker_posture: dict = field(default_factory=dict)
 
 
-def _parse_gateway(data: Any) -> GatewayConfig:
+def parse_gateway(data: Any) -> GatewayConfig:
     if not isinstance(data, dict):
         raise ConfigValidationError("'gateway' section must be a mapping.")
     node_heartbeat_raw = data.get("node_heartbeat") or {}
@@ -337,7 +337,7 @@ def _parse_gateway(data: Any) -> GatewayConfig:
     enabled = bool(data.get("enabled", False))
     broker_url = str(data.get("broker_url", ""))
     if enabled and "${" in broker_url:
-        # `_expand_env_vars` deliberately leaves `${VAR}` literal when the
+        # `expand_env_vars` deliberately leaves `${VAR}` literal when the
         # variable is unset, and every other field carrying a secret or an
         # endpoint checks for the leftover. This one did not, so an unset
         # variable produced a URL the parser below accepts and no client can
@@ -410,11 +410,11 @@ def _parse_gateway_broker_posture(data: Any) -> dict[str, Any]:
     }
 
 
-def _warn_gateway_network_posture(gateway: GatewayConfig) -> None:
+def warn_gateway_network_posture(gateway: GatewayConfig) -> None:
     """Warn about weak non-loopback gateway broker posture in development.
 
     Staging and production profiles fail closed on the same conditions in
-    ``_validate_production_security_posture``; development deployments get a
+    ``validate_production_security_posture``; development deployments get a
     single consolidated WARNING instead so LAN testing stays possible.
     """
     if not bool(gateway.enabled):

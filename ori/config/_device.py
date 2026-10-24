@@ -79,7 +79,7 @@ class DeviceConfig:
     site_id: str = ""
 
 
-def _parse_device(data: Any) -> DeviceConfig:
+def parse_device(data: Any) -> DeviceConfig:
     if not isinstance(data, dict):
         raise ConfigValidationError("'device' section must be a mapping.")
 

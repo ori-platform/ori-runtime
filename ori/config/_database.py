@@ -19,7 +19,7 @@ logger = logging.getLogger("ori.config")
 _IN_MEMORY_STORE = ":memory:"
 
 
-def _parse_database_path(data: Any) -> str:
+def parse_database_path(data: Any) -> str:
     if data is None:
         return "ori_state.db"
     if not isinstance(data, dict):
@@ -46,7 +46,7 @@ def anchor_to_config(declared: str, config_path: str) -> str:
     return str(Path(os.path.normpath(home / candidate)))
 
 
-def _resolve_database_path(declared: str, config_path: str) -> str:
+def resolve_database_path(declared: str, config_path: str) -> str:
     """Resolve a relative store path against the configuration that declared it.
 
     A relative path otherwise resolves against the caller's working directory,

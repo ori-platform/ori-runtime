@@ -327,11 +327,19 @@ class SectionWalker(ast.NodeVisitor):
 
 
 def parse_functions(tree: ast.Module) -> dict[str, ast.FunctionDef]:
-    return {
-        n.name: n
-        for n in ast.walk(tree)
-        if isinstance(n, ast.FunctionDef) and n.name in ENTRY_POINTS
-    }
+    """Each section parser, keyed by the name ``ori.config`` exposes it under.
+
+    A parser another section module calls is defined without the underscore
+    and re-exported with it, so the inventory reads the same either way.
+    """
+    found: dict[str, ast.FunctionDef] = {}
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.FunctionDef):
+            continue
+        for exposed in (n.name, f"_{n.name}"):
+            if exposed in ENTRY_POINTS:
+                found[exposed] = n
+    return found
 
 
 def collect(tree: ast.Module) -> list[dict[str, Any]]:

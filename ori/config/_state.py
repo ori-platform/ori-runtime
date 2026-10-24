@@ -28,7 +28,7 @@ class StateConfig:
     encryption: StateEncryptionConfig = field(default_factory=StateEncryptionConfig)
 
 
-def _parse_state(data: Any) -> StateConfig:
+def parse_state(data: Any) -> StateConfig:
     if not isinstance(data, dict):
         return StateConfig()
     comp_data = data.get("compaction", {})

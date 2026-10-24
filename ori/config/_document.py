@@ -11,7 +11,7 @@ from typing import Any
 
 import yaml
 
-from ori.config._env import _ENV_VAR_RE, _expand_env_vars
+from ori.config._env import _ENV_VAR_RE, expand_env_vars
 from ori.config._fields import ConfigValidationError
 from ori.utils.path_utils import shown
 
@@ -141,7 +141,7 @@ class _BoundedConfigSafeLoader(yaml.SafeLoader):
         # Only the value is substituted. An explicit tag and a quoting style
         # both survive, because both already decided how the scalar is read,
         # so neither re-resolves against the substituted text.
-        expanded = _expand_env_vars(event.value)
+        expanded = expand_env_vars(event.value)
         if event.style is None:
             # A plain scalar has its surrounding whitespace stripped by the
             # parser, and the textual substitution happened before that ran.

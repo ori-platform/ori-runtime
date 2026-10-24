@@ -26,7 +26,7 @@ class SkillConfig:
 _SKILL_ENTRY_KEYS = frozenset({"name", "version"})
 
 
-def _parse_skills(data: Any) -> list[SkillConfig]:
+def parse_skills(data: Any) -> list[SkillConfig]:
     if not isinstance(data, list):
         raise ConfigValidationError("'skills' must be a list.")
 

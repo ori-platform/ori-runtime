@@ -6,11 +6,11 @@
 from pathlib import Path
 from typing import Any
 
-from ori.config._env import _ENV_NAME_RE
+from ori.config._env import ENV_NAME_RE
 from ori.config._fields import ConfigValidationError
 
 
-def _parse_firmware_mqtt_provisioning(data: Any) -> dict:
+def parse_firmware_mqtt_provisioning(data: Any) -> dict:
     """Parse the fail-closed firmware MQTT operator-service configuration."""
     defaults = {
         "enabled": False,
@@ -159,7 +159,7 @@ def _parse_firmware_mqtt_provisioning(data: Any) -> dict:
             "client_ca_key_password_env",
         ):
             env_name = str(out[env_field])
-            if env_name and _ENV_NAME_RE.fullmatch(env_name) is None:
+            if env_name and ENV_NAME_RE.fullmatch(env_name) is None:
                 raise ConfigValidationError(
                     f"firmware_mqtt_provisioning.{env_field} is invalid."
                 )

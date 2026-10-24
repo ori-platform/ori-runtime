@@ -7,41 +7,41 @@ import logging
 import re
 from dataclasses import dataclass, field, replace
 
-from ori.config._actions import ActionChannelConfig, _parse_actions
+from ori.config._actions import ActionChannelConfig, parse_actions
 from ori.config._database import (
-    _parse_database_path,
-    _resolve_database_path,
     anchor_to_config,
+    parse_database_path,
+    resolve_database_path,
 )
-from ori.config._device import DeviceConfig, _parse_device
-from ori.config._device_policy import _parse_device_policy
+from ori.config._device import DeviceConfig, parse_device
+from ori.config._device_policy import parse_device_policy
 from ori.config._document import _load_config_document, _read_config_text
-from ori.config._evidence import EvidenceConfig, _parse_evidence
+from ori.config._evidence import EvidenceConfig, parse_evidence
 from ori.config._fields import ConfigValidationError
 from ori.config._fields import checked_device_endpoint as _checked_device_endpoint
-from ori.config._firmware_mqtt_provisioning import _parse_firmware_mqtt_provisioning
+from ori.config._firmware_mqtt_provisioning import parse_firmware_mqtt_provisioning
 from ori.config._gateway import (
     GatewayConfig,
-    _parse_gateway,
-    _warn_gateway_network_posture,
+    parse_gateway,
+    warn_gateway_network_posture,
 )
-from ori.config._hal import HalConfig, _parse_hal
-from ori.config._health_socket import _parse_health_socket
-from ori.config._logging import LoggingConfig, _parse_logging
-from ori.config._os_sandbox import _parse_os_sandbox
-from ori.config._posture import _validate_production_security_posture
-from ori.config._reasoning import ReasoningConfig, _parse_reasoning
-from ori.config._security import _parse_security, _validate_sms_webhook_source_cidrs
+from ori.config._hal import HalConfig, parse_hal
+from ori.config._health_socket import parse_health_socket
+from ori.config._logging import LoggingConfig, parse_logging
+from ori.config._os_sandbox import parse_os_sandbox
+from ori.config._posture import validate_production_security_posture
+from ori.config._reasoning import ReasoningConfig, parse_reasoning
+from ori.config._security import parse_security, validate_sms_webhook_source_cidrs
 from ori.config._sensors import (
     SensorConfig,
-    _parse_sensors,
-    _refuse_persistent_mqtt_session,
-    _refuse_wildcard_mqtt_topic,
-    _validate_coap_sensor_allowlist,
+    parse_sensors,
+    refuse_persistent_mqtt_session,
+    refuse_wildcard_mqtt_topic,
+    validate_coap_sensor_allowlist,
 )
-from ori.config._skills import SkillConfig, _parse_skills
-from ori.config._state import StateConfig, _parse_state
-from ori.config._telemetry_export import TelemetryExportConfig, _parse_telemetry_export
+from ori.config._skills import SkillConfig, parse_skills
+from ori.config._state import StateConfig, parse_state
+from ori.config._telemetry_export import TelemetryExportConfig, parse_telemetry_export
 from ori.hal.protocol_registry import MQTT_FAMILY_PROTOCOLS
 from ori.security.config_signatures import (
     ConfigSignatureError,
@@ -153,18 +153,18 @@ class Config:
                 f"Config file {shown(path)} must be a YAML mapping at the top level."
             )
 
-        device = _parse_device(data.get("device", {}))
-        actions = _parse_actions(data.get("actions", {}))
+        device = parse_device(data.get("device", {}))
+        actions = parse_actions(data.get("actions", {}))
         sensor_external = dict(data)
         sensor_external["actions"] = {"coap": actions.coap}
-        sensors = _parse_sensors(data.get("sensors", []), external=sensor_external)
-        skills = _parse_skills(data.get("skills", []))
-        reasoning = _parse_reasoning(data.get("reasoning", {}))
-        gateway = _parse_gateway(data.get("gateway", {}))
-        telemetry_export = _parse_telemetry_export(data.get("telemetry_export"))
-        hal = _parse_hal(data.get("hal"))
-        device_policy = _parse_device_policy(data.get("device_policy"))
-        security = _parse_security(data.get("security"))
+        sensors = parse_sensors(data.get("sensors", []), external=sensor_external)
+        skills = parse_skills(data.get("skills", []))
+        reasoning = parse_reasoning(data.get("reasoning", {}))
+        gateway = parse_gateway(data.get("gateway", {}))
+        telemetry_export = parse_telemetry_export(data.get("telemetry_export"))
+        hal = parse_hal(data.get("hal"))
+        device_policy = parse_device_policy(data.get("device_policy"))
+        security = parse_security(data.get("security"))
         security["config_signature"]["verified"] = (
             config_signature_verification.verified
         )
@@ -180,17 +180,17 @@ class Config:
         security["config_signature"]["signed_at_ms"] = (
             config_signature_verification.signed_at_ms
         )
-        health_socket = _parse_health_socket(data.get("health_socket"))
-        firmware_mqtt_provisioning = _parse_firmware_mqtt_provisioning(
+        health_socket = parse_health_socket(data.get("health_socket"))
+        firmware_mqtt_provisioning = parse_firmware_mqtt_provisioning(
             data.get("firmware_mqtt_provisioning")
         )
-        os_sandbox = _parse_os_sandbox(data.get("os_sandbox"))
-        state_cfg = _parse_state(data.get("state"))
-        evidence_cfg = _parse_evidence(data.get("evidence"))
-        database_path = _resolve_database_path(
-            _parse_database_path(data.get("database")), path
+        os_sandbox = parse_os_sandbox(data.get("os_sandbox"))
+        state_cfg = parse_state(data.get("state"))
+        evidence_cfg = parse_evidence(data.get("evidence"))
+        database_path = resolve_database_path(
+            parse_database_path(data.get("database")), path
         )
-        logging_cfg = _parse_logging(data.get("logging"))
+        logging_cfg = parse_logging(data.get("logging"))
         # The runtime writes these, so where they land must be the installation
         # the configuration describes rather than wherever it was started. The
         # evidence key is sealed on first use, so a second working directory
@@ -227,8 +227,8 @@ class Config:
         for sensor in sensors:
             mqtt_cfg = sensor.metadata.get("mqtt")
             if sensor.protocol in MQTT_FAMILY_PROTOCOLS:
-                _refuse_persistent_mqtt_session(sensor.id, sensor.metadata)
-                _refuse_wildcard_mqtt_topic(sensor.id, sensor.metadata)
+                refuse_persistent_mqtt_session(sensor.id, sensor.metadata)
+                refuse_wildcard_mqtt_topic(sensor.id, sensor.metadata)
             tls = mqtt_cfg.get("tls") if isinstance(mqtt_cfg, dict) else None
             if isinstance(tls, dict):
                 for key in ("ca_certfile", "certfile", "keyfile"):
@@ -260,9 +260,9 @@ class Config:
             gsm["port"] = _checked_device_endpoint(
                 gsm["port"], "actions.sms.gsm.port", urls_supported=False
             )
-        _validate_coap_sensor_allowlist(sensors, actions.coap)
-        _warn_gateway_network_posture(gateway)
-        _validate_production_security_posture(
+        validate_coap_sensor_allowlist(sensors, actions.coap)
+        warn_gateway_network_posture(gateway)
+        validate_production_security_posture(
             device=device,
             gateway=gateway,
             actions=actions,
@@ -406,7 +406,7 @@ class Config:
                     or incoming.get("enabled") is True
                 )
                 if webhook_enabled:
-                    _validate_sms_webhook_source_cidrs(
+                    validate_sms_webhook_source_cidrs(
                         incoming.get("allowed_source_cidrs")
                     )
                     signature_cfg = incoming.get("signature") or {}

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
-from ori.config._env import _ENV_NAME_RE
+from ori.config._env import ENV_NAME_RE
 from ori.config._fields import ConfigValidationError
 from ori.utils.bool_utils import is_truthy
 from ori.utils.net_utils import is_loopback_host
@@ -24,7 +24,7 @@ class TelemetryExportConfig:
     max_queue_size: int = 1000
 
 
-def _parse_telemetry_export(data: Any) -> TelemetryExportConfig:
+def parse_telemetry_export(data: Any) -> TelemetryExportConfig:
     if data is None:
         return TelemetryExportConfig()
     if not isinstance(data, dict):
@@ -83,7 +83,7 @@ def _parse_telemetry_export(data: Any) -> TelemetryExportConfig:
                 "telemetry_export.api_key_env is required when "
                 "telemetry_export.enabled=true."
             )
-        if not _ENV_NAME_RE.match(api_key_env):
+        if not ENV_NAME_RE.match(api_key_env):
             raise ConfigValidationError(
                 "telemetry_export.api_key_env must be an environment variable name."
             )

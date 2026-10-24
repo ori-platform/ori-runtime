@@ -21,7 +21,7 @@ class ReasoningConfig:
     context_enricher: dict = field(default_factory=dict)
 
 
-def _parse_reasoning(data: Any) -> ReasoningConfig:
+def parse_reasoning(data: Any) -> ReasoningConfig:
     if not isinstance(data, dict):
         raise ConfigValidationError("'reasoning' section must be a mapping.")
 

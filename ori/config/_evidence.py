@@ -6,7 +6,7 @@
 from dataclasses import dataclass
 from typing import Any
 
-from ori.config._env import _ENV_NAME_RE
+from ori.config._env import ENV_NAME_RE
 from ori.config._fields import ConfigValidationError
 from ori.utils.bool_utils import is_truthy
 
@@ -42,7 +42,7 @@ class EvidenceConfig:
     # is one that would eventually be set wrongly and could not be corrected.
 
 
-def _parse_evidence(data: Any) -> EvidenceConfig:
+def parse_evidence(data: Any) -> EvidenceConfig:
     if data is None:
         return EvidenceConfig()
     if not isinstance(data, dict):
@@ -62,7 +62,7 @@ def _parse_evidence(data: Any) -> EvidenceConfig:
             raise ConfigValidationError(
                 "evidence.key_path is required when evidence.enabled is true"
             )
-        if not _ENV_NAME_RE.match(device_secret_env):
+        if not ENV_NAME_RE.match(device_secret_env):
             raise ConfigValidationError(
                 "evidence.device_secret_env must be a valid environment variable name"
             )

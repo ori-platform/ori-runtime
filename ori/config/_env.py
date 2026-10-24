@@ -7,10 +7,10 @@ import os
 import re
 
 _ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
-_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\Z")
+ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\Z")
 
 
-def _expand_env_vars(text: str) -> str:
+def expand_env_vars(text: str) -> str:
     """Replace ${VAR_NAME} with the environment variable value, or leave as-is."""
 
     def _replace(match: re.Match[str]) -> str:

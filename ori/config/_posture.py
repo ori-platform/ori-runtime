@@ -13,7 +13,7 @@ from ori.config._device import DeviceConfig
 from ori.config._document import _load_config_document, _read_config_text
 from ori.config._fields import ConfigValidationError
 from ori.config._gateway import GatewayConfig
-from ori.config._security import _sms_webhook_source_cidrs_present
+from ori.config._security import sms_webhook_source_cidrs_present
 from ori.config._state import StateConfig
 from ori.security.config_signatures import CONFIG_REQUIRE_SIGNED_ENV
 from ori.utils.bool_utils import is_truthy
@@ -72,7 +72,7 @@ def requires_production_posture(
     )
 
 
-def _validate_production_security_posture(
+def validate_production_security_posture(
     *,
     device: DeviceConfig,
     gateway: GatewayConfig,
@@ -224,7 +224,7 @@ def _validate_production_security_posture(
         host = str(incoming.get("host", "127.0.0.1") or "").strip()
         if not is_loopback_host(host):
             allowed_source_cidrs = incoming.get("allowed_source_cidrs")
-            if not _sms_webhook_source_cidrs_present(allowed_source_cidrs):
+            if not sms_webhook_source_cidrs_present(allowed_source_cidrs):
                 raise ConfigValidationError(
                     "production posture requires "
                     "actions.sms.incoming_webhook.allowed_source_cidrs for public "

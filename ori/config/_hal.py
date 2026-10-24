@@ -20,7 +20,7 @@ class HalConfig:
     status_signaling: dict = field(default_factory=dict)
 
 
-def _parse_hal(data: Any) -> HalConfig:
+def parse_hal(data: Any) -> HalConfig:
     """Parse the HAL block gracefully, enforcing safe defaults on failure."""
     default_cb = {
         "failure_threshold": 5,

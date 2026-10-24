@@ -11,7 +11,7 @@ from ori.config._fields import ConfigValidationError
 logger = logging.getLogger("ori.config")
 
 
-def _parse_device_policy(data: Any) -> dict:
+def parse_device_policy(data: Any) -> dict:
     """Parse remote DevicePolicy fetch settings."""
     default_policy = {
         "enabled": False,

@@ -11,7 +11,7 @@ from ori.config._fields import ConfigValidationError
 logger = logging.getLogger("ori.config")
 
 
-def _parse_health_socket(data: Any) -> dict:
+def parse_health_socket(data: Any) -> dict:
     """Parse local read-only health socket configuration."""
     default_socket = {
         "enabled": True,

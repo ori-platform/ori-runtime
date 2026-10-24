@@ -33,7 +33,7 @@ class ActionChannelConfig:
     setup_notifications: dict = field(default_factory=dict)
 
 
-def _parse_actions(data: Any) -> ActionChannelConfig:
+def parse_actions(data: Any) -> ActionChannelConfig:
     if not isinstance(data, dict):
         raise ConfigValidationError("'actions' section must be a mapping.")
 

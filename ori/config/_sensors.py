@@ -53,7 +53,7 @@ class SensorConfig:
     calibration: dict = field(default_factory=dict)
 
 
-def _parse_sensors(
+def parse_sensors(
     data: Any, *, external: dict[str, Any] | None = None
 ) -> list[SensorConfig]:
     if not isinstance(data, list):
@@ -188,7 +188,7 @@ def _refuse_reserved_sensor_metadata(
         )
 
 
-def _validate_coap_sensor_allowlist(
+def validate_coap_sensor_allowlist(
     sensors: list[SensorConfig], coap_actions_cfg: dict[str, Any]
 ) -> None:
     coap_sensors = [sensor for sensor in sensors if sensor.protocol == "coap"]
@@ -244,7 +244,7 @@ def _validate_coap_sensor_metadata(metadata: dict[str, Any], section: str) -> No
 _CLEAN_SESSION_SPELLINGS = ("clean_session", "mqtt_clean_session")
 
 
-def _refuse_persistent_mqtt_session(sensor_id: str, metadata: dict[str, Any]) -> None:
+def refuse_persistent_mqtt_session(sensor_id: str, metadata: dict[str, Any]) -> None:
     """A sensor's MQTT session is clean; a persistent one is refused by name."""
     mqtt_cfg = metadata.get("mqtt")
     places: list[tuple[str, Any]] = [
@@ -270,7 +270,7 @@ def _refuse_persistent_mqtt_session(sensor_id: str, metadata: dict[str, Any]) ->
 _MQTT_TOPIC_KEYS = ("topic", "portal_id")
 
 
-def _refuse_wildcard_mqtt_topic(sensor_id: str, metadata: dict[str, Any]) -> None:
+def refuse_wildcard_mqtt_topic(sensor_id: str, metadata: dict[str, Any]) -> None:
     """A sensor reads one concrete topic; a wildcard is refused by name."""
     for key in _MQTT_TOPIC_KEYS:
         value = metadata.get(key)

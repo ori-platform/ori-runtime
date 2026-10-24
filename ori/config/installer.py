@@ -15,7 +15,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -25,9 +24,9 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 from ori.config import Config, ConfigValidationError, read_config_bytes
+from ori.config._env import ENV_NAME_RE
 from ori.utils.path_utils import shown
 
-_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\Z")
 # Named apart from `ori.config._MAX_CONFIG_BYTES`, which bounds the runtime's own
 # `ori.yaml` at 1 MiB. Two different documents, two different limits.
 _MAX_SOURCE_CONFIG_BYTES = 512 * 1024
@@ -199,7 +198,7 @@ def _fetch_https_source(
     headers = {"Accept": "application/x-yaml, text/yaml, application/octet-stream"}
     if bearer_token_env:
         env_name = bearer_token_env.strip()
-        if not _ENV_NAME_RE.fullmatch(env_name):
+        if not ENV_NAME_RE.fullmatch(env_name):
             raise ConfigInstallError("bearer-token-env must be an environment name")
         token = os.environ.get(env_name, "").strip()
         if not token:

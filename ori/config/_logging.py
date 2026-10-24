@@ -20,7 +20,7 @@ class LoggingConfig:
     log_approval_workflow: bool = True
 
 
-def _parse_logging(data: Any) -> LoggingConfig:
+def parse_logging(data: Any) -> LoggingConfig:
     if not isinstance(data, dict):
         if data is not None:
             logger.warning(

@@ -8,7 +8,7 @@ import os
 from ipaddress import ip_network
 from typing import Any
 
-from ori.config._env import _ENV_NAME_RE
+from ori.config._env import ENV_NAME_RE
 from ori.config._fields import ConfigValidationError
 from ori.security.config_signatures import (
     CONFIG_REQUIRE_SIGNED_ENV,
@@ -21,7 +21,7 @@ from ori.utils.bool_utils import is_truthy
 logger = logging.getLogger("ori.config")
 
 
-def _parse_security(data: Any) -> dict:
+def parse_security(data: Any) -> dict:
     """Parse security controls that are not tied to one action channel."""
     if data is None:
         data = {}
@@ -111,7 +111,7 @@ def _parse_security(data: Any) -> dict:
         or config_signature.get("trust_anchor_env")
         or DEFAULT_CONFIG_TRUST_ANCHOR_ENV
     ).strip()
-    if not trust_anchor_env or not _ENV_NAME_RE.fullmatch(trust_anchor_env):
+    if not trust_anchor_env or not ENV_NAME_RE.fullmatch(trust_anchor_env):
         raise ConfigValidationError(
             "security.config_signature.trust_anchor_env must be a valid "
             "environment variable name."
@@ -132,7 +132,7 @@ def _parse_security(data: Any) -> dict:
     return out
 
 
-def _validate_sms_webhook_source_cidrs(data: Any) -> None:
+def validate_sms_webhook_source_cidrs(data: Any) -> None:
     """Validate optional SMS webhook source CIDR allowlist."""
     if data is None:
         return
@@ -161,7 +161,7 @@ def _validate_sms_webhook_source_cidrs(data: Any) -> None:
             )
 
 
-def _sms_webhook_source_cidrs_present(data: Any) -> bool:
+def sms_webhook_source_cidrs_present(data: Any) -> bool:
     if not isinstance(data, list):
         return False
     return any(str(item).strip() for item in data)
