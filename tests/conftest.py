@@ -122,8 +122,8 @@ def pytest_runtest_teardown(item: pytest.Item) -> Iterator[None]:
     fixture's included, since the last test of its scope runs its teardown."""
     from tests.package_layout import begin_phase, check_bindings
 
-    # The call's own check ran last, so this only starts teardown from here.
-    begin_phase("In the test")
+    # Other plugins' hooks run between the call's check and here.
+    _patch_problems(item, "teardown", begin_phase("Before teardown"))
     try:
         return (yield)
     finally:

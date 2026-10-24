@@ -100,6 +100,10 @@ def test_partial_and_a_setup_error(partial_then_setup_error):
     pass
 
 
+def test_patched_by_another_plugin():
+    pass
+
+
 def test_clean():
     pass
 
@@ -110,6 +114,23 @@ def test_clean_xfail():
 """
 
 
+#: A plugin whose own wrapper, outside this conftest's, patches between the
+#: call's check and teardown.
+OUTER_PLUGIN = """
+from unittest import mock
+
+import pytest
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_teardown(item):
+    if item.name == "test_patched_by_another_plugin":
+        with mock.patch("ori.config._actions.parse_actions", print):
+            pass
+    return (yield)
+"""
+
+
 def test_a_refused_patch_fails_its_report_whatever_else_the_test_does(
     tmp_path: Path,
 ) -> None:
@@ -117,6 +138,7 @@ def test_a_refused_patch_fails_its_report_whatever_else_the_test_does(
     # conftest loaded as a plugin and nothing inherited that changes the run.
     probe = tmp_path / "test_probe.py"
     probe.write_text(PROBE, encoding="utf-8")
+    (tmp_path / "outer_plugin.py").write_text(OUTER_PLUGIN, encoding="utf-8")
     (tmp_path / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
     junit = tmp_path / "report.xml"
     env = {
@@ -124,7 +146,7 @@ def test_a_refused_patch_fails_its_report_whatever_else_the_test_does(
         for name, value in os.environ.items()
         if not name.startswith("PYTEST_")
     }
-    env["PYTHONPATH"] = str(TESTS.parent)
+    env["PYTHONPATH"] = os.pathsep.join([str(TESTS.parent), str(tmp_path)])
     run = subprocess.run(
         [
             sys.executable,
@@ -134,6 +156,8 @@ def test_a_refused_patch_fails_its_report_whatever_else_the_test_does(
             str(probe),
             "-p",
             "tests.conftest",
+            "-p",
+            "outer_plugin",
             "-p",
             "no:cacheprovider",
             "-p",
@@ -166,6 +190,8 @@ def test_a_refused_patch_fails_its_report_whatever_else_the_test_does(
         ("test_partial_in_teardown", "PASSED"),
         ("test_partial_in_teardown", "ERROR"),
         ("test_partial_and_a_setup_error", "ERROR"),
+        ("test_patched_by_another_plugin", "PASSED"),
+        ("test_patched_by_another_plugin", "ERROR"),
         ("test_clean", "PASSED"),
         ("test_clean_xfail", "XFAIL"),
     }, run.stdout + run.stderr
