@@ -202,7 +202,7 @@ def resolve_original_ts(ctx: SkillContext) -> int:
         try:
             return int(ctx.event.timestamp)
         except Exception:
-            pass
+            pass  # an unreadable timestamp falls back to now
     return now_ms()
 
 

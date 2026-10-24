@@ -222,7 +222,7 @@ class BackgroundLoops(RuntimeCore):
             try:
                 await asyncio.wait_for(self._shutdown_event.wait(), timeout=interval)
             except asyncio.TimeoutError:
-                pass
+                pass  # the interval elapsed: refresh the posture again
 
     async def _status_signaling_loop(
         self,
@@ -239,5 +239,5 @@ class BackgroundLoops(RuntimeCore):
             try:
                 await asyncio.wait_for(self._shutdown_event.wait(), timeout=interval)
             except asyncio.TimeoutError:
-                pass
+                pass  # the interval elapsed: signal status again
         await indicator.close()

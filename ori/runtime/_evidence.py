@@ -34,7 +34,7 @@ class EvidenceLoops(FirmwareCommands):
                 )
                 return
             except asyncio.TimeoutError:
-                pass
+                pass  # the interval elapsed: retain the next checkpoint
             await attestor.issue_checkpoint()
 
     async def _evidence_registration_loop(
@@ -54,7 +54,7 @@ class EvidenceLoops(FirmwareCommands):
                 )
                 return
             except asyncio.TimeoutError:
-                pass
+                pass  # the interval elapsed: reconcile again
 
     async def _reconcile_evidence_registration(
         self, attestor: FirstPartyEvidenceAttestor

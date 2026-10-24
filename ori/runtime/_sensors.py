@@ -216,7 +216,7 @@ class SensorPolling(MeasurementSupervision):
                 await asyncio.wait_for(self._shutdown_event.wait(), timeout=interval)
                 break
             except asyncio.TimeoutError:
-                pass
+                pass  # the interval elapsed: check staleness again
 
     def _safety_notice_sender(self) -> SendNotice | None:
         sender = self._alert_sender
