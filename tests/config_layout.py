@@ -31,33 +31,32 @@ def section_modules() -> tuple[types.ModuleType, ...]:
     )
 
 
-@functools.cache
-def config_owners() -> dict[str, tuple[str, ...]]:
-    """Each name ``ori.config`` binds -> every binding a caller of it reads.
+def bindings_of(value: object) -> tuple[str, ...]:
+    """Every section-module binding of *value*, as dotted targets.
 
     A section module imports what it calls by value, under its own local name,
-    so the binding a caller looks up is in the caller's module, not where the
-    object was defined: ``Config.load`` reads ``ori.config._config.parse_actions``
-    while ``ori.config._parse_actions`` and ``ori.config._actions.parse_actions``
-    name the same function. Patching takes effect only on the bindings callers
-    read, so this lists every section-module binding of the same object, the
-    defining module's included, as dotted targets.
+    so the binding a caller looks up is in the caller's module: ``Config.load``
+    reads ``ori.config._config.parse_actions``, not the binding in
+    ``ori.config._actions`` where the function is defined. Patching takes
+    effect only on the bindings callers read, so all of them are listed, the
+    defining module's included.
     """
+    return tuple(
+        sorted(
+            f"{section.__name__}.{local}"
+            for section in section_modules()
+            for local, bound in vars(section).items()
+            if bound is value and not local.startswith("__")
+        )
+    )
+
+
+@functools.cache
+def config_owners() -> dict[str, tuple[str, ...]]:
+    """Each name ``ori.config`` exports -> every binding a caller of it reads."""
     sections = section_modules()
     assert len(sections) > 10, "found too few section modules under ori/config/"
-    owners: dict[str, tuple[str, ...]] = {}
-    for name, value in vars(ori.config).items():
-        if name.startswith("__") or any(value is section for section in sections):
-            continue
-        owners[name] = tuple(
-            sorted(
-                f"{section.__name__}.{local}"
-                for section in sections
-                for local, bound in vars(section).items()
-                if bound is value and not local.startswith("__")
-            )
-        )
-    return owners
+    return {name: bindings_of(getattr(ori.config, name)) for name in ori.config.__all__}
 
 
 def _refusal(name: str) -> str:

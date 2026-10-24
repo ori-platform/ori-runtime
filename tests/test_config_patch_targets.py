@@ -23,7 +23,8 @@ from unittest import mock
 import pytest
 
 import ori.config
-from tests.config_layout import bindings, config_owners, rebound
+from ori.config import _actions, _device
+from tests.config_layout import bindings, bindings_of, rebound
 
 REFUSED = "is a re-export; rebinding it reaches no caller"
 
@@ -36,24 +37,26 @@ def test_the_guard_is_installed() -> None:
     "rebind",
     [
         pytest.param(
-            lambda mp: mp.setattr("ori.config._detect_host_timezone", None),
+            lambda mp: mp.setattr("ori.config.anchor_to_config", None),
             id="setattr-string",
         ),
         pytest.param(
             # A string target takes its value through ``name``.
-            lambda mp: mp.setattr(target="ori.config._parse_device", name=None),
+            lambda mp: mp.setattr(target="ori.config.read_config_document", name=None),
             id="setattr-keyword",
         ),
         pytest.param(
-            lambda mp: mp.setattr(ori.config, "_parse_gateway", None),
+            lambda mp: mp.setattr(ori.config, "requires_production_posture", None),
             id="setattr-object",
         ),
         pytest.param(
-            lambda mp: mp.setattr(ori.config, name="_parse_hal", value=None),
+            lambda mp: mp.setattr(
+                ori.config, name="hardened_posture_declared", value=None
+            ),
             id="setattr-object-keyword",
         ),
         pytest.param(
-            lambda mp: mp.setattr("ori.config." + "_parse_skills", None),
+            lambda mp: mp.setattr("ori.config." + "config_env_placeholders", None),
             id="setattr-concatenated",
         ),
         pytest.param(
@@ -63,21 +66,23 @@ def test_the_guard_is_installed() -> None:
             id="setattr-import-module",
         ),
         pytest.param(
-            lambda mp: mp.delattr("ori.config._parse_state"), id="delattr-string"
+            lambda mp: mp.delattr("ori.config.SensorConfig"), id="delattr-string"
         ),
         pytest.param(
-            lambda mp: setattr(ori.config, "_MAX_CONFIG_BYTES", 1), id="assignment"
+            lambda mp: setattr(ori.config, "SKILL_NAME_RE", None), id="assignment"
         ),
         pytest.param(
-            lambda mp: mock.patch("ori.config._parse_sensors").start(),
+            lambda mp: mock.patch("ori.config.Config").start(),
             id="mock-patch",
         ),
         pytest.param(
-            lambda mp: mock.patch.object(ori.config, "is_truthy").start(),
+            lambda mp: mock.patch.object(ori.config, "ConfigValidationError").start(),
             id="mock-patch-object",
         ),
         pytest.param(
-            lambda mp: mock.patch.multiple("ori.config", _parse_logging=None).start(),
+            lambda mp: mock.patch.multiple(
+                "ori.config", MAX_SKILL_NAME_LENGTH=0
+            ).start(),
             id="mock-patch-multiple",
         ),
     ],
@@ -104,16 +109,16 @@ def test_a_write_into_the_module_dict_is_found(
     catches it when it persists to the end of the test."""
     before = bindings()
     namespace: dict[str, Any] = ori.config.__dict__
-    original = namespace["_parse_actions"]
-    namespace["_parse_actions"] = None
+    original = namespace["anchor_to_config"]
+    namespace["anchor_to_config"] = None
     try:
         problems = rebound(before)
     finally:
-        namespace["_parse_actions"] = original
+        namespace["anchor_to_config"] = original
     assert problems == [
-        "ori.config._parse_actions is a re-export; rebinding it reaches no "
+        "ori.config.anchor_to_config is a re-export; rebinding it reaches no "
         "caller. Patch each binding a caller reads instead: "
-        "ori.config._actions.parse_actions, ori.config._config.parse_actions."
+        "ori.config._config.anchor_to_config, ori.config._database.anchor_to_config."
     ]
     assert rebound(before) == []
 
@@ -133,7 +138,7 @@ root = importlib.import_module("ori")
 
 def _delitem_in_a_fixture(mp: pytest.MonkeyPatch) -> None:
     def held():
-        mp.delitem(cfg.__dict__, "_parse_actions")
+        mp.delitem(cfg.__dict__, "anchor_to_config")
         yield
 
     next(held())
@@ -172,7 +177,7 @@ def _root_alias() -> None:
 
 def _in_a_fixture_like_generator() -> None:
     def held():
-        with mock.patch.dict("ori.config.__dict__", _parse_actions=None):
+        with mock.patch.dict("ori.config.__dict__", anchor_to_config=None):
             yield
 
     next(held())
@@ -183,7 +188,7 @@ def _in_a_fixture_like_generator() -> None:
     [
         pytest.param(
             lambda mp: mock.patch.dict(
-                "ori.config.__dict__", _parse_actions=None
+                "ori.config.__dict__", anchor_to_config=None
             ).start(),
             id="string-target",
         ),
@@ -201,14 +206,16 @@ def _in_a_fixture_like_generator() -> None:
         pytest.param(lambda mp: _root_alias(), id="root-import-alias"),
         pytest.param(lambda mp: _in_a_fixture_like_generator(), id="generator"),
         pytest.param(
-            lambda mp: mp.setitem(vars(cfg), "_parse_actions", None),
+            lambda mp: mp.setitem(vars(cfg), "anchor_to_config", None),
             id="setitem",
         ),
         pytest.param(
             lambda mp: mp.setitem(dic=cfg.__dict__, name="x", value=1),
             id="setitem-keyword",
         ),
-        pytest.param(lambda mp: mp.delitem(vars(cfg), "_parse_actions"), id="delitem"),
+        pytest.param(
+            lambda mp: mp.delitem(vars(cfg), "anchor_to_config"), id="delitem"
+        ),
         pytest.param(lambda mp: _delitem_in_a_fixture(mp), id="delitem-fixture"),
     ],
 )
@@ -250,11 +257,11 @@ def _shadowed(cfg: object) -> None:
             id="section-namespace",
         ),
         pytest.param(
-            lambda mp: mp.setitem(vars(cfg._device), "x", 1), id="section-setitem"
+            lambda mp: mp.setitem(vars(_device), "x", 1), id="section-setitem"
         ),
         pytest.param(lambda mp: mp.setitem({}, "x", 1), id="other-mapping"),
         pytest.param(
-            lambda mp: mp.delitem(vars(cfg._device), "logger"),
+            lambda mp: mp.delitem(vars(_device), "logger"),
             id="section-delitem",
         ),
         # The stated limit: a view delegating to the namespace is another
@@ -287,7 +294,7 @@ def test_patching_every_named_binding_reaches_config_load(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The refusal's advice works: Config.load calls what was patched."""
-    for target in config_owners()["_parse_actions"]:
+    for target in bindings_of(_actions.parse_actions):
         monkeypatch.setattr(target, _reached)
     # Config.load reports a parser's exception as its own, with the cause kept.
     with pytest.raises(ori.config.ConfigValidationError) as refused:

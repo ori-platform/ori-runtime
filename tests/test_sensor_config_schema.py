@@ -16,7 +16,8 @@ from typing import Any
 import pytest
 
 import ori.hal.protocol_registry as registry
-from ori.config import ConfigValidationError, _parse_sensors
+from ori.config import ConfigValidationError
+from ori.config._sensors import parse_sensors as _parse_sensors
 from ori.hal.base import BaseAdapter
 from ori.hal.config_schema import (
     DocumentError,

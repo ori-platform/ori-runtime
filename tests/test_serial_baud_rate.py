@@ -23,7 +23,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ori.config import ConfigValidationError, _parse_sensors
+from ori.config import ConfigValidationError
+from ori.config._sensors import parse_sensors as _parse_sensors
 from ori.hal.base import AdapterConnectionError
 from ori.hal.serial_adapter import SerialAdapter
 from ori.hal.usb_serial_adapter import UsbSerialAdapter

@@ -16,12 +16,8 @@ from typing import cast
 
 import pytest
 
-from ori.config import (
-    Config,
-    ConfigValidationError,
-    EvidenceConfig,
-    _parse_evidence,
-)
+from ori.config import Config, ConfigValidationError, EvidenceConfig
+from ori.config._evidence import parse_evidence as _parse_evidence
 from ori.runtime import _build_evidence_attestor
 from ori.security.evidence.custody_keys import derive_custody_key_id
 

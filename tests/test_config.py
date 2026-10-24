@@ -16,12 +16,8 @@ import threading
 import pytest
 import yaml
 
-from ori.config import (
-    _MAX_CONFIG_BYTES,
-    Config,
-    ConfigValidationError,
-    _load_config_document,
-)
+from ori.config import Config, ConfigValidationError
+from ori.config._document import _MAX_CONFIG_BYTES, _load_config_document
 from ori.phone_doctor import (
     _phone_profile_hints_from_invalid_config as phone_doctor_hints,
 )
@@ -6668,7 +6664,10 @@ def test_hardened_posture_needs_an_operator_for_either_approval_channel(channel)
     """Either channel can carry a Tier C proposal to operator_contact."""
     from types import SimpleNamespace
 
-    from ori.config import ActionChannelConfig, _validate_production_security_posture
+    from ori.config import ActionChannelConfig
+    from ori.config._posture import (
+        validate_production_security_posture as _validate_production_security_posture,
+    )
 
     actions = (
         ActionChannelConfig(primary_alert_channel="sms", sms={"enabled": True})
