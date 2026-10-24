@@ -67,6 +67,10 @@ def _refusal(name: str) -> str:
     )
 
 
+class ReexportRebindError(AttributeError):
+    """A test tried to rebind or delete a name ``ori.config`` re-exports."""
+
+
 class _ReexportsHeld(types.ModuleType):
     """``ori.config`` while the suite runs: a re-export cannot be rebound.
 
@@ -79,12 +83,12 @@ class _ReexportsHeld(types.ModuleType):
 
     def __setattr__(self, name: str, value: object) -> None:
         if name in config_owners() and vars(self).get(name) is not value:
-            raise AssertionError(_refusal(name))
+            raise ReexportRebindError(_refusal(name))
         super().__setattr__(name, value)
 
     def __delattr__(self, name: str) -> None:
         if name in config_owners():
-            raise AssertionError(_refusal(name))
+            raise ReexportRebindError(_refusal(name))
         super().__delattr__(name)
 
 

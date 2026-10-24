@@ -23,8 +23,7 @@ from unittest import mock
 import pytest
 
 import ori.config
-from ori.config import _actions, _device
-from tests.config_layout import bindings, bindings_of, rebound
+from tests.config_layout import ReexportRebindError, bindings, bindings_of, rebound
 
 REFUSED = "is a re-export; rebinding it reaches no caller"
 
@@ -92,7 +91,7 @@ def test_every_attribute_spelling_is_refused(
 ) -> None:
     before = bindings()
     try:
-        with pytest.raises(AssertionError, match=REFUSED) as refused:
+        with pytest.raises(ReexportRebindError, match=REFUSED) as refused:
             rebind(monkeypatch)
     finally:
         mock.patch.stopall()
@@ -133,6 +132,8 @@ def test_patching_the_owning_module_is_allowed(
 TESTS = Path(__file__).resolve().parent
 NAMESPACE_REFUSED = "namespace holds re-exports; writing it reaches no caller"
 cfg = ori.config
+_actions = importlib.import_module("ori.config._actions")
+_device = importlib.import_module("ori.config._device")
 root = importlib.import_module("ori")
 
 
@@ -216,7 +217,7 @@ def _in_a_fixture_like_generator() -> None:
         pytest.param(
             lambda mp: mp.delitem(vars(cfg), "anchor_to_config"), id="delitem"
         ),
-        pytest.param(lambda mp: _delitem_in_a_fixture(mp), id="delitem-fixture"),
+        pytest.param(_delitem_in_a_fixture, id="delitem-fixture"),
     ],
 )
 def test_every_namespace_write_is_refused_by_identity(
