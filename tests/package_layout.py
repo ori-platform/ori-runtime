@@ -16,8 +16,10 @@ read.
 While the suite runs, `hold_reexports` refuses every rebinding of a
 re-export and observes every binding a test changes in any module of either
 package, however soon the change is undone. The conftest fails a test that
-changed a binding no caller reads, or an object's binding in some of the
+changed a binding no caller reads, or an Ori object's binding in some of the
 modules that read it and never in the others; `binding_problems` says which.
+Setup, the call and teardown are each judged from the bindings as they find
+them, so a fixture's complete patch is where the call starts.
 Two limits: a write past a module's class and the mapping writers, straight
 into its namespace or through ``types.ModuleType.__setattr__``, is seen only
 if it is still in place at the next check; and a patch on a stand-in put in
@@ -114,60 +116,29 @@ class PackageLayout:
             f"{self.name.replace('.', '/')}/."
         )
 
-    def package_imports(self) -> frozenset[str]:
-        """Each binding a module of the package takes from another of them, by
-        ``from`` import, as a dotted target."""
-        found: set[str] = set()
-        for module in self.modules():
-            source = inspect.getsourcefile(module)
-            assert source is not None, module
-            for node in ast.walk(ast.parse(Path(source).read_text(encoding="utf-8"))):
-                if not isinstance(node, ast.ImportFrom):
-                    continue
-                # A relative import would need resolving; the packages use
-                # none, and one appearing must not drop its bindings silently.
-                assert not node.level, f"{module.__name__}: relative import"
-                origin = node.module or ""
-                if origin == self.name or origin.startswith(f"{self.name}."):
-                    found.update(
-                        f"{module.__name__}.{alias.asname or alias.name}"
-                        for alias in node.names
-                    )
-        return frozenset(found)
-
     def shared_bindings(self) -> list[tuple[str, ...]]:
-        """Groups of bindings that name one object the package's modules pass
-        between them.
+        """Groups of bindings that name one Ori object in more than one module.
 
         A function, class or module is grouped by identity, whatever local name
-        each module gives it; any other value only with others of its name,
-        because equal numbers can be one object. A group stands only where some
-        module imports the object from another of the package's: ``os`` or a
-        logger each module makes for itself is that module's own, and patching
-        one module's binding of it is a patch of that module alone.
+        each module gives it; any other value, a logger or a constant, only
+        with others of its name, because equal numbers can be one object. A
+        module, function or class from outside Ori, ``os`` or ``Path``, is
+        each module's own tool: patching one module's binding of it fakes that
+        module alone.
         """
-        imported = self.package_imports()
         groups: dict[object, list[str]] = {}
         for module in self.modules():
             for local, value in vars(module).items():
                 if local.startswith("__"):
                     continue
-                shareable = isinstance(
-                    value,
-                    (
-                        types.FunctionType,
-                        types.BuiltinFunctionType,
-                        type,
-                        types.ModuleType,
-                    ),
-                ) or callable(value)
+                shareable = isinstance(value, (types.ModuleType, type)) or callable(
+                    value
+                )
+                if shareable and not _is_ori(value):
+                    continue
                 key: object = id(value) if shareable else (local, id(value))
                 groups.setdefault(key, []).append(f"{module.__name__}.{local}")
-        return [
-            tuple(sorted(found))
-            for found in groups.values()
-            if len(found) > 1 and not imported.isdisjoint(found)
-        ]
+        return [tuple(sorted(found)) for found in groups.values() if len(found) > 1]
 
     def namespace_refusal(self) -> str:
         return (
@@ -332,6 +303,16 @@ def runtime_methods() -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
 
 class ReexportRebindError(AttributeError):
     """A test tried to rebind or delete a name a split package re-exports."""
+
+
+def _is_ori(value: object) -> bool:
+    """Whether a module, function or class is Ori's own."""
+    name = (
+        value.__name__
+        if isinstance(value, types.ModuleType)
+        else getattr(value, "__module__", None)
+    )
+    return isinstance(name, str) and (name == "ori" or name.startswith("ori."))
 
 
 def _is_own_submodule(package: types.ModuleType, name: str, value: object) -> bool:
@@ -523,6 +504,9 @@ class BindingSnapshot:
     modules: dict[str, dict[str, object]]
     #: Bindings of one object in more than one module, from `shared_bindings`.
     groups: tuple[tuple[str, ...], ...]
+    #: The names each module bound when the session began, which a phase's
+    #: own starting point does not change.
+    names: dict[str, frozenset[str]]
 
 
 def _namespace(module: types.ModuleType) -> dict[str, object]:
@@ -539,6 +523,7 @@ def take_snapshot() -> BindingSnapshot:
     return BindingSnapshot(
         modules,
         tuple(group for layout in LAYOUTS for group in layout.shared_bindings()),
+        {name: frozenset(bound) for name, bound in modules.items()},
     )
 
 
@@ -573,7 +558,7 @@ def _observe(module: types.ModuleType, name: str) -> None:
         # one, as the import system binds it on a first import.
         if value is not sys.modules.get(target):
             _WATCH["stray"].add(target)
-    elif name not in before and not (
+    elif name not in snapshot.names[module.__name__] and not (
         module.__name__ in _BY_NAME and _is_own_submodule(module, name, value)
     ):
         _WATCH["stray"].add(target)
@@ -581,7 +566,7 @@ def _observe(module: types.ModuleType, name: str) -> None:
 
 def _observe_mapping(mapping: object) -> None:
     """Observe a write made to a module's namespace directly, past its class."""
-    for module_name in _HELD.get("snapshot", BindingSnapshot({}, ())).modules:
+    for module_name in _HELD.get("snapshot", BindingSnapshot({}, (), {})).modules:
         module = sys.modules.get(module_name)
         if module is not None and vars(module) is mapping:
             _observe_module(module)
@@ -591,6 +576,14 @@ def _observe_module(module: types.ModuleType) -> None:
     before = _HELD["snapshot"].modules[module.__name__]
     for name in before.keys() | _namespace(module).keys():
         _observe(module, name)
+
+
+def _consistent(snapshot: BindingSnapshot, group: tuple[str, ...]) -> bool:
+    found = set()
+    for target in group:
+        module, _, name = target.rpartition(".")
+        found.add(id(snapshot.modules[module].get(name, _DELETED)))
+    return len(found) == 1
 
 
 def binding_problems(snapshot: BindingSnapshot) -> list[str]:
@@ -630,6 +623,9 @@ def binding_problems(snapshot: BindingSnapshot) -> list[str]:
             if f"{layout.name}.{name}" in touched
         ]
     for group in snapshot.groups:
+        if not _consistent(snapshot, group):
+            # Already split when the phase began: reported then, as a leftover.
+            continue
         patched = [target for target in group if target in touched]
         if patched and len(patched) < len(group):
             missed = [target for target in group if target not in touched]
@@ -664,15 +660,16 @@ def take_problems() -> list[str]:
     return found
 
 
-def settle() -> list[str]:
-    """Report what was left since the last check, then start a test afresh.
+def begin_phase(where: str) -> list[str]:
+    """Report what changed since the last check, then judge from here on.
 
-    Every test starts from the bindings as they are, so one left changed, a
-    module-scope fixture's complete patch among them, is not counted as the
-    next test's change and cannot hide a partial patch the next test makes.
-    Which modules bind one object stays what the package itself does.
+    Setup, the call and teardown are each judged from the bindings as their
+    phase finds them, so a complete patch a fixture holds, or an earlier test
+    left, is where the call starts: patching one of its bindings in the body
+    is partial, however soon it is undone. Which modules bind one object stays
+    what the package itself does.
     """
-    found = [f"Left before this test started: {problem}" for problem in take_problems()]
+    found = [f"{where}: {problem}" for problem in take_problems()]
     snapshot: BindingSnapshot | None = _HELD.get("snapshot")
     if snapshot is not None:
         _HELD["snapshot"] = BindingSnapshot(
@@ -682,5 +679,6 @@ def settle() -> list[str]:
                 for module in [sys.modules.get(name)]
             },
             snapshot.groups,
+            snapshot.names,
         )
     return found

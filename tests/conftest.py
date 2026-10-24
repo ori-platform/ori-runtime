@@ -89,9 +89,9 @@ def pytest_runtest_setup(item: pytest.Item) -> Iterator[None]:
 
     A write made while a test module was collected is caught at its first test.
     """
-    from tests.package_layout import settle
+    from tests.package_layout import begin_phase
 
-    problems = settle()
+    problems = begin_phase("Left before this test started")
     if problems:
         pytest.fail("\n".join(problems))
     return (yield)
@@ -102,8 +102,11 @@ def pytest_runtest_call(item: pytest.Item) -> Iterator[None]:
     """Fail a test whose fixtures or body changed, in a split package, a
     binding that reaches no caller, or an object's binding in only some of the
     modules that read it, however soon the change was undone."""
-    from tests.package_layout import check_bindings
+    from tests.package_layout import begin_phase, check_bindings
 
+    problems = begin_phase("In setup")
+    if problems:
+        pytest.fail("\n".join(problems))
     result = yield
     problems = check_bindings()
     if problems:
@@ -115,8 +118,11 @@ def pytest_runtest_call(item: pytest.Item) -> Iterator[None]:
 def pytest_runtest_teardown(item: pytest.Item) -> Iterator[None]:
     """The same, for what fixture teardown changed, a module- or session-scope
     fixture's included, since the last test of its scope runs its teardown."""
-    from tests.package_layout import check_bindings
+    from tests.package_layout import begin_phase, check_bindings
 
+    problems = begin_phase("In the test")
+    if problems:
+        pytest.fail("\n".join(problems))
     result = yield
     problems = check_bindings()
     if problems:

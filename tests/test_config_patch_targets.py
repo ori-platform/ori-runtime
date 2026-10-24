@@ -32,12 +32,12 @@ from tests.package_layout import (
     CONFIG,
     RUNTIME,
     ReexportRebindError,
+    begin_phase,
     bindings,
     bindings_of,
     check_bindings,
     patched_runtime,
     rebound,
-    settle,
     take_problems,
 )
 
@@ -522,21 +522,21 @@ def test_patching_every_binding_passes_in_any_order(
 
 
 def test_a_leftover_is_reported_once_and_then_held_as_the_start() -> None:
-    """``settle`` runs before each test: a binding left changed is reported
-    against the next test only, not against every test after it."""
+    """``begin_phase`` runs before each test: a binding left changed is
+    reported against the next test only, not against every test after it."""
     original = _actions.parse_actions
     _actions.parse_actions = _reached
     try:
-        assert settle() == [f"Left before this test started: {PARTIAL}"]
-        assert settle() == []
-        # Which modules bind one object is kept, so the next partial is seen.
-        with mock.patch("ori.config._config.parse_actions", _reached):
-            pass
-        [report] = take_problems()
-        assert report.startswith("patched or deleted ori.config._config.parse_actions")
+        assert begin_phase("Left") == [f"Left: {PARTIAL}"]
+        assert begin_phase("Left") == []
     finally:
         _actions.parse_actions = original
-        settle()
+    assert begin_phase("Left") == []
+    # Which modules bind one object is kept, so the next partial is seen.
+    with mock.patch("ori.config._config.parse_actions", _reached):
+        pass
+    [report] = take_problems()
+    assert report.startswith("patched or deleted ori.config._config.parse_actions")
 
 
 def test_a_complete_patch_left_in_place_hides_no_later_partial() -> None:
@@ -548,7 +548,7 @@ def test_a_complete_patch_left_in_place_hides_no_later_partial() -> None:
     for patcher in every:
         patcher.start()
     try:
-        assert settle() == []
+        assert begin_phase("Left") == []
         with mock.patch("ori.config._config.parse_actions", _other):
             pass
         [report] = take_problems()
@@ -556,7 +556,7 @@ def test_a_complete_patch_left_in_place_hides_no_later_partial() -> None:
     finally:
         for patcher in every:
             patcher.stop()
-        settle()
+        begin_phase("")
 
 
 def _other(*args: object, **kwargs: object) -> None:
@@ -566,10 +566,10 @@ def _other(*args: object, **kwargs: object) -> None:
 def test_one_module_own_import_may_be_patched_alone(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``os`` and each module's logger are the module's own, not an object the
-    package's modules pass between them."""
+    """``os`` and ``datetime`` are tools from outside Ori: patching one
+    module's binding of them fakes that module alone."""
     monkeypatch.setattr(_device, "os", mock.Mock())
-    monkeypatch.setattr(_device, "logger", mock.Mock())
+    monkeypatch.setattr(_device, "datetime", mock.Mock())
     monkeypatch.undo()
     assert take_problems() == []
 
@@ -694,8 +694,60 @@ def test_a_reexport_written_into_the_namespace_is_refused() -> None:
     assert REFUSED in report
 
 
-def test_an_import_through_the_package_is_an_import_from_it() -> None:
-    imported = CONFIG.package_imports()
-    assert "ori.config.installer.Config" in imported  # from ori.config import
-    assert "ori.config._device.checked_device_id" in imported
-    assert "ori.config._device.os" not in imported
+def test_one_shared_object_is_one_group_wherever_it_comes_from() -> None:
+    """A function, a logger, and a class from the other split package are each
+    one object the runtime's modules read; stdlib tools are not."""
+    groups = [set(group) for group in RUNTIME.shared_bindings()]
+    for target in (
+        "ori.runtime._health.now_ms",
+        "ori.runtime._alerts.logger",
+        "ori.runtime._services.Config",
+    ):
+        assert any(target in group for group in groups), target
+    assert not any("ori.runtime._startup.asyncio" in group for group in groups)
+
+
+def test_a_partial_override_of_a_complete_patch_is_checked() -> None:
+    """A fixture's complete patch is where the call starts; the body replacing
+    one of its bindings is partial, even when it restores it."""
+    every = [
+        mock.patch(target, _reached) for target in bindings_of(_actions.parse_actions)
+    ]
+    for patcher in every:
+        patcher.start()
+    try:
+        assert begin_phase("In setup") == []
+        with mock.patch("ori.config._config.parse_actions", _other):
+            pass
+        [report] = take_problems()
+        assert report.startswith("patched or deleted ori.config._config.parse_actions")
+    finally:
+        for patcher in every:
+            patcher.stop()
+        begin_phase("")
+
+
+def test_the_test_that_mends_a_leftover_split_is_not_blamed() -> None:
+    original = _actions.parse_actions
+    _actions.parse_actions = _reached
+    try:
+        assert begin_phase("Left") == [f"Left: {PARTIAL}"]
+        with mock.patch("ori.config._config.parse_actions", _reached):
+            pass
+        assert take_problems() == []
+    finally:
+        _actions.parse_actions = original
+        begin_phase("")
+
+
+class _EqualToAll:
+    def __eq__(self, other: object) -> bool:
+        return True
+
+    __hash__ = object.__hash__
+
+
+def test_a_binding_is_compared_by_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(_device, "checked_device_id", _EqualToAll())
+    monkeypatch.undo()
+    assert take_problems() == [DEVICE_ID_PARTIAL]
