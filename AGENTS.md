@@ -49,7 +49,7 @@ ori/                    Python package — the runtime
 ├── utils/              Small shared helpers
 ├── state/              SQLite state store
 ├── config/             ori.yaml loader, one module per section
-└── runtime.py          Main event loop — ties everything together
+└── runtime/            Main event loop — OriRuntime, one module per domain
 
 skills/                 Bundled skills (YAML + Python hooks)
 tests/                  pytest test suite
@@ -336,7 +336,7 @@ The interface contract is fixed: accept a prompt string, return a
 
 ### 5. Modifying the runtime event loop
 
-**Where:** `ori/runtime.py`
+**Where:** `ori/runtime/` (`_loops.py` for a periodic task, `_startup.py` to start it)
 **When:** Adding a new background task (health check, sync job, cron handler).
 
 ```python
@@ -790,7 +790,7 @@ these rules can compromise the runtime that controls physical hardware.
 | Change skill loading and validation   | `ori/skills/loader.py`               |
 | Change what gets persisted to SQLite  | `ori/state/` (one module per domain) |
 | Change device configuration format    | `ori/config/` + `ori.yaml.example`   |
-| Change the main event loop            | `ori/runtime.py`                     |
+| Change the main event loop            | `ori/runtime/` (a module per domain) |
 | Add a bundled skill                   | `skills/`                            |
 | Understand a design decision          | `CLAUDE.md`                          |
 | Understand the business context       | `CONTRIBUTING.md`                    |

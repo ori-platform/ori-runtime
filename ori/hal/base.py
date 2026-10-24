@@ -428,7 +428,7 @@ class BaseAdapter(ABC):
     # over. During shutdown the refusal would surface the same way any other
     # connect failure does — logged, the adapter not added, the runtime
     # continuing — which is the correct outcome for an adapter that is being
-    # torn down anyway. `ori/runtime.py` does more than log: it records the
+    # torn down anyway. `ori/runtime/` does more than log: it records the
     # sensor in `_unconnected_sensors`, calls
     # `_safety_registry.note_sensor_unavailable()` and warns the operator. A
     # refused connect therefore tells a Tier D pair that its measurement is

@@ -94,7 +94,7 @@ class Config:
         ``ValueError``, on a list ``TypeError``, and
         ``device.rated_capacity_amps`` — the Tier D threshold input — is the
         first field to reach one. Neither `Config.load`'s callers in
-        `ori/runtime.py` nor `ori/config/installer.py` catch those, so each
+        `ori/runtime/` nor `ori/config/installer.py` catch those, so each
         would leave startup as an interpreter traceback and a restart loop.
 
         A defect in a section parser is classified here too. That is the

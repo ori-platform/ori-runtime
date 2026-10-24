@@ -396,7 +396,7 @@ ori/
 │
 ├── ori/
 │   ├── __init__.py
-│   ├── runtime.py             ← main event loop — build last
+│   ├── runtime/               ← main event loop, OriRuntime composed one module per domain
 │   ├── config/                ← ori.yaml loader and validator, one module per section
 │   │
 │   ├── utils/
@@ -542,7 +542,7 @@ Step 16  ori/actions/whatsapp.py        ← includes approval_workflow response 
 Step 17  ori/actions/sms.py             ← Africa's Talking primary channel
 Step 18  ori/actions/relay.py           ← GPIO output for physical control
 Step 19  ori/actions/logger.py
-Step 20  ori/runtime.py                 ← ties everything together
+Step 20  ori/runtime/                   ← ties everything together
 ```
 
 **Current build state:** All 20 steps complete. Runtime is operational.
