@@ -30,6 +30,7 @@ from cryptography.hazmat.primitives.serialization import (
     PublicFormat,
 )
 
+import ori.runtime
 from ori.actions.alert_delivery import (
     AlertDeliveryReceipt,
     AlertIntent,
@@ -2748,6 +2749,32 @@ class TestLifecycle:
             gpio_pin=26, active_high=False, tolerate_missing_backend=True
         )
         trigger.assert_awaited_once_with(duration_seconds=None)
+
+
+@pytest.mark.asyncio
+async def test_stop_closes_the_adapters_through_the_concurrent_close(
+    minimal_config: Path, monkeypatch
+):
+    """Closed one after another, adapters mid-connect add their waits."""
+    _patch_external(monkeypatch)
+    _treat_scratch_skills_as_packaged(monkeypatch)
+    handed: list[list[Any]] = []
+    real = ori.runtime.close_adapters
+
+    async def spy(adapters):
+        handed.append(list(adapters))
+        await real(adapters)
+
+    monkeypatch.setattr(ori.runtime, "close_adapters", spy)
+    runtime = OriRuntime(config_path=str(minimal_config))
+    start_task = asyncio.create_task(runtime.start())
+    await wait_until(
+        lambda: bool(runtime._adapters) or start_task.done(),
+        what="an adapter to connect, or startup to end",
+    )
+    adapters = list(runtime._adapters)
+    await _stop_and_join(runtime, start_task)
+    assert adapters and handed == [adapters]
 
 
 class TestStartupLogs:

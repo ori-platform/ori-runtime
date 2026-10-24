@@ -376,6 +376,32 @@ release is cut.
   the broker never answers is closed rather than left open. A broker that
   hangs without closing the connection is still noticed only after twice the
   keepalive.
+- An MQTT-family sensor whose broker is unavailable when the runtime starts is
+  no longer skipped until a restart. At start, a broker that cannot be
+  reached, refuses the connection (bad credentials included) or a
+  subscription, fails the TLS handshake, or gives no answer within the timeout
+  is retried; anything else fails the connect. The retry uses the same
+  back-off as after a drop, and a refused subscription is logged at every
+  attempt with its topic and code. Until its first accepted reading the sensor reports
+  `connected: false`, health is degraded, its reads are refused, and the
+  registry or the operator is told at start, as for a sensor that failed to
+  connect. When a notice was sent at start, the first accepted reading sends
+  one more, saying the sensor is now read.
+  An MQTT-family adapter's `health_check()` is true only while its broker
+  link is up with every subscription granted and its listener alive, so it is
+  false while the adapter retries, at start or after a drop. Closing an
+  MQTT-family adapter while a connect attempt is in progress no longer leaves
+  that attempt's connection open. The close waits up to 6 seconds for the
+  connect threads it abandoned to settle, closing each socket on the event
+  loop; a thread still running after that is logged. A socket such a thread
+  opens is closed only where nothing its attempt queued on the event loop can
+  still run: by the loop, or off it once the loop is closed. The thread never
+  waits for that: a background thread owns the socket from then, and if the
+  loop has neither run nor closed within 60 seconds it ends the broker
+  connection, with a warning. The descriptor is closed when the loop resumes
+  or closes; only an owner that does neither, for the life of the process,
+  holds it. The 6 seconds bound only that settling: a close issued during the
+  adapter's first connect first waits for that connect to return (#920).
 - A retained MQTT message is never taken as a reading. The on-change
   adapters (Victron, LoRaWAN, Zigbee) stay without a value, reads refused,
   until a live publication arrives, which can take hours. Sensors always
@@ -391,11 +417,11 @@ release is cut.
   refused as a subscription. A broker that refuses a subscription at
   SUBSCRIBE, as mosquitto's dynamic-security plugin does, keeps the
   connection up; the adapter read the link as up and reads said no data was
-  cached yet, indefinitely. Such a refusal now fails the connect, naming
-  the topic and the broker's code. At start the sensor is skipped and
-  reported unconnected, and is not retried until the runtime restarts; on a
-  reconnect the refusal is logged at each attempt, reads stay refused, and
-  the adapter keeps retrying under the same back-off. Mosquitto's
+  cached yet, indefinitely. Such a refusal now keeps the link down, naming
+  the topic and the broker's code. At start and on a reconnect alike, the
+  refusal is logged at each attempt, reads stay refused, and the adapter
+  keeps retrying under the same back-off; a sensor refused at start is
+  reported unconnected until its first accepted reading. Mosquitto's
   `acl_file` grants the subscription and withholds delivery instead, which
   this check cannot see (#855).
 - `aiomqtt` is in the runtime lock, so the MQTT perception adapters install

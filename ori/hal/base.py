@@ -487,6 +487,12 @@ class BaseAdapter(ABC):
                 )
             try:
                 yield
+            except GeneratorExit:
+                # Closed, not cancelled, as a finalizer does: nothing may be
+                # awaited now, so release is skipped. The MQTT family's body
+                # hands its socket to its connect watch or the reaper before
+                # this; no other adapter's body hands anything over.
+                raise
             except BaseException:
                 await self._release_quietly(release)
                 raise
@@ -581,6 +587,15 @@ class BaseAdapter(ABC):
     def is_connected(self) -> bool:
         """``True`` after a successful :meth:`connect`, ``False`` after :meth:`close`."""
         return self._connected
+
+    @property
+    def connection_retrying(self) -> bool:
+        """``True`` when :meth:`connect` returned without reaching the source.
+
+        The adapter retries in the background and its reads refuse until a
+        value arrives; the runtime reports the sensor unconnected meanwhile.
+        """
+        return False
 
     @property
     def adapter_name(self) -> str:

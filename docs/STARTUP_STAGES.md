@@ -106,7 +106,7 @@ above. A dash means none.
 | event path | - | `_deduplicator`, `_event_bus`, `_skill_reload_lock` | - |
 | skills | `_config_path`, `_loaded_skills`, `_state_store` | `_dispatch_coordinator`, `_skill_loader`, `_skill_selection`, `_skills_dir` | `_binding_view`, `reload_skills` |
 | signals | `_request_stop` | - | `reload_skills` |
-| sensors | `_adapters`, `_background_tasks`, `_connected_sensor_ids`, `_deduplicator`, `_safety_registry`, `_unconnected_sensors` | `_configured_sensors`, `_connected_sensor_ids`, `_last_alert_timestamps_by_channel`, `_last_alert_timestamps_by_trigger`, `_measurement_refusals`, `_measurement_valid_streak`, `_sensor_last_seen_ms`, `_sensor_poll_interval_ms`, `_stale_sensor_active`, `_unconnected_sensors` | `_emit_unconnected_sensor_warning`, `_poll_sensor`, `_restore_measurement_state` |
+| sensors | `_adapters`, `_background_tasks`, `_connected_sensor_ids`, `_deduplicator`, `_retrying_sensors_announced`, `_safety_registry`, `_unconnected_sensors` | `_configured_sensors`, `_connected_sensor_ids`, `_last_alert_timestamps_by_channel`, `_last_alert_timestamps_by_trigger`, `_measurement_refusals`, `_measurement_valid_streak`, `_retrying_sensors_announced`, `_sensor_last_seen_ms`, `_sensor_poll_interval_ms`, `_stale_sensor_active`, `_unconnected_sensors` | `_poll_sensor`, `_restore_measurement_state`, `_safety_notice_sender` |
 | loops | `_background_tasks`, `_deduplicator`, `_sensor_poll_interval_ms` | - | `_alert_delivery_loop`, `_capability_posture_loop`, `_compaction_loop`, `_device_policy_refresh_loop`, `_external_watchdog_loop`, `_heartbeat_loop`, `_sensor_staleness_loop`, `_status_signaling_loop`, `_stop_if_requested_during_startup`, `_watchdog_loop` |
 | services | `_background_tasks`, `_deduplicator`, `_nudge_firmware_confirmations`, `_shutdown_event`, `_state_store` | `_evidence_inbound_subscriber`, `_evidence_outbound_publisher`, `_firmware_command_publisher`, `_firmware_command_service`, `_firmware_liveness_scheduler`, `_firmware_liveness_supervisor` | `_evidence_checkpoint_loop`, `_start_gateway_export_responder_if_enabled`, `_start_sms_webhook_if_enabled`, `_start_telemetry_export_if_enabled`, `_stop_if_requested_during_startup` |
 | operator services | `_background_tasks`, `_build_health_snapshot`, `_shutdown_event` | `_runtime_node_heartbeat_publisher` | `_start_firmware_mqtt_operator_if_enabled`, `_stop_if_requested_during_startup` |
@@ -131,7 +131,7 @@ runtime surface is the table above.
 | 9 | event path | Builds the event bus, attaches the elevator, pushes the first posture snapshot to the elevator, the dispatcher, the sender and the indicator, creates the reload lock and the deduplicator | config, status_indicator, relay_action, alert_sender, dispatcher, elevator, local_llm, posture_tracker | |
 | 10 | skills | Anchors the skills directory to the configuration, binds the resource gate and the binding view to the dispatcher, builds the dispatch coordinator and the loader, loads the skills, logs the tier configuration | config, dispatcher, elevator | |
 | 11 | signals | Installs the SIGTERM, SIGINT and SIGHUP handlers | - | |
-| 12 | sensors | Restores measurement state, connects every adapter, tells the registry about a sensor that could not connect, starts a poll task per connected sensor | config, event_bus | |
+| 12 | sensors | Restores measurement state, connects every adapter, tells the registry about a sensor that could not connect or whose adapter is still retrying its source, starts a poll task per connected or retrying sensor | config, event_bus | |
 | 13 | loops | Starts the staleness watch, the watchdogs, the heartbeat, compaction, alert delivery, policy refresh, the posture loop and status signalling | config, status_cfg, status_indicator, relay_action, alert_sender, dispatcher, elevator, local_llm, posture_cfg, posture_tracker | yes |
 | 14 | services | Starts the SMS webhook, telemetry export, the gateway export responder and heartbeat subscriber, the evidence subscribers and checkpoint loop, and the firmware liveness stack, with the security posture warnings | config, event_bus, evidence_attestor, posture_tracker | yes |
 | 15 | operator services | Starts the firmware operator and the node heartbeat | config | yes |
@@ -176,7 +176,14 @@ must pin. The reason is the one the code carries today.
 8. **A sensor that failed to connect is reported to the registry at the
    moment it fails.** A pair must not wait out its loss bound for a fact the
    runtime already holds. The unconnected-sensor warning is sent only when no
-   pair was told, so one event produces one notice.
+   pair was told, so one event produces one notice. An MQTT-family adapter
+   connects and retries in the background when its broker is unavailable. At
+   start, a broker that cannot be reached, refuses the connection (bad
+   credentials included) or a subscription, fails the TLS handshake, or gives
+   no answer within the timeout is retried; anything else fails the connect. A
+   retried sensor is reported the same way and stays unconnected until its
+   first accepted reading, and if a notice was sent at start, the operator is
+   then told it is now read.
 9. **Relay-backed executors exist only when an actuator is in force.**
    `trip_relay`, `release_relay` and `close_gas_valve` exist on the dispatcher
    only when a commissioned actuator exists, so a skill's request for them is

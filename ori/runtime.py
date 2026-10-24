@@ -263,6 +263,13 @@ from ori.security.webhook_signatures import (
     WebhookSignatureConfig,
     WebhookSignatureVerifier,
 )
+from ori.sensor_connection import (
+    SendNotice,
+    announce_late_connection,
+    close_adapters,
+    connected_late,
+    note_unconnected_sensor,
+)
 from ori.skills.loader import (
     MAX_TOTAL_SUBSCRIPTIONS as SKILL_SUBSCRIPTION_BUDGET,
 )
@@ -531,6 +538,7 @@ class OriRuntime:
         # sensor that connected and went quiet: that one is late and the
         # staleness watch sees it, this one is absent and nothing else does.
         self._unconnected_sensors: set[str] = set()
+        self._retrying_sensors_announced: set[str] = set()
         self._measurement_unnotified: set[str] = set()
         self._measurement_notify_attempts: dict[str, int] = {}
         self._measurement_degraded_since: dict[str, int] = {}
@@ -1563,6 +1571,7 @@ class OriRuntime:
         # ── Start background tasks ────────────────────────────────────────────
         self._configured_sensors = list(config.sensors)
         self._unconnected_sensors = set()
+        self._retrying_sensors_announced = set()
         self._connected_sensor_ids = set()
         self._sensor_poll_interval_ms = {}
         self._sensor_last_seen_ms = {}
@@ -1605,47 +1614,41 @@ class OriRuntime:
             except UnknownProtocolError as exc:
                 raise ConfigValidationError(str(exc)) from exc
             connect_cfg = adapter_connect_config(sensor_cfg, config)
+            connected = True
             try:
                 await adapter.connect(connect_cfg)
-                self._adapters.append(adapter)
-                self._connected_sensor_ids.add(sensor_cfg.id)
-                self._sensor_poll_interval_ms[sensor_cfg.id] = int(
-                    sensor_cfg.poll_interval_ms
+            except Exception:
+                logger.exception(
+                    "[runtime] failed to connect adapter for sensor_id=%s — skipping",
+                    sensor_cfg.id,
                 )
+                connected = False
+            retrying = connected and adapter.connection_retrying
+            if not connected or retrying:
+                # Skipped, or polled with no last-seen time until its first
+                # reading: absent, not late, so no staleness watch covers it.
+                await note_unconnected_sensor(
+                    str(sensor_cfg.id),
+                    retrying=retrying,
+                    unconnected=self._unconnected_sensors,
+                    announced=self._retrying_sensors_announced,
+                    registry=self._safety_registry,
+                    send=self._safety_notice_sender(),
+                )
+            if not connected:
+                continue
+            self._adapters.append(adapter)
+            self._sensor_poll_interval_ms[sensor_cfg.id] = int(
+                sensor_cfg.poll_interval_ms
+            )
+            if not retrying:
+                self._connected_sensor_ids.add(sensor_cfg.id)
                 self._sensor_last_seen_ms[sensor_cfg.id] = now_ms()
                 logger.info(
                     "[runtime] adapter=%s sensor_id=%s connected",
                     adapter.adapter_name,
                     sensor_cfg.id,
                 )
-            except Exception:
-                logger.exception(
-                    "[runtime] failed to connect adapter for sensor_id=%s — skipping",
-                    sensor_cfg.id,
-                )
-                # Skipped, and said out loud. The staleness watch cannot cover
-                # this: it runs from the poll intervals of sensors that
-                # connected, so one that never did is not late, it is absent.
-                self._unconnected_sensors.add(str(sensor_cfg.id))
-                # The registry must not wait out its loss bound for a fact the
-                # runtime already holds. Until a pair is told, it is an active
-                # pair with no record that its measurement is unavailable.
-                told_a_pair = False
-                if self._safety_registry is not None:
-                    told_a_pair = await self._safety_registry.note_sensor_unavailable(
-                        str(sensor_cfg.id), "could not be connected"
-                    )
-                if not told_a_pair:
-                    # A pair notice already names the sensor, its zone and its
-                    # profile, so sending this as well would be two messages
-                    # for one event, and one per pair where several depend on
-                    # the sensor. Decided on whether a pair was actually told,
-                    # not on whether a registry exists: candidate, pending and
-                    # refused profiles produce no pair notice at all.
-                    await self._emit_unconnected_sensor_warning(
-                        sensor_id=str(sensor_cfg.id)
-                    )
-                continue
 
             task = asyncio.create_task(
                 self._poll_sensor(
@@ -2201,12 +2204,8 @@ class OriRuntime:
         if self._gateway_envelope_state is not None:
             await asyncio.to_thread(self._gateway_envelope_state.close)
 
-        # 3. Close HAL adapters
-        for adapter in self._adapters:
-            try:
-                await adapter.close()
-            except Exception:
-                logger.exception("[shutdown] error closing adapter")
+        # 3. Close HAL adapters, at once: the stop waits for the slowest only
+        await close_adapters(self._adapters)
 
         # 4. Close StateStore, after the measurement writer has settled what
         #    it can: a write still in flight past its grace is unknown, one
@@ -4375,6 +4374,22 @@ class OriRuntime:
                 # then fail on every poll before any skill evaluated it.
                 refuse_unusable_reading(reading)
                 self._sensor_last_seen_ms[sensor_cfg.id] = now_ms()
+                if connected_late(
+                    str(sensor_cfg.id),
+                    unconnected=self._unconnected_sensors,
+                    connected=self._connected_sensor_ids,
+                ):
+                    # A task, so delivery never delays this reading's evaluation.
+                    notice = announce_late_connection(
+                        str(sensor_cfg.id),
+                        announced=self._retrying_sensors_announced,
+                        send=self._safety_notice_sender(),
+                    )
+                    self._background_tasks.append(
+                        asyncio.create_task(
+                            notice, name=f"sensor-connected-notice:{sensor_cfg.id}"
+                        )
+                    )
                 if (
                     self._read_failure_logged_at.pop(str(sensor_cfg.id), None)
                     is not None
@@ -4923,33 +4938,12 @@ class OriRuntime:
             )
         )
 
-    async def _emit_unconnected_sensor_warning(self, *, sensor_id: str) -> None:
-        """A configured sensor that never connected, as a Tier A notice.
-
-        Health already reports it unconnected, and on a headless device
-        nothing carries a log line to an operator. It never aborts startup:
-        a runtime that refuses to run has removed the agent, and the sensor
-        that failed may not be the one protecting anything.
-
-        Sent through the structural path rather than the ordinary one, so it
-        is delivered or durably queued rather than dropped. An entitlement cap
-        that suppressed it would leave an operator believing a measurement is
-        being taken that is not, which is the fact this notice exists to carry.
-        """
-        if self._alert_sender is None:
-            logger.warning(
-                "[runtime] unconnected sensor warning not sent for %s: "
-                "no alert sender is configured",
-                sensor_id,
-            )
-            return
-        await self._send_or_queue_safety_alert(
-            message=(
-                f"Sensor {sensor_id} could not be connected at startup and is "
-                "not being read. The rest of the runtime is running."
-            ),
-            trigger_name="sensor_unconnected_warning",
-            alert_sender=self._alert_sender,
+    def _safety_notice_sender(self) -> SendNotice | None:
+        sender = self._alert_sender
+        if sender is None:
+            return None
+        return lambda message, trigger: self._send_or_queue_safety_alert(
+            message=message, trigger_name=trigger, alert_sender=sender
         )
 
     async def _emit_stale_sensor_warning(

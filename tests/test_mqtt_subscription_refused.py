@@ -21,12 +21,13 @@ from unittest.mock import patch
 
 import pytest
 
-from ori.hal.base import AdapterConnectionError, AdapterReadError
+from ori.hal.base import AdapterReadError
 from ori.hal.mqtt_base import MqttCachedAdapter, subscription_refusal
 from ori.hal.protocol_registry import MQTT_FAMILY_PROTOCOLS, make_adapter
 from tests.test_mqtt_adapter import _FakeClient
 from tests.test_mqtt_family_hostile_payloads import _LostConnection
 from tests.test_mqtt_wildcard_topic import SENSORS
+from tests.waiting import wait_until
 
 GRANTED = (0,)
 NOT_AUTHORISED = (0x87,)
@@ -127,8 +128,10 @@ def test_paho_reason_codes_are_read_as_the_broker_sent_them() -> None:
 
 
 @pytest.mark.parametrize("protocol", sorted(SENSORS))
-async def test_a_refused_subscription_fails_the_connect(protocol: str) -> None:
-    """Refusing the last topic an adapter asks for leaves nothing connected."""
+async def test_a_subscription_refused_at_start_is_retried_like_a_reconnect(
+    protocol: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Any one refused topic keeps the link down and is retried, never skipped."""
     broker = _Broker()
     available, module = _patched(broker)
     with available, module:
@@ -136,22 +139,53 @@ async def test_a_refused_subscription_fails_the_connect(protocol: str) -> None:
         await learner.connect(_config(protocol))
         topics = list(broker.clients[-1].subscriptions)
         await learner.close()
-        denied = topics[-1]
-        broker.answer = lambda topic: NOT_AUTHORISED if topic == denied else GRANTED
+    assert len(topics) > 1 if protocol == "victron" else topics
 
-        adapter = _adapter(protocol)
-        with pytest.raises(AdapterConnectionError) as caught:
+    for denied in topics:
+        broker = _Broker()
+        broker.answer = lambda topic, d=denied: (
+            NOT_AUTHORISED if topic == d else GRANTED
+        )
+        available, module = _patched(broker)
+        caplog.clear()
+        with (
+            available,
+            module,
+            patch("ori.hal.mqtt_base.reconnect_delay", lambda _a: 0.001),
+            caplog.at_level(logging.WARNING, logger="ori.hal.mqtt_base"),
+        ):
+            adapter = _adapter(protocol)
             await adapter.connect(_config(protocol))
+            try:
+                assert adapter.is_connected and adapter.connection_retrying
+                assert adapter._client is None and not adapter._link_up
+                assert not await adapter.health_check()
+                await wait_until(
+                    lambda: len(broker.clients) >= 3, what="the refusal to be retried"
+                )
+                assert all(client.closed for client in broker.clients[:-1])
+                refusals = [
+                    r.getMessage()
+                    for r in caplog.records
+                    if "the broker refused the subscription" in r.getMessage()
+                ]
+                assert len(refusals) >= 2, "not logged at every attempt"
+                assert all(
+                    f"topic={denied!r}" in m and "SUBACK 0x87" in m for m in refusals
+                )
+                assert "connect at start" in refusals[0]
+                with pytest.raises(AdapterReadError, match="connection is down"):
+                    await adapter.read("s1")
 
-    message = str(caught.value)
-    assert "the broker refused the subscription" in message
-    assert f"topic={denied!r}" in message
-    assert "SUBACK 0x87" in message and "ACL" in message
-    client = broker.clients[-1]
-    assert client.subscriptions == topics, "the refusal was not the broker's answer"
-    assert client.closed
-    assert adapter._client is None and adapter._listener_task is None
-    assert not adapter._link_up and not adapter.is_connected
+                assert not await adapter.health_check()
+                broker.answer = GRANTED
+                await wait_until(lambda: adapter._link_up, what="the grant")
+                assert not adapter.connection_retrying
+                assert await adapter.health_check()
+                assert broker.clients[-1].subscriptions == topics
+            finally:
+                await adapter.close()
+        assert adapter._listener_task is None and adapter._client is None
 
 
 @pytest.mark.parametrize("protocol", sorted(SENSORS))
@@ -176,6 +210,7 @@ async def test_a_subscription_refused_on_reconnect_keeps_the_link_down(
             refused = broker.clients[1:]
             assert len(refused) > 1, "a refused reconnect was not retried"
             assert not adapter._link_up
+            assert not await adapter.health_check()
             assert all(client.closed for client in refused[:-1])
             assert "the broker refused the subscription" in caplog.text
             assert "SUBACK 0x87" in caplog.text
@@ -185,6 +220,7 @@ async def test_a_subscription_refused_on_reconnect_keeps_the_link_down(
             broker.answer = GRANTED
             await _spin()
             assert adapter._link_up
+            assert await adapter.health_check()
             assert adapter._listener_task is listener and not listener.done()
             assert adapter._client is broker.clients[-1]
             assert not broker.clients[-1].closed
