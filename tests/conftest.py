@@ -82,52 +82,74 @@ def pytest_unconfigure(config: pytest.Config) -> None:
     release_reexports()
 
 
+_PATCH_PROBLEMS = pytest.StashKey[dict[str, list[str]]]()
+
+
+def _patch_problems(item: pytest.Item, when: str, problems: list[str]) -> None:
+    item.stash.setdefault(_PATCH_PROBLEMS, {}).setdefault(when, []).extend(problems)
+
+
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_setup(item: pytest.Item) -> Iterator[None]:
-    """Refuse to start a test after a binding in ``ori.config`` or
-    ``ori.runtime`` was left that reaches no caller, or only some.
+    """Check the bindings in ``ori.config`` and ``ori.runtime`` a test starts
+    from, and what its fixtures' setup changed.
 
     A write made while a test module was collected is caught at its first test.
     """
     from tests.package_layout import begin_phase
 
-    problems = begin_phase("Left before this test started")
-    if problems:
-        pytest.fail("\n".join(problems))
-    return (yield)
+    _patch_problems(item, "setup", begin_phase("Left before this test started"))
+    try:
+        return (yield)
+    finally:
+        _patch_problems(item, "setup", begin_phase("In setup"))
 
 
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_call(item: pytest.Item) -> Iterator[None]:
-    """Fail a test whose fixtures or body changed, in a split package, a
-    binding that reaches no caller, or an object's binding in only some of the
-    modules that read it, however soon the change was undone."""
-    from tests.package_layout import begin_phase, check_bindings
+    """Check what the test body changed, however soon it was undone."""
+    from tests.package_layout import check_bindings
 
-    problems = begin_phase("In setup")
-    if problems:
-        pytest.fail("\n".join(problems))
-    result = yield
-    problems = check_bindings()
-    if problems:
-        pytest.fail("\n".join(problems))
-    return result
+    try:
+        return (yield)
+    finally:
+        _patch_problems(item, "call", check_bindings())
 
 
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_teardown(item: pytest.Item) -> Iterator[None]:
-    """The same, for what fixture teardown changed, a module- or session-scope
+    """Check what fixture teardown changed, a module- or session-scope
     fixture's included, since the last test of its scope runs its teardown."""
     from tests.package_layout import begin_phase, check_bindings
 
-    problems = begin_phase("In the test")
+    _patch_problems(item, "teardown", begin_phase("In the test"))
+    try:
+        return (yield)
+    finally:
+        _patch_problems(item, "teardown", check_bindings())
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_makereport(
+    item: pytest.Item, call: pytest.CallInfo[None]
+) -> Iterator[pytest.TestReport]:
+    """Fail the phase whose bindings reach no caller, or only some.
+
+    Set on the finished report, outside every other wrapper, so neither
+    ``xfail`` nor a skip can turn the refusal into an expected outcome.
+    """
+    report: pytest.TestReport = yield
+    problems = item.stash.get(_PATCH_PROBLEMS, {}).pop(call.when, [])
     if problems:
-        pytest.fail("\n".join(problems))
-    result = yield
-    problems = check_bindings()
-    if problems:
-        pytest.fail("\n".join(problems))
-    return result
+        text = "\n".join(problems)
+        if report.failed:
+            report.sections.append(("patch targets", text))
+        else:
+            report.outcome = "failed"
+            report.longrepr = text
+        if hasattr(report, "wasxfail"):
+            del report.wasxfail
+    return report
 
 
 @pytest.fixture(autouse=True)

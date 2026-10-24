@@ -751,3 +751,17 @@ def test_a_binding_is_compared_by_identity(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(_device, "checked_device_id", _EqualToAll())
     monkeypatch.undo()
     assert take_problems() == [DEVICE_ID_PARTIAL]
+
+
+def test_a_partial_of_an_ori_function_is_ori_and_a_compiler_flag_is_no_binding() -> (
+    None
+):
+    import functools
+
+    from ori.utils.time_utils import now_ms
+    from tests.package_layout import _is_ori
+
+    assert _is_ori(functools.partial(now_ms))
+    assert not _is_ori(functools.partial(print))
+    for group in (*CONFIG.shared_bindings(), *RUNTIME.shared_bindings()):
+        assert not any(target.endswith(".annotations") for target in group), group

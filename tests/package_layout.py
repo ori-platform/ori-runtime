@@ -20,14 +20,18 @@ changed a binding no caller reads, or an Ori object's binding in some of the
 modules that read it and never in the others; `binding_problems` says which.
 Setup, the call and teardown are each judged from the bindings as they find
 them, so a fixture's complete patch is where the call starts.
-Two limits: a write past a module's class and the mapping writers, straight
-into its namespace or through ``types.ModuleType.__setattr__``, is seen only
-if it is still in place at the next check; and a patch on a stand-in put in
-``sys.modules`` for one of the modules lands on the stand-in, which is no
-module the guard watches.
+Three limits. A phase is judged on which bindings it changed, not when, so
+patching every binding of an object in turn, never all at once, passes; and
+a fixture that patches some bindings, with the test body patching the rest,
+is refused as partial in setup. A write past a module's class and the
+mapping writers, straight into its namespace or through
+``types.ModuleType.__setattr__``, is seen only if it is still in place at the
+next check. And a patch on a stand-in put in ``sys.modules`` for one of the
+modules lands on the stand-in, which is no module the guard watches.
 """
 
 from __future__ import annotations
+import __future__
 
 import ast
 import contextlib
@@ -136,6 +140,8 @@ class PackageLayout:
                 )
                 if shareable and not _is_ori(value):
                     continue
+                if isinstance(value, __future__._Feature):  # type: ignore[attr-defined]
+                    continue  # a compiler flag such as ``annotations``
                 key: object = id(value) if shareable else (local, id(value))
                 groups.setdefault(key, []).append(f"{module.__name__}.{local}")
         return [tuple(sorted(found)) for found in groups.values() if len(found) > 1]
@@ -307,6 +313,8 @@ class ReexportRebindError(AttributeError):
 
 def _is_ori(value: object) -> bool:
     """Whether a module, function or class is Ori's own."""
+    while isinstance(value, functools.partial):
+        value = value.func
     name = (
         value.__name__
         if isinstance(value, types.ModuleType)
