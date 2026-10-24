@@ -41,6 +41,12 @@ from ori.actions.alert_delivery import (
 from ori.actions.alert_failover import AlertFailoverSender
 from ori.actions.coap import CoAPAction, coap_backend_available
 from ori.actions.commissioned_actuator import CommissionedActuator
+from ori.actions.executor_targets import (
+    kernel_subsystem_from_context as _kernel_subsystem_from_context,
+)
+from ori.actions.executor_targets import (
+    process_target_from_context as _process_target_from_context,
+)
 from ori.actions.logger import LoggerAction
 from ori.actions.process_manager import ProcessManagerAction
 from ori.actions.relay import (
@@ -282,6 +288,7 @@ from ori.skills.selection import (
     skills_dir_for,
 )
 from ori.skills.signing import verify_signed_payload
+from ori.startup_stages import STARTUP_CHECKPOINTS, STARTUP_STAGES, StartupContext
 from ori.state.deferred_writer import DeferredWriter
 from ori.state.store import StateStore, TripJournal
 from ori.telemetry.http_export import HttpTelemetryExporter
@@ -727,38 +734,53 @@ class OriRuntime:
         )
 
     async def start(self) -> None:
-        """Full startup sequence. Blocks until a shutdown signal is received."""
+        """Full startup sequence. Blocks until a shutdown signal is received.
 
-        # ── Step A: Load and validate config ─────────────────────────────────
+        Runs the stages of `STARTUP_STAGES` in order, and stops at a
+        checkpoint after any stage in `STARTUP_CHECKPOINTS` if a signal asked
+        for it; see docs/STARTUP_STAGES.md.
+        """
+        context = StartupContext()
+        for stage in STARTUP_STAGES:
+            await getattr(self, f"_stage_{stage.name}")(context)
+            if (
+                stage.name in STARTUP_CHECKPOINTS
+                and await self._stop_if_requested_during_startup()
+            ):
+                return
+
+    async def _stage_configuration(self, context: StartupContext) -> None:
         try:
-            config = Config.load(self._config_path)
+            context.config = Config.load(self._config_path)
             # The autoload had to decide before this document could be read, so
             # its answer is confirmed against the posture the document turns
             # out to declare. This closes a document whose posture is itself
             # expanded, and one replaced between the two reads.
             if self._dotenv_variables is not None and requires_production_posture(
-                device=config.device, security=config.security
+                device=context.config.device, security=context.config.security
             ):
                 raise ConfigValidationError(
                     "a .env was loaded through ORI_AUTOLOAD_DOTENV before this "
                     "configuration declared hardened posture; its values may "
                     "have supplied signed fields. Use the unit's EnvironmentFile."
                 )
-            _validate_required_runtime_capabilities(config, self._config_path)
+            _validate_required_runtime_capabilities(context.config, self._config_path)
             self._config_env_placeholders = config_env_placeholders(self._config_path)
         except ConfigValidationError:
             logger.exception("[runtime] config validation failed — aborting")
             raise
-        self._config = config
+        self._config = context.config
         # Anchors are compared as key material at configuration load, before
         # any binding is seen: if a commissioning anchor is the provisioning
         # anchor, the separation the binding contract rests on does not exist.
         try:
-            commissioning_anchors = load_commissioning_anchors()
+            context.commissioning_anchors = load_commissioning_anchors()
         except AnchorError as exc:
             logger.error("[commissioning] %s — aborting", exc)
             raise ConfigValidationError(f"commissioning anchors: {exc}") from exc
-        if anchor_collision(commissioning_anchors, _provisioning_anchor_bytes(config)):
+        if anchor_collision(
+            context.commissioning_anchors, _provisioning_anchor_bytes(context.config)
+        ):
             logger.error(
                 "[commissioning] anchor_collision: a commissioning anchor is the "
                 "provisioning anchor — aborting"
@@ -771,10 +793,12 @@ class OriRuntime:
         from logging.handlers import RotatingFileHandler
 
         root_logger = logging.getLogger()
-        root_logger.setLevel(getattr(logging, config.logging.level, logging.INFO))
+        root_logger.setLevel(
+            getattr(logging, context.config.logging.level, logging.INFO)
+        )
 
         # Prevent duplicate file handlers when start() is called multiple times.
-        target_log_file = os.path.abspath(config.logging.file)
+        target_log_file = os.path.abspath(context.config.logging.file)
         for handler in list(root_logger.handlers):
             if (
                 isinstance(handler, RotatingFileHandler)
@@ -791,9 +815,9 @@ class OriRuntime:
                     )
 
         file_handler = RotatingFileHandler(
-            config.logging.file,
-            maxBytes=config.logging.max_bytes,
-            backupCount=config.logging.backup_count,
+            context.config.logging.file,
+            maxBytes=context.config.logging.max_bytes,
+            backupCount=context.config.logging.backup_count,
         )
         file_handler.setFormatter(
             logging.Formatter(
@@ -805,103 +829,109 @@ class OriRuntime:
 
         logger.info(
             "[runtime] config loaded — device=%s location=%s deployment=%s",
-            shown(config.device.id),
-            shown(config.device.location),
-            shown(config.device.deployment_type),
+            shown(context.config.device.id),
+            shown(context.config.device.location),
+            shown(context.config.device.deployment_type),
         )
-        self._device_id = str(config.device.id)
-        self._device_location = str(config.device.location or "site")
-        self._device_timezone = str(config.device.timezone or "UTC")
+        self._device_id = str(context.config.device.id)
+        self._device_location = str(context.config.device.location or "site")
+        self._device_timezone = str(context.config.device.timezone or "UTC")
         self._runtime_started_at_ms = now_ms()
         self._device_policy_enabled = bool(
-            (config.device_policy or {}).get("enabled", False)
+            (context.config.device_policy or {}).get("enabled", False)
         )
-        self._remote_command_lockout_config = _remote_command_lockout_config(config)
+        self._remote_command_lockout_config = _remote_command_lockout_config(
+            context.config
+        )
 
-        status_cfg = (
-            config.hal.status_signaling
-            if isinstance(config.hal.status_signaling, dict)
+        context.status_cfg = (
+            context.config.hal.status_signaling
+            if isinstance(context.config.hal.status_signaling, dict)
             else {}
         )
-        status_indicator: LEDIndicator | None = None
-        if bool(status_cfg.get("enabled", False)):
-            status_indicator = LEDIndicator(
+        context.status_indicator = None
+        if bool(context.status_cfg.get("enabled", False)):
+            context.status_indicator = LEDIndicator(
                 StatusSignalingConfig(
-                    power_led_pin=int(status_cfg.get("power_led_pin", 17)),
-                    relay_led_pin=int(status_cfg.get("relay_led_pin", 27)),
-                    network_led_pin=int(status_cfg.get("network_led_pin", 22)),
-                    health_led_pin=int(status_cfg.get("health_led_pin", 23)),
-                    buzzer_pin=int(status_cfg.get("buzzer_pin", 24)),
+                    power_led_pin=int(context.status_cfg.get("power_led_pin", 17)),
+                    relay_led_pin=int(context.status_cfg.get("relay_led_pin", 27)),
+                    network_led_pin=int(context.status_cfg.get("network_led_pin", 22)),
+                    health_led_pin=int(context.status_cfg.get("health_led_pin", 23)),
+                    buzzer_pin=int(context.status_cfg.get("buzzer_pin", 24)),
                 ),
-                tick_ms=int(status_cfg.get("tick_ms", 100)),
+                tick_ms=int(context.status_cfg.get("tick_ms", 100)),
             )
-            await status_indicator.connect()
-            status_indicator.set_runtime_state(RuntimeHealthState.STARTING)
-            status_indicator.set_policy_state(PolicyLEDState.NORMAL)
-            self._status_indicator = status_indicator
+            await context.status_indicator.connect()
+            context.status_indicator.set_runtime_state(RuntimeHealthState.STARTING)
+            context.status_indicator.set_policy_state(PolicyLEDState.NORMAL)
+            self._status_indicator = context.status_indicator
 
-        # ── Step B: Open StateStore ───────────────────────────────────────────
+    async def _stage_store(self, context: StartupContext) -> None:
         # Startup is the one opener allowed to rebuild pre-receipt history,
         # because it is the moment the device is being upgraded on purpose.
         self._state_store = StateStore(
-            db_path=config.database_path, allow_history_rebuild=True
+            db_path=context.config.database_path, allow_history_rebuild=True
         )
         await self._state_store.open()
         await self._load_remote_command_lockout_state()
 
-        # ── Step C: Instantiate action executors and ActionDispatcher ─────────
-        remote_command_verifier = _build_remote_command_verifier(config)
-        whatsapp_action = WhatsAppAction(
+    async def _stage_actions(self, context: StartupContext) -> None:
+        remote_command_verifier = _build_remote_command_verifier(context.config)
+        context.whatsapp_action = WhatsAppAction(
             provider=TwilioProvider(),
-            templates=config.actions.whatsapp.get("templates") or {},
+            templates=context.config.actions.whatsapp.get("templates") or {},
             state_store=self._state_store,
             remote_command_verifier=remote_command_verifier,
             remote_command_handler=self._handle_remote_command,
             remote_command_incident_handler=self._handle_remote_command_incident,
         )
-        sms_action = SMSAction(
+        context.sms_action = SMSAction(
             state_store=self._state_store,
-            config=config.actions.sms,
+            config=context.config.actions.sms,
             remote_command_verifier=remote_command_verifier,
             remote_command_handler=self._handle_remote_command,
             remote_command_incident_handler=self._handle_remote_command_incident,
-            allowed_senders=_build_sms_allowed_senders(config),
+            allowed_senders=_build_sms_allowed_senders(context.config),
         )
-        coap_action = CoAPAction(config=config.actions.coap)
-        self._sms_action = sms_action
-        logger_action = LoggerAction()
-        process_manager_action = ProcessManagerAction()
-        system_control_action = SystemControlAction()
+        context.coap_action = CoAPAction(config=context.config.actions.coap)
+        self._sms_action = context.sms_action
+        context.logger_action = LoggerAction()
+        context.process_manager_action = ProcessManagerAction()
+        context.system_control_action = SystemControlAction()
 
-        relay_action: RelayAction | None = None
-        has_relay_config = "gpio_pin" in config.actions.relay
-        relay_enabled = bool(config.actions.relay.get("enabled", False))
+        context.relay_action = None
+        context.has_relay_config = "gpio_pin" in context.config.actions.relay
+        context.relay_enabled = bool(context.config.actions.relay.get("enabled", False))
 
-        if config.device.deployment_type == "phone" and has_relay_config:
+        if (
+            context.config.device.deployment_type == "phone"
+            and context.has_relay_config
+        ):
             logger.warning(
                 "[runtime] deployment_type=phone with relay configured; skipping relay initialization "
                 "(phone gateway supports Tier A/B software actions only)."
             )
-            has_relay_config = False
+            context.has_relay_config = False
             # Effective relay permission must be false on phone deployments
             # because no GPIO relay executor is initialized on this target.
-            relay_enabled = False
+            context.relay_enabled = False
 
+    async def _stage_safety_envelope(self, context: StartupContext) -> None:
         # The binding is loaded before any pin is driven: the pin's polarity
         # and what its coil states do are commissioned facts, and the relay is
         # connected only under an accepted zone for its pin.
-        await self._load_commissioning(config, commissioning_anchors)
+        await self._load_commissioning(context.config, context.commissioning_anchors)
         commissioning_state = self._commissioning_state
         zone = (
             commissioning_state.zone_for_local_gpio(
-                int(config.actions.relay["gpio_pin"])
+                int(context.config.actions.relay["gpio_pin"])
             )
-            if has_relay_config
+            if context.has_relay_config
             and commissioning_state is not None
             and commissioning_state.actuation_licensed
             else None
         )
-        if has_relay_config and zone is not None and not zone.in_force_eligible:
+        if context.has_relay_config and zone is not None and not zone.in_force_eligible:
             zone = None
         # The safety registry activates release-shipped profiles on the
         # in-force zones before any pin is driven, and its refusals gate a
@@ -927,7 +957,7 @@ class OriRuntime:
             alert_sink=self._safety_alert_sink,
             poll_intervals_ms={
                 str(sensor.id): int(sensor.poll_interval_ms)
-                for sensor in config.sensors
+                for sensor in context.config.sensors
             },
             binding_seq=(
                 commissioning_state.in_force.binding_seq
@@ -938,7 +968,7 @@ class OriRuntime:
         )
         safety_verdict = self._safety_registry.startup_verdict(
             hardened=requires_production_posture(
-                device=config.device, security=config.security
+                device=context.config.device, security=context.config.security
             )
         )
         if safety_verdict == "refuse":
@@ -959,18 +989,18 @@ class OriRuntime:
                     for r in self._safety_registry.activation.refused
                 ],
             )
-        if has_relay_config and zone is None:
+        if context.has_relay_config and zone is None:
             logger.warning(
                 "[runtime] relay on GPIO pin %s is declared but has no zone in force "
                 "with both proof legs; the pin is not driven, relay actions are "
                 "refused, and the zone is reported unprotected",
-                config.actions.relay.get("gpio_pin"),
+                context.config.actions.relay.get("gpio_pin"),
             )
-            has_relay_config = False
+            context.has_relay_config = False
         if self._safety_registry is not None:
             prospective_bound = (
                 frozenset({zone.zone_id})
-                if has_relay_config and zone is not None
+                if context.has_relay_config and zone is not None
                 else frozenset()
             )
             _refuse_unbound_active_zones(
@@ -978,7 +1008,7 @@ class OriRuntime:
                     self._safety_registry.zones_with_active_pairs - prospective_bound
                 ),
                 hardened=requires_production_posture(
-                    device=config.device, security=config.security
+                    device=context.config.device, security=context.config.security
                 ),
             )
         defer_line_acquisition = (
@@ -988,7 +1018,7 @@ class OriRuntime:
             and zone.mapping.get("de_energised_terminal_state") == "closed"
         )
         if (
-            has_relay_config
+            context.has_relay_config
             and zone is not None
             and commissioning_state is not None
             and defer_line_acquisition
@@ -997,24 +1027,28 @@ class OriRuntime:
             # closes the protected circuit — the act the registry defers
             # until the first credible reading. The line stays untouched;
             # the registry's first command is the acquisition.
-            relay_action = RelayAction()
+            context.relay_action = RelayAction()
             if not gpio_backend_importable() and requires_production_posture(
-                device=config.device, security=config.security
+                device=context.config.device, security=context.config.security
             ):
                 raise ConfigValidationError(
                     "production posture requires a real GPIO backend for the "
-                    f"deferred-acquisition relay on pin {config.actions.relay['gpio_pin']}"
+                    f"deferred-acquisition relay on pin {context.config.actions.relay['gpio_pin']}"
                 )
-        elif has_relay_config and zone is not None and commissioning_state is not None:
-            relay_action = RelayAction()
-            gpio_pin: int = config.actions.relay["gpio_pin"]
+        elif (
+            context.has_relay_config
+            and zone is not None
+            and commissioning_state is not None
+        ):
+            context.relay_action = RelayAction()
+            gpio_pin: int = context.config.actions.relay["gpio_pin"]
             try:
-                await relay_action.connect(
+                await context.relay_action.connect(
                     gpio_pin=gpio_pin,
                     active_high=bool(zone.identity["active_high"]),
                     tolerate_missing_backend=not requires_production_posture(
-                        device=config.device,
-                        security=config.security,
+                        device=context.config.device,
+                        security=context.config.security,
                     ),
                 )
                 logger.info(
@@ -1032,23 +1066,23 @@ class OriRuntime:
                     gpio_pin,
                 )
                 if requires_production_posture(
-                    device=config.device,
-                    security=config.security,
+                    device=context.config.device,
+                    security=context.config.security,
                 ):
                     raise ConfigValidationError(
                         "production posture requires configured GPIO relay control "
                         f"to initialise successfully on pin {gpio_pin}: {exc}"
                     ) from exc
-                relay_action = None
+                context.relay_action = None
         if (
-            relay_action is not None
+            context.relay_action is not None
             and zone is not None
             and zone.in_force_eligible
             and commissioning_state is not None
             and commissioning_state.in_force is not None
         ):
             actuator = CommissionedActuator(
-                driver=relay_action,
+                driver=context.relay_action,
                 zone=zone,
                 binding_seq=commissioning_state.in_force.binding_seq,
             )
@@ -1070,57 +1104,59 @@ class OriRuntime:
         if self._safety_registry is not None:
             await self._safety_registry.start()
 
+    async def _stage_alerting(self, context: StartupContext) -> None:
         # operator_contact is a first-class config field, not assembled from sub-dicts
-        _operator_contact: str = config.actions.operator_contact or ""
-        if not _operator_contact:
+        context.operator_contact = context.config.actions.operator_contact or ""
+        if not context.operator_contact:
             logger.warning(
                 "[runtime] operator_contact is not configured — "
                 "Tier C approval requests and emergency SMS will not reach the operator. "
                 "Set actions.operator_contact in ori.yaml."
             )
-        _secondary_contact: str = config.actions.secondary_contact or ""
+        context.secondary_contact = context.config.actions.secondary_contact or ""
 
         # The deployment settings that can change Tier C admission, bound into
         # every proposal's authority snapshot through its policy digest. A
         # proposal's lifetime is its trigger's, from skill.yaml, bounded by the
         # release maximum; no deployment setting shortens it today.
         self._tier_c_deployment_inputs = {
-            "relay_enabled": bool(relay_enabled),
+            "relay_enabled": bool(context.relay_enabled),
         }
 
-        primary_alert_channel = config.actions.primary_alert_channel
-        self._primary_alert_channel = primary_alert_channel
-        self._operator_contact = _operator_contact
-        self._secondary_contact = _secondary_contact
-        self._configure_alert_outbox(config.actions.alert_outbox)
-        alert_sender = AlertFailoverSender(
-            primary_channel=primary_alert_channel,
-            sms_sender=sms_action,
-            whatsapp_sender=whatsapp_action,
+        context.primary_alert_channel = context.config.actions.primary_alert_channel
+        self._primary_alert_channel = context.primary_alert_channel
+        self._operator_contact = context.operator_contact
+        self._secondary_contact = context.secondary_contact
+        self._configure_alert_outbox(context.config.actions.alert_outbox)
+        context.alert_sender = AlertFailoverSender(
+            primary_channel=context.primary_alert_channel,
+            sms_sender=context.sms_action,
+            whatsapp_sender=context.whatsapp_action,
         )
-        self._alert_sender = alert_sender
+        self._alert_sender = context.alert_sender
         if self._safety_alert_sink is not None:
-            self._safety_alert_sink.sender = alert_sender
+            self._safety_alert_sink.sender = context.alert_sender
         causal_cfg = (
-            config.reasoning.causal_memory
-            if isinstance(config.reasoning.causal_memory, dict)
+            context.config.reasoning.causal_memory
+            if isinstance(context.config.reasoning.causal_memory, dict)
             else {}
         )
-        rejection_expiry_days = int(causal_cfg.get("rejection_expiry_days", 30))
+        context.rejection_expiry_days = int(causal_cfg.get("rejection_expiry_days", 30))
 
-        evidence_attestor = _build_evidence_attestor(config)
-        if evidence_attestor is not None:
-            await evidence_attestor.start()
+    async def _stage_evidence(self, context: StartupContext) -> None:
+        context.evidence_attestor = _build_evidence_attestor(context.config)
+        if context.evidence_attestor is not None:
+            await context.evidence_attestor.start()
             # Evidence trust that cannot be established fails closed for
             # evidence — ingest refuses, health reports the posture — and
             # never for the runtime: Tier D is never gated on evidence, so the
             # deterministic safety path starts regardless of profile.
             self._evidence_posture_problems = _evidence_posture_problems(
-                config, evidence_attestor
+                context.config, context.evidence_attestor
             )
             for problem in self._evidence_posture_problems:
                 if requires_production_posture(
-                    device=config.device, security=config.security
+                    device=context.config.device, security=context.config.security
                 ):
                     logger.error(
                         "[evidence] hardened posture cannot establish evidence "
@@ -1134,7 +1170,7 @@ class OriRuntime:
                         "receipts and custody will be refused until it is",
                         problem,
                     )
-        self._evidence_attestor = evidence_attestor
+        self._evidence_attestor = context.evidence_attestor
 
         # The confirmation coordinator reconciles a locally-approved anchor
         # with the evidence store before its authority is treated as
@@ -1142,11 +1178,11 @@ class OriRuntime:
         # through the attestor's executor-bound backend, so the thread-bound
         # SQLite connections stay on the thread that opened them.
         if (
-            evidence_attestor is not None
+            context.evidence_attestor is not None
             and self._state_store is not None
-            and evidence_attestor.available
+            and context.evidence_attestor.available
         ):
-            confirmation_chain = evidence_attestor.confirmation_backend()
+            confirmation_chain = context.evidence_attestor.confirmation_backend()
             if confirmation_chain is not None:
                 coordinator = FirmwareConfirmationCoordinator(
                     store=self._state_store, chain=confirmation_chain
@@ -1156,8 +1192,8 @@ class OriRuntime:
                 # confirmation that arrives later has nothing re-examining
                 # the obligation. This is that missing layer.
                 firmware_cfg = (
-                    config.gateway.firmware_commands
-                    if isinstance(config.gateway.firmware_commands, dict)
+                    context.config.gateway.firmware_commands
+                    if isinstance(context.config.gateway.firmware_commands, dict)
                     else {}
                 )
                 # Config bounds the interval by the backoff ceiling, so the
@@ -1175,12 +1211,13 @@ class OriRuntime:
                     ),
                 )
 
+    async def _stage_dispatcher(self, context: StartupContext) -> None:
         # Built before the dispatcher, which reads reading-age bounds when it
         # composes an operator message, and fresh on every start: the table
         # and the signing starts it matches are memory only.
-        self._firmware_reading_age = _firmware_reading_age(config)
+        self._firmware_reading_age = _firmware_reading_age(context.config)
         reading_age = self._firmware_reading_age
-        dispatcher = ActionDispatcher(
+        context.dispatcher = ActionDispatcher(
             # What Measured may say is decided here, off the action path: the
             # dispatcher composes the line and never reads a reading's provenance.
             measured_time=(
@@ -1189,42 +1226,46 @@ class OriRuntime:
                 else functools.partial(measured_statement, reading_age)
             ),
             state_store=self._state_store,
-            alert_sender=alert_sender,
-            emergency_sms_sender=sms_action,
-            offline_token_verifier=_build_offline_token_verifier(config.actions),
-            status_indicator=status_indicator,
-            evidence_attestor=evidence_attestor,
+            alert_sender=context.alert_sender,
+            emergency_sms_sender=context.sms_action,
+            offline_token_verifier=_build_offline_token_verifier(
+                context.config.actions
+            ),
+            status_indicator=context.status_indicator,
+            evidence_attestor=context.evidence_attestor,
             binding_seq_in_force=self._binding_seq_in_force,
             authority_facts=self._tier_c_authority_facts,
             config={
-                "operator_contact": _operator_contact,
-                "secondary_contact": _secondary_contact,
-                "primary_alert_channel": primary_alert_channel,
-                "device_timezone": config.device.timezone,
-                "device_location": config.device.location,
-                "log_action_decisions": config.logging.log_action_decisions,
-                "log_approval_workflow": config.logging.log_approval_workflow,
-                "relay_enabled": relay_enabled,
-                "rejection_expiry_days": rejection_expiry_days,
+                "operator_contact": context.operator_contact,
+                "secondary_contact": context.secondary_contact,
+                "primary_alert_channel": context.primary_alert_channel,
+                "device_timezone": context.config.device.timezone,
+                "device_location": context.config.device.location,
+                "log_action_decisions": context.config.logging.log_action_decisions,
+                "log_approval_workflow": context.config.logging.log_approval_workflow,
+                "relay_enabled": context.relay_enabled,
+                "rejection_expiry_days": context.rejection_expiry_days,
                 "approval_require_scoped_replies": (
-                    config.actions.approval_require_scoped_replies
+                    context.config.actions.approval_require_scoped_replies
                 ),
                 "local_console_enabled": bool(
-                    config.actions.local_console.get("enabled", False)
+                    context.config.actions.local_console.get("enabled", False)
                 ),
                 "local_console_poll_interval_ms": int(
-                    config.actions.local_console.get("poll_interval_ms", 1000)
+                    context.config.actions.local_console.get("poll_interval_ms", 1000)
                 ),
                 "local_console_channel_id": str(
-                    config.actions.local_console.get(
+                    context.config.actions.local_console.get(
                         "approval_channel_id", "local_console"
                     )
                 ),
             },
         )
-        self._dispatcher = dispatcher
-        await self._load_cached_device_policy(config, dispatcher)
-        await self._maybe_refresh_remote_device_policy_once(config, dispatcher)
+        self._dispatcher = context.dispatcher
+        await self._load_cached_device_policy(context.config, context.dispatcher)
+        await self._maybe_refresh_remote_device_policy_once(
+            context.config, context.dispatcher
+        )
 
         # alert_whatsapp executor
         async def _exec_alert_whatsapp(action: str, ctx: SkillContext) -> bool | str:
@@ -1238,15 +1279,15 @@ class OriRuntime:
                 skill_name=skill_name,
                 skill_is_first_party=first_party,
                 message=msg,
-                recipient=_operator_contact,
+                recipient=context.operator_contact,
                 action_tier=action_tier,
                 trigger_name=trigger_name,
                 original_ts=original_ts,
                 received_at_ms=event_received_at_ms(ctx.event if ctx else None),
-                alert_sender=alert_sender,
+                alert_sender=context.alert_sender,
             )
 
-        dispatcher.register_executor("alert_whatsapp", _exec_alert_whatsapp)
+        context.dispatcher.register_executor("alert_whatsapp", _exec_alert_whatsapp)
 
         # alert_sms executor
         async def _exec_alert_sms(action: str, ctx: SkillContext) -> bool | str:
@@ -1260,15 +1301,15 @@ class OriRuntime:
                 skill_name=skill_name,
                 skill_is_first_party=first_party,
                 message=msg,
-                recipient=_operator_contact,
+                recipient=context.operator_contact,
                 action_tier=action_tier,
                 trigger_name=trigger_name,
                 original_ts=original_ts,
                 received_at_ms=event_received_at_ms(ctx.event if ctx else None),
-                alert_sender=alert_sender,
+                alert_sender=context.alert_sender,
             )
 
-        dispatcher.register_executor("alert_sms", _exec_alert_sms)
+        context.dispatcher.register_executor("alert_sms", _exec_alert_sms)
 
         async def _exec_terminate_process(action: str, ctx: SkillContext) -> bool:
             pid, name = _process_target_from_context(ctx)
@@ -1277,7 +1318,9 @@ class OriRuntime:
                     "[runtime] terminate_process requested but no unambiguous process target is available"
                 )
                 return False
-            ok = await process_manager_action.terminate_process(pid=pid, name=name)
+            ok = await context.process_manager_action.terminate_process(
+                pid=pid, name=name
+            )
             if not ok:
                 logger.warning(
                     "[runtime] terminate_process failed for pid=%s name=%r",
@@ -1286,7 +1329,9 @@ class OriRuntime:
                 )
             return ok
 
-        dispatcher.register_executor("terminate_process", _exec_terminate_process)
+        context.dispatcher.register_executor(
+            "terminate_process", _exec_terminate_process
+        )
 
         def _process_resource(ctx: SkillContext) -> dict[str, Any]:
             """The process this dispatch will terminate, not the sensor that reported."""
@@ -1295,7 +1340,9 @@ class OriRuntime:
                 return {}
             return {"target": f"{pid}:{name}"}
 
-        dispatcher.register_resource_resolver("terminate_process", _process_resource)
+        context.dispatcher.register_resource_resolver(
+            "terminate_process", _process_resource
+        )
 
         async def _exec_reset_kernel_subsystem(action: str, ctx: SkillContext) -> bool:
             subsystem = _kernel_subsystem_from_context(ctx)
@@ -1304,7 +1351,9 @@ class OriRuntime:
                     "[runtime] reset_kernel_subsystem requested but no target subsystem was provided"
                 )
                 return False
-            ok = await system_control_action.reset_kernel_subsystem(subsystem=subsystem)
+            ok = await context.system_control_action.reset_kernel_subsystem(
+                subsystem=subsystem
+            )
             if not ok:
                 logger.warning(
                     "[runtime] reset_kernel_subsystem failed for subsystem=%r",
@@ -1312,7 +1361,7 @@ class OriRuntime:
                 )
             return ok
 
-        dispatcher.register_executor(
+        context.dispatcher.register_executor(
             "reset_kernel_subsystem", _exec_reset_kernel_subsystem
         )
 
@@ -1321,7 +1370,7 @@ class OriRuntime:
             subsystem = _kernel_subsystem_from_context(ctx)
             return {"target": subsystem} if subsystem else {}
 
-        dispatcher.register_resource_resolver(
+        context.dispatcher.register_resource_resolver(
             "reset_kernel_subsystem", _subsystem_resource
         )
 
@@ -1334,7 +1383,7 @@ class OriRuntime:
                     getattr(ctx, "trigger_name", ""),
                 )
                 return False
-            ok = await coap_action.execute_command(
+            ok = await context.coap_action.execute_command(
                 command_name=command_name,
                 payload_override=payload_override,
             )
@@ -1345,7 +1394,7 @@ class OriRuntime:
                 )
             return ok
 
-        dispatcher.register_executor("coap_command", _exec_coap_command)
+        context.dispatcher.register_executor("coap_command", _exec_coap_command)
 
         def _coap_resource(ctx: SkillContext) -> dict[str, Any]:
             """The URI and payload this dispatch will actually command.
@@ -1359,7 +1408,9 @@ class OriRuntime:
             command_name, payload_override = _coap_command_from_context(ctx)
             if not command_name:
                 return {}
-            command = (config.actions.coap.get("commands") or {}).get(command_name)
+            command = (context.config.actions.coap.get("commands") or {}).get(
+                command_name
+            )
             if not isinstance(command, dict):
                 return {}
             uri = str(command.get("uri", "") or "")
@@ -1378,17 +1429,17 @@ class OriRuntime:
                 ),
             }
 
-        dispatcher.register_resource_resolver("coap_command", _coap_resource)
+        context.dispatcher.register_resource_resolver("coap_command", _coap_resource)
 
         # log_to_dashboard — override built-in with device_id from config
         async def _exec_log_to_dashboard(action: str, *_: Any) -> None:
-            logger_action.log_override(
+            context.logger_action.log_override(
                 action=action,
                 override_type="safe_default",
-                device_id=config.device.id,
+                device_id=context.config.device.id,
             )
 
-        dispatcher.register_executor("log_to_dashboard", _exec_log_to_dashboard)
+        context.dispatcher.register_executor("log_to_dashboard", _exec_log_to_dashboard)
 
         # Relay-backed safety executors — only if relay successfully connected.
         # Semantic safety actions such as close_gas_valve still resolve through
@@ -1396,9 +1447,9 @@ class OriRuntime:
         # the named fail-safe valve/contactor before that semantic action is
         # safety-creditable.
         actuator_in_force = self._commissioned_actuator
-        if relay_action is not None and actuator_in_force is not None:
+        if context.relay_action is not None and actuator_in_force is not None:
             actuator_bound = actuator_in_force
-            relay_action_bound = relay_action
+            relay_action_bound = context.relay_action
 
             def _reported(executed: bool) -> bool | str:
                 # A driver that refused because it was never connected drove
@@ -1413,103 +1464,113 @@ class OriRuntime:
                 # `trip_relay` and `close_gas_valve` name one outcome: isolate
                 # the load. The zone's mapping decides the coil state.
                 executed = await actuator_bound.command("open_protected_circuit")
-                if status_indicator is not None:
-                    status_indicator.set_relay_energized(actuator_bound.coil_energised)
+                if context.status_indicator is not None:
+                    context.status_indicator.set_relay_energized(
+                        actuator_bound.coil_energised
+                    )
                 return _reported(executed)
 
             async def _exec_release_relay(*_: Any) -> bool | str:
                 executed = await actuator_bound.command("close_protected_circuit")
-                if status_indicator is not None:
-                    status_indicator.set_relay_energized(actuator_bound.coil_energised)
+                if context.status_indicator is not None:
+                    context.status_indicator.set_relay_energized(
+                        actuator_bound.coil_energised
+                    )
                 return _reported(executed)
 
-            dispatcher.register_executor("trip_relay", _exec_trip_relay)
-            dispatcher.register_executor("release_relay", _exec_release_relay)
-            dispatcher.register_executor("close_gas_valve", _exec_trip_relay)
+            context.dispatcher.register_executor("trip_relay", _exec_trip_relay)
+            context.dispatcher.register_executor("release_relay", _exec_release_relay)
+            context.dispatcher.register_executor("close_gas_valve", _exec_trip_relay)
 
-        # ── Step D: Capability posture tracker + IntelligenceElevator ─────────
-        posture_cfg = (
-            config.reasoning.capability_posture
-            if isinstance(config.reasoning.capability_posture, dict)
+    async def _stage_reasoning(self, context: StartupContext) -> None:
+        context.posture_cfg = (
+            context.config.reasoning.capability_posture
+            if isinstance(context.config.reasoning.capability_posture, dict)
             else {}
         )
-        posture_enabled = bool(posture_cfg.get("enabled", True))
-        posture_tracker: CapabilityPostureTracker | None = None
+        posture_enabled = bool(context.posture_cfg.get("enabled", True))
+        context.posture_tracker = None
         if posture_enabled:
-            posture_tracker = CapabilityPostureTracker(
+            context.posture_tracker = CapabilityPostureTracker(
                 probe_interval_seconds=int(
-                    posture_cfg.get("probe_interval_seconds", 30)
+                    context.posture_cfg.get("probe_interval_seconds", 30)
                 ),
                 gateway_heartbeat_ttl_seconds=int(
-                    posture_cfg.get("gateway_heartbeat_ttl_seconds", 30)
+                    context.posture_cfg.get("gateway_heartbeat_ttl_seconds", 30)
                 ),
                 internet_probe_host=str(
-                    posture_cfg.get("internet_probe_host", "one.one.one.one")
+                    context.posture_cfg.get("internet_probe_host", "one.one.one.one")
                 ),
-                internet_probe_port=int(posture_cfg.get("internet_probe_port", 53)),
+                internet_probe_port=int(
+                    context.posture_cfg.get("internet_probe_port", 53)
+                ),
                 internet_probe_timeout_ms=int(
-                    posture_cfg.get("internet_probe_timeout_ms", 1000)
+                    context.posture_cfg.get("internet_probe_timeout_ms", 1000)
                 ),
             )
-            self._capability_posture_tracker = posture_tracker
+            self._capability_posture_tracker = context.posture_tracker
 
-        local_llm = _build_local_llm(
-            config.reasoning,
+        context.local_llm = _build_local_llm(
+            context.config.reasoning,
             self._config_path,
             required=bool(
                 requires_production_posture(
-                    device=config.device,
-                    security=config.security,
+                    device=context.config.device,
+                    security=context.config.security,
                 )
-                and _local_llm_requested(config.reasoning)
+                and _local_llm_requested(context.config.reasoning)
             ),
         )
         # One envelope state for every gateway route; see
         # _build_gateway_envelope_state. It raises only when another runtime
         # owns this state database's replay store, which refuses the start.
-        gateway_envelope_state = _build_gateway_envelope_state(config)
-        self._gateway_envelope_state = gateway_envelope_state
-        gateway_reasoner = _build_gateway_reasoner(config, gateway_envelope_state)
-        elevator = IntelligenceElevator(
-            local_llm=local_llm,
+        context.gateway_envelope_state = _build_gateway_envelope_state(context.config)
+        self._gateway_envelope_state = context.gateway_envelope_state
+        gateway_reasoner = _build_gateway_reasoner(
+            context.config, context.gateway_envelope_state
+        )
+        context.elevator = IntelligenceElevator(
+            local_llm=context.local_llm,
             gateway_reasoner=gateway_reasoner,
-            config=config.reasoning,
-            context_enricher=_build_context_enricher(config),
+            config=context.config.reasoning,
+            context_enricher=_build_context_enricher(context.config),
         )
 
-        # ── Step E: EventBus ──────────────────────────────────────────────────
-        event_bus = EventBus()
-        elevator.attach_event_bus(event_bus)
-        self._event_bus = event_bus
-        self._elevator = elevator
-        if posture_tracker is not None:
+    async def _stage_event_path(self, context: StartupContext) -> None:
+        context.event_bus = EventBus()
+        context.elevator.attach_event_bus(context.event_bus)
+        self._event_bus = context.event_bus
+        self._elevator = context.elevator
+        if context.posture_tracker is not None:
             # Build an initial posture snapshot before processing events.
-            posture = await posture_tracker.refresh(
-                sms_available=is_truthy(config.actions.sms.get("enabled", False)),
-                whatsapp_available=is_truthy(
-                    config.actions.whatsapp.get("enabled", False)
+            posture = await context.posture_tracker.refresh(
+                sms_available=is_truthy(
+                    context.config.actions.sms.get("enabled", False)
                 ),
-                local_slm_loaded=_is_local_slm_available(local_llm),
-                relay_connected=relay_action is not None,
+                whatsapp_available=is_truthy(
+                    context.config.actions.whatsapp.get("enabled", False)
+                ),
+                local_slm_loaded=_is_local_slm_available(context.local_llm),
+                relay_connected=context.relay_action is not None,
             )
-            elevator.update_capability_posture(posture)
-            dispatcher.update_capability_posture(posture)
-            alert_sender.update_capability_posture(posture)
-            if status_indicator is not None:
-                _sync_network_state_from_posture(status_indicator, posture)
+            context.elevator.update_capability_posture(posture)
+            context.dispatcher.update_capability_posture(posture)
+            context.alert_sender.update_capability_posture(posture)
+            if context.status_indicator is not None:
+                _sync_network_state_from_posture(context.status_indicator, posture)
 
         self._skill_reload_lock = asyncio.Lock()
         self._deduplicator = EventDeduplicator()
 
-        # ── Step F: Load skills and register handlers ─────────────────────────
-        declared = config.raw.get("skills_dir")
+    async def _stage_skills(self, context: StartupContext) -> None:
+        declared = context.config.raw.get("skills_dir")
         self._skills_dir = skills_dir_for(
             None if declared is None else str(declared), self._config_path
         )
         self._skill_selection = tuple(
-            (entry.name, entry.version) for entry in config.skills
+            (entry.name, entry.version) for entry in context.config.skills
         )
-        skills_security = config.security.get("skills")
+        skills_security = context.config.security.get("skills")
         skills_require_signed = is_truthy(
             skills_security.get("require_signed", False)
             if isinstance(skills_security, dict)
@@ -1521,10 +1582,10 @@ class OriRuntime:
         # runs whichever caller reached it.
         binding_view = self._binding_view()
         gate = ResourceGate()
-        dispatcher.bind_resource_gate(gate, binding_view)
+        context.dispatcher.bind_resource_gate(gate, binding_view)
         dispatch_coordinator = DispatchCoordinator(
-            elevator=elevator,
-            dispatcher=dispatcher,
+            elevator=context.elevator,
+            dispatcher=context.dispatcher,
             state_store=self._state_store,
             gate=gate,
         )
@@ -1532,10 +1593,10 @@ class OriRuntime:
         self._dispatch_coordinator = dispatch_coordinator
 
         loader = SkillLoader(
-            elevator=elevator,
+            elevator=context.elevator,
             state_store=self._state_store,
-            dispatcher=dispatcher,
-            os_sandbox_config=config.os_sandbox,
+            dispatcher=context.dispatcher,
+            os_sandbox_config=context.config.os_sandbox,
             require_signed=skills_require_signed,
             coordinator=dispatch_coordinator,
         )
@@ -1546,12 +1607,12 @@ class OriRuntime:
 
         logger.info(
             "[runtime] event loop ready — device=%s skills=%d triggers=%d",
-            config.device.id,
+            context.config.device.id,
             len(self._loaded_skills),
             sum(len(s.triggers) for s in self._loaded_skills),
         )
 
-        # ── Register signal handlers ──────────────────────────────────────────
+    async def _stage_signals(self, context: StartupContext) -> None:
         # Registered here rather than at the end of startup, because a device
         # that cannot be stopped for the whole of startup is worse than one
         # that stops untidily, and startup includes adapter connects that can
@@ -1568,8 +1629,8 @@ class OriRuntime:
                 "[runtime] SIGHUP handler active — reload applies to new events only; in-flight tasks keep previous skill config"
             )
 
-        # ── Start background tasks ────────────────────────────────────────────
-        self._configured_sensors = list(config.sensors)
+    async def _stage_sensor_state(self, context: StartupContext) -> None:
+        self._configured_sensors = list(context.config.sensors)
         self._unconnected_sensors = set()
         self._retrying_sensors_announced = set()
         self._connected_sensor_ids = set()
@@ -1584,6 +1645,7 @@ class OriRuntime:
         self._last_alert_timestamps_by_channel = {}
         self._last_alert_timestamps_by_trigger = {}
 
+    async def _stage_tier_c_recovery(self, context: StartupContext) -> None:
         if self._state_store is not None:
             # Proposals a previous process left: an open one is closed with its
             # safe default, an approval without an outcome is recorded
@@ -1594,26 +1656,31 @@ class OriRuntime:
             # over proposals this process never settled, and Tier D, which
             # consults none of this, still starts.
             try:
-                recovered = await dispatcher.recover_tier_c_at_start(self._state_store)
+                recovered = await context.dispatcher.recover_tier_c_at_start(
+                    self._state_store
+                )
             except Exception as exc:
                 logger.critical(
                     "[runtime] Tier C recovery at start failed: %s; Tier C proposals "
                     "are refused until a start settles them, Tier D is unaffected",
                     exc,
                 )
-                dispatcher.mark_tier_c_recovery_failed(f"{type(exc).__name__}: {exc}")
+                context.dispatcher.mark_tier_c_recovery_failed(
+                    f"{type(exc).__name__}: {exc}"
+                )
             else:
                 if any(recovered.values()):
                     logger.warning(
                         "[runtime] Tier C proposals settled at start: %s", recovered
                     )
 
-        for sensor_cfg in config.sensors:
+    async def _stage_sensors(self, context: StartupContext) -> None:
+        for sensor_cfg in context.config.sensors:
             try:
                 adapter = make_adapter(sensor_cfg.protocol)
             except UnknownProtocolError as exc:
                 raise ConfigValidationError(str(exc)) from exc
-            connect_cfg = adapter_connect_config(sensor_cfg, config)
+            connect_cfg = adapter_connect_config(sensor_cfg, context.config)
             connected = True
             try:
                 await adapter.connect(connect_cfg)
@@ -1654,18 +1721,19 @@ class OriRuntime:
                 self._poll_sensor(
                     adapter,
                     sensor_cfg,
-                    event_bus,
-                    config.device.id,
+                    context.event_bus,
+                    context.config.device.id,
                     self._deduplicator,
-                    config.device.timezone,
-                    config.device.country_code,
-                    config.device.location,
-                    config.device.site_type,
+                    context.config.device.timezone,
+                    context.config.device.country_code,
+                    context.config.device.location,
+                    context.config.device.site_type,
                 ),
                 name=f"poll:{sensor_cfg.id}",
             )
             self._background_tasks.append(task)
 
+    async def _stage_loops(self, context: StartupContext) -> None:
         if self._sensor_poll_interval_ms:
             min_poll_ms = min(self._sensor_poll_interval_ms.values())
             stale_check_interval_s = min(
@@ -1675,7 +1743,7 @@ class OriRuntime:
             self._background_tasks.append(
                 asyncio.create_task(
                     self._sensor_staleness_loop(
-                        alert_sender=alert_sender,
+                        alert_sender=context.alert_sender,
                         check_interval_s=stale_check_interval_s,
                     ),
                     name="sensor-staleness",
@@ -1686,12 +1754,12 @@ class OriRuntime:
             asyncio.create_task(self._watchdog_loop(), name="watchdog")
         )
         external_wd = (
-            config.hal.external_watchdog
-            if isinstance(config.hal.external_watchdog, dict)
+            context.config.hal.external_watchdog
+            if isinstance(context.config.hal.external_watchdog, dict)
             else {}
         )
         if bool(external_wd.get("enabled", False)):
-            if config.device.deployment_type == "phone":
+            if context.config.device.deployment_type == "phone":
                 logger.warning(
                     "[runtime] external watchdog requested on phone deployment; skipping "
                     "(requires Raspberry Pi GPIO)."
@@ -1709,26 +1777,28 @@ class OriRuntime:
                 )
         self._background_tasks.append(
             asyncio.create_task(
-                self._heartbeat_loop(config.device.id), name="heartbeat"
+                self._heartbeat_loop(context.config.device.id), name="heartbeat"
             )
         )
         self._background_tasks.append(
             asyncio.create_task(
                 self._compaction_loop(
                     self._deduplicator,
-                    max_backward_skew_ms=config.state.compaction.max_backward_skew_ms,
+                    max_backward_skew_ms=context.config.state.compaction.max_backward_skew_ms,
                 ),
                 name="compaction",
             )
         )
         self._background_tasks.append(
             asyncio.create_task(
-                self._alert_delivery_loop(alert_sender),
+                self._alert_delivery_loop(context.alert_sender),
                 name="alert-outbox",
             )
         )
         policy_cfg = (
-            config.device_policy if isinstance(config.device_policy, dict) else {}
+            context.config.device_policy
+            if isinstance(context.config.device_policy, dict)
+            else {}
         )
         if bool(policy_cfg.get("enabled", False)) and bool(
             policy_cfg.get("refresh_enabled", False)
@@ -1739,16 +1809,16 @@ class OriRuntime:
             self._background_tasks.append(
                 asyncio.create_task(
                     self._device_policy_refresh_loop(
-                        config=config,
-                        dispatcher=dispatcher,
+                        config=context.config,
+                        dispatcher=context.dispatcher,
                         refresh_interval_s=refresh_interval_s,
                     ),
                     name="device-policy-refresh",
                 )
             )
-        if posture_tracker is not None:
+        if context.posture_tracker is not None:
             posture_interval_s = float(
-                posture_cfg.get(
+                context.posture_cfg.get(
                     "probe_interval_seconds",
                     CAPABILITY_POSTURE_UPDATE_INTERVAL_S,
                 )
@@ -1756,58 +1826,59 @@ class OriRuntime:
             self._background_tasks.append(
                 asyncio.create_task(
                     self._capability_posture_loop(
-                        tracker=posture_tracker,
-                        elevator=elevator,
-                        sms_enabled=is_truthy(config.actions.sms.get("enabled", False)),
-                        whatsapp_enabled=is_truthy(
-                            config.actions.whatsapp.get("enabled", False)
+                        tracker=context.posture_tracker,
+                        elevator=context.elevator,
+                        sms_enabled=is_truthy(
+                            context.config.actions.sms.get("enabled", False)
                         ),
-                        local_llm=local_llm,
-                        relay_connected=relay_action is not None,
+                        whatsapp_enabled=is_truthy(
+                            context.config.actions.whatsapp.get("enabled", False)
+                        ),
+                        local_llm=context.local_llm,
+                        relay_connected=context.relay_action is not None,
                         update_interval_s=posture_interval_s,
                     ),
                     name="capability-posture",
                 )
             )
-        if status_indicator is not None:
-            status_tick_ms = int(status_cfg.get("tick_ms", 100))
+        if context.status_indicator is not None:
+            status_tick_ms = int(context.status_cfg.get("tick_ms", 100))
             self._background_tasks.append(
                 asyncio.create_task(
                     self._status_signaling_loop(
-                        indicator=status_indicator,
+                        indicator=context.status_indicator,
                         tick_ms=status_tick_ms,
                     ),
                     name="status-signaling",
                 )
             )
-        if await self._stop_if_requested_during_startup():
-            return
 
-        webhook_task = await self._start_sms_webhook_if_enabled(config)
+    async def _stage_services(self, context: StartupContext) -> None:
+        webhook_task = await self._start_sms_webhook_if_enabled(context.config)
         if webhook_task is not None:
             self._background_tasks.append(webhook_task)
 
         telemetry_export_task = self._start_telemetry_export_if_enabled(
-            config,
-            event_bus,
+            context.config,
+            context.event_bus,
         )
         if telemetry_export_task is not None:
             self._background_tasks.append(telemetry_export_task)
 
-        _warn_gateway_security_posture(config)
-        _warn_sms_webhook_security_posture(config)
+        _warn_gateway_security_posture(context.config)
+        _warn_sms_webhook_security_posture(context.config)
 
         gateway_export_task = self._start_gateway_export_responder_if_enabled(
-            config, gateway_envelope_state
+            context.config, context.gateway_envelope_state
         )
         if gateway_export_task is not None:
             self._background_tasks.append(gateway_export_task)
 
         hb_subscriber = (
             _build_gateway_heartbeat_subscriber(
-                config, posture_tracker, gateway_envelope_state
+                context.config, context.posture_tracker, context.gateway_envelope_state
             )
-            if posture_tracker is not None
+            if context.posture_tracker is not None
             else None
         )
         if hb_subscriber is not None:
@@ -1819,7 +1890,7 @@ class OriRuntime:
             )
 
         evidence_inbound_subscriber = _build_evidence_inbound_subscriber(
-            config, evidence_attestor, gateway_envelope_state
+            context.config, context.evidence_attestor, context.gateway_envelope_state
         )
         self._evidence_inbound_subscriber = evidence_inbound_subscriber
         if evidence_inbound_subscriber is not None:
@@ -1831,26 +1902,31 @@ class OriRuntime:
             )
 
         if (
-            evidence_attestor is not None
-            and evidence_attestor.available
+            context.evidence_attestor is not None
+            and context.evidence_attestor.available
             and self._state_store is not None
         ):
             # Independent of the courier: a registration is sealed and held
             # whether or not a gateway is configured to carry it.
             self._background_tasks.append(
                 asyncio.create_task(
-                    self._evidence_registration_loop(evidence_attestor),
+                    self._evidence_registration_loop(context.evidence_attestor),
                     name="evidence-registration",
                 )
             )
             logger.info("[runtime] evidence anchor registration reconciler started")
 
         evidence_outbound_publisher = _build_evidence_outbound_publisher(
-            config, evidence_attestor, gateway_envelope_state
+            context.config, context.evidence_attestor, context.gateway_envelope_state
         )
         self._evidence_outbound_publisher = evidence_outbound_publisher
-        if evidence_outbound_publisher is not None and evidence_attestor is not None:
-            evidence_attestor.set_sealed_listener(evidence_outbound_publisher.nudge)
+        if (
+            evidence_outbound_publisher is not None
+            and context.evidence_attestor is not None
+        ):
+            context.evidence_attestor.set_sealed_listener(
+                evidence_outbound_publisher.nudge
+            )
             self._background_tasks.append(
                 asyncio.create_task(
                     evidence_outbound_publisher.serve_until(self._shutdown_event),
@@ -1859,14 +1935,14 @@ class OriRuntime:
             )
             self._background_tasks.append(
                 asyncio.create_task(
-                    self._evidence_checkpoint_loop(evidence_attestor),
+                    self._evidence_checkpoint_loop(context.evidence_attestor),
                     name="evidence-checkpoint",
                 )
             )
 
         # Built here, not read back from the subscriber, so health reaches the
         # documents and alarm snapshots without holding anything of the stack.
-        firmware_telemetry_cfg = _firmware_telemetry_config(config)
+        firmware_telemetry_cfg = _firmware_telemetry_config(context.config)
         if firmware_telemetry_cfg is not None:
             self._firmware_profile_library = _firmware_profile_library(
                 firmware_telemetry_cfg
@@ -1878,13 +1954,12 @@ class OriRuntime:
             firmware_command_pair,
             firmware_liveness_scheduler,
         ) = _build_firmware_liveness_stack(
-            config,
-            event_bus,
-            self._state_store,
+            context.config,
+            context.event_bus,
+            self._state_store,  # type: ignore[arg-type]
             self._deduplicator,
-            # Late-bound on purpose: the subscriber is built before the
-            # evidence attestor decides whether a reconciler exists at all,
-            # so the callback reads it when a reconnect actually happens.
+            # Late-bound: the callback reads the reconciler when a reconnect
+            # happens, so no construction order between the two matters.
             self._nudge_firmware_confirmations,
             profiles=self._firmware_profile_library,
             alarms=self._firmware_alarm_tracker,
@@ -1926,15 +2001,13 @@ class OriRuntime:
                     )
                 )
 
-        if await self._stop_if_requested_during_startup():
-            return
-
-        await self._start_firmware_mqtt_operator_if_enabled(config)
+    async def _stage_operator_services(self, context: StartupContext) -> None:
+        await self._start_firmware_mqtt_operator_if_enabled(context.config)
 
         node_heartbeat = _build_runtime_node_heartbeat_publisher(
-            config,
+            context.config,
             self._build_health_snapshot,
-            gateway_envelope_state,
+            context.gateway_envelope_state,
         )
         if node_heartbeat is not None:
             self._runtime_node_heartbeat_publisher = node_heartbeat
@@ -1945,11 +2018,9 @@ class OriRuntime:
                 )
             )
 
-        if await self._stop_if_requested_during_startup():
-            return
-
-        await self._start_health_socket_if_enabled(config)
-        await self._start_operator_socket(str(config.device.deployment_profile))
+    async def _stage_health_and_reconciliation(self, context: StartupContext) -> None:
+        await self._start_health_socket_if_enabled(context.config)
+        await self._start_operator_socket(str(context.config.device.deployment_profile))
 
         await self._drain_pending_firmware_confirmations()
         if self._firmware_confirmation_reconciler is not None:
@@ -1963,13 +2034,13 @@ class OriRuntime:
             )
         await self._reconcile_pending_attestations()
 
-        if status_indicator is not None:
-            status_indicator.set_runtime_state(RuntimeHealthState.NORMAL)
+        if context.status_indicator is not None:
+            context.status_indicator.set_runtime_state(RuntimeHealthState.NORMAL)
 
-        if await self._stop_if_requested_during_startup():
-            return
-
-        await self._send_setup_success_notifications(config, alert_sender)
+    async def _stage_announce(self, context: StartupContext) -> None:
+        await self._send_setup_success_notifications(
+            context.config, context.alert_sender
+        )
 
         # Block here until stop() sets the shutdown event
         if self._safety_registry is not None:
@@ -7629,106 +7700,6 @@ def _build_context_enricher(config: Config) -> ContextEnricher | None:
             "[runtime] failed to construct ContextEnricher — enrichment disabled"
         )
         return None
-
-
-def _process_target_from_context(ctx: SkillContext) -> tuple[int | None, str]:
-    """Resolve a single process target for `terminate_process`.
-
-    Resolution order:
-    1. Explicit event context override: `event.context["terminate_process"]`
-       with `{pid, name}`.
-    2. Exactly one process in `event.reading.metadata["processes"]`.
-    """
-    if not ctx or not ctx.event:
-        return None, ""
-
-    terminate_ctx = ctx.event.context.get("terminate_process", {})
-    if isinstance(terminate_ctx, dict):
-        pid = terminate_ctx.get("pid")
-        name = terminate_ctx.get("name")
-        if isinstance(pid, int) and isinstance(name, str) and name.strip():
-            return pid, name.strip()
-        if (
-            isinstance(pid, str)
-            and pid.isdigit()
-            and isinstance(name, str)
-            and name.strip()
-        ):
-            return int(pid), name.strip()
-
-    reading = ctx.event.reading
-    if reading is None:
-        return None, ""
-
-    processes = reading.metadata.get("processes", [])
-    if not isinstance(processes, list):
-        processes = []
-
-    recommended = reading.metadata.get("recommended_process")
-    if isinstance(recommended, dict):
-        pid = recommended.get("pid")
-        name = recommended.get("name")
-        if isinstance(pid, int) and isinstance(name, str) and name.strip():
-            return pid, name.strip()
-        if (
-            isinstance(pid, str)
-            and pid.isdigit()
-            and isinstance(name, str)
-            and name.strip()
-        ):
-            return int(pid), name.strip()
-
-    valid: list[tuple[int, str]] = []
-    for proc in processes:
-        if not isinstance(proc, dict):
-            continue
-        pid = proc.get("pid")
-        name = proc.get("name")
-        if isinstance(pid, int) and isinstance(name, str) and name.strip():
-            valid.append((pid, name.strip()))
-        elif (
-            isinstance(pid, str)
-            and pid.isdigit()
-            and isinstance(name, str)
-            and name.strip()
-        ):
-            valid.append((int(pid), name.strip()))
-
-    if len(valid) == 1:
-        return valid[0]
-
-    return None, ""
-
-
-def _kernel_subsystem_from_context(ctx: SkillContext) -> str:
-    """Resolve subsystem target for `reset_kernel_subsystem`.
-
-    Resolution order:
-    1. Explicit event context override:
-       `event.context["reset_kernel_subsystem"]` as either
-       `{"subsystem": "<name>"}` or `"<name>"`.
-    2. Reading metadata keys: `kernel_subsystem` then `subsystem`.
-    """
-    if not ctx or not ctx.event:
-        return ""
-
-    raw = ctx.event.context.get("reset_kernel_subsystem", "")
-    if isinstance(raw, dict):
-        subsystem = raw.get("subsystem")
-        if isinstance(subsystem, str) and subsystem.strip():
-            return subsystem.strip()
-    elif isinstance(raw, str) and raw.strip():
-        return raw.strip()
-
-    reading = ctx.event.reading
-    if reading is None:
-        return ""
-
-    for key in ("kernel_subsystem", "subsystem"):
-        value = reading.metadata.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return ""
 
 
 def _coap_command_from_context(ctx: SkillContext) -> tuple[str, str | None]:

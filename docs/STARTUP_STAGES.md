@@ -28,7 +28,9 @@ stage, and the guard holds the inventory.
 
 The order is data, not control flow: a tuple of stage names, a constraint
 table beside it of `(later, earlier, reason, safety)`, and a set of the
-boundaries after which startup checks for a stop request. A test asserts the
+boundaries after which startup checks for a stop request. All three, and the
+`StartupContext`, live in `ori/startup_stages.py`; the stage bodies stay on
+`OriRuntime`, and `start()` is the loop over the tuple. A test asserts the
 tuple satisfies every constraint, that every constraint names stages that
 exist, and that the checkpoint set is exactly the four the code has today.
 
@@ -39,36 +41,37 @@ hold the stop.
 
 ## How the inventories below were made
 
-They are derived from the body of `start()` rather than written by hand, by
-the classification the guard will apply:
+They are derived from the code rather than written by hand, by the
+classification the guard applies:
 
-- The span of each stage is the run of top-level statements between two
-  anchors in `start()` today.
-- A **context field** is a local of `start()` stored in one span and loaded
-  in a later one. A load inside a closure counts for the span that defines
-  the closure, because an executor registered on the dispatcher is where a
-  hidden dependency would otherwise live.
+- Each stage is a method whose body is the run of top-level statements of the
+  former `start()` between two anchors, moved unchanged.
+- A **context field** is a value one stage sets and a later one reads. Within
+  a stage body it is `context.<field>`; a load inside a closure counts for the
+  stage that defines the closure, because an executor registered on the
+  dispatcher is where a hidden dependency would otherwise live. A load is a
+  context read when an earlier stage may have set the field.
 - A **runtime call** is `self.<name>(...)`. A **runtime write** is
   `self.<name>` as an assignment target, or as the root of an attribute or
   subscript that is assigned, since setting `self._safety_alert_sink.sender`
   mutates the sink. Every other `self.<name>` is a **runtime read**,
   including a method referenced without being called, which is a read of a
-  bound callable.
+  bound callable. The runtime itself handed to something a stage builds is
+  the read `<self>`.
 
-One local is reused for an unrelated value in a later span: the relay's
-`gpio_pin` in the safety envelope and the external watchdog's in the loops.
-The derivation reports it as crossing the boundary because it cannot tell the
-two apart; the implementation change renames the second, and it is not a
-context field.
+Each stage is its own scope, so a local reused for an unrelated value in a
+later stage, such as the relay's `gpio_pin` in the safety envelope and the
+external watchdog's in the loops, is two locals and needs no rename.
 
 ## The context
 
-Exactly the locals of `start()` that a later span reads. The underscore
-prefix three of them carry today is dropped on the context.
+Exactly the values one stage sets and a later stage reads. The underscore
+prefix two of them carried as locals of `start()` is dropped on the context.
+A field is unset until its stage runs, and reading it earlier raises.
 
 | Field | Set by | Read by |
 | --- | --- | --- |
-| `config` | configuration | every later stage |
+| `config` | configuration | every later stage except signals and tier C recovery |
 | `commissioning_anchors` | configuration | safety envelope |
 | `status_cfg` | configuration | loops |
 | `status_indicator` | configuration | dispatcher, event path, loops, health and reconciliation |
@@ -77,40 +80,44 @@ prefix three of them carry today is dropped on the context.
 | `coap_action`, `logger_action`, `process_manager_action`, `system_control_action` | actions | dispatcher |
 | `has_relay_config` | actions, then the safety envelope | safety envelope |
 | `relay_action` | actions, then the safety envelope | safety envelope, dispatcher, event path, loops |
-| `relay_enabled` | actions | dispatcher |
-| `operator_contact`, `secondary_contact`, `approval_timeout`, `primary_alert_channel`, `rejection_expiry_days` | alerting | dispatcher |
+| `relay_enabled` | actions | alerting, dispatcher |
+| `operator_contact`, `secondary_contact`, `primary_alert_channel`, `rejection_expiry_days` | alerting | dispatcher |
 | `alert_sender` | alerting | dispatcher, event path, loops, announce |
 | `evidence_attestor` | evidence | dispatcher, services |
-| `dispatcher` | dispatcher | event path, skills, loops |
-| `elevator` | reasoning | event path, skills, loops |
-| `local_llm` | reasoning | event path, loops |
+| `dispatcher` | dispatcher | event path, skills, tier C recovery, loops |
 | `posture_cfg` | reasoning | loops |
 | `posture_tracker` | reasoning | event path, loops, services |
+| `local_llm` | reasoning | event path, loops |
+| `gateway_envelope_state` | reasoning | services, operator services |
+| `elevator` | reasoning | event path, skills, loops |
 | `event_bus` | event path | sensors, services |
 
 ## The runtime surface of each stage
 
 Every runtime attribute each stage reads, writes or calls, by the rules
-above. A dash means none.
+above. A dash means none. The stop check is not in any stage: `start()` makes
+it after each checkpoint stage.
 
 | Stage | Runtime reads | Runtime writes | Runtime calls |
 | --- | --- | --- | --- |
 | configuration | `_config_path`, `_dotenv_variables` | `_config`, `_config_env_placeholders`, `_device_id`, `_device_location`, `_device_policy_enabled`, `_device_timezone`, `_remote_command_lockout_config`, `_runtime_started_at_ms`, `_status_indicator` | - |
 | store | `_state_store` | `_state_store` | `_load_remote_command_lockout_state` |
 | actions | `_handle_remote_command`, `_handle_remote_command_incident`, `_state_store` | `_sms_action` | - |
-| safety envelope | `_commissioning_state`, `_safety_alert_sink`, `_safety_commander`, `_safety_registry`, `_state_store` | `_commissioned_actuator`, `_safety_alert_sink`, `_safety_commander`, `_safety_registry` | `_load_commissioning` |
-| alerting | - | `_alert_sender`, `_operator_contact`, `_primary_alert_channel`, `_safety_alert_sink`, `_secondary_contact` | `_configure_alert_outbox` |
-| evidence | `_state_store` | `_evidence_attestor`, `_evidence_posture_problems`, `_firmware_confirmation_coordinator`, `_firmware_confirmation_reconciler` | - |
-| dispatcher | `_binding_seq_in_force`, `_commissioned_actuator`, `_state_store` | `_dispatcher` | `_load_cached_device_policy`, `_maybe_refresh_remote_device_policy_once`, `_send_or_queue_alert` |
-| reasoning | `_config_path` | `_capability_posture_tracker` | - |
-| event path | - | `_deduplicator`, `_event_bus`, `_skill_reload_lock` | - |
+| safety envelope | `<self>`, `_commissioning_state`, `_safety_alert_sink`, `_safety_commander`, `_safety_registry`, `_state_store` | `_commissioned_actuator`, `_safety_alert_sink`, `_safety_commander`, `_safety_registry`, `_shipped_profile_digest` | `_load_commissioning` |
+| alerting | `_safety_alert_sink` | `_alert_sender`, `_operator_contact`, `_primary_alert_channel`, `_safety_alert_sink`, `_secondary_contact`, `_tier_c_deployment_inputs` | `_configure_alert_outbox` |
+| evidence | `_evidence_posture_problems`, `_state_store` | `_evidence_attestor`, `_evidence_posture_problems`, `_firmware_confirmation_coordinator`, `_firmware_confirmation_reconciler` | - |
+| dispatcher | `_binding_seq_in_force`, `_commissioned_actuator`, `_firmware_reading_age`, `_state_store`, `_tier_c_authority_facts` | `_dispatcher`, `_firmware_reading_age` | `_load_cached_device_policy`, `_maybe_refresh_remote_device_policy_once`, `_send_or_queue_alert` |
+| reasoning | `_config_path` | `_capability_posture_tracker`, `_gateway_envelope_state` | - |
+| event path | - | `_deduplicator`, `_elevator`, `_event_bus`, `_skill_reload_lock` | - |
 | skills | `_config_path`, `_loaded_skills`, `_state_store` | `_dispatch_coordinator`, `_skill_loader`, `_skill_selection`, `_skills_dir` | `_binding_view`, `reload_skills` |
 | signals | `_request_stop` | - | `reload_skills` |
-| sensors | `_adapters`, `_background_tasks`, `_connected_sensor_ids`, `_deduplicator`, `_retrying_sensors_announced`, `_safety_registry`, `_unconnected_sensors` | `_configured_sensors`, `_connected_sensor_ids`, `_last_alert_timestamps_by_channel`, `_last_alert_timestamps_by_trigger`, `_measurement_refusals`, `_measurement_valid_streak`, `_retrying_sensors_announced`, `_sensor_last_seen_ms`, `_sensor_poll_interval_ms`, `_stale_sensor_active`, `_unconnected_sensors` | `_poll_sensor`, `_restore_measurement_state`, `_safety_notice_sender` |
-| loops | `_background_tasks`, `_deduplicator`, `_sensor_poll_interval_ms` | - | `_alert_delivery_loop`, `_capability_posture_loop`, `_compaction_loop`, `_device_policy_refresh_loop`, `_external_watchdog_loop`, `_heartbeat_loop`, `_sensor_staleness_loop`, `_status_signaling_loop`, `_stop_if_requested_during_startup`, `_watchdog_loop` |
-| services | `_background_tasks`, `_deduplicator`, `_nudge_firmware_confirmations`, `_shutdown_event`, `_state_store` | `_evidence_inbound_subscriber`, `_evidence_outbound_publisher`, `_firmware_command_publisher`, `_firmware_command_service`, `_firmware_liveness_scheduler`, `_firmware_liveness_supervisor` | `_evidence_checkpoint_loop`, `_start_gateway_export_responder_if_enabled`, `_start_sms_webhook_if_enabled`, `_start_telemetry_export_if_enabled`, `_stop_if_requested_during_startup` |
-| operator services | `_background_tasks`, `_build_health_snapshot`, `_shutdown_event` | `_runtime_node_heartbeat_publisher` | `_start_firmware_mqtt_operator_if_enabled`, `_stop_if_requested_during_startup` |
-| health and reconciliation | `_background_tasks`, `_firmware_confirmation_reconciler`, `_shutdown_event` | - | `_drain_pending_firmware_confirmations`, `_reconcile_pending_attestations`, `_start_health_socket_if_enabled`, `_stop_if_requested_during_startup` |
+| sensor state | - | `_configured_sensors`, `_connected_sensor_ids`, `_last_alert_timestamps_by_channel`, `_last_alert_timestamps_by_trigger`, `_measurement_refusal_reason`, `_measurement_refusals`, `_measurement_valid_streak`, `_read_failure_logged_at`, `_retrying_sensors_announced`, `_sensor_last_seen_ms`, `_sensor_poll_interval_ms`, `_stale_sensor_active`, `_unconnected_sensors` | `_restore_measurement_state` |
+| tier C recovery | `_state_store` | - | - |
+| sensors | `_adapters`, `_background_tasks`, `_connected_sensor_ids`, `_deduplicator`, `_retrying_sensors_announced`, `_safety_registry`, `_unconnected_sensors` | `_sensor_last_seen_ms`, `_sensor_poll_interval_ms` | `_poll_sensor`, `_safety_notice_sender` |
+| loops | `_background_tasks`, `_deduplicator`, `_sensor_poll_interval_ms` | - | `_alert_delivery_loop`, `_capability_posture_loop`, `_compaction_loop`, `_device_policy_refresh_loop`, `_external_watchdog_loop`, `_heartbeat_loop`, `_sensor_staleness_loop`, `_status_signaling_loop`, `_watchdog_loop` |
+| services | `_background_tasks`, `_deduplicator`, `_firmware_alarm_tracker`, `_firmware_profile_library`, `_firmware_reading_age`, `_nudge_firmware_confirmations`, `_shutdown_event`, `_state_store` | `_evidence_inbound_subscriber`, `_evidence_outbound_publisher`, `_firmware_alarm_tracker`, `_firmware_command_publisher`, `_firmware_command_service`, `_firmware_liveness_scheduler`, `_firmware_liveness_supervisor`, `_firmware_profile_library` | `_evidence_checkpoint_loop`, `_evidence_registration_loop`, `_start_gateway_export_responder_if_enabled`, `_start_sms_webhook_if_enabled`, `_start_telemetry_export_if_enabled` |
+| operator services | `_background_tasks`, `_build_health_snapshot`, `_shutdown_event` | `_runtime_node_heartbeat_publisher` | `_start_firmware_mqtt_operator_if_enabled` |
+| health and reconciliation | `_background_tasks`, `_firmware_confirmation_reconciler`, `_shutdown_event` | - | `_drain_pending_firmware_confirmations`, `_reconcile_pending_attestations`, `_start_health_socket_if_enabled`, `_start_operator_socket` |
 | announce | `_background_tasks`, `_safety_registry`, `_shutdown_event` | - | `_complete_startup`, `_send_setup_success_notifications`, `stop` |
 
 ## The stages
@@ -120,28 +127,31 @@ runtime surface is the table above.
 
 | # | Stage | What it does | Context reads | Checkpoint after |
 | --- | --- | --- | --- | --- |
-| 1 | configuration | Loads and validates the configuration, refuses an autoloaded dotenv under hardened posture, checks required capabilities, loads the commissioning anchors and refuses a collision with the provisioning anchor, installs the log handler, records device identity, connects the status indicator as STARTING | - | |
+| 1 | configuration | Loads and validates the configuration, refuses an autoloaded dotenv under hardened posture, checks required capabilities, records the environment placeholders, loads the commissioning anchors and refuses a collision with the provisioning anchor, installs the log handler, records device identity, connects the status indicator as STARTING | - | |
 | 2 | store | Opens the state store, the one opener allowed to rebuild pre-receipt history, and loads the remote-command lockout state | config | |
 | 3 | actions | Builds the remote-command verifier and the WhatsApp, SMS, CoAP, logger, process-manager and system-control actions; initialises the relay decision and drops the relay on a phone deployment | config | |
-| 4 | safety envelope | Loads the commissioned binding under the anchors, resolves the zone for the declared pin, builds the safety registry over the in-force zones with the trip journal, takes the startup verdict, refuses active zones with no executor, connects the relay under the zone's polarity or defers acquisition, binds the commissioned actuator to the commander, commands the coil de-energised where no profile owns the zone, starts the registry | config, commissioning_anchors, has_relay_config, relay_action | |
-| 5 | alerting | Resolves the operator numbers and the approval timeout, configures the outbox, builds the failover sender over the SMS and WhatsApp actions, hands the sender to the safety alert sink | config, sms_action, whatsapp_action | |
+| 4 | safety envelope | Loads the commissioned binding under the anchors, resolves the zone for the declared pin, records the shipped profile digest, builds the safety registry over the in-force zones with the trip journal, takes the startup verdict, refuses active zones with no executor, connects the relay under the zone's polarity or defers acquisition, binds the commissioned actuator to the commander, commands the coil de-energised where no profile owns the zone, starts the registry | config, commissioning_anchors, has_relay_config, relay_action | |
+| 5 | alerting | Resolves the operator numbers, records the Tier C deployment inputs, configures the outbox, builds the failover sender over the SMS and WhatsApp actions, hands the sender to the safety alert sink, reads the rejection expiry | config, relay_enabled, sms_action, whatsapp_action | |
 | 6 | evidence | Builds and starts the attestor, computes the evidence posture, builds the firmware confirmation coordinator and reconciler over the store | config | |
-| 7 | dispatcher | Builds the dispatcher, loads the cached device policy and refreshes it once, sets every executor and resource resolver, the relay-backed ones only when an actuator is in force | config, status_indicator, sms_action, coap_action, logger_action, process_manager_action, system_control_action, relay_action, relay_enabled, operator_contact, secondary_contact, approval_timeout, primary_alert_channel, rejection_expiry_days, alert_sender, evidence_attestor | |
-| 8 | reasoning | Builds the posture tracker, the local model (required under hardened posture when requested), the gateway reasoner and the elevator | config | |
+| 7 | dispatcher | Builds the firmware reading-age table, builds the dispatcher, loads the cached device policy and refreshes it once, sets every executor and resource resolver, the relay-backed ones only when an actuator is in force | config, status_indicator, sms_action, coap_action, logger_action, process_manager_action, system_control_action, relay_action, relay_enabled, operator_contact, secondary_contact, primary_alert_channel, rejection_expiry_days, alert_sender, evidence_attestor | |
+| 8 | reasoning | Builds the posture tracker, the local model (required under hardened posture when requested), the one gateway envelope state, the gateway reasoner and the elevator | config | |
 | 9 | event path | Builds the event bus, attaches the elevator, pushes the first posture snapshot to the elevator, the dispatcher, the sender and the indicator, creates the reload lock and the deduplicator | config, status_indicator, relay_action, alert_sender, dispatcher, elevator, local_llm, posture_tracker | |
-| 10 | skills | Anchors the skills directory to the configuration, binds the resource gate and the binding view to the dispatcher, builds the dispatch coordinator and the loader, loads the skills, logs the tier configuration | config, dispatcher, elevator | |
+| 10 | skills | Resolves the skills directory and the skill selection, binds the resource gate and the binding view to the dispatcher, builds the dispatch coordinator and the loader, loads the selected skills refusing any it cannot resolve, logs the tier configuration | config, dispatcher, elevator | |
 | 11 | signals | Installs the SIGTERM, SIGINT and SIGHUP handlers | - | |
-| 12 | sensors | Restores measurement state, connects every adapter, tells the registry about a sensor that could not connect or whose adapter is still retrying its source, starts a poll task per connected or retrying sensor | config, event_bus | |
-| 13 | loops | Starts the staleness watch, the watchdogs, the heartbeat, compaction, alert delivery, policy refresh, the posture loop and status signalling | config, status_cfg, status_indicator, relay_action, alert_sender, dispatcher, elevator, local_llm, posture_cfg, posture_tracker | yes |
-| 14 | services | Starts the SMS webhook, telemetry export, the gateway export responder and heartbeat subscriber, the evidence subscribers and checkpoint loop, and the firmware liveness stack, with the security posture warnings | config, event_bus, evidence_attestor, posture_tracker | yes |
-| 15 | operator services | Starts the firmware operator and the node heartbeat | config | yes |
-| 16 | health and reconciliation | Starts the health socket, drains pending firmware confirmations, starts the reconciler loop, reconciles pending attestations, sets the indicator NORMAL | config, status_indicator | yes |
-| 17 | announce | Sends the setup notifications, starts the registry retry loop, completes startup and waits for shutdown | config, alert_sender | |
+| 12 | sensor state | Resets the per-sensor bookkeeping and restores measurement state | config | |
+| 13 | tier C recovery | Settles the Tier C proposals a previous process left, or fails Tier C closed if the store cannot be read | dispatcher | |
+| 14 | sensors | Connects every adapter, records it before any notice is awaited, tells the registry about a sensor that could not connect or whose adapter is still retrying its source, starts a poll task per connected or retrying sensor | config, event_bus | |
+| 15 | loops | Starts the staleness watch, the watchdogs, the heartbeat, compaction, alert delivery, policy refresh, the posture loop and status signalling | config, status_cfg, status_indicator, relay_action, alert_sender, dispatcher, elevator, local_llm, posture_cfg, posture_tracker | yes |
+| 16 | services | Starts the SMS webhook, telemetry export, the gateway export responder and heartbeat subscriber, the evidence subscribers, registration reconciler and checkpoint loop, and the firmware liveness stack, with the security posture warnings | config, event_bus, evidence_attestor, posture_tracker, gateway_envelope_state | yes |
+| 17 | operator services | Starts the firmware operator and the node heartbeat | config, gateway_envelope_state | yes |
+| 18 | health and reconciliation | Starts the health socket and the operator socket, drains pending firmware confirmations, starts the reconciler loop, reconciles pending attestations, sets the indicator NORMAL | config, status_indicator | yes |
+| 19 | announce | Sends the setup notifications, starts the registry retry loop, completes startup and waits for shutdown | config, alert_sender | |
 
 ## Orderings that exist for a safety reason
 
-Each of these is a constraint the decomposition must keep and the order test
-must pin. The reason is the one the code carries today.
+Each of these is a constraint the decomposition must keep; the ones between
+stages are pinned by the order test, as the end of this section says. The
+reason is the one the code carries today.
 
 1. **Anchors before the binding.** The commissioning anchors are loaded and
    compared against the provisioning anchor in the configuration stage, before
@@ -171,7 +181,7 @@ must pin. The reason is the one the code carries today.
    registry issues the terminal-state-conditioned command, which honours a
    durable latch that a plain de-energise would release.
 7. **The registry starts before any reading can arrive.** It starts in the
-   safety envelope stage; sensors connect eight stages later, so no reading
+   safety envelope stage; sensors connect ten stages later, so no reading
    reaches a profile before its pairs exist.
 8. **A sensor that failed to connect is reported to the registry at the
    moment it fails.** A pair must not wait out its loss bound for a fact the
@@ -196,6 +206,22 @@ must pin. The reason is the one the code carries today.
     be established fails closed for evidence and never for the runtime. This
     is an ordering the decomposition must keep in the negative: no stage
     after evidence may be made a precondition of the safety envelope.
+12. **Tier C proposals a previous process left are settled after every
+    executor exists and before any sensor connects.** An open proposal is
+    closed with its safe default, which needs its executor; an approval with
+    no outcome is recorded uncertain; none is replayed. No governed proposal
+    is raised over proposals this process never settled, and a store that
+    cannot be read here fails Tier C closed, not the start.
+
+The stage-level orderings among these are rows of the constraint table, and
+the order test holds them: 1 (safety envelope after configuration), 7
+(sensors after the safety envelope), 9 (dispatcher after the safety
+envelope), 10 (skills after the dispatcher), 11 (evidence after the safety
+envelope) and 12 (tier C recovery after the dispatcher, sensors after tier C
+recovery). Orderings 2 to 6 and 8 hold inside one stage, the safety envelope
+or the sensors; they are held by that stage's body being the former span of
+`start()` moved unchanged, and by the behavioural tests that drive it, not by
+the order test.
 
 ## Orderings that exist for other reasons
 
@@ -219,6 +245,20 @@ must pin. The reason is the one the code carries today.
   adapter connects can block on hardware.
 - **The event bus before the poll tasks**, and the first posture snapshot
   before events are processed.
+- **One gateway envelope state for every gateway route.** It is built once in
+  the reasoning stage, with the gateway reasoner, and handed to every route
+  the services and operator services stages build, so the replay cache and
+  signing clock are held once per process. Building it refuses the start
+  when another runtime owns the state database's replay store.
+- **The reading-age table before the dispatcher and the liveness stack.** The
+  dispatcher reads reading-age bounds when it composes an operator message,
+  and the firmware liveness stack in the services stage is handed the same
+  table.
+- **The Tier C authority inputs before any proposal.** The shipped profile
+  digest (safety envelope) and the Tier C deployment inputs (alerting) are
+  read when a proposal is bound, after the dispatcher exists.
+- **An adapter is recorded before its notice is awaited**, so a stop during
+  the notice still closes it.
 - **The firmware command publisher connects before the liveness scheduler
   starts.** The first tick would otherwise sign a message, spend a sequence
   number and fail to publish it.
@@ -226,11 +266,20 @@ must pin. The reason is the one the code carries today.
   The reconciler is built in the evidence stage and the subscriber in the
   services stage; the callback reads the reconciler from the runtime when a
   reconnect happens rather than capturing it, so no construction order
-  between the two is a constraint. The comment beside the subscriber's
-  construction says the opposite and is stale; the implementation change
-  corrects it.
+  between the two is a constraint.
 - **Pending confirmations drain before the reconciler loop starts**, and
   pending attestations reconcile after the services are up.
+- **The operator socket starts after Tier C recovery.** The socket serves
+  `evidence reconcile-tier-c`, an operator's observation of an uncertain
+  dispatch, and recovery is what moves a dispatch a previous process left
+  mid-way from `dispatch_started` or `approved_pending_dispatch` to an
+  uncertain state. A reconciliation that arrived first would be refused
+  `not_uncertain` by the store, which admits one only for
+  `dispatch_outcome_unknown` or `dispatch_not_proven`, in one transaction,
+  and moves the proposal to a reconciled state that recovery does not read
+  again. Recovery that fails still lets the socket start. So the store, not
+  this order, is the boundary: the row is not a safety constraint, and it
+  spares an operator a refused attempt.
 - **The setup notification is last**, after the indicator reports NORMAL and
   after the final checkpoint, so a device that was told to stop during
   startup never announces that it is online.
@@ -255,32 +304,48 @@ block in an adapter connect that never answers and an operator who asked
 twice is owed a way out.
 
 The four checkpoints sit after the loops, after the services, after the
-operator services, and after health and reconciliation. Each is a stage
-boundary in the tuple and the order test asserts the set is exactly these
-four, so moving or adding one is a visible edit rather than a line found by
-reading.
+operator services, and after health and reconciliation. They are
+`STARTUP_CHECKPOINTS`, and `start()` makes the check after each of those
+stages; no stage checks for itself. The order test asserts the set is exactly
+these four, so moving or adding one is a visible edit rather than a line
+found by reading.
 
 ## What the decomposition must preserve, and how that is tested
 
-- **No behaviour change.** The nine test files that drive `start()` and the
-  runtime suite pass without a test being rewritten to accommodate the move.
-  A test that has to change is evidence the move changed behaviour.
-- **The order test.** A new test reads the stage tuple, the constraint table
-  and the checkpoint set, and asserts every constraint holds, every
-  constraint names existing stages, and the checkpoints are the four above.
+- **No behaviour change.** The behavioural tests in the files that drive
+  `start()` pass without being rewritten to accommodate the move: `tests/test_runtime.py`, `tests/commissioning/test_runtime_startup.py`,
+  `tests/evidence/test_registration_runtime.py`,
+  `tests/firmware/test_controller_profiles.py`,
+  `tests/safety/test_runtime_wiring.py`,
+  `tests/test_firmware_command_action_boundary.py`,
+  `tests/test_mqtt_broker_down_at_start.py`,
+  `tests/test_sigterm_during_startup.py` and `tests/test_startup_race_guard.py`.
+  Three source-reading guards read startup's source; each keeps its property
+  against the stage methods: the checkpoint check in `tests/test_sigterm_during_startup.py`, which
+  drives `start()` with recorder stages,
+  the firmware-surface classification, keyed on the stage that holds each
+  touch, in `tests/test_firmware_command_action_boundary.py`, and the
+  envelope-state scan, which follows `context.gateway_envelope_state`
+  through the stages, in `tests/test_gateway_payload_bounds.py`.
+- **The order test.** `tests/test_startup_stages.py` reads the stage tuple,
+  the constraint table and the checkpoint set, and asserts every constraint
+  holds, every constraint names existing stages, the safety rows are the
+  designed ones, and the checkpoints are the four above. It also drives
+  `start()` with each stage replaced by a recorder, and asserts the stages run
+  in order on one context and startup stops at a checkpoint.
 - **The context test.** Each stage declares the context fields it reads and
   sets; the test walks the tuple and asserts every read is set by an earlier
-  stage and every field has a later reader.
+  stage, every field has a later reader, and each declaration is what the
+  stage's body does.
 - **The surface inventory.** The guard applies the classification above to
-  each stage method, closures included, and compares each of the four
-  categories, context reads, runtime reads, runtime writes and runtime calls,
-  with the stage's declaration, in both directions: an attribute nobody
-  classified fails the suite, and a declaration with no access behind it
-  fails too, so the tables describe the code rather than excusing it. This is
-  an inventory, not a proof of isolation, and its failure message says so:
-  it sees what a stage's own body touches, not what a method it calls
-  reaches, and a helper the stage delegates to is a runtime method with a
-  surface of its own that the inventory does not follow.
+  each stage method, closures included, and compares each of the three
+  runtime categories with the stage's inventory in both directions: an
+  attribute nobody classified fails the suite, and a declaration with no
+  access behind it fails too, so the tables describe the code rather than
+  excusing it. This is an inventory, not a proof of isolation, and its
+  failure message says so: it sees what a stage's own body touches, not what
+  a method it calls reaches, and a helper the stage delegates to is a runtime
+  method with a surface of its own that the inventory does not follow.
 - **Re-certification** on both production-supported tuples, since shipped
   code changes.
 
@@ -292,6 +357,21 @@ A notice the registry raises between those two points is refused and logged,
 which the sink's docstring states as intended. Whether the sender should be
 built before the registry starts is a behaviour question for its own issue,
 not for this decomposition.
+
+Two stages are longer than 150 lines, and neither has a cut point the design
+allows:
+
+- **dispatcher, 270 lines.** Most of it is the executor and resource-resolver
+  closures registered on the dispatcher, and each reads the context fields
+  and the dispatcher it is registered on. Cutting between registrations
+  would only spread one registration step over stages, with no checkpoint or
+  ordering constraint between the halves to justify the cut.
+- **safety envelope, 187 lines.** It is one safety-ordered sequence:
+  orderings 2 to 6 run binding, registry verdict, deferred acquisition,
+  connect, bind and coil command in that order, and share locals (`zone`,
+  `commissioning_state`, `defer_line_acquisition`) that are not context
+  fields. A cut inside it would turn those into context fields and pin a
+  safety ordering between stages that today is the order of statements.
 
 ## Order of work
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import textwrap
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -102,21 +103,44 @@ async def test_a_checkpoint_stops_and_tells_startup_to_abandon() -> None:
     assert stopped == ["stop"]
 
 
-def test_startup_checks_the_request_at_several_points() -> None:
+async def test_startup_checks_the_request_at_several_points() -> None:
     """One checkpoint would leave the rest of startup racing the teardown.
 
-    Read from the source rather than counted in a comment, so removing one
-    fails here. The window each closes is the phase it precedes; a single
-    checkpoint would only narrow the race, not order the two operations.
+    Driven through `start()` with each stage replaced by a recorder, so
+    removing one fails here. The window each closes is the phase it precedes;
+    a single checkpoint would only narrow the race, not order the two
+    operations.
     """
-    from pathlib import Path
+    from ori.startup_stages import STARTUP_STAGES
 
-    source = (Path(__file__).resolve().parents[1] / "ori" / "runtime.py").read_text()
-    start = source.index("async def start(")
-    end = source.index("def _request_stop(")
-    body = source[start:end]
+    runtime = _runtime()
+    ran: list[str] = []
 
-    assert body.count("await self._stop_if_requested_during_startup()") >= 4
+    def recorder(name: str) -> Any:
+        async def stage(context: Any) -> None:
+            ran.append(name)
+
+        return stage
+
+    for stage in STARTUP_STAGES:
+        setattr(runtime, f"_stage_{stage.name}", recorder(stage.name))
+
+    async def checkpoint() -> bool:
+        ran.append("checkpoint")
+        return False
+
+    runtime._stop_if_requested_during_startup = checkpoint  # type: ignore[method-assign]
+    await runtime.start()
+
+    checked_after = {
+        ran[index - 1] for index, step in enumerate(ran) if step == "checkpoint"
+    }
+    assert checked_after >= {
+        "loops",
+        "services",
+        "operator_services",
+        "health_and_reconciliation",
+    }
 
 
 def test_startup_acts_on_the_handoff_rather_than_only_calling_it() -> None:

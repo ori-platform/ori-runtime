@@ -128,6 +128,7 @@ from ori.security.evidence.ingest_service import ConfirmedEpochReader
 from ori.security.firmware.commands import FirmwareCommandSigner
 from ori.security.firmware.confirmation import FirmwareConfirmationCoordinator
 from ori.security.firmware.reconciliation import FirmwareConfirmationReconciler
+from ori.startup_stages import STARTUP_STAGES
 from ori.state.store import StateStore
 from tests.commissioning.signing import (
     EPHEMERAL_SEED,
@@ -447,19 +448,19 @@ RUNTIME_TOUCHES: dict[str, str] = {
     "OriRuntime.publish_firmware_command|load|publish_command": (
         "the command wrapper delegating to the service"
     ),
-    "OriRuntime.start|store|_firmware_command_service": (
+    "OriRuntime._stage_services|store|_firmware_command_service": (
         "lifecycle: stores the service built by _build_firmware_liveness_stack; "
-        "a load of the attribute in start is a different key and fails here, and "
-        "the local it is stored from is held by test_start_holds_the_service_"
+        "a load of the attribute in the stage is a different key and fails here, "
+        "and the local it is stored from is held by test_start_holds_the_service_"
         "only_in_its_lifecycle_bindings"
     ),
-    "OriRuntime.start|load|_build_firmware_liveness_stack": (
+    "OriRuntime._stage_services|load|_build_firmware_liveness_stack": (
         "lifecycle: composes telemetry, command egress and liveness"
     ),
     "OriRuntime.stop|store|_firmware_command_service": (
         "lifecycle: releases the service at shutdown"
     ),
-    "OriRuntime.start|load|firmware_commands": (
+    "OriRuntime._stage_evidence|load|firmware_commands": (
         "lifecycle: reads the command configuration to size the grant-side "
         "reconciler's retry interval"
     ),
@@ -520,10 +521,10 @@ RUNTIME_TOUCHES: dict[str, str] = {
     "OriRuntime.__init__|store|_firmware_liveness_scheduler": (
         "declares the liveness scheduler absent"
     ),
-    "OriRuntime.start|store|_firmware_command_publisher": (
+    "OriRuntime._stage_services|store|_firmware_command_publisher": (
         "lifecycle: holds the transport built by _build_firmware_liveness_stack"
     ),
-    "OriRuntime.start|store|_firmware_liveness_scheduler": (
+    "OriRuntime._stage_services|store|_firmware_liveness_scheduler": (
         "lifecycle: holds the liveness scheduler, which signs liveness only"
     ),
     "OriRuntime.stop|load|_firmware_command_publisher": (
@@ -556,32 +557,32 @@ RUNTIME_TOUCHES: dict[str, str] = {
     "OriRuntime.__init__|store|_firmware_confirmation_reconciler": (
         "declares the reconciler absent until evidence is configured"
     ),
-    "OriRuntime.start|load|FirmwareConfirmationCoordinator": (
+    "OriRuntime._stage_evidence|load|FirmwareConfirmationCoordinator": (
         "lifecycle: builds the coordinator over the evidence confirmation "
         "backend when evidence is configured"
     ),
-    "OriRuntime.start|load|FirmwareConfirmationReconciler": (
+    "OriRuntime._stage_evidence|load|FirmwareConfirmationReconciler": (
         "lifecycle: builds the reconciler that retries pending grant confirmations"
     ),
-    "OriRuntime.start|store|_firmware_confirmation_coordinator": (
+    "OriRuntime._stage_evidence|store|_firmware_confirmation_coordinator": (
         "lifecycle: holds the coordinator for the grant side"
     ),
-    "OriRuntime.start|store|_firmware_confirmation_reconciler": (
+    "OriRuntime._stage_evidence|store|_firmware_confirmation_reconciler": (
         "lifecycle: holds the reconciler for the grant side"
     ),
-    "OriRuntime.start|load|_firmware_confirmation_reconciler": (
+    "OriRuntime._stage_health_and_reconciliation|load|_firmware_confirmation_reconciler": (
         "lifecycle: starts the reconciler's background retry loop, which "
         "confirms new epochs and decides no action"
     ),
-    "OriRuntime.start|load|_drain_pending_firmware_confirmations": (
+    "OriRuntime._stage_health_and_reconciliation|load|_drain_pending_firmware_confirmations": (
         "startup: drains pending grant confirmations once, before any event is "
         "dispatched"
     ),
-    "OriRuntime.start|load|_reconcile_pending_attestations": (
+    "OriRuntime._stage_health_and_reconciliation|load|_reconcile_pending_attestations": (
         "startup: re-signs evidence rows of actions that already executed; a "
         "record of the past, never a precondition"
     ),
-    "OriRuntime.start|load|_nudge_firmware_confirmations": (
+    "OriRuntime._stage_services|load|_nudge_firmware_confirmations": (
         "lifecycle: hands the telemetry subscriber a callback that wakes the "
         "reconciler on reconnect"
     ),
@@ -629,8 +630,8 @@ RUNTIME_TOUCH_COUNTS: dict[str, int] = {
     "OriRuntime._start_firmware_mqtt_operator_if_enabled|str|provisioner_key_env": 2,
     "OriRuntime.approve_firmware_commands|load|_firmware_command_service": 2,
     "OriRuntime.publish_firmware_command|load|_firmware_command_service": 2,
-    "OriRuntime.start|load|_firmware_confirmation_reconciler": 2,
-    "OriRuntime.start|load|firmware_commands": 2,
+    "OriRuntime._stage_health_and_reconciliation|load|_firmware_confirmation_reconciler": 2,
+    "OriRuntime._stage_evidence|load|firmware_commands": 2,
     "OriRuntime.stop|load|_firmware_command_publisher": 2,
     "OriRuntime.stop|load|_firmware_mqtt_operator_server": 2,
     "_build_firmware_command_service|load|FirmwareCommandService": 2,
@@ -1175,8 +1176,10 @@ CONFIRMATION_OBJECTS = (
 )
 
 #: Lifecycle names too generic to propagate reach by name; each is classified
-#: in RUNTIME_TOUCHES instead.
-LIFECYCLE_METHODS = frozenset({"__init__", "start", "stop"})
+#: in RUNTIME_TOUCHES instead. The startup stages are `start`, split.
+LIFECYCLE_METHODS = frozenset(
+    {"__init__", "start", "stop"} | {f"_stage_{stage.name}" for stage in STARTUP_STAGES}
+)
 
 
 def _class_methods(relative: str, owner: str) -> dict[str, ast.AST]:
@@ -2695,7 +2698,8 @@ def test_every_runtime_touch_on_the_firmware_surface_is_classified() -> None:
     assert not unclassified, (
         f"{RUNTIME} touches the firmware command surface where nothing "
         f"classifies it: {unclassified}. An executor closure or a lambda "
-        "registered in start is its own scope and is never covered by start. " + _LIMIT
+        "registered in a startup stage is its own scope and is never covered by "
+        "that stage. " + _LIMIT
     )
     # A classification covers the touches that exist, not every later one in
     # the same scope.
@@ -2720,14 +2724,21 @@ def test_the_runtime_classification_describes_touches_that_exist() -> None:
     )
 
 
-def _start_function() -> ast.AsyncFunctionDef:
+def _startup_stage_functions() -> list[ast.AsyncFunctionDef]:
+    """The methods `OriRuntime.start` runs, in `STARTUP_STAGES` order."""
     tree = ast.parse((ROOT / RUNTIME).read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef) and node.name == "OriRuntime":
-            for item in node.body:
-                if isinstance(item, ast.AsyncFunctionDef) and item.name == "start":
-                    return item
-    raise AssertionError(f"OriRuntime.start not found in {RUNTIME}")
+            methods = {
+                item.name: item
+                for item in node.body
+                if isinstance(item, ast.AsyncFunctionDef)
+            }
+            names = [f"_stage_{stage.name}" for stage in STARTUP_STAGES]
+            missing = [name for name in names if name not in methods]
+            assert not missing, f"startup stages not found in {RUNTIME}: {missing}"
+            return [methods[name] for name in names]
+    raise AssertionError(f"OriRuntime not found in {RUNTIME}")
 
 
 def test_every_firmware_attribute_of_the_runtime_is_named() -> None:
@@ -2778,8 +2789,36 @@ async def test_start_reports_undeclared_devices_once(
 
 
 def test_start_holds_the_service_only_in_its_lifecycle_bindings() -> None:
-    """A local holding the service may be stored, connected, or None-tested."""
-    start = _start_function()
+    """A local holding the service may be stored, connected, or None-tested.
+
+    Read in every startup stage; a holder is a local of the stage that binds it.
+    """
+    stages = _startup_stage_functions()
+    unpacked = [
+        stage.name
+        for stage in stages
+        for node in ast.walk(stage)
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "_build_firmware_liveness_stack"
+    ]
+    assert unpacked, (
+        "no startup stage unpacks _build_firmware_liveness_stack into locals, so "
+        "this guard would pass while tracking nothing"
+    )
+    offenders: list[str] = []
+    for start in stages:
+        offenders += _service_holder_offenders(start)
+    assert not offenders, (
+        "a startup stage uses a local holding the firmware command service "
+        f"outside its lifecycle bindings: {offenders}. Handing it to an executor, "
+        "the dispatcher, the startup context or a closure puts the epoch "
+        "confirmation gate within reach of the action path. " + _LIMIT
+    )
+
+
+def _service_holder_offenders(start: ast.AsyncFunctionDef) -> list[str]:
     parents: dict[int, ast.AST] = {}
     for node in ast.walk(start):
         for child in ast.iter_child_nodes(node):
@@ -2796,10 +2835,8 @@ def test_start_holds_the_service_only_in_its_lifecycle_bindings() -> None:
             for target in node.targets:
                 elements = target.elts if isinstance(target, ast.Tuple) else [target]
                 holders.update(e.id for e in elements if isinstance(e, ast.Name))
-    assert holders, (
-        "start no longer unpacks _build_firmware_liveness_stack into locals, so "
-        "this guard would pass while tracking nothing"
-    )
+    if not holders:
+        return []
     changed = True
     while changed:
         changed = False
@@ -2859,7 +2896,7 @@ def test_start_holds_the_service_only_in_its_lifecycle_bindings() -> None:
             )
         return False
 
-    offenders = [
+    return [
         f"{node.id} at line {node.lineno}"
         + (" inside a nested scope" if nested(node) else "")
         for node in ast.walk(start)
@@ -2868,9 +2905,3 @@ def test_start_holds_the_service_only_in_its_lifecycle_bindings() -> None:
         and isinstance(node.ctx, ast.Load)
         and (nested(node) or not permitted(node))
     ]
-    assert not offenders, (
-        "start uses a local holding the firmware command service outside its "
-        f"lifecycle bindings: {offenders}. Handing it to an executor, the "
-        "dispatcher or a closure puts the epoch confirmation gate within reach "
-        "of the action path. " + _LIMIT
-    )
