@@ -7,7 +7,9 @@
 parser, and every helper one calls, runs in a private module under
 ``ori/config/``. Patching a name on ``ori.config`` rebinds the re-export and
 leaves the module that calls it untouched, so the patch does nothing and a test
-built on it checks nothing. Patch the owning module named here instead.
+built on it checks nothing. A section module imports what it calls by value,
+so patch every binding `config_owners` lists for the name, the callers' own
+bindings among them, not only the module that defines it.
 """
 
 from __future__ import annotations
@@ -31,12 +33,15 @@ def section_modules() -> tuple[types.ModuleType, ...]:
 
 @functools.cache
 def config_owners() -> dict[str, tuple[str, ...]]:
-    """Each name ``ori.config`` binds -> the modules where patching it takes effect.
+    """Each name ``ori.config`` binds -> every binding a caller of it reads.
 
-    A function or class defined in a section module is owned by that module,
-    from its ``__module__``. Anything else, a constant or a name the package
-    imports from elsewhere, is owned by every section module binding the same
-    object, since each of those reads its own binding.
+    A section module imports what it calls by value, under its own local name,
+    so the binding a caller looks up is in the caller's module, not where the
+    object was defined: ``Config.load`` reads ``ori.config._config.parse_actions``
+    while ``ori.config._parse_actions`` and ``ori.config._actions.parse_actions``
+    name the same function. Patching takes effect only on the bindings callers
+    read, so this lists every section-module binding of the same object, the
+    defining module's included, as dotted targets.
     """
     sections = section_modules()
     assert len(sections) > 10, "found too few section modules under ori/config/"
@@ -44,25 +49,22 @@ def config_owners() -> dict[str, tuple[str, ...]]:
     for name, value in vars(ori.config).items():
         if name.startswith("__") or any(value is section for section in sections):
             continue
-        home = getattr(value, "__module__", None)
-        if isinstance(home, str) and home.startswith(f"{ori.config.__name__}."):
-            owners[name] = (home,)
-            continue
         owners[name] = tuple(
             sorted(
-                section.__name__
+                f"{section.__name__}.{local}"
                 for section in sections
-                if name in vars(section) and vars(section)[name] is value
+                for local, bound in vars(section).items()
+                if bound is value and not local.startswith("__")
             )
         )
     return owners
 
 
 def _refusal(name: str) -> str:
-    where = ", ".join(config_owners().get(name, ())) or "the module that reads it"
+    where = ", ".join(config_owners().get(name, ())) or "the binding its caller reads"
     return (
         f"{ori.config.__name__}.{name} is a re-export; rebinding it reaches no "
-        f"caller. Patch {where} instead."
+        f"caller. Patch each binding a caller reads instead: {where}."
     )
 
 
