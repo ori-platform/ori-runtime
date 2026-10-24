@@ -91,6 +91,38 @@ class PackageLayout:
             f"caller. Patch each binding a caller reads instead: {where}."
         )
 
+    def absent_refusal(self, name: str) -> str:
+        return (
+            f"{self.name} does not bind {name}, so binding it reaches no caller. "
+            "Patch each binding a caller reads, in the modules under "
+            f"{self.name.replace('.', '/')}/."
+        )
+
+    def shared_bindings(self) -> list[tuple[str, ...]]:
+        """Groups of bindings that name one object in more than one module.
+
+        A function, class or module is grouped by identity, whatever local name
+        each module gives it; any other value only with others of its name,
+        because equal numbers can be one object.
+        """
+        groups: dict[object, list[str]] = {}
+        for module in self.modules():
+            for local, value in vars(module).items():
+                if local.startswith("__"):
+                    continue
+                shareable = isinstance(
+                    value,
+                    (
+                        types.FunctionType,
+                        types.BuiltinFunctionType,
+                        type,
+                        types.ModuleType,
+                    ),
+                ) or callable(value)
+                key: object = id(value) if shareable else (local, id(value))
+                groups.setdefault(key, []).append(f"{module.__name__}.{local}")
+        return [tuple(sorted(found)) for found in groups.values() if len(found) > 1]
+
     def namespace_refusal(self) -> str:
         return (
             f"{self.name}'s namespace holds re-exports; writing it reaches "
@@ -256,6 +288,14 @@ class ReexportRebindError(AttributeError):
     """A test tried to rebind or delete a name a split package re-exports."""
 
 
+def _is_own_submodule(package: types.ModuleType, name: str, value: object) -> bool:
+    """The import system binding a submodule on its package, on first import."""
+    return (
+        isinstance(value, types.ModuleType)
+        and value.__name__ == f"{package.__name__}.{name}"
+    )
+
+
 class _ReexportsHeld(types.ModuleType):
     """A split package while the suite runs: a re-export cannot be rebound.
 
@@ -270,6 +310,10 @@ class _ReexportsHeld(types.ModuleType):
         layout = _BY_NAME[self.__name__]
         if name in layout.owners() and vars(self).get(name) is not value:
             raise ReexportRebindError(layout.refusal(name))
+        if name not in vars(self) and not _is_own_submodule(self, name, value):
+            # A name the package never bound reaches no caller either: it is
+            # what ``raising=False`` or ``create=True`` makes of a stale target.
+            raise ReexportRebindError(layout.absent_refusal(name))
         super().__setattr__(name, value)
 
     def __delattr__(self, name: str) -> None:
@@ -366,7 +410,10 @@ def release_reexports() -> None:
     from _pytest.monkeypatch import MonkeyPatch
 
     for layout in LAYOUTS:
-        cast(Any, layout.package).__class__ = _HELD["module_classes"][layout.name]
+        # Past the trap, which refuses every name the package never bound.
+        types.ModuleType.__setattr__(
+            layout.package, "__class__", _HELD["module_classes"][layout.name]
+        )
     cast(Any, mock)._patch_dict._patch_dict = _HELD["apply"]
     MonkeyPatch.setitem = _HELD["setitem"]  # type: ignore[method-assign]
     MonkeyPatch.delitem = _HELD["delitem"]  # type: ignore[method-assign]
@@ -397,4 +444,44 @@ def rebound(before: dict[str, int]) -> list[str]:
             if key.startswith(prefix) and "." not in key.removeprefix(prefix)
         }
         problems += layout.rebound(mine)
+    return problems
+
+
+#: What a binding a test deleted resolves to.
+_DELETED = object()
+
+
+def _resolve(target: str) -> object:
+    module, _, name = target.rpartition(".")
+    return getattr(importlib.import_module(module), name, _DELETED)
+
+
+def shared_binding_state() -> tuple[list[tuple[str, ...]], dict[str, int]]:
+    """Every shared binding group of every split package, and what each names now."""
+    groups = [group for layout in LAYOUTS for group in layout.shared_bindings()]
+    return groups, {
+        target: id(_resolve(target)) for group in groups for target in group
+    }
+
+
+def split_bindings(state: tuple[list[tuple[str, ...]], dict[str, int]]) -> list[str]:
+    """Groups a test patched in some modules and not others, while it runs.
+
+    The modules of a split package each read their own binding of what they
+    import, so patching one module's binding of a shared object leaves the
+    rest of the package on the original, and the test checks only part of
+    what it means to.
+    """
+    groups, originals = state
+    problems = []
+    for group in groups:
+        now = {target: id(_resolve(target)) for target in group}
+        if len(set(now.values())) > 1:
+            patched = [t for t in group if now[t] != originals[t]]
+            missed = [t for t in group if now[t] == originals[t]]
+            problems.append(
+                f"patched or deleted {', '.join(patched)} but not "
+                f"{', '.join(missed)}; "
+                "each is read by the code in its own module, so patch them all."
+            )
     return problems

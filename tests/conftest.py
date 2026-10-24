@@ -72,13 +72,15 @@ def _real_gpio_allowed() -> bool:
 
 _REEXPORT_BINDINGS = pytest.StashKey[dict[str, int]]()
 _SESSION_REEXPORT_BINDINGS = pytest.StashKey[dict[str, int]]()
+_SHARED_BINDINGS = pytest.StashKey[Any]()
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    from tests.package_layout import bindings, hold_reexports
+    from tests.package_layout import bindings, hold_reexports, shared_binding_state
 
     hold_reexports()
     config.stash[_SESSION_REEXPORT_BINDINGS] = bindings()
+    config.stash[_SHARED_BINDINGS] = shared_binding_state()
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
@@ -106,11 +108,17 @@ def pytest_runtest_setup(item: pytest.Item) -> Iterator[None]:
 
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_call(item: pytest.Item) -> Iterator[None]:
-    """Fail a test whose fixtures or body left a split package's re-export rebound."""
-    from tests.package_layout import rebound
+    """Fail a test whose fixtures or body left a split package's re-export
+    rebound, or patched one module's binding of an object others also read.
+
+    This runs before teardown, so a fixture's or the body's patches are still
+    in place when the bindings are compared.
+    """
+    from tests.package_layout import rebound, split_bindings
 
     result = yield
     problems = rebound(item.stash[_REEXPORT_BINDINGS])
+    problems += split_bindings(item.config.stash[_SHARED_BINDINGS])
     if problems:
         pytest.fail("\n".join(problems))
     return result

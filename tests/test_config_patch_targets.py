@@ -14,6 +14,7 @@ These tests drive that guard through each spelling of a patch.
 from __future__ import annotations
 
 import importlib
+import sys
 from collections import ChainMap
 from collections.abc import Mapping
 from pathlib import Path
@@ -23,7 +24,14 @@ from unittest import mock
 import pytest
 
 import ori.config
-from tests.package_layout import ReexportRebindError, bindings, bindings_of, rebound
+from tests.package_layout import (
+    ReexportRebindError,
+    bindings,
+    bindings_of,
+    rebound,
+    shared_binding_state,
+    split_bindings,
+)
 
 REFUSED = "is a re-export; rebinding it reaches no caller"
 
@@ -262,7 +270,7 @@ def _shadowed(cfg: object) -> None:
         ),
         pytest.param(lambda mp: mp.setitem({}, "x", 1), id="other-mapping"),
         pytest.param(
-            lambda mp: mp.delitem(vars(_device), "logger"),
+            lambda mp: mp.delitem(vars(_device), "_detect_host_timezone"),
             id="section-delitem",
         ),
         # The stated limit: a view delegating to the namespace is another
@@ -306,9 +314,75 @@ def test_patching_every_named_binding_reaches_config_load(
 def test_patching_only_where_it_is_defined_does_not(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Why the advice names callers: the defining module's binding is not read."""
+    """Why the advice names callers: the defining module's binding is not read.
+
+    The suite refuses this partial patch once the test body returns, so the
+    test reads the refusal itself and undoes the patch before then.
+    """
+    state = shared_binding_state()
     monkeypatch.setattr("ori.config._actions.parse_actions", _reached)
     ori.config.Config.load(str(EXAMPLE))
+    assert split_bindings(state) == [
+        "patched or deleted ori.config._actions.parse_actions but not "
+        "ori.config._config.parse_actions; each is read by the code in its own "
+        "module, so patch them all."
+    ]
+    monkeypatch.undo()
+    assert split_bindings(state) == []
+
+
+@pytest.mark.parametrize(
+    "absent",
+    [
+        pytest.param(
+            lambda mp: mp.setattr(cfg, "not_a_binding", 1, raising=False),
+            id="raising-false",
+        ),
+        pytest.param(
+            lambda mp: mock.patch.object(cfg, "not_a_binding", 1, create=True).start(),
+            id="create-true",
+        ),
+        pytest.param(
+            lambda mp: setattr(cfg, "not_a_binding", 1), id="plain-assignment"
+        ),
+    ],
+)
+def test_a_name_the_package_never_bound_is_refused(
+    monkeypatch: pytest.MonkeyPatch, absent
+) -> None:
+    # mock's own cleanup after a refused create=True raises in turn, so the
+    # refusal may arrive as the context of another AttributeError.
+    try:
+        with pytest.raises(AttributeError) as refused:
+            absent(monkeypatch)
+    finally:
+        mock.patch.stopall()
+    chain: BaseException | None = refused.value
+    while chain is not None and not isinstance(chain, ReexportRebindError):
+        chain = chain.__context__
+    assert chain is not None and "does not bind not_a_binding" in str(chain)
+    assert "not_a_binding" not in vars(cfg)
+
+
+def test_the_import_system_still_binds_a_submodule_on_first_import(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delitem(sys.modules, "ori.config.installer", raising=False)
+    monkeypatch.delattr(cfg, "installer", raising=False)
+    imported = importlib.import_module("ori.config.installer")
+    assert vars(cfg)["installer"] is imported
+    monkeypatch.undo()
+
+
+def test_deleting_one_binding_of_a_shared_object_is_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = shared_binding_state()
+    monkeypatch.delitem(vars(_device), "logger")
+    [report] = split_bindings(state)
+    assert report.startswith("patched or deleted ori.config._device.logger but not ")
+    monkeypatch.undo()
+    assert split_bindings(state) == []
 
 
 def test_release_restores_what_was_held_and_holding_twice_wraps_once() -> None:
