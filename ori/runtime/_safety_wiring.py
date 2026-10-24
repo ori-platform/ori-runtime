@@ -10,7 +10,7 @@ from ori.actions.alert_failover import AlertFailoverSender
 from ori.config import ConfigValidationError
 
 if TYPE_CHECKING:
-    from ori.runtime._runtime import OriRuntime
+    from ori.runtime._alerts import AlertDelivery
 
 
 logger = logging.getLogger("ori.runtime")
@@ -22,7 +22,7 @@ class SafetyAlertAdapter:
     sender arrives late in startup; a notice raised before then is refused
     and the registry logs it."""
 
-    def __init__(self, runtime: "OriRuntime") -> None:
+    def __init__(self, runtime: "AlertDelivery") -> None:
         self._runtime = runtime
         self.sender: AlertFailoverSender | None = None
 
