@@ -122,7 +122,11 @@ class _LateCheck:
             # Written even when clean: a missing file is a worker that stopped
             # before its check finished, never one that found nothing.
             found = Path(workerinput[_LATE_PATCHES_KEY]) / workerinput["workerid"]
-            found.write_text("\n".join(problems), encoding="utf-8")
+            # Renamed into place whole, so a worker stopped while writing
+            # leaves no file rather than an empty one that reads as clean.
+            partial = found.with_name(f"{found.name}.partial")
+            partial.write_text("\n".join(problems), encoding="utf-8")
+            os.replace(partial, found)
             return result
         if _LATE_PATCHES_DIR in config.stash:
             left = config.stash[_LATE_PATCHES_DIR]

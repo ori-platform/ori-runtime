@@ -267,6 +267,45 @@ def test_a_worker_that_stops_before_its_check_fails_the_run(tmp_path: Path) -> N
     assert "stopped before its check of the bindings finished" in run.stdout
 
 
+def test_a_worker_stopped_after_it_finished_fails_the_run(tmp_path: Path) -> None:
+    """A worker still in its last hooks when execnet's exit grace runs out is
+    stopped after telling the controller it finished; that is no report."""
+    probe = (
+        "import time\n\n"
+        "import pytest\n\n\n"
+        "@pytest.hookimpl(wrapper=True, tryfirst=True)\n"
+        "def pytest_sessionfinish(session):\n"
+        "    result = yield\n"
+        "    if hasattr(session.config, 'workerinput'):\n"
+        "        time.sleep(15)\n"
+        "    return result\n"
+    )
+    (tmp_path / "conftest.py").write_text(probe, encoding="utf-8")
+    run = _run_probe(
+        tmp_path, "def test_passes():\n    pass\n", xdist=True, outer=False
+    )
+    assert run.returncode == pytest.ExitCode.TESTS_FAILED, run.stdout + run.stderr
+    assert "stopped before its check of the bindings finished" in run.stdout
+
+
+def test_a_worker_stopped_while_writing_fails_the_run(tmp_path: Path) -> None:
+    """A file cut off as it was written is not an empty, clean one."""
+    probe = (
+        "import pathlib\n"
+        "import time\n\n\n"
+        "def _stalled(self, data, *args, **kwargs):\n"
+        "    open(self, 'w').close()\n"
+        "    time.sleep(15)\n\n\n"
+        "def pytest_configure(config):\n"
+        "    if hasattr(config, 'workerinput'):\n"
+        "        pathlib.Path.write_text = _stalled\n"
+    )
+    (tmp_path / "conftest.py").write_text(probe, encoding="utf-8")
+    run = _run_probe(tmp_path, "def test_passes():\n    pass\n", xdist=True)
+    assert run.returncode == pytest.ExitCode.TESTS_FAILED, run.stdout + run.stderr
+    assert "stopped before its check of the bindings finished" in run.stdout
+
+
 def test_an_interrupted_run_keeps_its_exit_status(tmp_path: Path) -> None:
     probe = (
         "import pytest\n\n\n"
