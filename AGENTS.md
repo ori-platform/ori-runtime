@@ -48,7 +48,7 @@ ori/                    Python package — the runtime
 ├── gateway/            Runtime-side MQTT gateway export/reasoning clients
 ├── utils/              Small shared helpers
 ├── state/              SQLite state store
-├── config.py           ori.yaml loader
+├── config/             ori.yaml loader, one module per section
 └── runtime.py          Main event loop — ties everything together
 
 skills/                 Bundled skills (YAML + Python hooks)
@@ -124,7 +124,7 @@ class NewProtocolAdapter(BaseAdapter):
   )
   ```
 
-- Register the adapter in `ori/config.py` protocol map so ori.yaml can
+- Register the adapter in `ori/hal/protocol_registry.py` so ori.yaml can
   reference it by name
 
 SHARED HARDWARE RESOURCES:
@@ -789,7 +789,7 @@ these rules can compromise the runtime that controls physical hardware.
 | Add a new action type                 | `ori/actions/`                       |
 | Change skill loading and validation   | `ori/skills/loader.py`               |
 | Change what gets persisted to SQLite  | `ori/state/` (one module per domain) |
-| Change device configuration format    | `ori/config.py` + `ori.yaml.example` |
+| Change device configuration format    | `ori/config/` + `ori.yaml.example`   |
 | Change the main event loop            | `ori/runtime.py`                     |
 | Add a bundled skill                   | `skills/`                            |
 | Understand a design decision          | `CLAUDE.md`                          |

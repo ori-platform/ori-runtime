@@ -878,7 +878,7 @@ def test_the_runtime_sizes_each_gateway_replay_cache_for_the_window(monkeypatch)
 
 def test_any_replay_window_the_contract_admits_is_accepted():
     """runtime-config/v2 bounds it below only; the cache follows it up."""
-    from ori.config import _parse_gateway
+    from ori.config._gateway import parse_gateway as _parse_gateway
 
     for ttl_ms in (1_000, 300_000, 86_400_000):
         data = {
@@ -1041,7 +1041,8 @@ def test_a_replay_is_refused_until_it_is_stale_whatever_the_ttl(ttl_ms, broadcas
 
 
 def test_an_infinite_window_in_the_configuration_is_a_configuration_error():
-    from ori.config import ConfigValidationError, _parse_gateway
+    from ori.config import ConfigValidationError
+    from ori.config._gateway import parse_gateway as _parse_gateway
 
     for key in ("replay_ttl_ms", "max_clock_skew_ms"):
         with pytest.raises(ConfigValidationError, match="must be integers"):

@@ -11,8 +11,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from ori.config import _MAX_CONFIG_BYTES
-from ori.config_installer import (
+from ori.config._document import _MAX_CONFIG_BYTES
+from ori.config.installer import (
     _MAX_SOURCE_CONFIG_BYTES,
     ConfigInstallError,
     install_signed_config,
@@ -100,7 +100,7 @@ def test_the_human_output_escapes_the_destination_and_json_keeps_it(
     line it is printed on. A consumer reads the other and needs the name it
     can open.
     """
-    from ori import config_installer
+    from ori.config import installer as config_installer
 
     hostile = tmp_path / "dest\x1b[2K\nFORGED" / "ori.yaml"
     result = config_installer.ConfigInstallResult(
@@ -367,3 +367,42 @@ class TestTheGeneratedSourceIsAdmittedBeforeItIsRead:
     def test_the_two_caps_are_distinct_and_the_source_cap_is_tighter(self):
         """Two documents, two limits, and no name collision between them."""
         assert _MAX_SOURCE_CONFIG_BYTES < _MAX_CONFIG_BYTES
+
+
+class _FetchedError(Exception):
+    """Raised by the stub download, so reaching it means the URL was admitted."""
+
+
+@pytest.mark.parametrize(
+    ("url", "admitted"),
+    [
+        ("http://127.0.0.1/c.yaml", True),
+        ("http://127.0.0.2/c.yaml", True),
+        ("http://[::1]/c.yaml", True),
+        ("http://localhost/c.yaml", True),
+        ("http://localhost.example/c.yaml", False),
+        ("http://127.0.0.1.nip.io/c.yaml", False),
+        ("http://192.168.1.10/c.yaml", False),
+    ],
+)
+def test_insecure_loopback_admits_loopback_and_nothing_resembling_it(
+    monkeypatch: pytest.MonkeyPatch, url: str, admitted: bool
+) -> None:
+    """The installer judges loopback with the one helper the config and runtime use."""
+    from ori.config import installer
+
+    def refuse_download(*args: object, **kwargs: object) -> None:
+        raise _FetchedError
+
+    monkeypatch.setattr(installer, "urlopen", refuse_download)
+    with pytest.raises(installer.ConfigInstallError) as refused:
+        installer._fetch_https_source(
+            source=url,
+            bearer_token_env=None,
+            allow_insecure_loopback=True,
+            timeout_s=1.0,
+        )
+    # An admitted URL reaches the download, whose failure the installer wraps.
+    assert isinstance(refused.value.__cause__, _FetchedError) is admitted
+    if not admitted:
+        assert "must be fetched over https" in str(refused.value)

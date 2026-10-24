@@ -70,6 +70,51 @@ def _real_gpio_allowed() -> bool:
     return os.environ.get(ALLOW_GPIO_ENV, "").strip().lower() in {"1", "true", "yes"}
 
 
+_CONFIG_BINDINGS = pytest.StashKey[dict[str, int]]()
+_SESSION_CONFIG_BINDINGS = pytest.StashKey[dict[str, int]]()
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    from tests.config_layout import bindings, hold_reexports
+
+    hold_reexports()
+    config.stash[_SESSION_CONFIG_BINDINGS] = bindings()
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    from tests.config_layout import release_reexports
+
+    release_reexports()
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_setup(item: pytest.Item) -> Iterator[None]:
+    """Refuse to start a test once an ``ori.config`` re-export was rebound.
+
+    The bindings are compared with those taken when the session started, so a
+    write made while a test module was collected is caught at its first test.
+    """
+    from tests.config_layout import bindings, rebound
+
+    problems = rebound(item.config.stash[_SESSION_CONFIG_BINDINGS])
+    if problems:
+        pytest.fail("\n".join(problems))
+    item.stash[_CONFIG_BINDINGS] = bindings()
+    return (yield)
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_call(item: pytest.Item) -> Iterator[None]:
+    """Fail a test whose fixtures or body left an ``ori.config`` re-export rebound."""
+    from tests.config_layout import rebound
+
+    result = yield
+    problems = rebound(item.stash[_CONFIG_BINDINGS])
+    if problems:
+        pytest.fail("\n".join(problems))
+    return result
+
+
 @pytest.fixture(autouse=True)
 def no_real_gpio(monkeypatch: pytest.MonkeyPatch) -> None:
     """Refuse real GPIO for the whole suite unless a run opts in.

@@ -14,7 +14,8 @@ from typing import Any
 
 import pytest
 
-from ori.config import ConfigValidationError, _parse_skills
+from ori.config import ConfigValidationError
+from ori.config._skills import parse_skills as _parse_skills
 from ori.reasoning.approval_bounds import MAX_PROPOSAL_LIFETIME_S
 from ori.skills.loader import SkillLoader, SkillValidationError
 

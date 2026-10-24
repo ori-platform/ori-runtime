@@ -278,9 +278,35 @@ release is cut.
   `ori.state.store` still exports every name imported from it. A new test
   holds every module under `ori/` to 2,500 lines, and the five already over
   it, `ori/runtime.py` among them, to their current size.
+- The configuration loader is split by section. `ori/config.py` is now the
+  package `ori/config/`, with one private module per top-level section of
+  `ori.yaml` (device, sensors, skills, reasoning, gateway, actions, hal,
+  state, security, evidence and the rest), document admission in
+  `_document.py`, `Config` in `_config.py` and production posture in
+  `_posture.py`. The code moved unchanged: every section is parsed and
+  refused as before, and log records still carry the `ori.config` logger name.
+  `ori.config` now exports its interface only: `Config`, each section's
+  dataclass, `ConfigValidationError`, and the functions and constants other
+  modules read (`anchor_to_config`, `config_env_placeholders`,
+  `hardened_posture_declared`, `read_config_document`,
+  `requires_production_posture`, `SKILL_NAME_RE`, `MAX_SKILL_NAME_LENGTH`,
+  `RESERVED_SENSOR_METADATA_KEYS`), listed in its `__all__`. Its private
+  helpers and the names it happened to import are no longer reachable through
+  it; a script that read one imports it from the section module that defines
+  it.
+- The modules beside the configuration loader moved into it:
+  `ori.config_fields` is now `ori.config._fields`, `ori.config_skill_entry` is
+  `ori.config._skill_entry`, and the signed config installer is
+  `ori.config.installer`. The `ori-config-install` command is unchanged; a
+  script importing one of the old module paths must use the new one.
 
 ## Fixed
 
+- The signed config installer judged loopback for `--allow-insecure-loopback`
+  with its own fixed set (`localhost`, `127.0.0.1`, `::1`). It now uses the
+  same helper as the configuration and the runtime, so any loopback address,
+  `127.0.0.2` or a bracketed `[::1]` among them, is admitted, and a hostname
+  that only resembles one, such as `127.0.0.1.nip.io`, is still refused.
 - A `skills:` entry naming a skill that ships with the runtime loads it on an
   installed runtime. Before, the loader read only `skills` beside `ori.yaml`,
   which an installed runtime does not populate, so the runtime started with no

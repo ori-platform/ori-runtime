@@ -9,7 +9,7 @@ TO_REF="${2:-}"
 PR_BODY_TEXT="${GUARD_CAP_MATRIX_BYPASS_TEXT:-}"
 
 # Code whose behaviour the capability matrix describes.
-CAPABILITY_PATHS='^(ori/reasoning/|ori/actions/|ori/security/|ori/safety/|ori/policy/|ori/runtime\.py$|ori/skills/loader\.py$|ori/config\.py$)'
+CAPABILITY_PATHS='^(ori/reasoning/|ori/actions/|ori/security/|ori/safety/|ori/policy/|ori/runtime\.py$|ori/skills/loader\.py$|ori/config(\.py$|/))'
 
 # A bypass is a line of its own: the token first, then a rationale of at least
 # twenty characters. The token quoted anywhere else, as the pull request

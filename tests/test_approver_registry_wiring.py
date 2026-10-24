@@ -21,7 +21,8 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
-from ori.config import ConfigValidationError, _parse_device
+from ori.config import ConfigValidationError
+from ori.config._device import parse_device as _parse_device
 from ori.security.approvers.forms import spki_sha256
 from ori.security.approvers.wiring import (
     PREVIOUS_PROVISIONING_ANCHOR_ENV,

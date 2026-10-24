@@ -397,7 +397,7 @@ ori/
 ├── ori/
 │   ├── __init__.py
 │   ├── runtime.py             ← main event loop — build last
-│   ├── config.py              ← ori.yaml loader and validator
+│   ├── config/                ← ori.yaml loader and validator, one module per section
 │   │
 │   ├── utils/
 │   │   ├── bool_utils.py
@@ -524,7 +524,7 @@ Follow this sequence exactly. Each module depends on the previous.
 
 ```text
 Step 1   ori/network/events.py          ← SensorReading, OriEvent, ActionResult, ReasoningResult
-Step 2   ori/config.py                  ← ori.yaml loader with action_tier support
+Step 2   ori/config/                    ← ori.yaml loader with action_tier support
 Step 3   ori/state/store.py             ← SQLite wrapper + action_log table
 Step 4   ori/hal/base.py                ← BaseAdapter interface
 Step 5   ori/hal/psutil_adapter.py      ← testable on any laptop, no hardware

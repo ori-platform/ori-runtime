@@ -46,7 +46,25 @@ from typing import Any
 # is committed to a public repository, and a checkout path is neither portable
 # nor anyone else's business.
 RUNTIME = pathlib.Path(__file__).resolve().parents[2]
-CONFIG = RUNTIME / "ori" / "config.py"
+CONFIG_PACKAGE = RUNTIME / "ori" / "config"
+
+
+class _ConfigSource:
+    """The configuration package, read as the one module it was split from.
+
+    The section parsers live one module per section under ``ori/config/``.
+    Their source is joined in path order, so ``ast.parse(CONFIG.read_text())``
+    finds every ``_parse_*`` function wherever it lives, and no parser can
+    fall out of the walk by moving between modules.
+    """
+
+    def read_text(self) -> str:
+        return "\n".join(
+            path.read_text() for path in sorted(CONFIG_PACKAGE.glob("*.py"))
+        )
+
+
+CONFIG = _ConfigSource()
 EXAMPLE = RUNTIME / "ori.yaml.example"
 HAL = RUNTIME / "ori" / "hal"
 
@@ -309,11 +327,19 @@ class SectionWalker(ast.NodeVisitor):
 
 
 def parse_functions(tree: ast.Module) -> dict[str, ast.FunctionDef]:
-    return {
-        n.name: n
-        for n in ast.walk(tree)
-        if isinstance(n, ast.FunctionDef) and n.name in ENTRY_POINTS
-    }
+    """Each section parser, keyed by the name ``ori.config`` exposes it under.
+
+    A parser another section module calls is defined without the underscore
+    and re-exported with it, so the inventory reads the same either way.
+    """
+    found: dict[str, ast.FunctionDef] = {}
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.FunctionDef):
+            continue
+        for exposed in (n.name, f"_{n.name}"):
+            if exposed in ENTRY_POINTS:
+                found[exposed] = n
+    return found
 
 
 def collect(tree: ast.Module) -> list[dict[str, Any]]:
@@ -395,7 +421,7 @@ def in_example_exact(path: str, example: set[str]) -> bool:
 def coverage(entries: list[dict[str, Any]], in_example: set[str]) -> dict[str, Any]:
     """What this inventory does not cover, stated rather than implied.
 
-    The walk covers ori/config.py's parse functions. Keys read elsewhere are
+    The walk covers the parse functions under ori/config/. Keys read elsewhere are
     not covered: runtime.py assembles the dict handed to adapter.connect(), and
     adapters read from it directly.
 
@@ -440,7 +466,7 @@ def coverage(entries: list[dict[str, Any]], in_example: set[str]) -> dict[str, A
 
     return {
         "note": (
-            "Paths the shipped example sets that ori/config.py's parse functions "
+            "Paths the shipped example sets that the parse functions under ori/config/ "
             "do not read. Adapter correlation is applied to sensors[] only, "
             "because a shared leaf name elsewhere proves nothing."
         ),
@@ -494,10 +520,10 @@ def main() -> None:
                 "versioned baseline entry."
             ),
             "runtime_commit": commit,
-            "source": "ori/config.py",
+            "source": "ori/config/",
             "example": "ori.yaml.example",
             "method": (
-                "Per-function AST walk of ori/config.py with an environment mapping "
+                "Per-function AST walk of ori/config/ with an environment mapping "
                 "local names to configuration paths. A read is recorded only when "
                 "its receiver holds configuration, so intermediate dictionaries are "
                 "not flattened in beside real settings. Types, constraints, "

@@ -15,7 +15,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -24,15 +23,16 @@ from typing import Any, cast
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
-from ori.config import Config, ConfigValidationError, read_config_bytes
+from ori.config import Config, ConfigValidationError
+from ori.config._document import read_config_bytes
+from ori.config._env import ENV_NAME_RE
+from ori.utils.net_utils import is_loopback_host
 from ori.utils.path_utils import shown
 
-_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\Z")
-# Named apart from `ori.config._MAX_SOURCE_CONFIG_BYTES`, which bounds the runtime's
-# own `ori.yaml` at 1 MiB. Two different documents, two different limits.
+# Named apart from `ori.config._MAX_CONFIG_BYTES`, which bounds the runtime's own
+# `ori.yaml` at 1 MiB. Two different documents, two different limits.
 _MAX_SOURCE_CONFIG_BYTES = 512 * 1024
 _DEFAULT_TIMEOUT_S = 10.0
-_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
 class ConfigInstallError(Exception):
@@ -189,7 +189,7 @@ def _fetch_https_source(
     if parsed.scheme != "https" and not (
         allow_insecure_loopback
         and parsed.scheme == "http"
-        and _is_loopback_host(parsed.hostname)
+        and is_loopback_host(parsed.hostname)
     ):
         raise ConfigInstallError(
             "remote generated configs must be fetched over https "
@@ -199,7 +199,7 @@ def _fetch_https_source(
     headers = {"Accept": "application/x-yaml, text/yaml, application/octet-stream"}
     if bearer_token_env:
         env_name = bearer_token_env.strip()
-        if not _ENV_NAME_RE.fullmatch(env_name):
+        if not ENV_NAME_RE.fullmatch(env_name):
             raise ConfigInstallError("bearer-token-env must be an environment name")
         token = os.environ.get(env_name, "").strip()
         if not token:
@@ -214,7 +214,7 @@ def _fetch_https_source(
             if final.scheme != "https" and not (
                 allow_insecure_loopback
                 and final.scheme == "http"
-                and _is_loopback_host(final.hostname)
+                and is_loopback_host(final.hostname)
             ):
                 raise ConfigInstallError(
                     "config download redirected to a non-https URL"
@@ -272,10 +272,6 @@ def _fsync_directory(path: Path) -> None:
         os.fsync(dir_fd)
     finally:
         os.close(dir_fd)
-
-
-def _is_loopback_host(hostname: str | None) -> bool:
-    return (hostname or "").strip().lower() in _LOOPBACK_HOSTS
 
 
 def main(argv: list[str] | None = None) -> int:

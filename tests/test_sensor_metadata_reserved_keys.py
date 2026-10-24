@@ -31,8 +31,8 @@ from ori.config import (
     RESERVED_SENSOR_METADATA_KEYS,
     ConfigValidationError,
     SensorConfig,
-    _parse_sensors,
 )
+from ori.config._sensors import parse_sensors as _parse_sensors
 from ori.hal.base import CircuitState
 from ori.hal.psutil_adapter import PsutilAdapter
 from ori.runtime import adapter_connect_config
@@ -357,7 +357,9 @@ def test_start_uses_the_shared_assembly_rather_than_its_own_dict() -> None:
 def test_a_sensor_cannot_widen_the_coap_host_allowlist(
     sensor_allow: list[str] | None,
 ) -> None:
-    from ori.config import _validate_coap_sensor_allowlist
+    from ori.config._sensors import (
+        validate_coap_sensor_allowlist as _validate_coap_sensor_allowlist,
+    )
 
     entry: dict[str, Any] = {
         "id": "s1",
@@ -383,7 +385,9 @@ def test_a_sensor_cannot_widen_the_coap_host_allowlist(
 
 def test_a_sensor_may_narrow_its_own_coap_allowlist() -> None:
     """The reason the key is not reserved: narrowing is legitimate."""
-    from ori.config import _validate_coap_sensor_allowlist
+    from ori.config._sensors import (
+        validate_coap_sensor_allowlist as _validate_coap_sensor_allowlist,
+    )
 
     parsed = _parse_sensors(
         [

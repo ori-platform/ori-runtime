@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from ori.config import ConfigValidationError, _parse_reasoning
+from ori.config import ConfigValidationError
+from ori.config._reasoning import parse_reasoning as _parse_reasoning
 from ori.network.events import OriEvent, SensorReading
 from ori.reasoning.context_enricher import (
     _SNAPSHOT_HEADER,

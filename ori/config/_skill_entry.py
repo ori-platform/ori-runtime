@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ori.config_fields import ConfigValidationError
+from ori.config._fields import ConfigValidationError
 
 # Deployment keys that look like trigger authority -> the skill.yaml trigger
 # key that actually holds it (a test ties each target to the trigger grammar).

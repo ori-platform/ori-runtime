@@ -16,12 +16,8 @@ import threading
 import pytest
 import yaml
 
-from ori.config import (
-    _MAX_CONFIG_BYTES,
-    Config,
-    ConfigValidationError,
-    _load_config_document,
-)
+from ori.config import Config, ConfigValidationError
+from ori.config._document import _MAX_CONFIG_BYTES, _load_config_document
 from ori.phone_doctor import (
     _phone_profile_hints_from_invalid_config as phone_doctor_hints,
 )
@@ -3130,7 +3126,7 @@ class TestDeviceValidation:
     def test_timezone_falls_back_to_utc_when_config_and_host_unavailable(
         self, tmp_path, monkeypatch
     ):
-        monkeypatch.setattr("ori.config._detect_host_timezone", lambda: None)
+        monkeypatch.setattr("ori.config._device._detect_host_timezone", lambda: None)
         yaml_path = _write_yaml(
             tmp_path,
             """
@@ -3813,14 +3809,14 @@ actions:
         message = str(caught.value)
         assert f"skills[0] (skill-x).config.{key}" in message
         assert "on its trigger in skill.yaml" in message
-        from ori.config_skill_entry import (
+        from ori.config._skill_entry import (
             TRIGGER_OWNED_SKILL_KEYS as _TRIGGER_OWNED_SKILL_KEYS,
         )
 
         assert f"`{_TRIGGER_OWNED_SKILL_KEYS[key]}`" in message
 
     def test_each_trigger_owned_key_names_a_real_trigger_key(self):
-        from ori.config_skill_entry import (
+        from ori.config._skill_entry import (
             TRIGGER_OWNED_SKILL_KEYS as _TRIGGER_OWNED_SKILL_KEYS,
         )
         from ori.skills.loader import _TRIGGER_ALLOWED_KEYS
@@ -6668,7 +6664,10 @@ def test_hardened_posture_needs_an_operator_for_either_approval_channel(channel)
     """Either channel can carry a Tier C proposal to operator_contact."""
     from types import SimpleNamespace
 
-    from ori.config import ActionChannelConfig, _validate_production_security_posture
+    from ori.config import ActionChannelConfig
+    from ori.config._posture import (
+        validate_production_security_posture as _validate_production_security_posture,
+    )
 
     actions = (
         ActionChannelConfig(primary_alert_channel="sms", sms={"enabled": True})
