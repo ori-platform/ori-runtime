@@ -6,7 +6,7 @@
 import logging
 from typing import Any
 
-from ori.config_fields import ConfigValidationError
+from ori.config._fields import ConfigValidationError
 
 logger = logging.getLogger("ori.config")
 

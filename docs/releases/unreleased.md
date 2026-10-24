@@ -286,6 +286,11 @@ release is cut.
   `_posture.py`. The code moved unchanged: every section is parsed and
   refused as before, log records still carry the `ori.config` logger name, and
   `ori.config` still binds every name it bound before, which a test holds.
+- The modules beside the configuration loader moved into it:
+  `ori.config_fields` is now `ori.config._fields`, `ori.config_skill_entry` is
+  `ori.config._skill_entry`, and the signed config installer is
+  `ori.config.installer`. The `ori-config-install` command is unchanged; a
+  script importing one of the old module paths must use the new one.
 
 ## Fixed
 

@@ -48,7 +48,7 @@ from typing import Any
 
 import yaml
 
-from ori.config_fields import MAX_SKILL_NAME_LENGTH, SKILL_NAME_RE
+from ori.config import MAX_SKILL_NAME_LENGTH, SKILL_NAME_RE
 from ori.network.events import OriEvent
 from ori.reasoning.action_registry import (
     capability,

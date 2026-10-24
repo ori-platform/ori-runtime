@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from ori.config_fields import ConfigValidationError
+from ori.config._fields import ConfigValidationError
 from ori.utils.path_utils import shown
 
 logger = logging.getLogger("ori.config")

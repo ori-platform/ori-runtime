@@ -12,7 +12,7 @@ from typing import Any
 import yaml
 
 from ori.config._env import _ENV_VAR_RE, _expand_env_vars
-from ori.config_fields import ConfigValidationError
+from ori.config._fields import ConfigValidationError
 from ori.utils.path_utils import shown
 
 
@@ -273,7 +273,7 @@ _CONFIG_READ_CHUNK = 65536
 def read_config_bytes(path: str, *, max_bytes: int = _MAX_CONFIG_BYTES) -> bytes:
     """Admit and read a configuration document, bounding what that costs.
 
-    Shared with `ori/config_installer.py`, which admits a *generated* document
+    Shared with `ori/config/installer.py`, which admits a *generated* document
     under a tighter cap of its own before installing it. Both need the same
     admission: the whole file used to be read with no size cap, the path was
     followed if it was a symlink, and a FIFO blocked in `read()` with no

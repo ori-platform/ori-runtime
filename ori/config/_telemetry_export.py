@@ -8,7 +8,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from ori.config._env import _ENV_NAME_RE
-from ori.config_fields import ConfigValidationError
+from ori.config._fields import ConfigValidationError
 from ori.utils.bool_utils import is_truthy
 from ori.utils.net_utils import is_loopback_host
 

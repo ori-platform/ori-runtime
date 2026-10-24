@@ -6,7 +6,7 @@
 from dataclasses import dataclass, field
 from typing import Any
 
-from ori.config_fields import ConfigValidationError
+from ori.config._fields import ConfigValidationError
 from ori.utils.bool_utils import is_truthy
 
 # BCM GPIO pins valid for relay use on Raspberry Pi 4 and CM4 (both BCM2711).

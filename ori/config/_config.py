@@ -17,6 +17,8 @@ from ori.config._device import DeviceConfig, _parse_device
 from ori.config._device_policy import _parse_device_policy
 from ori.config._document import _load_config_document, _read_config_text
 from ori.config._evidence import EvidenceConfig, _parse_evidence
+from ori.config._fields import ConfigValidationError
+from ori.config._fields import checked_device_endpoint as _checked_device_endpoint
 from ori.config._firmware_mqtt_provisioning import _parse_firmware_mqtt_provisioning
 from ori.config._gateway import (
     GatewayConfig,
@@ -40,8 +42,6 @@ from ori.config._sensors import (
 from ori.config._skills import SkillConfig, _parse_skills
 from ori.config._state import StateConfig, _parse_state
 from ori.config._telemetry_export import TelemetryExportConfig, _parse_telemetry_export
-from ori.config_fields import ConfigValidationError
-from ori.config_fields import checked_device_endpoint as _checked_device_endpoint
 from ori.hal.protocol_registry import MQTT_FAMILY_PROTOCOLS
 from ori.security.config_signatures import (
     ConfigSignatureError,
@@ -94,7 +94,7 @@ class Config:
         ``ValueError``, on a list ``TypeError``, and
         ``device.rated_capacity_amps`` — the Tier D threshold input — is the
         first field to reach one. Neither `Config.load`'s callers in
-        `ori/runtime.py` nor `ori/config_installer.py` catch those, so each
+        `ori/runtime.py` nor `ori/config/installer.py` catch those, so each
         would leave startup as an interpreter traceback and a restart loop.
 
         A defect in a section parser is classified here too. That is the

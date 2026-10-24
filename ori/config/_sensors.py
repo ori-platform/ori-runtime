@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlparse
 
-from ori.config_fields import ConfigValidationError
+from ori.config._fields import ConfigValidationError
 from ori.hal.config_schema import (
     DocumentError,
     SchemaError,

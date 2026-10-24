@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ori.config._env import _ENV_NAME_RE
-from ori.config_fields import ConfigValidationError
+from ori.config._fields import ConfigValidationError
 from ori.utils.bool_utils import is_truthy
 
 

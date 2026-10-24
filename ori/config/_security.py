@@ -9,7 +9,7 @@ from ipaddress import ip_network
 from typing import Any
 
 from ori.config._env import _ENV_NAME_RE
-from ori.config_fields import ConfigValidationError
+from ori.config._fields import ConfigValidationError
 from ori.security.config_signatures import (
     CONFIG_REQUIRE_SIGNED_ENV,
     DEFAULT_CONFIG_TRUST_ANCHOR_ENV,

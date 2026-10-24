@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ori.config_fields import ConfigValidationError
+from ori.config._fields import ConfigValidationError
 
 
 @dataclass

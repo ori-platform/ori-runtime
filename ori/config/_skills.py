@@ -6,14 +6,14 @@
 from dataclasses import dataclass, field
 from typing import Any
 
-from ori.config_fields import (
+from ori.config._fields import (
     MAX_SKILL_NAME_LENGTH,
     SKILL_NAME_RE,
     ConfigValidationError,
 )
-from ori.config_fields import require_optional_str as _require_optional_str
-from ori.config_fields import require_str as _require_str
-from ori.config_skill_entry import refuse_skill_config as _refuse_skill_config
+from ori.config._fields import require_optional_str as _require_optional_str
+from ori.config._fields import require_str as _require_str
+from ori.config._skill_entry import refuse_skill_config as _refuse_skill_config
 
 
 @dataclass

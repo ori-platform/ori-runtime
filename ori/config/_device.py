@@ -10,12 +10,12 @@ from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from ori.config_fields import (
+from ori.config._fields import (
     ConfigValidationError,
     checked_device_id,
     checked_site_id,
 )
-from ori.config_fields import require_str as _require_str
+from ori.config._fields import require_str as _require_str
 
 logger = logging.getLogger("ori.config")
 

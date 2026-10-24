@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from ori.config._env import _ENV_NAME_RE
-from ori.config_fields import ConfigValidationError
+from ori.config._fields import ConfigValidationError
 
 
 def _parse_firmware_mqtt_provisioning(data: Any) -> dict:

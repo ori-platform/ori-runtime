@@ -11,10 +11,10 @@ from ori.config._actions import ActionChannelConfig
 from ori.config._database import _IN_MEMORY_STORE
 from ori.config._device import DeviceConfig
 from ori.config._document import _load_config_document, _read_config_text
+from ori.config._fields import ConfigValidationError
 from ori.config._gateway import GatewayConfig
 from ori.config._security import _sms_webhook_source_cidrs_present
 from ori.config._state import StateConfig
-from ori.config_fields import ConfigValidationError
 from ori.security.config_signatures import CONFIG_REQUIRE_SIGNED_ENV
 from ori.utils.bool_utils import is_truthy
 from ori.utils.net_utils import is_loopback_host

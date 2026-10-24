@@ -12,7 +12,7 @@ import pytest
 import yaml
 
 from ori.config import _MAX_CONFIG_BYTES
-from ori.config_installer import (
+from ori.config.installer import (
     _MAX_SOURCE_CONFIG_BYTES,
     ConfigInstallError,
     install_signed_config,
@@ -100,7 +100,7 @@ def test_the_human_output_escapes_the_destination_and_json_keeps_it(
     line it is printed on. A consumer reads the other and needs the name it
     can open.
     """
-    from ori import config_installer
+    from ori.config import installer as config_installer
 
     hostile = tmp_path / "dest\x1b[2K\nFORGED" / "ori.yaml"
     result = config_installer.ConfigInstallResult(

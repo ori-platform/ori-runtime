@@ -117,7 +117,7 @@ dev = [
 [project.scripts]
 ori = "ori.cli:main"
 ori-runtime = "ori.runtime:main"
-ori-config-install = "ori.config_installer:main"
+ori-config-install = "ori.config.installer:main"
 ori-phone-doctor = "ori.phone_doctor:main"
 ori-inverter-profile-doctor = "ori.inverter_profile_doctor:main"
 ori-firmware-provisioner = "ori.firmware_provisioner:main"
