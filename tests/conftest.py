@@ -81,6 +81,12 @@ def pytest_configure(config: pytest.Config) -> None:
     config.stash[_SESSION_CONFIG_BINDINGS] = bindings()
 
 
+def pytest_unconfigure(config: pytest.Config) -> None:
+    from tests.config_layout import release_reexports
+
+    release_reexports()
+
+
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_setup(item: pytest.Item) -> Iterator[None]:
     """Refuse to start a test once an ``ori.config`` re-export was rebound.

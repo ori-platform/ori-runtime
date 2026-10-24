@@ -14,9 +14,10 @@ These tests drive that guard through each spelling of a patch.
 from __future__ import annotations
 
 import importlib
+from collections import ChainMap
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest import mock
 
 import pytest
@@ -130,6 +131,14 @@ cfg = ori.config
 root = importlib.import_module("ori")
 
 
+def _delitem_in_a_fixture(mp: pytest.MonkeyPatch) -> None:
+    def held():
+        mp.delitem(cfg.__dict__, "_parse_actions")
+        yield
+
+    next(held())
+
+
 def _annotated() -> None:
     ns: Mapping[str, object] = vars(cfg)
     with mock.patch.dict(ns, {}):
@@ -199,6 +208,8 @@ def _in_a_fixture_like_generator() -> None:
             lambda mp: mp.setitem(dic=cfg.__dict__, name="x", value=1),
             id="setitem-keyword",
         ),
+        pytest.param(lambda mp: mp.delitem(vars(cfg), "_parse_actions"), id="delitem"),
+        pytest.param(lambda mp: _delitem_in_a_fixture(mp), id="delitem-fixture"),
     ],
 )
 def test_every_namespace_write_is_refused_by_identity(
@@ -242,6 +253,16 @@ def _shadowed(cfg: object) -> None:
             lambda mp: mp.setitem(vars(cfg._device), "x", 1), id="section-setitem"
         ),
         pytest.param(lambda mp: mp.setitem({}, "x", 1), id="other-mapping"),
+        pytest.param(
+            lambda mp: mp.delitem(vars(cfg._device), "logger"),
+            id="section-delitem",
+        ),
+        # The stated limit: a view delegating to the namespace is another
+        # mapping, so it is not recognised.
+        pytest.param(
+            lambda mp: mock.patch.dict(ChainMap(cfg.__dict__), {}).start(),
+            id="delegating-view",
+        ),
     ],
 )
 def test_other_mappings_are_allowed(monkeypatch: pytest.MonkeyPatch, write) -> None:
@@ -280,3 +301,25 @@ def test_patching_only_where_it_is_defined_does_not(
     """Why the advice names callers: the defining module's binding is not read."""
     monkeypatch.setattr("ori.config._actions.parse_actions", _reached)
     ori.config.Config.load(str(EXAMPLE))
+
+
+def test_release_restores_what_was_held_and_holding_twice_wraps_once() -> None:
+    """The guard lasts one test session, so an embedding process gets its own."""
+    from _pytest.monkeypatch import MonkeyPatch
+
+    from tests import config_layout
+
+    held = dict(config_layout._HELD)
+    config_layout.release_reexports()
+    try:
+        assert type(ori.config) is held["module_class"]
+        assert MonkeyPatch.setitem is held["setitem"]
+        assert MonkeyPatch.delitem is held["delitem"]
+        assert cast(Any, mock)._patch_dict._patch_dict is held["apply"]
+    finally:
+        config_layout.hold_reexports()
+        config_layout.hold_reexports()
+    assert config_layout._HELD["setitem"] is held["setitem"]
+    assert type(ori.config).__name__ == "_ReexportsHeld"
+    with pytest.raises(AssertionError, match=NAMESPACE_REFUSED):
+        MonkeyPatch().setitem(vars(cfg), "x", 1)

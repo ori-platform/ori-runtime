@@ -97,20 +97,30 @@ def _namespace_refusal() -> str:
     )
 
 
-def _hold_namespace_writers() -> None:
-    """Refuse the mapping writers on ``ori.config``'s namespace, by identity.
+#: What `hold_reexports` replaced, restored by `release_reexports`.
+_HELD: dict[str, Any] = {}
 
-    ``mock.patch.dict`` and ``MonkeyPatch.setitem`` write the mapping directly,
-    past the module's class, and a ``with`` block restores it before the test
-    ends. Whatever the target's spelling, the mapping each one is about to
-    write is compared with the namespace itself.
+
+def _hold_namespace_writers() -> None:
+    """Refuse the mapping writers aimed at ``ori.config``'s namespace.
+
+    ``mock.patch.dict`` and ``MonkeyPatch``'s ``setitem`` and ``delitem``
+    change the mapping directly, past the module's class, and a ``with`` block
+    restores it before the test ends. Each is refused when the mapping it
+    targets is the namespace itself, whatever the target's spelling; any other
+    mapping passes, including a view such as ``ChainMap`` that delegates to the
+    namespace, which this does not recognise.
     """
     from unittest import mock
 
     from _pytest.monkeypatch import MonkeyPatch
 
     namespace = vars(ori.config)
-    apply = mock._patch_dict._patch_dict  # type: ignore[attr-defined]
+    patch_dict_class: Any = mock._patch_dict  # type: ignore[attr-defined]
+    apply = patch_dict_class._patch_dict
+    setitem = MonkeyPatch.setitem
+    delitem = MonkeyPatch.delitem
+    _HELD.update(apply=apply, setitem=setitem, delitem=delitem)
 
     def patch_dict(self: Any) -> Any:
         result = apply(self)  # resolves a string target to its mapping first
@@ -119,31 +129,56 @@ def _hold_namespace_writers() -> None:
             raise AssertionError(_namespace_refusal())
         return result
 
-    mock._patch_dict._patch_dict = patch_dict  # type: ignore[attr-defined]
-
-    setitem = MonkeyPatch.setitem
-
     def guarded_setitem(self: MonkeyPatch, dic: Any, name: Any, value: Any) -> None:
         if dic is namespace:
             raise AssertionError(_namespace_refusal())
         setitem(self, dic, name, value)
 
+    def guarded_delitem(
+        self: MonkeyPatch, dic: Any, name: Any, raising: bool = True
+    ) -> None:
+        if dic is namespace:
+            raise AssertionError(_namespace_refusal())
+        delitem(self, dic, name, raising)
+
+    patch_dict_class._patch_dict = patch_dict
     MonkeyPatch.setitem = guarded_setitem  # type: ignore[method-assign]
+    MonkeyPatch.delitem = guarded_delitem  # type: ignore[method-assign]
 
 
 def hold_reexports() -> None:
-    """Refuse every rebinding of an ``ori.config`` re-export while tests run.
+    """Refuse every rebinding of an ``ori.config`` re-export for a test session.
 
-    Attribute spellings go through the module's class; ``patch.dict`` and
-    ``setitem`` are refused by the mapping they write. Writes to the
-    namespace by plain dict operations, undone by the same test, are outside
-    both; the session and per-test snapshots catch any that persist.
+    Attribute spellings go through the module's class; ``patch.dict``,
+    ``setitem`` and ``delitem`` are refused by the mapping they target. A
+    plain dict operation on the namespace that the same test undoes, and a
+    write through a mapping that delegates to it, are outside both; the
+    session and per-test snapshots catch any that persist. Installing twice
+    is a no-op, and `release_reexports` restores what this replaced.
     """
+    if _HELD:
+        return
     config_owners()  # computed before the class swap, from the real bindings
+    _HELD["module_class"] = type(ori.config)
     # A module's class may be swapped for a ModuleType subclass; pyright
     # does not model that, so the assignment goes through Any.
     cast(Any, ori.config).__class__ = _ReexportsHeld
     _hold_namespace_writers()
+
+
+def release_reexports() -> None:
+    """Restore what `hold_reexports` replaced, when the test session ends."""
+    if not _HELD:
+        return
+    from unittest import mock
+
+    from _pytest.monkeypatch import MonkeyPatch
+
+    cast(Any, ori.config).__class__ = _HELD["module_class"]
+    cast(Any, mock)._patch_dict._patch_dict = _HELD["apply"]
+    MonkeyPatch.setitem = _HELD["setitem"]  # type: ignore[method-assign]
+    MonkeyPatch.delitem = _HELD["delitem"]  # type: ignore[method-assign]
+    _HELD.clear()
 
 
 def bindings() -> dict[str, int]:
