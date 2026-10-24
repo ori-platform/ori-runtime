@@ -89,12 +89,61 @@ class _ReexportsHeld(types.ModuleType):
         super().__delattr__(name)
 
 
+def _namespace_refusal() -> str:
+    return (
+        f"{ori.config.__name__}'s namespace holds re-exports; writing it reaches "
+        "no caller. Patch each binding a caller reads, as config_owners lists "
+        "them, instead."
+    )
+
+
+def _hold_namespace_writers() -> None:
+    """Refuse the mapping writers on ``ori.config``'s namespace, by identity.
+
+    ``mock.patch.dict`` and ``MonkeyPatch.setitem`` write the mapping directly,
+    past the module's class, and a ``with`` block restores it before the test
+    ends. Whatever the target's spelling, the mapping each one is about to
+    write is compared with the namespace itself.
+    """
+    from unittest import mock
+
+    from _pytest.monkeypatch import MonkeyPatch
+
+    namespace = vars(ori.config)
+    apply = mock._patch_dict._patch_dict  # type: ignore[attr-defined]
+
+    def patch_dict(self: Any) -> Any:
+        result = apply(self)  # resolves a string target to its mapping first
+        if self.in_dict is namespace:
+            self._unpatch_dict()
+            raise AssertionError(_namespace_refusal())
+        return result
+
+    mock._patch_dict._patch_dict = patch_dict  # type: ignore[attr-defined]
+
+    setitem = MonkeyPatch.setitem
+
+    def guarded_setitem(self: MonkeyPatch, dic: Any, name: Any, value: Any) -> None:
+        if dic is namespace:
+            raise AssertionError(_namespace_refusal())
+        setitem(self, dic, name, value)
+
+    MonkeyPatch.setitem = guarded_setitem  # type: ignore[method-assign]
+
+
 def hold_reexports() -> None:
-    """Refuse every attribute rebinding of an ``ori.config`` re-export."""
+    """Refuse every rebinding of an ``ori.config`` re-export while tests run.
+
+    Attribute spellings go through the module's class; ``patch.dict`` and
+    ``setitem`` are refused by the mapping they write. Writes to the
+    namespace by plain dict operations, undone by the same test, are outside
+    both; the session and per-test snapshots catch any that persist.
+    """
     config_owners()  # computed before the class swap, from the real bindings
     # A module's class may be swapped for a ModuleType subclass; pyright
     # does not model that, so the assignment goes through Any.
     cast(Any, ori.config).__class__ = _ReexportsHeld
+    _hold_namespace_writers()
 
 
 def bindings() -> dict[str, int]:

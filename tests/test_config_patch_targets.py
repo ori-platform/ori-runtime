@@ -13,9 +13,10 @@ These tests drive that guard through each spelling of a patch.
 
 from __future__ import annotations
 
-import ast
 import importlib
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import pytest
@@ -98,11 +99,16 @@ def test_every_attribute_spelling_is_refused(
 def test_a_write_into_the_module_dict_is_found(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The one spelling that bypasses the class, caught when the test ends."""
+    """A plain dict write passes the class and the writer guards; the snapshot
+    catches it when it persists to the end of the test."""
     before = bindings()
-    monkeypatch.setitem(vars(ori.config), "_parse_actions", None)
-    problems = rebound(before)
-    monkeypatch.undo()
+    namespace: dict[str, Any] = ori.config.__dict__
+    original = namespace["_parse_actions"]
+    namespace["_parse_actions"] = None
+    try:
+        problems = rebound(before)
+    finally:
+        namespace["_parse_actions"] = original
     assert problems == [
         "ori.config._parse_actions is a re-export; rebinding it reaches no "
         "caller. Patch each binding a caller reads instead: "
@@ -119,148 +125,130 @@ def test_patching_the_owning_module_is_allowed(
 
 
 TESTS = Path(__file__).resolve().parent
+NAMESPACE_REFUSED = "namespace holds re-exports; writing it reaches no caller"
+cfg = ori.config
+root = importlib.import_module("ori")
 
 
-_PACKAGE_NAMESPACE = "ori.config.__dict__"
-#: The callables that write a mapping, and the keyword each takes it under.
-_DICT_WRITERS = {"dict": "in_dict", "setitem": "dic"}
+def _annotated() -> None:
+    ns: Mapping[str, object] = vars(cfg)
+    with mock.patch.dict(ns, {}):
+        pass
 
 
-def _is_package(node: ast.AST, aliases: set[str]) -> bool:
-    if isinstance(node, ast.Name):
-        return node.id in aliases
-    return (
-        isinstance(node, ast.Attribute)
-        and node.attr == "config"
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "ori"
-    )
+def _chained() -> None:
+    a = b = vars(cfg)
+    with mock.patch.dict(b, {}):
+        pass
+    del a
 
 
-def _is_package_dict(node: ast.AST, aliases: set[str], held: set[str]) -> bool:
-    """``ori.config``'s namespace in any form a file can name statically.
-
-    The string ``"ori.config.__dict__"``, ``ori.config.__dict__`` or
-    ``vars(ori.config)`` under any alias of the package, or a variable assigned
-    from one of those. A section module's own namespace is not the package's.
-    """
-    if isinstance(node, ast.Constant):
-        return node.value == _PACKAGE_NAMESPACE
-    if isinstance(node, ast.Name):
-        return node.id in held
-    if isinstance(node, ast.Attribute) and node.attr == "__dict__":
-        return _is_package(node.value, aliases)
-    return (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "vars"
-        and len(node.args) == 1
-        and _is_package(node.args[0], aliases)
-    )
+def _unpacked() -> None:
+    ns, _ = vars(cfg), None
+    with mock.patch.dict(ns, {}):
+        pass
 
 
-def _package_aliases(tree: ast.Module) -> set[str]:
-    aliases: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            aliases |= {
-                a.asname for a in node.names if a.name == "ori.config" and a.asname
-            }
-        elif isinstance(node, ast.ImportFrom) and node.module == "ori":
-            aliases |= {a.asname or a.name for a in node.names if a.name == "config"}
-    return aliases
+def _writer_alias_of_alias() -> None:
+    pd = mock.patch.dict
+    pd2 = pd
+    with pd2("ori.config.__dict__", {}):
+        pass
 
 
-def _writer(node: ast.Call, writers: dict[str, str]) -> str | None:
-    """The keyword the mapping goes under, if *node* calls a mapping writer."""
-    func = node.func
-    if isinstance(func, ast.Attribute) and func.attr in _DICT_WRITERS:
-        return _DICT_WRITERS[func.attr]
-    if isinstance(func, ast.Name):
-        return writers.get(func.id)
-    return None
+def _root_alias() -> None:
+    with mock.patch.dict(vars(root.config), {}):
+        pass
 
 
-def dict_patches(root: Path) -> list[str]:
-    """Writes into ``ori.config``'s namespace that bypass its module class.
+def _in_a_fixture_like_generator() -> None:
+    def held():
+        with mock.patch.dict("ori.config.__dict__", _parse_actions=None):
+            yield
 
-    ``patch.dict`` and ``setitem`` write the mapping directly, and a ``with``
-    block restores it before the test ends, so neither the class nor a
-    snapshot sees them. This scan covers every target it can name statically
-    (see `_is_package_dict`), passed positionally or by keyword, through an
-    alias of the writer too. A target computed at run time is outside it.
-    """
-    found = []
-    for path in sorted(root.rglob("*.py")):
-        if path == Path(__file__).resolve():
-            continue
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        aliases = _package_aliases(tree)
-        held: set[str] = set()
-        writers: dict[str, str] = {}
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Assign) and len(node.targets) == 1:
-                target = node.targets[0]
-                if not isinstance(target, ast.Name):
-                    continue
-                if _is_package_dict(node.value, aliases, held):
-                    held.add(target.id)
-                elif (
-                    isinstance(node.value, ast.Attribute)
-                    and node.value.attr in _DICT_WRITERS
-                ):
-                    writers[target.id] = _DICT_WRITERS[node.value.attr]
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            keyword = _writer(node, writers)
-            if keyword is None:
-                continue
-            candidates = list(node.args[:1]) + [
-                k.value for k in node.keywords if k.arg == keyword
-            ]
-            if any(_is_package_dict(c, aliases, held) for c in candidates):
-                found.append(f"{path.relative_to(root.parent)}:{node.lineno}")
-    return found
+    next(held())
 
 
-def test_no_test_patches_the_namespace_of_ori_config() -> None:
-    found = dict_patches(TESTS)
-    assert not found, (
-        "patch each binding a caller reads, as tests/config_layout.py lists "
-        "them, not ori.config's namespace: " + ", ".join(found)
-    )
+@pytest.mark.parametrize(
+    "write",
+    [
+        pytest.param(
+            lambda mp: mock.patch.dict(
+                "ori.config.__dict__", _parse_actions=None
+            ).start(),
+            id="string-target",
+        ),
+        pytest.param(
+            lambda mp: mock.patch.dict(in_dict="ori.config.__dict__").start(),
+            id="keyword-string",
+        ),
+        pytest.param(
+            lambda mp: mock.patch.dict(cfg.__dict__, {}).start(), id="attribute"
+        ),
+        pytest.param(lambda mp: _annotated(), id="annotated-assignment"),
+        pytest.param(lambda mp: _chained(), id="chained-assignment"),
+        pytest.param(lambda mp: _unpacked(), id="unpacked-assignment"),
+        pytest.param(lambda mp: _writer_alias_of_alias(), id="writer-alias-chain"),
+        pytest.param(lambda mp: _root_alias(), id="root-import-alias"),
+        pytest.param(lambda mp: _in_a_fixture_like_generator(), id="generator"),
+        pytest.param(
+            lambda mp: mp.setitem(vars(cfg), "_parse_actions", None),
+            id="setitem",
+        ),
+        pytest.param(
+            lambda mp: mp.setitem(dic=cfg.__dict__, name="x", value=1),
+            id="setitem-keyword",
+        ),
+    ],
+)
+def test_every_namespace_write_is_refused_by_identity(
+    monkeypatch: pytest.MonkeyPatch, write
+) -> None:
+    before = bindings()
+    try:
+        with pytest.raises(AssertionError, match=NAMESPACE_REFUSED):
+            write(monkeypatch)
+    finally:
+        mock.patch.stopall()
+    assert rebound(before) == []
+    assert "x" not in vars(ori.config)
 
 
-def test_the_namespace_scan_finds_each_spelling(tmp_path: Path) -> None:
-    """Restored ``with`` blocks in a body and a fixture, and every target form."""
-    (tmp_path / "test_x.py").write_text(
-        "import pytest\n"
-        "import ori.config\n"
-        "import ori.config as cfg\n"
-        "from ori import config as c2\n"
-        "from unittest import mock\n"
-        "from unittest.mock import patch\n"
-        "pd = mock.patch.dict\n"
-        "ns = vars(cfg)\n"
-        "@pytest.fixture\n"
-        "def held():\n"
-        "    with mock.patch.dict(ori.config.__dict__, _parse_actions=None):\n"
-        "        yield\n"
-        "def test(monkeypatch, held):\n"
-        "    with mock.patch.dict('ori.config.__dict__', _parse_actions=None):\n"
-        "        pass\n"
-        "    with patch.dict(in_dict='ori.config.__dict__', values={}):\n"
-        "        pass\n"
-        "    mock.patch.dict(vars(c2), {})\n"
-        "    pd(ns, {})\n"
-        "    monkeypatch.setitem(dic=cfg.__dict__, name='x', value=1)\n"
-        "    monkeypatch.setitem(ns, 'x', 1)\n"
-        "    mock.patch.dict(ori.config._device.__dict__, {})\n"
-        "    mock.patch.dict('ori.config._device.__dict__', {})\n"
-        "    monkeypatch.setitem(dict(), 'x', 1)\n"
-    )
-    assert len(dict_patches(tmp_path)) == 7, dict_patches(tmp_path)
+def _reassigned() -> None:
+    ns = vars(cfg)
+    ns = {}
+    with mock.patch.dict(ns, {"a": 1}):
+        pass
+
+
+def _shadowed(cfg: object) -> None:
+    with mock.patch.dict(vars(cfg), {"a": 1}):
+        pass
+
+
+@pytest.mark.parametrize(
+    "write",
+    [
+        pytest.param(lambda mp: _reassigned(), id="reassigned-to-a-dict"),
+        pytest.param(
+            lambda mp: _shadowed(importlib.import_module("ori.config._device")),
+            id="parameter-shadows-the-alias",
+        ),
+        pytest.param(
+            lambda mp: mock.patch.dict("ori.config._device.__dict__", {}).start(),
+            id="section-namespace",
+        ),
+        pytest.param(
+            lambda mp: mp.setitem(vars(cfg._device), "x", 1), id="section-setitem"
+        ),
+        pytest.param(lambda mp: mp.setitem({}, "x", 1), id="other-mapping"),
+    ],
+)
+def test_other_mappings_are_allowed(monkeypatch: pytest.MonkeyPatch, write) -> None:
+    try:
+        write(monkeypatch)
+    finally:
+        mock.patch.stopall()
 
 
 class _ReachedError(Exception):
