@@ -1651,7 +1651,7 @@ class TestCancellationHandling:
         await wait_until(started.is_set, what="the executor to start")
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await task
+            await asyncio.wait_for(task, timeout=30.0)
         await drained(d)
         store.log_action_for_event.assert_awaited_once()
         logged = store.log_action_for_event.await_args.args[0]
@@ -1712,7 +1712,7 @@ class TestCancellationHandling:
             await wait_until(started.is_set, what="the approved act to start")
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await task
+                await asyncio.wait_for(task, timeout=30.0)
         await drained(d)
         row = store.log_action_for_event.await_args.args[0]
         assert (row.approved, row.proposal_id) == (True, "AB12CD34")
@@ -1762,7 +1762,7 @@ class TestCancellationHandling:
             )
         )
         with pytest.raises(asyncio.CancelledError):
-            await outer[0]
+            await asyncio.wait_for(outer[0], timeout=30.0)
         await drained(d)
         assert store.log_action_for_event.await_args.args[0].executed is True
 
