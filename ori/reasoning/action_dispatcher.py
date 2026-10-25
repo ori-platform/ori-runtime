@@ -49,6 +49,7 @@ from ori.network.events import (
 )
 from ori.network.producer_time import NOT_REPORTED, UNKNOWN, read_producer_time
 from ori.policy.device_policy import DevicePolicy
+from ori.reasoning.action_authority import authority_snapshot_json
 from ori.reasoning.action_registry import (
     ACTION_REGISTRY,
     capability,
@@ -187,64 +188,6 @@ def _action_taken(
     if missing_executor:
         return NO_EXECUTOR
     return ""
-
-
-def _authority_snapshot_json(
-    action_result: ActionResult,
-    context: SkillContext,
-    *,
-    trigger_name: str,
-    binding_seq: int | None,
-) -> str | None:
-    """The licence this dispatch acted under, as canonical JSON, or None.
-
-    Built here because this is the only place that holds all of it at once: the
-    skill that declared the trigger, the trigger that matched, and the proposal
-    an operator answered. It is persisted with the action row so reconciliation
-    after a restart replays this decision rather than rebuilding one from
-    whatever is loaded then.
-
-    Only Tier C and Tier D rows reach the evidence chain, so only they carry a
-    snapshot. Returning None for the rest is not an omission: an action that
-    produces no `runtime_action` evidence has no authority object to carry.
-    """
-    tier = str(action_result.tier or "").upper()
-    if not tier_requires_attestation(tier):
-        return None
-
-    if tier == ActionTier.HARD_PHYSICAL:
-        proposal_id = str(action_result.proposal_id or "")
-        # Only an approval licenses a Tier C action. A refused, unanswered or
-        # undelivered proposal has no licence kind, and the attestor refuses it.
-        if not proposal_id or action_result.approved is not True:
-            return None
-        authority: dict[str, Any] = {
-            "kind": "tier_c_approval",
-            "proposal_id": proposal_id,
-        }
-    else:
-        skill = getattr(context, "skill", None)
-        skill_name = str(getattr(skill, "name", "") or "")
-        skill_version = str(getattr(skill, "version", "") or "")
-        if not (skill_name and skill_version and trigger_name):
-            return None
-        # `tier_d_legacy_skill` is the truthful kind while a packaged skill's
-        # declaration is what licenses the trip. It is not a protection claim,
-        # and a verifier is required not to read it as one; the profile and
-        # qualification kinds become emittable when the safety registry is the
-        # Tier D path.
-        authority = {
-            "kind": "tier_d_legacy_skill",
-            "skill_name": skill_name,
-            "skill_version": skill_version,
-            "trigger_name": trigger_name,
-        }
-        if binding_seq is not None:
-            # Recorded on the row rather than in the authority: no defined kind
-            # pairs a binding sequence with a skill declaration, and inventing
-            # a field here would be a grammar this runtime does not own.
-            pass
-    return json.dumps(authority, sort_keys=True, separators=(",", ":"))
 
 
 def _generate_proposal_id(length: int = 8) -> str:
@@ -387,6 +330,33 @@ def _cancelled_here(exc: BaseException) -> bool:
         return False
     task = asyncio.current_task()
     return task is None or task.cancelling() > 0
+
+
+def _interrupted_result(
+    exc: BaseException,
+    action: str,
+    tier: str,
+    inner: asyncio.Task[ActionResult] | None,
+) -> ActionResult:
+    """What an interrupted dispatch records: the act that ran, or none.
+
+    A Tier D executor that finished before the interruption reached its caller
+    reports its own result; otherwise an exception may carry the act it ran.
+    """
+    if inner is not None and inner.done() and not inner.cancelled():
+        if inner.exception() is None:
+            return inner.result()
+    acted = getattr(exc, "ori_acted", None)
+    if isinstance(acted, ActionResult):
+        return acted
+    return ActionResult(
+        action_name=action,
+        tier=tier,
+        executed=False,
+        approved=None,
+        action_taken="",
+        timestamp=now_ms(),
+    )
 
 
 @dataclass
@@ -1268,7 +1238,16 @@ class ActionDispatcher:
         record: asyncio.Future[ActionResult] | None,
         meta: _RecordMeta,
     ) -> ActionResult:
-        """Admit *action* against its resource, run it, and record the attempt."""
+        """Admit *action* against its resource, run it, and record the attempt.
+
+        A cancellation of the calling task during the attempt is re-raised once
+        it is recorded, unless a Tier D executor is still driving.
+        """
+        # The task's own cancellation count, not the exception, decides: a
+        # workflow may consume one to finish its records, and an executor may
+        # raise CancelledError of its own accord without the task being cancelled.
+        running = asyncio.current_task()
+        baseline = running.cancelling() if running is not None else 0
         # Resource admission. Contention is decided on the resource an action
         # drives, never on its name: two names can be one act, and one name can
         # be two acts on different zones.
@@ -1481,19 +1460,7 @@ class ActionDispatcher:
                     action,
                     tier,
                 )
-            acted = getattr(exc, "ori_acted", None)
-            action_result = (
-                acted
-                if isinstance(acted, ActionResult)
-                else ActionResult(
-                    action_name=action,
-                    tier=tier,
-                    executed=False,
-                    approved=None,
-                    action_taken="",
-                    timestamp=now_ms(),
-                )
-            )
+            action_result = _interrupted_result(exc, action, tier, inner_task)
             if (
                 tier == ActionTier.SAFETY_CRITICAL
                 and self._status_indicator is not None
@@ -1516,36 +1483,77 @@ class ActionDispatcher:
                 await gate.retire(gate_token, _proposed_act_executed(action_result))
 
         if record is not None and inner_task is not None and not inner_task.done():
-            # The executor is still driving, so what this dispatch can say now
-            # — that it was interrupted — is not what happened. The row waits
-            # for the executor and records what it reports.
-            self._held_by_executor.add(id(record))
-            interrupted = action_result
-
-            def settle(finished: asyncio.Task[ActionResult]) -> None:
-                self._held_by_executor.discard(id(record))
-                if record.done():
-                    return
-                settled = interrupted
-                if not finished.cancelled() and finished.exception() is None:
-                    settled = finished.result()
-                _stamp_correlation_id(settled, context)
-                record.set_result(settled)
-
-            inner_task.add_done_callback(settle)
-            return action_result
+            self._record_when_executor_reports(
+                record, inner_task, action_result, context
+            )
+            return action_result  # still driving: answered, never re-raised
 
         await self._record(action_result, context, record)
+        if running is not None and running.cancelling() > baseline:
+            raise asyncio.CancelledError  # recorded, then handed back to the canceller
         return action_result
+
+    def _record_when_executor_reports(
+        self,
+        record: asyncio.Future[ActionResult],
+        inner_task: asyncio.Task[ActionResult],
+        interrupted: ActionResult,
+        context: SkillContext,
+    ) -> None:
+        """Hold the row for a still-driving executor and record what it reports.
+
+        What the dispatch can say now -- that it was interrupted -- is not what
+        happened, so the row waits for the executor.
+        """
+        self._held_by_executor.add(id(record))
+
+        def settle(finished: asyncio.Task[ActionResult]) -> None:
+            self._held_by_executor.discard(id(record))
+            if record.done():
+                return
+            settled = interrupted
+            if not finished.cancelled() and finished.exception() is None:
+                settled = finished.result()
+            _stamp_correlation_id(settled, context)
+            record.set_result(settled)
+
+        inner_task.add_done_callback(settle)
+
+    def _report_missing_executor(self, action: str, tier: str) -> None:
+        if tier == ActionTier.SAFETY_CRITICAL:
+            logger.critical(
+                "ActionDispatcher: Tier D executor is not registered for action=%r. "
+                "No physical safety action was taken.",
+                action,
+            )
+        elif capability(action) is not None:
+            # A governed action names something the runtime is supposed to be
+            # able to do. Reaching dispatch without an executor is a capability
+            # the deployment advertises and does not have, which DEBUG is the
+            # wrong level to say.
+            logger.error(
+                "ActionDispatcher: no executor registered for governed "
+                "action=%r (tier=%s) — nothing was executed",
+                action,
+                tier,
+            )
+        elif self._log_action_decisions:
+            logger.info(
+                "ActionDispatcher: no executor registered for action=%r — "
+                "intent recorded, nothing executed",
+                action,
+            )
 
     def _retire_when_settled(self, token: Any, finished: Any) -> None:
         """Clear an uncertain command once its shielded executor finally reports."""
         if self._resource_gate is None:
             return
-        try:
-            accepted = _proposed_act_executed(finished.result())
-        except Exception:
-            accepted = False
+        # A cancelled executor reports nothing, which is not acceptance.
+        accepted = (
+            not finished.cancelled()
+            and finished.exception() is None
+            and _proposed_act_executed(finished.result())
+        )
         task = asyncio.ensure_future(
             self._resource_gate.resolve_uncertain(token, accepted)
         )
@@ -1704,29 +1712,7 @@ class ActionDispatcher:
                     executed = True
             else:
                 missing_executor = True
-                if tier == ActionTier.SAFETY_CRITICAL:
-                    logger.critical(
-                        "ActionDispatcher: Tier D executor is not registered for action=%r. "
-                        "No physical safety action was taken.",
-                        action,
-                    )
-                elif capability(action) is not None:
-                    # A governed action names something the runtime is supposed
-                    # to be able to do. Reaching dispatch without an executor is
-                    # a capability the deployment advertises and does not have,
-                    # which DEBUG is the wrong level to say.
-                    logger.error(
-                        "ActionDispatcher: no executor registered for governed "
-                        "action=%r (tier=%s) — nothing was executed",
-                        action,
-                        tier,
-                    )
-                elif self._log_action_decisions:
-                    logger.info(
-                        "ActionDispatcher: no executor registered for action=%r — "
-                        "intent recorded, nothing executed",
-                        action,
-                    )
+                self._report_missing_executor(action, tier)
         except (Exception, asyncio.CancelledError) as exc:
             if tier == ActionTier.SAFETY_CRITICAL:
                 logger.critical(
@@ -4737,8 +4723,8 @@ class ActionDispatcher:
             # runtime_action and is never a candidate for attestation.
             attest = False
         authority_json = (
-            _authority_snapshot_json(
-                action_result, context, trigger_name=matched_trigger, binding_seq=None
+            authority_snapshot_json(
+                action_result, context, trigger_name=matched_trigger
             )
             if record_kind == "dispatch"
             else None

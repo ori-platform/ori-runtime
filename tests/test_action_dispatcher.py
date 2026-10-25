@@ -1632,6 +1632,178 @@ class TestCancellationHandling:
 
         assert executor_ran.is_set(), "Shielded executor was abandoned"
 
+    async def test_a_cancelled_dispatch_is_recorded_then_propagates(self):
+        """Whoever cancels a dispatch learns it was honoured, and the attempt is
+        still written."""
+        store = _mock_store()
+        d = ActionDispatcher(state_store=store)
+        started = asyncio.Event()
+
+        async def _slow(action, ctx):
+            started.set()
+            await asyncio.sleep(3600)
+
+        d.register_executor("alert_whatsapp", _slow)
+        ctx = SkillContext(skill=FakeSkill(), event=_event(), state_store=None)
+        task = asyncio.create_task(
+            d.dispatch("alert_whatsapp", ActionTier.INFORMATIONAL, ctx, _result())
+        )
+        await wait_until(started.is_set, what="the executor to start")
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await drained(d)
+        store.log_action_for_event.assert_awaited_once()
+        logged = store.log_action_for_event.await_args.args[0]
+        assert logged.executed is False
+
+    async def test_a_tier_d_dispatch_still_driving_answers_rather_than_raises(self):
+        d = ActionDispatcher()
+        started = asyncio.Event()
+
+        async def _slow_trip(action, ctx):
+            started.set()
+            await asyncio.sleep(0.1)
+
+        d.register_executor("trip_relay", _slow_trip)
+        task = asyncio.create_task(
+            d.dispatch("trip_relay", ActionTier.SAFETY_CRITICAL, _context(), _result())
+        )
+        await wait_until(started.is_set, what="the Tier D executor to start")
+        task.cancel()
+        assert isinstance(await task, ActionResult)
+        await settle(d.get_inflight_tier_d_tasks(), what="the shielded Tier D act")
+
+    async def test_an_approval_survives_a_cancel_while_the_approved_act_runs(self):
+        """The workflow finishes its records before the cancellation is handed
+        back: the row keeps the approval and its proposal, and the decision is
+        logged."""
+        store = _mock_store()
+        d = ActionDispatcher(state_store=store)
+        started = asyncio.Event()
+
+        async def _slow(action, ctx):
+            started.set()
+            await asyncio.sleep(3600)
+            return True
+
+        d.register_executor("terminate_process", _slow)
+        d._alert_sender = AsyncMock()
+        d._config = {"operator_contact": "+234800000000"}
+        ctx = SkillContext(skill=FakeSkill(), event=_event(), state_store=None)
+        with (
+            patch(
+                "ori.reasoning.action_dispatcher._generate_proposal_id",
+                return_value="AB12CD34",
+            ),
+            patch.object(
+                d, "_listen_for_response", new=AsyncMock(return_value="YES-AB12CD34")
+            ),
+        ):
+            task = asyncio.create_task(
+                d.dispatch(
+                    "terminate_process",
+                    ActionTier.HARD_PHYSICAL,
+                    ctx,
+                    _result(),
+                    approval_timeout_seconds=10,
+                )
+            )
+            await wait_until(started.is_set, what="the approved act to start")
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        await drained(d)
+        row = store.log_action_for_event.await_args.args[0]
+        assert (row.approved, row.proposal_id) == (True, "AB12CD34")
+        store.log_tier_c_decision.assert_awaited()
+
+    async def test_a_cancelled_tier_d_executor_still_escalates(self):
+        d = ActionDispatcher()
+        emergency = AsyncMock()
+        d._emergency_sms = emergency  # type: ignore[method-assign]
+        started = asyncio.Event()
+
+        async def _slow_trip(action, ctx):
+            started.set()
+            await asyncio.sleep(3600)
+
+        d.register_executor("trip_relay", _slow_trip)
+        task = asyncio.create_task(
+            d.dispatch("trip_relay", ActionTier.SAFETY_CRITICAL, _context(), _result())
+        )
+        await wait_until(started.is_set, what="the Tier D executor to start")
+        for inner in d.get_inflight_tier_d_tasks():
+            inner.cancel()
+        result = await task
+        assert result.executed is False
+        await wait_until(
+            lambda: emergency.await_count == 1, what="the emergency notice"
+        )
+
+    async def test_a_tier_d_act_that_finished_is_recorded_as_it_ran(self):
+        """A cancellation that reaches the caller after the shielded act finished
+        is handed back, and the row records the act that ran."""
+        store = _mock_store()
+        d = ActionDispatcher(state_store=store)
+        d.register_executor("trip_relay", AsyncMock(return_value=True))
+        outer: list[asyncio.Task[Any]] = []
+        track = d._track_tier_d_task
+
+        def _track(task: asyncio.Task[Any]) -> None:
+            track(task)
+            task.add_done_callback(lambda _done: outer[0].cancel())
+
+        d._track_tier_d_task = _track  # type: ignore[method-assign]
+        ctx = SkillContext(skill=FakeSkill(), event=_event(), state_store=None)
+        outer.append(
+            asyncio.create_task(
+                d.dispatch("trip_relay", ActionTier.SAFETY_CRITICAL, ctx, _result())
+            )
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await outer[0]
+        await drained(d)
+        assert store.log_action_for_event.await_args.args[0].executed is True
+
+    async def test_a_cancellation_from_before_the_dispatch_is_not_handed_back(self):
+        """Only a cancellation during this attempt is re-raised: a caller that
+        consumed an earlier one gets its result."""
+        d = ActionDispatcher()
+        d.register_executor("alert_whatsapp", AsyncMock(return_value=True))
+
+        async def _caller() -> ActionResult:
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.sleep(3600)
+            return await d.dispatch(
+                "alert_whatsapp", ActionTier.INFORMATIONAL, _context(), _result()
+            )
+
+        task = asyncio.create_task(_caller())
+        await asyncio.sleep(0)
+        task.cancel()
+        result = await task
+        assert result.executed is True
+
+    async def test_a_tier_d_act_cancelled_before_it_ran_is_still_recorded(self):
+        store = _mock_store()
+        d = ActionDispatcher(state_store=store)
+        d.register_executor("trip_relay", AsyncMock(return_value=True))
+        track = d._track_tier_d_task
+
+        def _track(task: asyncio.Task[Any]) -> None:
+            track(task)
+            task.cancel()  # before its first step, as a loop-wide cancel can
+
+        d._track_tier_d_task = _track  # type: ignore[method-assign]
+        ctx = SkillContext(skill=FakeSkill(), event=_event(), state_store=None)
+        result = await d.dispatch(
+            "trip_relay", ActionTier.SAFETY_CRITICAL, ctx, _result()
+        )
+        await drained(d)
+        assert result.executed is False
+        assert store.log_action_for_event.await_args.args[0].executed is False
+
     async def test_cancelled_error_on_non_tier_d_logs_at_exception_not_critical(
         self, caplog
     ):

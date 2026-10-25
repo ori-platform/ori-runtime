@@ -407,17 +407,21 @@ class SafetyRegistry:
         done, _ = await asyncio.wait(
             {intent_task}, timeout=TRIP_INTENT_APPEND_DEADLINE_MS / 1000
         )
-        if intent_task in done and intent_task.exception() is not None:
+        if intent_task in done and (
+            intent_task.cancelled() or intent_task.exception() is not None
+        ):
+            # A cancelled append is a failed one; reading its exception would
+            # raise here and end the attempt before the command it never gates.
             logger.error(
                 "[safety] trip intent append failed zone=%s: %s",
                 pair[0],
-                intent_task.exception(),
+                "cancelled" if intent_task.cancelled() else intent_task.exception(),
             )
         elif intent_task not in done:
             logger.error(
                 "[safety] trip intent append missed the deadline zone=%s", pair[0]
             )
-            intent_task.add_done_callback(lambda t: t.exception())
+            intent_task.add_done_callback(lambda t: t.cancelled() or t.exception())
         machine.begin_driver_attempt()
         try:
             accepted = await self._executor.execute(

@@ -363,6 +363,24 @@ release is cut.
 
 ## Fixed
 
+- A cancelled dispatch now hands the cancellation back to whoever cancelled
+  it, once the attempt is recorded. Before, the dispatcher recorded the
+  attempt and returned normally, so a shutdown or a superseding task could not
+  tell it had been honoured. Recording is unchanged: an approval workflow
+  still finishes its decision record and the act's row, approval and proposal
+  included, and a failed Tier D act still sends its emergency notice, before
+  the cancellation is handed back. A Tier D act whose shielded executor is
+  still driving still answers with its uncertain result, and one that had
+  finished when the cancellation arrived is now recorded as it ran rather
+  than as not executed. Three handlers of the same kind no longer misread a
+  cancellation: a Tier D executor task that ends cancelled, as a loop-wide
+  cancel can leave one before it runs, while the resource gate holds its
+  command as uncertain now releases it as not accepted (it stayed uncertain
+  until shutdown, refusing the opposite command), a cancelled safety-trip
+  intent append is logged as a failed append and the trip command still
+  proceeds, and the deadline callback for that append no longer logs a
+  cancellation as an error.
+
 - Every action-log row carries a `record_key`. A refusal for an unrecognised
   tier, a relay action suppressed by policy, a Tier D action from a skill
   without first-party provenance, and an action below its minimum tier were

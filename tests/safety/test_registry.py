@@ -3,6 +3,7 @@
 """The registry orchestration: activation to actuation, with a fake seam."""
 
 import asyncio
+import logging
 from dataclasses import replace
 from pathlib import Path
 
@@ -297,6 +298,52 @@ async def test_intent_append_failure_never_delays_the_command(
     assert pair_view["record"] == "pending"
     for task in asyncio.all_tasks() - before:
         task.cancel()
+
+
+async def test_a_cancelled_intent_append_never_stops_the_command(
+    store: StateStore,
+) -> None:
+    """An append that ends cancelled, as a loop-wide cancel would leave it, is
+    a failed append: the attempt reads it as one and still commands."""
+
+    class CancelledJournal(TripJournal):
+        async def append_intent(self, *args, **kwargs) -> None:
+            raise asyncio.CancelledError
+
+    commander = FakeCommander()
+    registry = SafetyRegistry(
+        RATIFIED, (zone(),), CancelledJournal(store), commander, binding_seq=4
+    )
+    await registry.start()
+    decisions = await asyncio.wait_for(
+        registry.observe_reading("main-distribution-current", 25.0, "ampere", 1.0),
+        timeout=10.0,
+    )
+    assert [d.tripped for d in decisions] == [True]
+    assert commander.outcome_calls == [("main-distribution", "open_protected_circuit")]
+
+
+async def test_a_late_intent_cancelled_at_teardown_logs_no_callback_error(
+    store: StateStore, caplog: pytest.LogCaptureFixture
+) -> None:
+    class HangingJournal(TripJournal):
+        async def append_intent(self, *args, **kwargs) -> None:
+            await asyncio.sleep(3600)
+
+    registry = SafetyRegistry(
+        RATIFIED, (zone(),), HangingJournal(store), FakeCommander(), binding_seq=4
+    )
+    await registry.start()
+    await asyncio.wait_for(
+        registry.observe_reading("main-distribution-current", 25.0, "ampere", 1.0),
+        timeout=10.0,
+    )
+    (intent,) = registry._unsettled_intents.values()
+    with caplog.at_level(logging.ERROR, logger="asyncio"):
+        intent.cancel()
+        await asyncio.gather(intent, return_exceptions=True)
+        await asyncio.sleep(0)
+    assert "Exception in callback" not in caplog.text
 
 
 async def test_record_write_failure_is_recovered_by_persistence_alone(

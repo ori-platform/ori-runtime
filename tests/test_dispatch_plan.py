@@ -1407,6 +1407,76 @@ class TestACancelledTripDoesNotFreeTheResource:
         assert opposing.admission == Admission.REFUSED
         assert opposing.reason == OPPOSING_COMMAND_UNCERTAIN
 
+    async def test_an_executor_cancelled_before_it_ran_releases_the_uncertainty(
+        self, caplog
+    ):
+        """A loop-wide cancel can end the shielded executor before its first step.
+        It reports nothing, which is not acceptance, and the gate is told so
+        rather than left uncertain for the life of the process."""
+        import logging
+
+        from ori.network.events import ReasoningResult
+        from ori.reasoning.elevator import SkillContext
+
+        gate = ResourceGate()
+        dispatcher = ActionDispatcher(config={"relay_enabled": True})
+        dispatcher.bind_resource_gate(gate, BOUND)
+        dispatcher.register_executor("trip_relay", AsyncMock(return_value=True))
+        outer: list[asyncio.Task[Any]] = []
+        track = dispatcher._track_tier_d_task
+
+        def _track(task: asyncio.Task[Any]) -> None:
+            track(task)
+            task.cancel()  # before its first step, with the caller, as at teardown
+            outer[0].cancel()
+
+        dispatcher._track_tier_d_task = _track  # type: ignore[method-assign]
+        context = SkillContext(
+            skill=FakeSkill(triggers=[], actions={}),
+            event=_event(),
+            state_store=None,
+            trigger_name="t",
+        )
+        result = ReasoningResult(
+            text="", tier="rule", model="m", tokens_used=0, latency_ms=0
+        )
+        with caplog.at_level(logging.ERROR, logger="asyncio"):
+            outer.append(
+                asyncio.create_task(
+                    dispatcher.dispatch(
+                        action="trip_relay", tier="D", context=context, result=result
+                    )
+                )
+            )
+            await asyncio.gather(outer[0], return_exceptions=True)
+            await wait_until(
+                lambda: gate.state_of(ZONE) != HolderState.UNCERTAIN,
+                what="the gate to resolve the cancelled command",
+            )
+        assert "Exception in callback" not in caplog.text
+
+    async def test_an_executor_that_failed_settles_as_not_accepted(self):
+        """However the shielded executor ended, cancelled or raising, the gate
+        is told the command was not accepted."""
+        resolved: list[tuple[object, bool]] = []
+
+        class _Gate:
+            async def resolve_uncertain(self, token: object, accepted: bool) -> None:
+                resolved.append((token, accepted))
+
+        dispatcher = ActionDispatcher()
+        dispatcher._resource_gate = _Gate()  # type: ignore[assignment]
+        loop = asyncio.get_running_loop()
+        failed: asyncio.Future[object] = loop.create_future()
+        failed.set_exception(RuntimeError("driver fault"))
+        cancelled: asyncio.Future[object] = loop.create_future()
+        cancelled.cancel()
+
+        dispatcher._retire_when_settled("raised", failed)
+        dispatcher._retire_when_settled("cancelled", cancelled)
+        await quiesce(what="the gate's resolutions")
+        assert sorted(resolved) == [("cancelled", False), ("raised", False)]
+
     async def test_two_opposing_tier_d_outcomes_outrank_the_uncertainty(self):
         """Both are true; the safety conflict is the one that must be reported.
 
