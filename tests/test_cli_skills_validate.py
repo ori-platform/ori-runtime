@@ -9,8 +9,8 @@ import pytest
 
 from ori.cli import EXIT_FAILED, EXIT_OK, EXIT_UNUSABLE, main
 from ori.skills._manifest import (
-    _ACTION_ALLOWED_KEYS,
-    _TRIGGER_ALLOWED_KEYS,
+    ACTION_ALLOWED_KEYS,
+    TRIGGER_ALLOWED_KEYS,
 )
 
 # ---------------------------------------------------------------------------
@@ -26,8 +26,8 @@ def _a_key_outside(allowed: frozenset[str]) -> str:
     return candidate
 
 
-_UNKNOWN_TRIGGER_KEY = _a_key_outside(_TRIGGER_ALLOWED_KEYS)
-_UNKNOWN_ACTION_KEY = _a_key_outside(_ACTION_ALLOWED_KEYS)
+_UNKNOWN_TRIGGER_KEY = _a_key_outside(TRIGGER_ALLOWED_KEYS)
+_UNKNOWN_ACTION_KEY = _a_key_outside(ACTION_ALLOWED_KEYS)
 
 
 def _write_valid_skill(skill_dir: Path, name: str = "my-skill") -> None:

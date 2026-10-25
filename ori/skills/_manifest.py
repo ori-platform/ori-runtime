@@ -12,13 +12,11 @@ from typing import Any
 
 import yaml
 
-from ori.config import MAX_SKILL_NAME_LENGTH, SKILL_NAME_RE
-
 # Every part of the loader logs as it did before the split, under one name an
 # operator's logging configuration may already select.
 logger = logging.getLogger("ori.skills.loader")
 
-_TRIGGER_ALLOWED_KEYS = frozenset(
+TRIGGER_ALLOWED_KEYS = frozenset(
     {
         "name",
         "condition",
@@ -33,23 +31,23 @@ _TRIGGER_ALLOWED_KEYS = frozenset(
     }
 )
 
-_ACTION_ALLOWED_KEYS = frozenset(
+ACTION_ALLOWED_KEYS = frozenset(
     {
         "name",
         "tier",
     }
 )
 
-_VALID_TIERS = frozenset({"A", "B", "C", "D"})
+VALID_TIERS = frozenset({"A", "B", "C", "D"})
 
 
-_TRIGGER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*\Z")
-_HISTORY_PLACEHOLDER_PATTERN = re.compile(r"\{history\.[^{}]+\}")
-_MAX_HISTORY_PLACEHOLDERS = 16
-_BUNDLED_SIGNATURE_SENTINEL = "bundled"
+TRIGGER_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*\Z")
+HISTORY_PLACEHOLDER_PATTERN = re.compile(r"\{history\.[^{}]+\}")
+MAX_HISTORY_PLACEHOLDERS = 16
+BUNDLED_SIGNATURE_SENTINEL = "bundled"
 # Generous for a manifest — the largest bundled skill.yaml is a few KiB.
 # This bounds resource use before trust is established, not authorship.
-_MAX_MANIFEST_BYTES = 1 << 20
+MAX_MANIFEST_BYTES = 1 << 20
 
 # ── Workload budgets ─────────────────────────────────────────────────────────
 #
@@ -79,34 +77,31 @@ _MAX_MANIFEST_BYTES = 1 << 20
 # concurrent tasks, so a skill with few handlers on a fast sensor can cost more
 # than a larger quiet one. Raising a cap requires event-loop benchmarking on the
 # supported deployment targets, not an inventory measurement.
-_MAX_SKILLS_PER_LOAD = 64
-_MAX_TRIGGERS_PER_SKILL = 64
-_MAX_SENSORS_PER_SKILL = 32
-_MAX_SUBSCRIPTIONS_PER_SKILL = 256
-_MAX_ACTIONS_AVAILABLE = 64
+MAX_SKILLS_PER_LOAD = 64
+MAX_TRIGGERS_PER_SKILL = 64
+MAX_SENSORS_PER_SKILL = 32
+MAX_SUBSCRIPTIONS_PER_SKILL = 256
+MAX_ACTIONS_AVAILABLE = 64
 # Actions dispatched when one trigger fires. The elevator iterates this list
 # and dispatches every entry, so it is execution work, not declaration size.
 # The longest list in any packaged skill is 4.
-_MAX_ACTIONS_PER_TRIGGER = 16
+MAX_ACTIONS_PER_TRIGGER = 16
 # Total default-action references across one skill; the packaged maximum is 20.
-_MAX_TOTAL_DEFAULT_REFERENCES = 256
-_MAX_PROMPTS_PER_SKILL = 64
-_MAX_CONFIG_ENTRIES = 256
+MAX_TOTAL_DEFAULT_REFERENCES = 256
+MAX_PROMPTS_PER_SKILL = 64
+MAX_CONFIG_ENTRIES = 256
 # Cumulative across a whole load: individually legal skills must not add up to
 # an illegal total. Without this, the per-skill caps are a per-file courtesy.
 MAX_TOTAL_SUBSCRIPTIONS = 1024
-_MAX_TOTAL_SUBSCRIPTIONS = MAX_TOTAL_SUBSCRIPTIONS
 # Directory entries examined during discovery. Bounds the walk itself, so a
 # directory padded with non-skill entries cannot force an unbounded scan.
-_MAX_DIRECTORY_ENTRIES = 4096
+MAX_DIRECTORY_ENTRIES = 4096
 
 # Identity fields appear in logs, operator alerts and audit records, so they are
 # bounded and stripped of control characters — a name carrying an escape
 # sequence can rewrite what an operator sees a decision attributed to.
-_MAX_NAME_LENGTH = MAX_SKILL_NAME_LENGTH
-_MAX_AUTHOR_LENGTH = 128
-_MAX_VERSION_LENGTH = 32
-_SKILL_NAME_RE = SKILL_NAME_RE
+MAX_AUTHOR_LENGTH = 128
+MAX_VERSION_LENGTH = 32
 
 
 # ── Exceptions ────────────────────────────────────────────────────────────────
@@ -117,7 +112,7 @@ class SkillValidationError(Exception):
 
 
 @dataclass(frozen=True)
-class _Selected:
+class SelectedSkill:
     """One ``skills:`` entry as resolution decided it, read by everything after."""
 
     name: str
@@ -130,7 +125,7 @@ class SkillSelectionError(Exception):
     """Raised when a deployment's ``skills:`` list names a skill that cannot run."""
 
 
-def _display_unsafe_character(value: str) -> str | None:
+def display_unsafe_character(value: str) -> str | None:
     """Describe the first character that could misrepresent *value*, if any.
 
     ASCII C0/DEL was not enough. Unicode format characters (category ``Cf``)
@@ -156,7 +151,7 @@ def _display_unsafe_character(value: str) -> str | None:
     return None
 
 
-def _unique_sensor_types(sensors_required: list[dict[str, Any]]) -> list[str]:
+def unique_sensor_types(sensors_required: list[dict[str, Any]]) -> list[str]:
     """Distinct sensor types a skill subscribes to, in declaration order.
 
     The single definition used by both registration and cost accounting. When
@@ -177,7 +172,7 @@ def _unique_sensor_types(sensors_required: list[dict[str, Any]]) -> list[str]:
     return seen or ["*"]
 
 
-class _UniqueStringKeySafeLoader(yaml.SafeLoader):
+class UniqueStringKeySafeLoader(yaml.SafeLoader):
     """Safe YAML loader with bounded structure and no aliases.
 
     The byte cap in :meth:`SkillLoader._read_manifest_bytes` bounds the file on
@@ -252,7 +247,7 @@ class _UniqueStringKeySafeLoader(yaml.SafeLoader):
 
 
 def _construct_unique_string_mapping(
-    loader: _UniqueStringKeySafeLoader,
+    loader: UniqueStringKeySafeLoader,
     node: yaml.MappingNode,
     deep: bool = False,
 ) -> dict[str, Any]:
@@ -278,7 +273,7 @@ def _construct_unique_string_mapping(
     return mapping
 
 
-_UniqueStringKeySafeLoader.add_constructor(
+UniqueStringKeySafeLoader.add_constructor(
     yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
     _construct_unique_string_mapping,
 )

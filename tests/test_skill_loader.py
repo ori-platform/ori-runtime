@@ -28,7 +28,7 @@ from cryptography.hazmat.primitives.serialization import (
 
 from ori.network.event_bus import EventBus
 from ori.network.events import OriEvent, SensorReading
-from ori.skills._manifest import _ACTION_ALLOWED_KEYS, _TRIGGER_ALLOWED_KEYS
+from ori.skills._manifest import ACTION_ALLOWED_KEYS, TRIGGER_ALLOWED_KEYS
 from ori.skills._provenance import _source_checkout
 from ori.skills._registration import _CooldownTracker
 from ori.skills.loader import (
@@ -492,7 +492,7 @@ class TestLoadOne:
 
         patch_skill_loader(
             monkeypatch,
-            "_HUB_ROOT_PUBLIC_KEY_B64",
+            "HUB_ROOT_PUBLIC_KEY_B64",
             public_key_b64,
         )
         loader = _first_party_loader()
@@ -516,7 +516,7 @@ class TestLoadOne:
 
         patch_skill_loader(
             monkeypatch,
-            "_HUB_ROOT_PUBLIC_KEY_B64",
+            "HUB_ROOT_PUBLIC_KEY_B64",
             public_key_b64,
         )
         loader = _first_party_loader()
@@ -533,7 +533,7 @@ class TestLoadOne:
         _write_skill_yaml_mapping(skill_dir, raw)
         patch_skill_loader(
             monkeypatch,
-            "_HUB_ROOT_PUBLIC_KEY_B64",
+            "HUB_ROOT_PUBLIC_KEY_B64",
             _A_WELL_FORMED_ANCHOR,
         )
         loader = _first_party_loader()
@@ -551,7 +551,7 @@ class TestLoadOne:
         _write_skill_yaml_mapping(skill_dir, raw)
         patch_skill_loader(
             monkeypatch,
-            "_HUB_ROOT_PUBLIC_KEY_B64",
+            "HUB_ROOT_PUBLIC_KEY_B64",
             _A_WELL_FORMED_ANCHOR,
         )
         loader = _first_party_loader()
@@ -571,7 +571,7 @@ class TestLoadOne:
         _write_skill_yaml_mapping(skill_dir, raw)
         patch_skill_loader(
             monkeypatch,
-            "_HUB_ROOT_PUBLIC_KEY_B64",
+            "HUB_ROOT_PUBLIC_KEY_B64",
             _A_WELL_FORMED_ANCHOR,
         )
         loader = _first_party_loader()
@@ -599,7 +599,7 @@ class TestLoadOne:
 
         patch_skill_loader(
             monkeypatch,
-            "_HUB_ROOT_PUBLIC_KEY_B64",
+            "HUB_ROOT_PUBLIC_KEY_B64",
             "PENDING_REPLACE_AT_HUB_LAUNCH",
         )
         monkeypatch.setenv("ORI_HUB_ROOT_PUBLIC_KEY_B64", public_key_b64)
@@ -1881,7 +1881,7 @@ class TestLoadSelected:
         packaged = loader.load_selected([("pc-system-health", "")], str(tmp_path))
         patch_skill_loader(
             monkeypatch,
-            "_MAX_TOTAL_SUBSCRIPTIONS",
+            "MAX_TOTAL_SUBSCRIPTIONS",
             loader._subscription_cost(packaged[0]),
         )
         _write_skill_yaml(tmp_path / "community", _minimal_yaml(name="community"))
@@ -2449,13 +2449,13 @@ def _a_key_outside(allowed: frozenset[str]) -> str:
 @pytest.mark.parametrize(
     "bad_key",
     [
-        _a_key_outside(_TRIGGER_ALLOWED_KEYS),
+        _a_key_outside(TRIGGER_ALLOWED_KEYS),
         "Requires_Approval",  # capital-R typo from the issue
         "requiresApproval",  # camelCase typo from the issue
     ],
 )
 def test_rejects_unknown_keys_in_trigger(tmp_path: Path, bad_key: str) -> None:
-    """Loader must refuse any key not in _TRIGGER_ALLOWED_KEYS."""
+    """Loader must refuse any key not in TRIGGER_ALLOWED_KEYS."""
     skill_dir = tmp_path / "s"
     # Inject the bad key inside the trigger block by appending after action_tier
     yaml_text = _minimal_yaml().replace(
@@ -2511,13 +2511,13 @@ def test_rejects_unknown_trigger_key_through_load_all(
 @pytest.mark.parametrize(
     "bad_key",
     [
-        _a_key_outside(_ACTION_ALLOWED_KEYS),
+        _a_key_outside(ACTION_ALLOWED_KEYS),
         "Requires_Approval",
         "requiresApproval",
     ],
 )
 def test_rejects_unknown_keys_in_action(tmp_path: Path, bad_key: str) -> None:
-    """Loader must refuse any key not in _ACTION_ALLOWED_KEYS."""
+    """Loader must refuse any key not in ACTION_ALLOWED_KEYS."""
     skill_dir = tmp_path / "s"
     yaml_text = _minimal_yaml().replace(
         "- name: alert_whatsapp\n              tier: A",

@@ -19,7 +19,7 @@ from pathlib import Path
 from ori.security.ed25519_keys import refused_public_key_clause
 from ori.security.published_test_keys import PUBLISHED_TEST_KEYS
 from ori.skills._manifest import (
-    _MAX_MANIFEST_BYTES,
+    MAX_MANIFEST_BYTES,
 )
 from ori.utils.strict_json import unique_members
 
@@ -29,12 +29,12 @@ logger = logging.getLogger("ori.skills.loader")
 # The value a build ships with until a Hub signing key exists. Compared as a
 # sentinel rather than against the constant itself, so a deployment that
 # configures a real anchor is not called unconfigured by a build that has one.
-_UNCONFIGURED_HUB_ANCHOR = "PENDING_REPLACE_AT_HUB_LAUNCH"
-_HUB_ROOT_PUBLIC_KEY_B64 = _UNCONFIGURED_HUB_ANCHOR
-_HUB_TRUST_ANCHOR_ENV = "ORI_HUB_ROOT_PUBLIC_KEY_B64"
+UNCONFIGURED_HUB_ANCHOR = "PENDING_REPLACE_AT_HUB_LAUNCH"
+HUB_ROOT_PUBLIC_KEY_B64 = UNCONFIGURED_HUB_ANCHOR
+HUB_TRUST_ANCHOR_ENV = "ORI_HUB_ROOT_PUBLIC_KEY_B64"
 
 
-def _anchor_fault(trust_anchor_b64: str, source: str) -> str | None:
+def anchor_fault_of(trust_anchor_b64: str, source: str) -> str | None:
     """Why this anchor can authenticate nothing, or ``None`` if it can.
 
     Every way an anchor fails is answered here, because the caller asks two
@@ -164,7 +164,7 @@ def _editable_source(dist: importlib.metadata.Distribution) -> Path | None:
 def _declares_distribution(pyproject: Path) -> bool:
     try:
         with pyproject.open("rb") as handle:
-            data = tomllib.loads(handle.read(_MAX_MANIFEST_BYTES).decode("utf-8"))
+            data = tomllib.loads(handle.read(MAX_MANIFEST_BYTES).decode("utf-8"))
     except (OSError, ValueError):
         return False
     project = data.get("project")
@@ -198,7 +198,7 @@ def first_party_skill_roots() -> tuple[Path, ...]:
     return tuple(roots)
 
 
-def _is_skill_directory(path: Path) -> bool:
+def is_skill_directory(path: Path) -> bool:
     """A real directory holding a manifest, as discovery counts one."""
     try:
         return (
@@ -208,7 +208,7 @@ def _is_skill_directory(path: Path) -> bool:
         return False
 
 
-def _packaged_skill_names() -> frozenset[str]:
+def packaged_skill_names() -> frozenset[str]:
     """Directory names of every skill that ships with the runtime.
 
     Read from the packaged roots rather than a hard-coded list so a skill added

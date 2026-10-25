@@ -314,13 +314,13 @@ class DispatchCoordinator:
         that guard is written in `skill.yaml`, which is the thing being
         constrained.
 
-        Decided by :func:`_unique_sensor_types`, the same function the loader
+        Decided by :func:`unique_sensor_types`, the same function the loader
         subscribes from, so the discovery set is by construction the set the bus
         would have delivered to.
         """
-        from ori.skills._manifest import _unique_sensor_types
+        from ori.skills._manifest import unique_sensor_types
 
-        declared = _unique_sensor_types(getattr(skill, "sensors_required", []) or [])
+        declared = unique_sensor_types(getattr(skill, "sensors_required", []) or [])
         if "*" in declared:
             return True
         reading = getattr(event, "reading", None)

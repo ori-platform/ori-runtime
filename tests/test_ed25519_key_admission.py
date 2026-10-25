@@ -658,12 +658,12 @@ def test_a_commissioning_anchor_is_refused_where_it_is_loaded() -> None:
 
 
 def test_a_skill_trust_anchor_is_reported_as_the_fault() -> None:
-    from ori.skills._provenance import _anchor_fault
+    from ori.skills._provenance import anchor_fault_of
 
-    fault = _anchor_fault(_b64(IDENTITY), "the Hub anchor")
+    fault = anchor_fault_of(_b64(IDENTITY), "the Hub anchor")
     assert fault is not None and CLAUSE_SMALL_ORDER in fault
     _, honest = _honest()
-    assert _anchor_fault(_b64(honest), "the Hub anchor") is None
+    assert anchor_fault_of(_b64(honest), "the Hub anchor") is None
 
 
 def test_an_offline_token_anchor_is_named_as_refused() -> None:

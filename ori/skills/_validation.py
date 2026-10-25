@@ -10,6 +10,7 @@ import math
 from pathlib import Path
 from typing import Any
 
+from ori.config import MAX_SKILL_NAME_LENGTH, SKILL_NAME_RE
 from ori.reasoning.action_registry import (
     capability,
     is_safe_default_eligible,
@@ -26,31 +27,29 @@ from ori.skills._core import (
     LoaderCore,
 )
 from ori.skills._manifest import (
-    _ACTION_ALLOWED_KEYS,
-    _BUNDLED_SIGNATURE_SENTINEL,
-    _HISTORY_PLACEHOLDER_PATTERN,
-    _MAX_ACTIONS_AVAILABLE,
-    _MAX_ACTIONS_PER_TRIGGER,
-    _MAX_AUTHOR_LENGTH,
-    _MAX_CONFIG_ENTRIES,
-    _MAX_HISTORY_PLACEHOLDERS,
-    _MAX_NAME_LENGTH,
-    _MAX_PROMPTS_PER_SKILL,
-    _MAX_SENSORS_PER_SKILL,
-    _MAX_SUBSCRIPTIONS_PER_SKILL,
-    _MAX_TOTAL_DEFAULT_REFERENCES,
-    _MAX_TRIGGERS_PER_SKILL,
-    _MAX_VERSION_LENGTH,
-    _SKILL_NAME_RE,
-    _TRIGGER_ALLOWED_KEYS,
-    _TRIGGER_NAME_RE,
-    _VALID_TIERS,
+    ACTION_ALLOWED_KEYS,
+    BUNDLED_SIGNATURE_SENTINEL,
+    HISTORY_PLACEHOLDER_PATTERN,
+    MAX_ACTIONS_AVAILABLE,
+    MAX_ACTIONS_PER_TRIGGER,
+    MAX_AUTHOR_LENGTH,
+    MAX_CONFIG_ENTRIES,
+    MAX_HISTORY_PLACEHOLDERS,
+    MAX_PROMPTS_PER_SKILL,
+    MAX_SENSORS_PER_SKILL,
+    MAX_SUBSCRIPTIONS_PER_SKILL,
+    MAX_TOTAL_DEFAULT_REFERENCES,
+    MAX_TRIGGERS_PER_SKILL,
+    MAX_VERSION_LENGTH,
+    TRIGGER_ALLOWED_KEYS,
+    TRIGGER_NAME_RE,
+    VALID_TIERS,
     SkillValidationError,
     Trigger,
-    _display_unsafe_character,
+    display_unsafe_character,
 )
 from ori.skills._provenance import (
-    _packaged_skill_names,
+    packaged_skill_names,
 )
 from ori.skills.sandbox import SkillSecurityError
 
@@ -87,7 +86,7 @@ def _refuse_history_in_tier_d_condition(
             )
 
 
-def _refuse_unresolved_names_in_tier_d_condition(
+def refuse_unresolved_names_in_tier_d_condition(
     skill_name: str,
     trigger_name: str,
     condition: str,
@@ -145,7 +144,7 @@ def _trigger_name(raw: object, skill_name: str, seen_trigger_names: set[str]) ->
             f"Skill '{skill_name}': each trigger must be a mapping."
         )
 
-    unknown_keys = set(raw.keys()) - _TRIGGER_ALLOWED_KEYS
+    unknown_keys = set(raw.keys()) - TRIGGER_ALLOWED_KEYS
     if unknown_keys:
         trigger_name_for_err = raw.get("name", "<unnamed>")
         raise SkillValidationError(
@@ -161,7 +160,7 @@ def _trigger_name(raw: object, skill_name: str, seen_trigger_names: set[str]) ->
             "Trigger names must be non-empty strings."
         )
     name = raw_name.strip()
-    if not _TRIGGER_NAME_RE.fullmatch(name):
+    if not TRIGGER_NAME_RE.fullmatch(name):
         raise SkillValidationError(
             f"Skill '{skill_name}' trigger '{name}' has invalid name format. "
             "Use letters, numbers, underscore, and hyphen only."
@@ -186,7 +185,7 @@ def _trigger_tier(raw: dict, skill_name: str, name: str, *, first_party: bool) -
             f"Every trigger must declare its tier (A, B, C, or D)."
         )
 
-    if action_tier not in _VALID_TIERS:
+    if action_tier not in VALID_TIERS:
         raise SkillValidationError(
             f"Skill '{skill_name}' trigger '{name}' has invalid action_tier={action_tier!r}. "
             f"Must be one of: A, B, C, D."
@@ -336,42 +335,42 @@ class SkillValidation(LoaderCore):
         trigger_count = len(triggers) if isinstance(triggers, list) else 0
         sensor_count = len(sensors) if isinstance(sensors, list) else 0
 
-        if trigger_count > _MAX_TRIGGERS_PER_SKILL:
+        if trigger_count > MAX_TRIGGERS_PER_SKILL:
             raise SkillValidationError(
                 f"Skill {skill_name!r}: {trigger_count} triggers exceeds the "
-                f"limit of {_MAX_TRIGGERS_PER_SKILL}."
+                f"limit of {MAX_TRIGGERS_PER_SKILL}."
             )
-        if sensor_count > _MAX_SENSORS_PER_SKILL:
+        if sensor_count > MAX_SENSORS_PER_SKILL:
             raise SkillValidationError(
                 f"Skill {skill_name!r}: {sensor_count} required sensors exceeds "
-                f"the limit of {_MAX_SENSORS_PER_SKILL}."
+                f"the limit of {MAX_SENSORS_PER_SKILL}."
             )
 
         # A skill with no declared sensor type subscribes to the wildcard once
         # per trigger, so the floor is the trigger count rather than zero.
         subscriptions = trigger_count * max(sensor_count, 1)
-        if subscriptions > _MAX_SUBSCRIPTIONS_PER_SKILL:
+        if subscriptions > MAX_SUBSCRIPTIONS_PER_SKILL:
             raise SkillValidationError(
                 f"Skill {skill_name!r}: {trigger_count} triggers × "
                 f"{max(sensor_count, 1)} sensor types would register "
                 f"{subscriptions} handlers, above the limit of "
-                f"{_MAX_SUBSCRIPTIONS_PER_SKILL}."
+                f"{MAX_SUBSCRIPTIONS_PER_SKILL}."
             )
 
         actions = raw.get("actions") or {}
         if isinstance(actions, dict):
             available = actions.get("available") or []
-            if isinstance(available, list) and len(available) > _MAX_ACTIONS_AVAILABLE:
+            if isinstance(available, list) and len(available) > MAX_ACTIONS_AVAILABLE:
                 raise SkillValidationError(
                     f"Skill {skill_name!r}: {len(available)} declared actions "
-                    f"exceeds the limit of {_MAX_ACTIONS_AVAILABLE}."
+                    f"exceeds the limit of {MAX_ACTIONS_AVAILABLE}."
                 )
             defaults = actions.get("defaults") or {}
             if isinstance(defaults, dict):
-                if len(defaults) > _MAX_TRIGGERS_PER_SKILL:
+                if len(defaults) > MAX_TRIGGERS_PER_SKILL:
                     raise SkillValidationError(
                         f"Skill {skill_name!r}: {len(defaults)} action default "
-                        f"entries exceeds the limit of {_MAX_TRIGGERS_PER_SKILL}."
+                        f"entries exceeds the limit of {MAX_TRIGGERS_PER_SKILL}."
                     )
 
                 # Capping the number of *keys* bounded nothing that matters:
@@ -385,11 +384,11 @@ class SkillValidation(LoaderCore):
                 for trigger_name, action_list in defaults.items():
                     if not isinstance(action_list, list):
                         continue
-                    if len(action_list) > _MAX_ACTIONS_PER_TRIGGER:
+                    if len(action_list) > MAX_ACTIONS_PER_TRIGGER:
                         raise SkillValidationError(
                             f"Skill {skill_name!r}: trigger {trigger_name!r} "
                             f"lists {len(action_list)} default actions, above "
-                            f"the limit of {_MAX_ACTIONS_PER_TRIGGER}. Each one "
+                            f"the limit of {MAX_ACTIONS_PER_TRIGGER}. Each one "
                             "is dispatched when the trigger fires."
                         )
                     # A repeated action is dispatched repeatedly. There is no
@@ -409,25 +408,25 @@ class SkillValidation(LoaderCore):
                         seen.add(action_name)
                     total_references += len(action_list)
 
-                if total_references > _MAX_TOTAL_DEFAULT_REFERENCES:
+                if total_references > MAX_TOTAL_DEFAULT_REFERENCES:
                     raise SkillValidationError(
                         f"Skill {skill_name!r}: {total_references} total default "
                         f"action references exceeds the limit of "
-                        f"{_MAX_TOTAL_DEFAULT_REFERENCES}."
+                        f"{MAX_TOTAL_DEFAULT_REFERENCES}."
                     )
 
         prompts = raw.get("prompts") or {}
-        if isinstance(prompts, dict) and len(prompts) > _MAX_PROMPTS_PER_SKILL:
+        if isinstance(prompts, dict) and len(prompts) > MAX_PROMPTS_PER_SKILL:
             raise SkillValidationError(
                 f"Skill {skill_name!r}: {len(prompts)} prompts exceeds the "
-                f"limit of {_MAX_PROMPTS_PER_SKILL}."
+                f"limit of {MAX_PROMPTS_PER_SKILL}."
             )
 
         config = raw.get("config") or {}
-        if isinstance(config, dict) and len(config) > _MAX_CONFIG_ENTRIES:
+        if isinstance(config, dict) and len(config) > MAX_CONFIG_ENTRIES:
             raise SkillValidationError(
                 f"Skill {skill_name!r}: {len(config)} config entries exceeds "
-                f"the limit of {_MAX_CONFIG_ENTRIES}."
+                f"the limit of {MAX_CONFIG_ENTRIES}."
             )
 
     def _validate_identity_fields(self, raw: dict[str, Any], skill_dir: Path) -> None:
@@ -441,9 +440,9 @@ class SkillValidation(LoaderCore):
         the YAML limits do not cover it.
         """
         checks = (
-            ("name", _MAX_NAME_LENGTH),
-            ("author", _MAX_AUTHOR_LENGTH),
-            ("version", _MAX_VERSION_LENGTH),
+            ("name", MAX_SKILL_NAME_LENGTH),
+            ("author", MAX_AUTHOR_LENGTH),
+            ("version", MAX_VERSION_LENGTH),
         )
         for field_name, limit in checks:
             value = raw.get(field_name)
@@ -461,7 +460,7 @@ class SkillValidation(LoaderCore):
                     f"Skill directory {skill_dir.name!r}: {field_name} is "
                     f"{len(value)} characters, above the limit of {limit}."
                 )
-            offending = _display_unsafe_character(value)
+            offending = display_unsafe_character(value)
             if offending is not None:
                 raise SkillValidationError(
                     f"Skill directory {skill_dir.name!r}: {field_name} contains "
@@ -470,7 +469,7 @@ class SkillValidation(LoaderCore):
                 )
 
         name = raw.get("name")
-        if isinstance(name, str) and not _SKILL_NAME_RE.fullmatch(name):
+        if isinstance(name, str) and not SKILL_NAME_RE.fullmatch(name):
             raise SkillValidationError(
                 f"Skill directory {skill_dir.name!r}: name {name!r} must start "
                 "with a letter or digit and use only letters, digits, dot, "
@@ -482,7 +481,7 @@ class SkillValidation(LoaderCore):
         # collision makes an untrusted skill indistinguishable from a reviewed
         # one in exactly the records used to decide whether to trust it.
         if isinstance(name, str) and not self._is_core_bundled_skill(skill_dir):
-            if name in _packaged_skill_names():
+            if name in packaged_skill_names():
                 raise SkillSecurityError(
                     f"Skill directory {skill_dir.name!r}: name {name!r} is the "
                     "name of a skill that ships with the runtime. Community "
@@ -564,19 +563,19 @@ class SkillValidation(LoaderCore):
         # as one.
         signature = str(raw.get("signature") or "").strip()
         if self._require_signed and not (
-            signature == _BUNDLED_SIGNATURE_SENTINEL or signature.startswith("ed25519:")
+            signature == BUNDLED_SIGNATURE_SENTINEL or signature.startswith("ed25519:")
         ):
             raise SkillSecurityError(
                 f"Skill {name!r}: security.skills.require_signed is enabled — "
-                f"bundled skills must carry {_BUNDLED_SIGNATURE_SENTINEL!r} or an "
+                f"bundled skills must carry {BUNDLED_SIGNATURE_SENTINEL!r} or an "
                 f"'ed25519:' signature. Got {signature!r}."
             )
         if signature and not (
-            signature == _BUNDLED_SIGNATURE_SENTINEL or signature.startswith("ed25519:")
+            signature == BUNDLED_SIGNATURE_SENTINEL or signature.startswith("ed25519:")
         ):
             raise SkillValidationError(
                 f"Skill {name!r}: bundled skill signature must be either "
-                f"{_BUNDLED_SIGNATURE_SENTINEL!r} or an 'ed25519:' signature."
+                f"{BUNDLED_SIGNATURE_SENTINEL!r} or an 'ed25519:' signature."
             )
 
     # ── Internal helpers ──────────────────────────────────────────────────────
@@ -621,7 +620,7 @@ class SkillValidation(LoaderCore):
                     "requires_approval on the trigger that defaults to this action."
                 )
 
-            unknown_keys = set(entry.keys()) - _ACTION_ALLOWED_KEYS
+            unknown_keys = set(entry.keys()) - ACTION_ALLOWED_KEYS
             if unknown_keys:
                 action_name = entry.get("name", "<unnamed>")
                 raise SkillValidationError(
@@ -843,8 +842,8 @@ class SkillValidation(LoaderCore):
         for prompt_key, template in prompts.items():
             if not isinstance(template, str):
                 continue
-            count = len(_HISTORY_PLACEHOLDER_PATTERN.findall(template))
-            if count <= _MAX_HISTORY_PLACEHOLDERS:
+            count = len(HISTORY_PLACEHOLDER_PATTERN.findall(template))
+            if count <= MAX_HISTORY_PLACEHOLDERS:
                 continue
             scope = (
                 "trigger"
@@ -853,5 +852,5 @@ class SkillValidation(LoaderCore):
             )
             raise SkillValidationError(
                 f"Skill {skill_name!r}: {scope} {prompt_key!r} contains {count} "
-                f"history placeholders; maximum allowed is {_MAX_HISTORY_PLACEHOLDERS}."
+                f"history placeholders; maximum allowed is {MAX_HISTORY_PLACEHOLDERS}."
             )

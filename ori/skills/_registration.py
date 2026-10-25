@@ -19,12 +19,12 @@ from ori.skills._core import (
     LoaderCore,
 )
 from ori.skills._manifest import (
-    _MAX_SUBSCRIPTIONS_PER_SKILL,
-    _MAX_TOTAL_SUBSCRIPTIONS,
+    MAX_SUBSCRIPTIONS_PER_SKILL,
+    MAX_TOTAL_SUBSCRIPTIONS,
     Skill,
     SkillValidationError,
     Trigger,
-    _unique_sensor_types,
+    unique_sensor_types,
 )
 from ori.skills.sandbox import SkillSecurityError
 from ori.utils.path_utils import shown
@@ -34,7 +34,7 @@ from ori.utils.path_utils import shown
 logger = logging.getLogger("ori.skills.loader")
 
 
-def _refuse_asynchronous_hooks(skill_name: str, hooks: Any) -> None:
+def refuse_asynchronous_hooks(skill_name: str, hooks: Any) -> None:
     """Hooks are synchronous: they run on the hook thread, never the event loop.
 
     A coroutine function would hand its body back to the loop to run, where
@@ -99,16 +99,16 @@ class SkillRegistration(LoaderCore):
         # without `load_all()`, so relying on load-time validation would leave
         # the budget holding only for one call path.
         cost = self._subscription_cost(skill)
-        if cost > _MAX_SUBSCRIPTIONS_PER_SKILL:
+        if cost > MAX_SUBSCRIPTIONS_PER_SKILL:
             raise SkillValidationError(
                 f"Skill {skill.name!r}: registering {cost} handlers exceeds the "
-                f"limit of {_MAX_SUBSCRIPTIONS_PER_SKILL}."
+                f"limit of {MAX_SUBSCRIPTIONS_PER_SKILL}."
             )
-        if self._registered_subscriptions + cost > _MAX_TOTAL_SUBSCRIPTIONS:
+        if self._registered_subscriptions + cost > MAX_TOTAL_SUBSCRIPTIONS:
             raise SkillValidationError(
                 f"Skill {skill.name!r}: registering {cost} handlers would take "
                 f"this loader past the cumulative limit of "
-                f"{_MAX_TOTAL_SUBSCRIPTIONS} subscriptions "
+                f"{MAX_TOTAL_SUBSCRIPTIONS} subscriptions "
                 f"({self._registered_subscriptions} already registered)."
             )
 
@@ -125,7 +125,7 @@ class SkillRegistration(LoaderCore):
         # something other than what it was bounding. Duplicate declarations are
         # also pointless: two handlers on one sensor type fire on the same
         # events.
-        sensor_types = _unique_sensor_types(skill.sensors_required)
+        sensor_types = unique_sensor_types(skill.sensors_required)
 
         for trigger in skill.triggers:
             for sensor_type in sensor_types:
@@ -187,10 +187,10 @@ class SkillRegistration(LoaderCore):
     def _subscription_cost(skill: Skill) -> int:
         """Handlers this skill will create: triggers × distinct sensor types.
 
-        Shares :func:`_unique_sensor_types` with :meth:`register` so the number
+        Shares :func:`unique_sensor_types` with :meth:`register` so the number
         charged is by construction the number registered.
         """
-        return len(skill.triggers) * len(_unique_sensor_types(skill.sensors_required))
+        return len(skill.triggers) * len(unique_sensor_types(skill.sensors_required))
 
     def _make_handler(
         self,

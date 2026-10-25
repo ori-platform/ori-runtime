@@ -12,10 +12,10 @@ from ori.skills._manifest import (
     CommunitySkillAdmission,
 )
 from ori.skills._provenance import (
-    _HUB_ROOT_PUBLIC_KEY_B64,
-    _HUB_TRUST_ANCHOR_ENV,
-    _UNCONFIGURED_HUB_ANCHOR,
-    _anchor_fault,
+    HUB_ROOT_PUBLIC_KEY_B64,
+    HUB_TRUST_ANCHOR_ENV,
+    UNCONFIGURED_HUB_ANCHOR,
+    anchor_fault_of,
     first_party_skill_roots,
 )
 
@@ -71,9 +71,9 @@ class LoaderCore:
         directory is read, and it is the same answer for every one of them.
         """
         anchor = self._resolve_community_trust_anchor()
-        if anchor == _UNCONFIGURED_HUB_ANCHOR:
+        if anchor == UNCONFIGURED_HUB_ANCHOR:
             return "community skill verification trust anchor is not configured"
-        return _anchor_fault(anchor, self._community_anchor_source())
+        return anchor_fault_of(anchor, self._community_anchor_source())
 
     def community_admission(self) -> CommunitySkillAdmission:
         """What the last load made of the community anchor."""
@@ -83,7 +83,7 @@ class LoaderCore:
         return (
             "the community trust anchor given to SkillLoader"
             if self._community_trust_anchor_public_key_b64
-            else _HUB_TRUST_ANCHOR_ENV
+            else HUB_TRUST_ANCHOR_ENV
         )
 
     @staticmethod
@@ -101,11 +101,11 @@ class LoaderCore:
         if self._community_trust_anchor_public_key_b64:
             return self._community_trust_anchor_public_key_b64
 
-        env_value = os.getenv(_HUB_TRUST_ANCHOR_ENV, "").strip()
+        env_value = os.getenv(HUB_TRUST_ANCHOR_ENV, "").strip()
         if env_value:
             return env_value
 
-        return _HUB_ROOT_PUBLIC_KEY_B64
+        return HUB_ROOT_PUBLIC_KEY_B64
 
     def _is_core_bundled_skill(self, skill_dir: Path) -> bool:
         """Return True for first-party skills shipped with the runtime."""

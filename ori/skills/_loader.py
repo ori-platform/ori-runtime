@@ -25,28 +25,28 @@ import yaml
 
 from ori.config import MAX_SKILL_NAME_LENGTH, SKILL_NAME_RE
 from ori.skills._manifest import (
-    _BUNDLED_SIGNATURE_SENTINEL,
-    _MAX_DIRECTORY_ENTRIES,
-    _MAX_MANIFEST_BYTES,
-    _MAX_SKILLS_PER_LOAD,
-    _MAX_TOTAL_SUBSCRIPTIONS,
+    BUNDLED_SIGNATURE_SENTINEL,
+    MAX_DIRECTORY_ENTRIES,
+    MAX_MANIFEST_BYTES,
+    MAX_SKILLS_PER_LOAD,
+    MAX_TOTAL_SUBSCRIPTIONS,
+    SelectedSkill,
     Skill,
     SkillSelectionError,
     SkillValidationError,
-    _Selected,
-    _UniqueStringKeySafeLoader,
+    UniqueStringKeySafeLoader,
 )
 from ori.skills._provenance import (
-    _is_skill_directory,
     first_party_skill_roots,
+    is_skill_directory,
 )
 from ori.skills._registration import (
     SkillRegistration,
-    _refuse_asynchronous_hooks,
+    refuse_asynchronous_hooks,
 )
 from ori.skills._validation import (
     SkillValidation,
-    _refuse_unresolved_names_in_tier_d_condition,
+    refuse_unresolved_names_in_tier_d_condition,
 )
 from ori.skills.sandbox import SkillAnchorError, SkillSecurityError
 from ori.skills.signing import verify_community_skill_signature
@@ -179,14 +179,14 @@ class SkillLoader(SkillValidation, SkillRegistration):
 
     def _resolve_selection(
         self, selection: Sequence[tuple[str, str]], root: Path
-    ) -> list[_Selected]:
-        if len(selection) > _MAX_SKILLS_PER_LOAD:
+    ) -> list[SelectedSkill]:
+        if len(selection) > MAX_SKILLS_PER_LOAD:
             raise SkillSelectionError(
                 f"skills: names {len(selection)} skills; the limit per load is "
-                f"{_MAX_SKILLS_PER_LOAD}"
+                f"{MAX_SKILLS_PER_LOAD}"
             )
         roots = first_party_skill_roots()
-        resolved: list[_Selected] = []
+        resolved: list[SelectedSkill] = []
         faults: list[str] = []
         folded: set[str] = set()
         for name, version in selection:
@@ -203,30 +203,28 @@ class SkillLoader(SkillValidation, SkillRegistration):
             if name == "template":
                 faults.append(f"{name!r} is a scaffold, not a skill")
                 continue
-            local = (
-                (root / name).resolve() if _is_skill_directory(root / name) else None
-            )
+            local = (root / name).resolve() if is_skill_directory(root / name) else None
             # The first packaged root holding the name, as bundled_skill_path
             # finds it: a checkout with the package also installed has two.
             packaged = next(
                 (
                     (base / name).resolve()
                     for base in roots
-                    if _is_skill_directory(base / name)
+                    if is_skill_directory(base / name)
                 ),
                 None,
             )
             if local is not None and self._is_core_bundled_skill(local):
-                resolved.append(_Selected(name, version, local, packaged=True))
+                resolved.append(SelectedSkill(name, version, local, packaged=True))
             elif local is not None and packaged is not None:
                 faults.append(
                     f"{name!r} is both a skill that ships with the runtime and "
                     f"a directory in {shown(root)}; rename or remove the directory"
                 )
             elif local is not None:
-                resolved.append(_Selected(name, version, local, packaged=False))
+                resolved.append(SelectedSkill(name, version, local, packaged=False))
             elif packaged is not None:
-                resolved.append(_Selected(name, version, packaged, packaged=True))
+                resolved.append(SelectedSkill(name, version, packaged, packaged=True))
             else:
                 faults.append(
                     f"{name!r} is neither a directory in {shown(root)} nor a "
@@ -307,14 +305,14 @@ class SkillLoader(SkillValidation, SkillRegistration):
                 # individually legal skills add up to an illegal total, and the
                 # event loop sees the sum, not the individual files.
                 cost = self._subscription_cost(skill)
-                if subscription_total + cost > _MAX_TOTAL_SUBSCRIPTIONS:
+                if subscription_total + cost > MAX_TOTAL_SUBSCRIPTIONS:
                     logger.error(
                         "SkillLoader: skipping %s — its %d handlers would take "
                         "the load past the cumulative limit of %d "
                         "subscriptions (%d already committed)",
                         shown(child),
                         cost,
-                        _MAX_TOTAL_SUBSCRIPTIONS,
+                        MAX_TOTAL_SUBSCRIPTIONS,
                         subscription_total,
                     )
                     _note_not_admitted(child)
@@ -439,7 +437,7 @@ class SkillLoader(SkillValidation, SkillRegistration):
         raw = (
             yaml.load(
                 self._read_manifest_bytes(yaml_path),
-                Loader=_UniqueStringKeySafeLoader,
+                Loader=UniqueStringKeySafeLoader,
             )
             or {}
         )
@@ -482,7 +480,7 @@ class SkillLoader(SkillValidation, SkillRegistration):
         config = raw.get("config")
         for trigger in triggers:
             if trigger.action_tier == "D":
-                _refuse_unresolved_names_in_tier_d_condition(
+                refuse_unresolved_names_in_tier_d_condition(
                     raw.get("name", "<unknown>"),
                     trigger.name,
                     trigger.condition,
@@ -491,7 +489,7 @@ class SkillLoader(SkillValidation, SkillRegistration):
         self._verify_community_signature(raw, skill_dir)
         if load_hooks:
             hooks = self._load_hooks(skill_dir)
-            _refuse_asynchronous_hooks(raw.get("name", "<unknown>"), hooks)
+            refuse_asynchronous_hooks(raw.get("name", "<unknown>"), hooks)
         else:
             if enforce_hook_policy:
                 self._assert_hooks_activatable(skill_dir)
@@ -536,7 +534,7 @@ class SkillLoader(SkillValidation, SkillRegistration):
 
         Structural limits — alias rejection, nesting depth, node and collection
         budgets — are enforced during parsing by
-        :class:`_UniqueStringKeySafeLoader`, because a byte bound does not bound
+        :class:`UniqueStringKeySafeLoader`, because a byte bound does not bound
         the structure a document expands into.
         """
         flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
@@ -571,17 +569,17 @@ class SkillLoader(SkillValidation, SkillRegistration):
                     "regular file. A FIFO or device node would block startup "
                     "rather than fail it."
                 )
-            if stat_result.st_size > _MAX_MANIFEST_BYTES:
+            if stat_result.st_size > MAX_MANIFEST_BYTES:
                 raise SkillValidationError(
                     f"Skill {yaml_path.parent.name!r}: skill.yaml is "
                     f"{stat_result.st_size} bytes, above the "
-                    f"{_MAX_MANIFEST_BYTES} byte limit."
+                    f"{MAX_MANIFEST_BYTES} byte limit."
                 )
 
             # One byte beyond the cap distinguishes "at the limit" from
             # "truncated", covering a file that grows after fstat.
             chunks: list[bytes] = []
-            remaining = _MAX_MANIFEST_BYTES + 1
+            remaining = MAX_MANIFEST_BYTES + 1
             while remaining > 0:
                 chunk = os.read(fd, remaining)
                 if not chunk:
@@ -592,10 +590,10 @@ class SkillLoader(SkillValidation, SkillRegistration):
         finally:
             os.close(fd)
 
-        if len(data) > _MAX_MANIFEST_BYTES:
+        if len(data) > MAX_MANIFEST_BYTES:
             raise SkillValidationError(
                 f"Skill {yaml_path.parent.name!r}: skill.yaml exceeds the "
-                f"{_MAX_MANIFEST_BYTES} byte limit."
+                f"{MAX_MANIFEST_BYTES} byte limit."
             )
         try:
             return data.decode("utf-8")
@@ -605,7 +603,7 @@ class SkillLoader(SkillValidation, SkillRegistration):
             ) from exc
 
     def _discover_candidates(self, root: Path) -> list[Path]:
-        """Find at most ``_MAX_SKILLS_PER_LOAD`` manifests to attempt.
+        """Find at most ``MAX_SKILLS_PER_LOAD`` manifests to attempt.
 
         The cap counts **candidates**, not successes. Counting successes made
         the limit meaningless against the case it exists for: rejected
@@ -635,14 +633,14 @@ class SkillLoader(SkillValidation, SkillRegistration):
             with os.scandir(root) as entries:
                 for entry in entries:
                     examined += 1
-                    if examined > _MAX_DIRECTORY_ENTRIES:
+                    if examined > MAX_DIRECTORY_ENTRIES:
                         truncated = True
                         logger.error(
                             "SkillLoader: stopping discovery in %s after %d "
                             "entries — the directory is larger than the runtime "
                             "will scan",
                             shown(root),
-                            _MAX_DIRECTORY_ENTRIES,
+                            MAX_DIRECTORY_ENTRIES,
                         )
                         break
                     # Template scaffolds are documentation, not runtime skills.
@@ -657,14 +655,14 @@ class SkillLoader(SkillValidation, SkillRegistration):
                     if not (child / "skill.yaml").exists():
                         continue
                     candidates.append(child)
-                    if len(candidates) >= _MAX_SKILLS_PER_LOAD:
+                    if len(candidates) >= MAX_SKILLS_PER_LOAD:
                         truncated = True
                         logger.error(
                             "SkillLoader: %d candidate manifests found in %s — "
                             "the limit per load is %d; the rest are not read",
                             len(candidates),
                             shown(root),
-                            _MAX_SKILLS_PER_LOAD,
+                            MAX_SKILLS_PER_LOAD,
                         )
                         break
         except OSError:
@@ -698,7 +696,7 @@ class SkillLoader(SkillValidation, SkillRegistration):
             return
 
         signature = str(raw.get("signature") or "").strip()
-        if signature == _BUNDLED_SIGNATURE_SENTINEL:
+        if signature == BUNDLED_SIGNATURE_SENTINEL:
             raise SkillSecurityError(
                 "skill uses the bundled signature sentinel but does not ship "
                 "with the runtime. Re-sign it with an 'ed25519:' signature."
