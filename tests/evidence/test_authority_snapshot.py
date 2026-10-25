@@ -17,6 +17,7 @@ current configuration would imply.
 from __future__ import annotations
 
 import json
+import uuid
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock
@@ -210,6 +211,7 @@ class TestRefusalIsTerminal:
                 ),
                 trigger_name="dangerous_overcurrent",
                 attestation_pending=True,
+                record_key=uuid.uuid4().hex,
             )
             assert [r["id"] for r in await store.get_actions_needing_attestation()] == [
                 row_id
@@ -245,6 +247,7 @@ class TestRefusalIsTerminal:
                 ),
                 trigger_name="dangerous_overcurrent",
                 attestation_pending=True,
+                record_key=uuid.uuid4().hex,
             )
             await store.set_action_attestation(
                 row_id, status="failed", attestation_seq=None
@@ -384,6 +387,7 @@ class TestTheProductionCallersRefuse:
                 ),
                 trigger_name="dangerous_overcurrent",
                 attestation_pending=True,
+                record_key=uuid.uuid4().hex,
             )
 
             calls: list[int] = []
@@ -537,6 +541,7 @@ class TestTheEmissionCallerRefuses:
                 trigger_name="dangerous_overcurrent",
                 attestation_pending=True,
                 authority_json=json.dumps(TIER_C),
+                record_key=uuid.uuid4().hex,
             )
 
             dispatcher = ActionDispatcher(evidence_attestor=attestor)

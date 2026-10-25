@@ -10,6 +10,7 @@ import os
 import secrets
 import sqlite3
 import textwrap
+import uuid
 from pathlib import Path
 
 import pytest
@@ -142,6 +143,7 @@ async def _seed_state_store(path: Path, action: str = "trip_relay") -> None:
             device_id="dev-01",
             sensor_id="pir_01",
             sensor_type="motion",
+            record_key=uuid.uuid4().hex,
         )
     finally:
         await store.close()

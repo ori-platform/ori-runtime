@@ -30,8 +30,8 @@ class ActionLogStore(StoreCore):
         trigger_name: str,
         *,
         attestation_pending: bool = False,
+        record_key: str,
         record_kind: str = "dispatch",
-        record_key: str = "",
         contributed_to: str | None = None,
     ) -> int:
         return await self._run_write(
@@ -63,8 +63,8 @@ class ActionLogStore(StoreCore):
         attestation_pending: bool = False,
         binding_seq: int | None = None,
         authority_json: str | None = None,
+        record_key: str,
         record_kind: str = "dispatch",
-        record_key: str = "",
         contributed_to: str | None = None,
     ) -> int:
         """Persist action result with sensor/device context for reporting.
@@ -119,7 +119,11 @@ class ActionLogStore(StoreCore):
             "pending" if context_fields.get("attestation_pending") else ""
         )
         record_kind = str(context_fields.get("record_kind", RECORD_DISPATCH))
-        record_key = str(context_fields.get("record_key", "") or "")
+        record_key = context_fields.get("record_key")
+        if not isinstance(record_key, str) or not record_key:
+            # The empty key is what rows from before keys hold; a new row that
+            # wrote one could never be named, resolved or exported as a key.
+            raise ValueError("an action record needs a non-empty record_key")
         contributed_to = context_fields.get("contributed_to")
         _check_action_record_shape(
             record_kind,
@@ -394,7 +398,10 @@ class ActionLogStore(StoreCore):
         tier: str | None,
         limit: int,
     ) -> list[dict]:
-        where = []
+        # A refusal stores the tier it was handed, which may be none of A to D;
+        # the export carries only the four, so such a row is omitted from it,
+        # in the query so paging counts only what is sent. The store keeps it.
+        where = ["tier IN ('A', 'B', 'C', 'D')"]
         params: list[Any] = []
         if device_id:
             where.append("device_id = ?")
@@ -408,7 +415,7 @@ class ActionLogStore(StoreCore):
         if tier:
             where.append("tier = ?")
             params.append(str(tier).upper())
-        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        where_sql = f"WHERE {' AND '.join(where)}"
         params.append(max(1, min(int(limit), 1000)))
         query = (
             """

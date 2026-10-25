@@ -578,6 +578,9 @@ class TestGovernedRejectionAndExpiry:
         assert outcome.safe_default_used is False
         assert [d["safe_default_used"] for d in decisions] == [False]
         assert [a["safe_default_used"] for a in actions] == [False]
+        # Nor is the safe default named as taken: another attempt made it.
+        assert outcome.action_taken == ""
+        assert [a["action_taken"] for a in actions] == [""]
 
 
 class _RefusingGate:

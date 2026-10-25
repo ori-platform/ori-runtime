@@ -30,7 +30,7 @@ from ori.policy.alert_classes import (
 )
 from ori.policy.device_policy import DevicePolicy
 from ori.policy.remote_fetch import _alert_preferences
-from ori.reasoning.action_dispatcher import ALERT_SUPPRESSED
+from ori.reasoning.action_taken import SUPPRESSED
 from ori.runtime import OriRuntime
 from tests.package_layout import runtime_tree
 from tests.waiting import drained
@@ -393,7 +393,7 @@ async def test_a_signed_toggle_withholds_only_its_own_class(bound) -> None:
     runtime = _runtime_with_policy(_policy(alerts={"grid_power_restored": False}))
     sender = _RecordingSender()
 
-    assert await _deliver(runtime, sender, trigger=TRIGGER) == ALERT_SUPPRESSED
+    assert await _deliver(runtime, sender, trigger=TRIGGER) == SUPPRESSED
     assert sender.sent == []
 
     # A sibling trigger with no binding is untouched by the same policy.
@@ -583,7 +583,7 @@ async def test_a_suppressed_alert_makes_no_provider_call_and_leaves_a_record(
                 trigger=TRIGGER,
                 original_ts=original_ts,
             )
-            assert delivered == ALERT_SUPPRESSED
+            assert delivered == SUPPRESSED
         assert sender.sent == []
 
         # Read the table directly: what matters is that three suppressions
@@ -629,7 +629,7 @@ async def test_the_real_dispatcher_logs_a_suppression_as_suppressed(
 
         async def _suppressing(action: str, ctx) -> str:
             calls.append(action)
-            return ALERT_SUPPRESSED
+            return SUPPRESSED
 
         async def _failing(action: str, ctx) -> bool:
             calls.append(action)
@@ -683,7 +683,7 @@ async def test_a_tier_d_action_reporting_itself_suppressed_still_escalates() -> 
     dispatcher._emergency_sms = _emergency  # type: ignore[method-assign]
 
     async def _suppressing(action: str, ctx) -> str:
-        return ALERT_SUPPRESSED
+        return SUPPRESSED
 
     dispatcher.register_executor("trip_relay", _suppressing)
 
@@ -768,7 +768,7 @@ async def test_a_disabled_alert_with_no_recipient_is_still_disabled(
             skill_is_first_party=True,
         )
 
-        assert result == ALERT_SUPPRESSED
+        assert result == SUPPRESSED
         assert sender.sent == []
 
         import sqlite3

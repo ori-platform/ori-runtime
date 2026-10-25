@@ -21,9 +21,9 @@ import pytest
 from ori.network.events import OriEvent, ReasoningResult, SensorReading
 from ori.reasoning import tier_c_admission as adm
 from ori.reasoning.action_dispatcher import (
-    ACTUATION_NOT_PERFORMED,
     ActionDispatcher,
 )
+from ori.reasoning.action_taken import NOT_PERFORMED
 from ori.reasoning.elevator import SkillContext
 from ori.reasoning.tier_c_admission import TierCAuthorityFacts
 from ori.state.store import StateStore
@@ -351,7 +351,7 @@ class TestLiveImmediateDispatch:
         self, tmp_path: Any
     ) -> None:
         for answer, expected in (
-            (ACTUATION_NOT_PERFORMED, adm.DISPATCH_FAILED),
+            (NOT_PERFORMED, adm.DISPATCH_FAILED),
             (False, adm.DISPATCH_OUTCOME_UNKNOWN),
         ):
             journal: list[str] = []

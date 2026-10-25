@@ -18,7 +18,7 @@ from ori.actions.alert_delivery import (
 from ori.actions.alert_failover import AlertFailoverSender
 from ori.config import Config
 from ori.policy.alert_classes import alert_class_for_trigger
-from ori.reasoning.action_dispatcher import ALERT_SUPPRESSED
+from ori.reasoning.action_taken import SUPPRESSED
 from ori.runtime._alert_text import (
     alert_policy_count_key,
     build_alert_id,
@@ -75,7 +75,7 @@ class AlertDelivery(RuntimeCore):
         event, and it is what the provider template's "detected at" slot shows.
 
         Returns True if the provider accepted it or a durable retry obligation
-        exists, False if neither holds, or `ALERT_SUPPRESSED` when a customer
+        exists, False if neither holds, or `SUPPRESSED` when a customer
         preference withheld the notice. Suppression is deliberate non-action,
         not a failed attempt. Provider acceptance is not handset delivery.
         """
@@ -104,7 +104,7 @@ class AlertDelivery(RuntimeCore):
                 action_tier=action_tier,
                 original_ts=original_ts,
             )
-            return ALERT_SUPPRESSED
+            return SUPPRESSED
 
         if not recipient:
             # Checked after the preference, because a notice the customer

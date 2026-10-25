@@ -3,6 +3,7 @@
 
 import asyncio
 import json
+import uuid
 from unittest.mock import patch
 
 import pytest
@@ -431,6 +432,7 @@ async def test_action_log_export_uses_runtime_store_boundary(store):
         device_id="dev-01",
         sensor_id="voltage-main",
         sensor_type="voltage",
+        record_key=uuid.uuid4().hex,
     )
 
     response = await _responder(store).handle_request(
@@ -636,6 +638,7 @@ async def test_mqtt_server_encrypts_sensitive_export_response_when_configured(st
         device_id="dev-01",
         sensor_id="voltage-main",
         sensor_type="voltage",
+        record_key=uuid.uuid4().hex,
     )
     request_auth = GatewayMessageAuthenticator(
         GatewayMessageAuthConfig(shared_secret="gateway-secret"),

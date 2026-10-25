@@ -5,6 +5,7 @@ import json
 import os
 import sqlite3
 import time
+import uuid
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -491,7 +492,9 @@ class TestAverages:
 class TestActionLog:
     async def test_log_and_retrieve_tier_a(self, store):
         result = _action_result(tier="A", approved=None)
-        await store.log_action(result, trigger_name="anomalous_draw")
+        await store.log_action(
+            result, trigger_name="anomalous_draw", record_key=uuid.uuid4().hex
+        )
         log = await store.get_action_log()
         assert len(log) == 1
         entry = log[0]
@@ -508,7 +511,9 @@ class TestActionLog:
             action_taken="open_safety_circuit",
             operator_response="YES",
         )
-        await store.log_action(result, trigger_name="critical_fault")
+        await store.log_action(
+            result, trigger_name="critical_fault", record_key=uuid.uuid4().hex
+        )
         log = await store.get_action_log()
         assert log[0]["approved"] is True
         assert log[0]["operator_response"] == "YES"
@@ -517,6 +522,7 @@ class TestActionLog:
         await store.log_action(
             _action_result(correlation_id="corr-test-123"),
             trigger_name="anomalous_draw",
+            record_key=uuid.uuid4().hex,
         )
         log = await store.get_action_log()
         assert log[0]["correlation_id"] == "corr-test-123"
@@ -527,11 +533,13 @@ class TestActionLog:
             trigger_name="dangerous_overcurrent",
             input_attestation_grade="rejected",
             input_posture="sealed_flash",
+            record_key=uuid.uuid4().hex,
         )
         await store.log_action_for_event(
             _action_result(action_name="open_safety_circuit", tier="D", timestamp=2),
             trigger_name="dangerous_overcurrent",
             input_attestation_grade="attested",
+            record_key=uuid.uuid4().hex,
         )
 
         rows = await store.get_action_log(limit=2)
@@ -545,10 +553,12 @@ class TestActionLog:
             tier="C",
             executed=False,
             approved=False,
-            action_taken="log_to_dashboard",
+            action_taken="",
             operator_response="NO",
         )
-        await store.log_action(result, trigger_name="critical_fault")
+        await store.log_action(
+            result, trigger_name="critical_fault", record_key=uuid.uuid4().hex
+        )
         log = await store.get_action_log()
         assert log[0]["approved"] is False
         assert log[0]["executed"] is False
@@ -556,7 +566,9 @@ class TestActionLog:
     async def test_get_action_log_limit(self, store):
         for i in range(10):
             await store.log_action(
-                _action_result(action_name=f"act_{i}"), trigger_name="t"
+                _action_result(action_name=f"act_{i}"),
+                trigger_name="t",
+                record_key=uuid.uuid4().hex,
             )
         log = await store.get_action_log(limit=4)
         assert len(log) == 4
@@ -565,7 +577,7 @@ class TestActionLog:
         base = _ms()
         for i in range(3):
             r = _action_result(action_name=f"act_{i}", timestamp=base + i * 1000)
-            await store.log_action(r, trigger_name="t")
+            await store.log_action(r, trigger_name="t", record_key=uuid.uuid4().hex)
         log = await store.get_action_log()
         assert log[0]["action_name"] == "act_2"
 
@@ -594,6 +606,7 @@ class TestActionLog:
             sensor_type="current_clamp",
             input_attestation_grade="attested",
             input_posture="hardware_key",
+            record_key=uuid.uuid4().hex,
         )
         await store.log_action_for_event(
             _action_result(
@@ -605,6 +618,7 @@ class TestActionLog:
             device_id="dev-02",
             sensor_id="voltage-main",
             sensor_type="voltage",
+            record_key=uuid.uuid4().hex,
         )
 
         rows = await store.export_action_log(

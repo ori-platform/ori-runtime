@@ -36,7 +36,8 @@ from ori.hardware.led_indicator import (
     StatusSignalingConfig,
 )
 from ori.network.events import event_received_at_ms
-from ori.reasoning.action_dispatcher import ACTUATION_NOT_PERFORMED, ActionDispatcher
+from ori.reasoning.action_dispatcher import ActionDispatcher
+from ori.reasoning.action_taken import NOT_PERFORMED
 from ori.reasoning.elevator import SkillContext
 from ori.runtime._alert_text import (
     message_from_context,
@@ -792,7 +793,7 @@ class StartupFoundation(Commissioning, RemoteCommands):
                 # failed rather than unknown. A failure on a connected line is
                 # unknown, since the coil may have moved before it was reported.
                 if not executed and not relay_action_bound.connected:
-                    return ACTUATION_NOT_PERFORMED
+                    return NOT_PERFORMED
                 return executed
 
             async def _exec_trip_relay(*_: Any) -> bool | str:

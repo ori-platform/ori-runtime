@@ -11,6 +11,7 @@ harder to read rather than easier.
 
 from __future__ import annotations
 
+import uuid
 from typing import Any, cast
 from unittest.mock import AsyncMock
 
@@ -443,6 +444,7 @@ class TestFirmwareRegistrationSnapshot:
                 input_firmware_seq=42,
                 input_firmware_registration='{"anchor_epoch_id":"sha256:aa"}',
                 attestation_pending=True,
+                record_key=uuid.uuid4().hex,
             )
             rows = await store.get_actions_needing_attestation()
             assert rows, "the row was not queued for attestation"
@@ -473,6 +475,7 @@ class TestFirmwareRegistrationSnapshot:
                 ),
                 trigger_name="dangerous_overcurrent",
                 attestation_pending=True,
+                record_key=uuid.uuid4().hex,
             )
             row = (await store.get_actions_needing_attestation())[0]
             assert not str(row.get("input_firmware_device_id") or "")
@@ -503,6 +506,7 @@ class TestFirmwareRegistrationSnapshot:
             input_firmware_seq=42,
             input_firmware_registration='{"anchor_epoch_id":"sha256:aa"}',
             attestation_pending=True,
+            record_key=uuid.uuid4().hex,
         )
         await store.close()
 
@@ -566,6 +570,7 @@ class TestReconciliationNeverSealsADeclinedProposalAsApproved:
                         sort_keys=True,
                         separators=(",", ":"),
                     ),
+                    record_key=uuid.uuid4().hex,
                 )
 
             await _reconcile(_Runtime(attestor=attestor, store=store))

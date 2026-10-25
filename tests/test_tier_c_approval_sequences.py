@@ -37,7 +37,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from ori.network.events import OriEvent, ReasoningResult, SensorReading
 from ori.reasoning import action_dispatcher as dispatcher_module
 from ori.reasoning import tier_c_admission as adm
-from ori.reasoning.action_dispatcher import ACTUATION_NOT_PERFORMED, ActionDispatcher
+from ori.reasoning.action_dispatcher import ActionDispatcher
+from ori.reasoning.action_taken import NOT_PERFORMED
 from ori.reasoning.dispatch_plan import BindingView
 from ori.reasoning.elevator import SkillContext
 from ori.reasoning.resource_gate import Admission
@@ -430,7 +431,7 @@ class Replay:
             # the actuator then reported.
             self.actuations += 1
             answer = self.executor_answer
-            if answer in (True, False, ACTUATION_NOT_PERFORMED):
+            if answer in (True, False, NOT_PERFORMED):
                 return answer
             raise RuntimeError(str(answer))
 
@@ -708,7 +709,7 @@ def _executor_answer(result: str) -> Any:
     if result == "executed":
         return True
     if result == "failed":
-        return ACTUATION_NOT_PERFORMED
+        return NOT_PERFORMED
     return False
 
 

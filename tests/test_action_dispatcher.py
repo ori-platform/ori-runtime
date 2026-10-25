@@ -7,6 +7,7 @@ import contextlib
 import json
 import sqlite3
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, cast
 from unittest.mock import AsyncMock, patch
@@ -23,10 +24,10 @@ from ori.network.events import (
 )
 from ori.policy.device_policy import DevicePolicy
 from ori.reasoning.action_dispatcher import (
-    NO_EXECUTOR_ACTION_TAKEN,
     ActionDispatcher,
     _classify_approval_response,
 )
+from ori.reasoning.action_taken import NO_EXECUTOR
 from ori.reasoning.capability_posture import CapabilityPosture
 from ori.reasoning.elevator import SkillContext
 from ori.security.offline_tokens import TokenVerificationResult
@@ -248,7 +249,7 @@ class TestTierA:
             "unknown_action", ActionTier.INFORMATIONAL, _context(), _result()
         )
         assert result.executed is False
-        assert result.action_taken == NO_EXECUTOR_ACTION_TAKEN
+        assert result.action_taken == NO_EXECUTOR
 
     async def test_logged_to_state_store(self):
         store = _mock_store()
@@ -330,7 +331,7 @@ class TestTierD:
             await asyncio.gather(*d.get_inflight_tier_d_tasks())
 
         assert result.executed is False
-        assert result.action_taken == NO_EXECUTOR_ACTION_TAKEN
+        assert result.action_taken == NO_EXECUTOR
         critical_messages = [
             str(call.args) for call in mock_logger.critical.call_args_list
         ]
@@ -435,7 +436,7 @@ class TestMissingExecutorNeverReportsExecution:
             )
 
         assert result.executed is False
-        assert result.action_taken == NO_EXECUTOR_ACTION_TAKEN
+        assert result.action_taken == NO_EXECUTOR
 
     async def test_approved_tier_c_without_executor_is_not_recorded_as_taken(self):
         """The case that sealed a false attestation: approval is not execution."""
@@ -451,7 +452,7 @@ class TestMissingExecutorNeverReportsExecution:
 
         assert result.approved is True
         assert result.executed is False
-        assert result.action_taken == NO_EXECUTOR_ACTION_TAKEN
+        assert result.action_taken == NO_EXECUTOR
 
     async def test_missing_executor_is_distinguishable_from_a_failing_one(self):
         """Different faults, different remedies, so they must not collapse."""
@@ -468,7 +469,7 @@ class TestMissingExecutorNeverReportsExecution:
 
         assert absent_result.executed is False
         assert failing_result.executed is False
-        assert absent_result.action_taken == NO_EXECUTOR_ACTION_TAKEN
+        assert absent_result.action_taken == NO_EXECUTOR
         assert failing_result.action_taken == ""
 
     async def test_a_registered_executor_still_reports_execution(self):
@@ -2446,6 +2447,7 @@ class TestFirmwareProvenanceAtomicity:
                 input_firmware_device_id="fw-1",
                 input_firmware_registration=snapshot,
                 attestation_pending=True,
+                record_key=uuid.uuid4().hex,
             )
 
             # Read the raw column directly: it is already populated, with no

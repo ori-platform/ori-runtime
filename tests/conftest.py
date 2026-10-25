@@ -74,9 +74,12 @@ def _real_gpio_allowed() -> bool:
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    from tests import action_taken_guard
     from tests.package_layout import hold_reexports
 
     hold_reexports()
+    # Before any fixture, so a session fixture's setup writes under it too.
+    action_taken_guard.install()
 
 
 _LATE_PATCHES_DIR = pytest.StashKey[Path]()
@@ -112,11 +115,18 @@ class _LateCheck:
         A worker leaves its findings for the controller, which reads them here,
         after every worker has stopped.
         """
+        from tests import action_taken_guard
         from tests.package_layout import begin_phase
 
         result = yield
         config = session.config
         problems = begin_phase("After the last test")
+        # A session fixture's finalizer writes after the last test's check.
+        problems += [
+            f"After the last test: action_log row outside the vocabulary: {row} "
+            f"({action_taken_guard.LIMIT})"
+            for row in action_taken_guard.drain()
+        ]
         workerinput = getattr(config, "workerinput", None)
         if workerinput is not None and _LATE_PATCHES_KEY in workerinput:
             # Written even when clean: a missing file is a worker that stopped
@@ -142,7 +152,7 @@ class _LateCheck:
         if problems:
             writer = config.get_terminal_writer()
             writer.line()
-            writer.sep("=", "patch targets", red=True)
+            writer.sep("=", "checks after the last test", red=True)
             for problem in problems:
                 writer.line(problem, red=True)
             # An interrupted or broken run keeps the status that says so.
@@ -171,6 +181,22 @@ def _patch_problems(item: pytest.Item, when: str, problems: list[str]) -> None:
     item.stash.setdefault(_PATCH_PROBLEMS, {}).setdefault(when, []).extend(problems)
 
 
+_VOCABULARY_PROBLEMS = pytest.StashKey[dict[str, list[str]]]()
+
+
+def _vocabulary_rows(item: pytest.Item, when: str, phase: str) -> None:
+    """Hold the action-log rows outside the vocabulary written since the last
+    drain for *item*'s *when* report (`tests/action_taken_guard.py`)."""
+    from tests import action_taken_guard
+
+    rows = [
+        f"{phase}: action_log row outside the vocabulary: {row} "
+        f"({action_taken_guard.LIMIT})"
+        for row in action_taken_guard.drain()
+    ]
+    item.stash.setdefault(_VOCABULARY_PROBLEMS, {}).setdefault(when, []).extend(rows)
+
+
 @pytest.hookimpl(wrapper=True)
 def pytest_runtest_setup(item: pytest.Item) -> Iterator[None]:
     """Check the bindings in ``ori.config`` and ``ori.runtime`` a test starts
@@ -181,10 +207,12 @@ def pytest_runtest_setup(item: pytest.Item) -> Iterator[None]:
     from tests.package_layout import begin_phase
 
     _patch_problems(item, "setup", begin_phase("Left before this test started"))
+    _vocabulary_rows(item, "setup", "Written outside any test")
     try:
         return (yield)
     finally:
         _patch_problems(item, "setup", begin_phase("In setup"))
+        _vocabulary_rows(item, "setup", "In setup")
 
 
 @pytest.hookimpl(wrapper=True)
@@ -196,6 +224,7 @@ def pytest_runtest_call(item: pytest.Item) -> Iterator[None]:
         return (yield)
     finally:
         _patch_problems(item, "call", check_bindings())
+        _vocabulary_rows(item, "call", "In the test body")
 
 
 @pytest.hookimpl(wrapper=True)
@@ -206,27 +235,35 @@ def pytest_runtest_teardown(item: pytest.Item) -> Iterator[None]:
 
     # Other plugins' hooks run between the call's check and here.
     _patch_problems(item, "teardown", begin_phase("Before teardown"))
+    _vocabulary_rows(item, "teardown", "Before teardown")
     try:
         return (yield)
     finally:
         _patch_problems(item, "teardown", check_bindings())
+        _vocabulary_rows(item, "teardown", "In teardown")
 
 
 @pytest.hookimpl(wrapper=True, tryfirst=True)
 def pytest_runtest_makereport(
     item: pytest.Item, call: pytest.CallInfo[None]
 ) -> Generator[None, pytest.TestReport, pytest.TestReport]:
-    """Fail the phase whose bindings reach no caller, or only some.
+    """Fail the phase whose bindings reach no caller, or only some, or that
+    wrote an action-log row outside the vocabulary.
 
     Set on the finished report, outside every other wrapper, so neither
     ``xfail`` nor a skip can turn the refusal into an expected outcome.
     """
     report: pytest.TestReport = yield
-    problems = item.stash.get(_PATCH_PROBLEMS, {}).pop(call.when, [])
-    if problems:
+    for key, section in (
+        (_PATCH_PROBLEMS, "patch targets"),
+        (_VOCABULARY_PROBLEMS, "action_taken vocabulary"),
+    ):
+        problems = item.stash.get(key, {}).pop(call.when, [])
+        if not problems:
+            continue
         text = "\n".join(problems)
         if report.failed:
-            report.sections.append(("patch targets", text))
+            report.sections.append((section, text))
         else:
             report.outcome = "failed"
             report.longrepr = text

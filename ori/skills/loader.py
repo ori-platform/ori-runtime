@@ -56,6 +56,7 @@ from ori.reasoning.action_registry import (
     minimum_tier,
     tier_rank,
 )
+from ori.reasoning.action_taken import is_reserved as is_reserved_action_taken
 from ori.reasoning.approval_bounds import (
     MAX_PROPOSAL_LIFETIME_S,
     approval_timeout_accepted,
@@ -589,6 +590,16 @@ def _declares_distribution(pyproject: Path) -> bool:
         return False
     project = data.get("project")
     return isinstance(project, dict) and project.get("name") == _DISTRIBUTION
+
+
+def _refuse_reserved_action_name(skill_name: str, action_name: Any, where: str) -> None:
+    """Refuse an action named as the runtime records an action not taken."""
+    if isinstance(action_name, str) and is_reserved_action_taken(action_name):
+        raise SkillValidationError(
+            f"Skill {skill_name!r}: {where} names {action_name!r}, which the runtime "
+            "records to say no action was taken, so its row would read as the "
+            "runtime's own decision. Rename the action."
+        )
 
 
 def first_party_skill_roots() -> tuple[Path, ...]:
@@ -1955,6 +1966,7 @@ class SkillLoader:
             declared = str(entry.get("tier") or "").upper()
             if not isinstance(action_name, str):
                 continue
+            _refuse_reserved_action_name(skill_name, action_name, "actions.available")
             floor = minimum_tier(action_name)
             if not declared:
                 # An action the runtime can execute must state its tier. Letting
@@ -2203,6 +2215,9 @@ class SkillLoader:
                     f"but 'safe_default_action' is empty. Tier C triggers must always "
                     f"declare a safe_default_action for approval timeout / NO response."
                 )
+
+            where = f"trigger {name!r} safe_default_action"
+            _refuse_reserved_action_name(skill_name, safe_default_action, where)
 
             # The safe default runs when the operator says NO or says nothing,
             # with no approval of its own. Naming an actuating action here

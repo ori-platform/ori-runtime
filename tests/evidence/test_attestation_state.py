@@ -12,6 +12,7 @@ and nothing would have noticed.
 from __future__ import annotations
 
 import time
+import uuid
 
 import pytest
 
@@ -51,6 +52,7 @@ async def _log(store: StateStore, tier: str = "C", **kw) -> int | None:
     itself the behaviour the tier tests below assert.
     """
     kw.setdefault("attestation_pending", tier in ("C", "D"))
+    kw.setdefault("record_key", uuid.uuid4().hex)
     await store.log_action_for_event(
         _result(tier=tier), trigger_name="dangerous_overcurrent", **kw
     )

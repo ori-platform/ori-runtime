@@ -57,6 +57,14 @@ from ori.reasoning.action_registry import (
     is_safe_default_eligible,
     is_valid_tier,
 )
+from ori.reasoning.action_taken import (
+    COALESCED,
+    NO_EXECUTOR,
+    NOT_PERFORMED,
+    PROPOSAL_NOT_COMMITTED,
+    SUPPRESSED,
+    UNRECORDED_SUFFIX,
+)
 from ori.reasoning.approval_bounds import MAX_PROPOSAL_LIFETIME_S
 from ori.reasoning.capability_posture import CapabilityPosture
 from ori.reasoning.dispatch_plan import (
@@ -122,15 +130,6 @@ _APPROVAL_END_HEADLINE: Final[dict[str, str]] = {
     APPROVAL_LISTENER_ENDED: "Tier C approval could not receive a reply",
 }
 
-#: An executor may return this instead of a bool to say it deliberately did not
-#: act. A plain `False` means the action was attempted and did not happen, which
-#: an operator reading `action_log` must be able to tell from a notice a
-#: customer switched off.
-ALERT_SUPPRESSED: Final = "suppressed"
-#: An executor's affirmation that the commanded physical outcome did not
-#: occur: the driver refused before anything was driven. Only this makes an
-#: approved dispatch `dispatch_failed`; a bare False or a raise is unknown.
-ACTUATION_NOT_PERFORMED: Final = "not_performed"
 #: Approvals whose outcome may be pending at once. The admission commit
 #: reserves one slot each; at the ceiling a reply is not an approval.
 _PENDING_OUTCOME_CEILING: Final = 64
@@ -138,15 +137,6 @@ _PENDING_OUTCOME_CEILING: Final = 64
 #: retypes a few times; a channel answering instantly with noise must not
 #: hold the workflow in a loop.
 _MAX_REPLIES_PER_PROPOSAL: Final = 20
-SUPPRESSED_ACTION_TAKEN: Final = "suppressed"
-
-#: Recorded when a dispatched action has no registered executor. `executed` is
-#: false for it, like any other non-execution, but the cause is a configuration
-#: fault rather than a runtime one: nothing was attempted because there was
-#: nothing to attempt. An operator reading `action_log` fixes a missing executor
-#: differently from an executor that ran and failed, so the two must not
-#: collapse into one indistinguishable row.
-NO_EXECUTOR_ACTION_TAKEN: Final = "no_executor"
 
 logger = logging.getLogger(__name__)
 
@@ -193,9 +183,9 @@ def _action_taken(
     if executed:
         return action
     if suppressed:
-        return SUPPRESSED_ACTION_TAKEN
+        return SUPPRESSED
     if missing_executor:
-        return NO_EXECUTOR_ACTION_TAKEN
+        return NO_EXECUTOR
     return ""
 
 
@@ -1203,7 +1193,7 @@ class ActionDispatcher:
                     tier=tier,
                     executed=False,
                     approved=None,
-                    action_taken="suppressed",
+                    action_taken=SUPPRESSED,
                     timestamp=now_ms(),
                     operator_response="policy_suppression",
                 )
@@ -1276,7 +1266,7 @@ class ActionDispatcher:
         safe_default_action: str,
         timeout_value: int,
         record: asyncio.Future[ActionResult] | None,
-        meta: _RecordMeta | None = None,
+        meta: _RecordMeta,
     ) -> ActionResult:
         """Admit *action* against its resource, run it, and record the attempt."""
         # Resource admission. Contention is decided on the resource an action
@@ -1322,7 +1312,7 @@ class ActionDispatcher:
                 dispatch_tier=tier,
                 correlation_id=str(getattr(result, "correlation_id", "") or ""),
                 tier_d_granted=tier == ActionTier.SAFETY_CRITICAL,
-                record_key=meta.key if meta is not None else "",
+                record_key=meta.key,
                 record_future=record,
             )
             awaits_operator = tier == ActionTier.HARD_PHYSICAL or (
@@ -1350,10 +1340,10 @@ class ActionDispatcher:
                     tier=tier,
                     executed=False,
                     approved=None,
-                    action_taken="coalesced",
+                    action_taken=COALESCED,
                     timestamp=now_ms(),
                 )
-                if meta is not None and holder_key:
+                if holder_key:
                     meta.kind = "contributor"
                     meta.contributed_to = holder_key
                     self._record_after_holder(joined, context, record, holder)
@@ -1704,11 +1694,11 @@ class ActionDispatcher:
                         "ActionDispatcher: executing action %r (tier=%s)", action, tier
                     )
                 maybe_ok = await executor(action, context)
-                if maybe_ok == ALERT_SUPPRESSED:
+                if maybe_ok == SUPPRESSED:
                     # Deliberate non-action: nothing was attempted and nothing
                     # went wrong, which is not what a bare False records.
                     suppressed = True
-                elif maybe_ok == ACTUATION_NOT_PERFORMED:
+                elif maybe_ok == NOT_PERFORMED:
                     not_performed = True
                 elif maybe_ok is not False:
                     executed = True
@@ -1790,7 +1780,7 @@ class ActionDispatcher:
             executed=executed,
             approved=None,  # no approval step for A/B/D
             action_taken=(
-                ACTUATION_NOT_PERFORMED
+                NOT_PERFORMED
                 if not_performed
                 else _action_taken(
                     action,
@@ -1980,7 +1970,9 @@ class ActionDispatcher:
         proposal_id: str | None,
     ) -> ActionResult:
         """Run the safe default for a proposal no decision was reached for."""
-        action_taken = safe_default_action
+        # Naming the safe default claims it was taken; until it reports, the
+        # row says what a failed executor's says.
+        action_taken = ""
         executed = False
         try:
             inner = await self._execute_immediately(safe_default_action, tier, context)
@@ -2577,7 +2569,7 @@ class ActionDispatcher:
                     creation,
                 )
                 self._governed_notify(action, context, "proposal could not be recorded")
-                taken = "proposal_not_committed"
+                taken = PROPOSAL_NOT_COMMITTED
             inner = await self._execute_immediately(
                 safe_default_action, ActionTier.INFORMATIONAL, context
             )
@@ -2913,9 +2905,8 @@ class ActionDispatcher:
             action_result = resolved(
                 executed=bool(safe is not None and safe.executed),
                 approved=False,
-                action_taken=safe.action_taken
-                if safe is not None
-                else safe_default_action,
+                # An intent another attempt made is not this row's to claim.
+                action_taken=safe.action_taken if safe is not None else "",
                 operator_response=operator_response,
                 safe_default_used=bool(safe is not None and safe.executed),
             )
@@ -2931,7 +2922,7 @@ class ActionDispatcher:
                 # durable: the safe default ran and the loss is counted.
                 operator_decision = f"{operator_decision}_unrecorded"
                 action_result = dataclasses.replace(
-                    action_result, action_taken=f"{decision_state}_unrecorded"
+                    action_result, action_taken=f"{decision_state}{UNRECORDED_SUFFIX}"
                 )
             if decision_state == REJECTED and operator_response is not None:
                 rejected_with = operator_response
@@ -3092,9 +3083,9 @@ class ActionDispatcher:
             )
             return resolved(
                 False,
-                "approval_expired_undispatched"
+                APPROVAL_EXPIRED_UNDISPATCHED
                 if recorded
-                else "approval_expired_undispatched_unrecorded",
+                else f"{APPROVAL_EXPIRED_UNDISPATCHED}{UNRECORDED_SUFFIX}",
                 bool(safe is not None and safe.executed),
             )
         if (
@@ -3126,9 +3117,9 @@ class ActionDispatcher:
             )
             return resolved(
                 False,
-                "dispatch_refused_contention"
+                DISPATCH_REFUSED_CONTENTION
                 if recorded
-                else "dispatch_refused_contention_unrecorded",
+                else f"{DISPATCH_REFUSED_CONTENTION}{UNRECORDED_SUFFIX}",
                 bool(safe is not None and safe.executed),
             )
 
@@ -3170,10 +3161,10 @@ class ActionDispatcher:
                 DISPATCH_OUTCOME_UNKNOWN,
                 {"raised": type(exc).__name__},
             )
-            return resolved(False, "dispatch_outcome_unknown", False)
+            return resolved(False, DISPATCH_OUTCOME_UNKNOWN, False)
         if inner.executed:
             state = EXECUTED
-        elif inner.action_taken == ACTUATION_NOT_PERFORMED:
+        elif inner.action_taken == NOT_PERFORMED:
             state = DISPATCH_FAILED
         else:
             state = DISPATCH_OUTCOME_UNKNOWN
@@ -4678,6 +4669,10 @@ class ActionDispatcher:
             return
 
         _stamp_correlation_id(action_result, context)
+        if meta is None:
+            # Every row is named: a refusal or a suppression is a record a
+            # contributor, a resolver or an export must be able to point at.
+            meta = _RecordMeta(key=uuid.uuid4().hex)
 
         # The trigger that matched, kept apart from the sensor that reported.
         # `matched_trigger` is empty when no trigger name reached this dispatch,
@@ -4736,7 +4731,7 @@ class ActionDispatcher:
             if firmware_registration is not None
             else ""
         )
-        record_kind = meta.kind if meta is not None else "dispatch"
+        record_kind = meta.kind
         if record_kind != "dispatch":
             # A contributor performed nothing and holds no licence: it is not a
             # runtime_action and is never a candidate for attestation.
@@ -4782,8 +4777,8 @@ class ActionDispatcher:
                     binding_seq=binding_seq,
                     authority_json=authority_json,
                     record_kind=record_kind,
-                    record_key=meta.key if meta is not None else "",
-                    contributed_to=meta.contributed_to if meta is not None else None,
+                    record_key=meta.key,
+                    contributed_to=meta.contributed_to,
                 )
             else:
                 # This insert cannot store the licence with the row, so the row
@@ -4794,8 +4789,8 @@ class ActionDispatcher:
                     action_result,
                     trigger_name,
                     record_kind=record_kind,
-                    record_key=meta.key if meta is not None else "",
-                    contributed_to=meta.contributed_to if meta is not None else None,
+                    record_key=meta.key,
+                    contributed_to=meta.contributed_to,
                 )
         except Exception:
             # A durable record is the writer's to retry or count lost; any

@@ -317,6 +317,25 @@ release is cut.
 
 ## Fixed
 
+- Every action-log row carries a `record_key`. A refusal for an unrecognised
+  tier, a relay action suppressed by policy, a Tier D action from a skill
+  without first-party provenance, and an action below its minimum tier were
+  written with an empty key, so nothing could name or resolve them, and
+  `gateway-api/v2` refuses an empty `record_key` on export. The store now
+  refuses a new row without one.
+- The gateway `action_log` export carries only tiers `A` to `D`. A refusal row
+  stored with the unrecognised tier it was handed, such as `Z`, was exported
+  as it was; it is now omitted from the export and kept in the store and in
+  `state action-log`.
+- A skill can no longer declare an action, or a `safe_default_action`, named
+  as the runtime records an action not taken: `coalesced`, `suppressed`,
+  `no_executor`, `not_performed`, `proposal_not_committed`, a Tier C decision
+  state such as `dispatch_outcome_unknown`, a name starting `refused_` or
+  ending `_unrecorded`, in any letter case. Its row would have read as the runtime's
+  own decision, and `coalesced` marks a contributor to a consumer that predates
+  `record_kind`. The loader refuses such a skill, naming it. A safe default
+  that raises after a failed approval, or whose intent another attempt already
+  made, is recorded as not taken, rather than under its own name.
 - The signed config installer judged loopback for `--allow-insecure-loopback`
   with its own fixed set (`localhost`, `127.0.0.1`, `::1`). It now uses the
   same helper as the configuration and the runtime, so any loopback address,
