@@ -532,7 +532,7 @@ def test_a_configured_gsm_recipient_reads_the_configured_rule(
     import logging
     from types import SimpleNamespace
 
-    import ori.actions.sms as sms
+    from ori.actions.sms import SMSAction
 
     opened: list[str] = []
 
@@ -540,9 +540,11 @@ def test_a_configured_gsm_recipient_reads_the_configured_rule(
         opened.append(kwargs.get("port", ""))
         raise OSError("no modem")
 
-    monkeypatch.setattr(sms, "_PYSERIAL_AVAILABLE", True)
-    monkeypatch.setattr(sms, "_serial_module", SimpleNamespace(Serial=_serial))
-    action = sms.SMSAction()
+    monkeypatch.setattr("ori.actions.sms._PYSERIAL_AVAILABLE", True)
+    monkeypatch.setattr(
+        "ori.actions.sms._serial_module", SimpleNamespace(Serial=_serial)
+    )
+    action = SMSAction()
     with caplog.at_level(logging.WARNING):
         action._send_gsm_sync("hi", "+234\xa08000000001")
     assert "invalid recipient" not in caplog.text
