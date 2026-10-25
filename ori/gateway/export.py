@@ -445,6 +445,11 @@ class MqttGatewayExportServer:
         # and held until the response is published or has failed.
         self._slots = Slots(EXPORT_IN_FLIGHT_BOUND)
 
+    @property
+    def ingress(self) -> IngressBound:
+        """This route's size and rate bound, whose counts health reports."""
+        return self._ingress
+
     async def serve_until(self, shutdown_event: asyncio.Event) -> None:
         self._loop = asyncio.get_running_loop()
         await serve_with_reconnect(

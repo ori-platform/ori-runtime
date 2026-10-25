@@ -62,6 +62,7 @@ from ori.gateway.payload_bounds import (
     REDELIVERY_DUE,
     RUNTIME_HEARTBEAT,
     IngressBound,
+    IngressFamilies,
     fits,
     fitting_count,
     refill_seconds,
@@ -1379,6 +1380,11 @@ async def test_an_inbound_message_past_the_rate_is_left_with_the_broker():
     assert routed == [] and client.acked == []
     # Owed back once the rate refills, never after a failed route's backoff.
     assert session.ended_for() == (False, True)
+    # Left with the broker, so not dropped: health counts it in no family.
+    families = IngressFamilies()
+    families.add(subscriber.ingress)
+    assert families.families()[EVIDENCE_INBOUND]["volume_dropped"] == 0
+    assert subscriber.ingress.refusals()[REDELIVERY_DUE] == 1
 
 
 @pytest.mark.parametrize("first, second", [("failed", "rate"), ("rate", "failed")])
@@ -1636,10 +1642,10 @@ async def test_a_callback_paused_across_a_reconnect_owes_only_its_own_session(
                 raise OSError("the loop did not stop")
 
     class _PausedBound:
-        def admit(self, _payload: bytes) -> str:
+        def admit(self, _payload: bytes, *, over_rate: str = RATE_EXCEEDED) -> str:
             entered.set()
             release.wait(5)
-            return RATE_EXCEEDED
+            return over_rate
 
     def factory(**_kwargs: Any) -> _Client:
         clients.append(_Client())
@@ -1689,7 +1695,9 @@ async def test_a_callback_paused_across_a_reconnect_owes_only_its_own_session(
         await asyncio.wait_for(task, timeout=10)
 
 
-async def test_both_evidence_routes_count_their_in_flight_drops():
+async def test_both_evidence_routes_count_their_in_flight_refusals():
+    """The inbound route leaves the message with the broker, so it is owed a
+    redelivery; the outbound acknowledgement is dropped."""
     from ori.gateway.evidence_inbound import INBOUND_IN_FLIGHT_BOUND
     from ori.gateway.evidence_outbound import ACK_IN_FLIGHT_BOUND
 
@@ -1701,7 +1709,9 @@ async def test_both_evidence_routes_count_their_in_flight_drops():
         try_take=lambda: False, taken=INBOUND_IN_FLIGHT_BOUND
     )
     client.on_message(client, None, _message(b"{}", 1))
-    assert subscriber._ingress.refusals()[IN_FLIGHT_EXCEEDED] == 1
+    assert client.acked == []
+    assert subscriber._ingress.refusals()[REDELIVERY_DUE] == 1
+    assert subscriber._ingress.refusals().get(IN_FLIGHT_EXCEEDED, 0) == 0
 
     publisher = MqttEvidenceOutboundPublisher(
         broker_url="mqtt://localhost",
@@ -2178,10 +2188,12 @@ def test_every_gateway_route_built_by_the_runtime_shares_one_envelope_state():
         "build_evidence_outbound_publisher",
         "build_runtime_node_heartbeat_publisher",
     }
+    # The stages, and any method a stage hands its startup context to.
     stages = [
         node
         for name, node in runtime_methods().items()
-        if isinstance(node, ast.AsyncFunctionDef) and name.startswith("_stage_")
+        if name.startswith("_stage_")
+        or [arg.arg for arg in node.args.args[1:2]] == ["context"]
     ]
     assert stages, "OriRuntime has no startup stages to read"
 

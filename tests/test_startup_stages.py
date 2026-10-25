@@ -128,7 +128,7 @@ SURFACE: dict[str, tuple[set[str], set[str], set[str]]] = {
         },
     ),
     "reasoning": (
-        {"_config_path"},
+        {"_config_path", "_gateway_ingress"},
         {"_capability_posture_tracker", "_gateway_envelope_state"},
         set(),
     ),
@@ -206,13 +206,13 @@ SURFACE: dict[str, tuple[set[str], set[str], set[str]]] = {
             "_firmware_alarm_tracker",
             "_firmware_profile_library",
             "_firmware_reading_age",
+            "_gateway_ingress",
             "_nudge_firmware_confirmations",
             "_shutdown_event",
             "_state_store",
         },
         {
             "_evidence_inbound_subscriber",
-            "_evidence_outbound_publisher",
             "_firmware_alarm_tracker",
             "_firmware_command_publisher",
             "_firmware_command_service",
@@ -221,8 +221,8 @@ SURFACE: dict[str, tuple[set[str], set[str], set[str]]] = {
             "_firmware_profile_library",
         },
         {
-            "_evidence_checkpoint_loop",
             "_evidence_registration_loop",
+            "_start_evidence_outbound",
             "_start_gateway_export_responder_if_enabled",
             "_start_sms_webhook_if_enabled",
             "_start_telemetry_export_if_enabled",

@@ -4,13 +4,19 @@
 """The runtime's health snapshot and the component reports it folds together."""
 
 import logging
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 from ori.hal.base import silence_bound_ms
 from ori.runtime._commissioning import Commissioning
-from ori.runtime._health_status import degradation_reasons, fold_health_status
+from ori.runtime._health_status import (
+    degradation_reasons,
+    firmware_liveness_severity,
+    fold_health_status,
+    past_startup_deadline,
+)
 from ori.security.evidence.chain import SCHEMA_VERSION as EVIDENCE_SCHEMA_VERSION
 from ori.security.evidence.registration import RegistrationOffer, RegistrationStatus
 from ori.utils.bool_utils import is_truthy
@@ -18,6 +24,13 @@ from ori.utils.path_utils import path_is_relative_to
 from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger("ori.runtime")
+
+#: `firmware_liveness` device-id sets kept on the device, and the count the
+#: health export carries in place of each (runtime-health/v4).
+LOCAL_ONLY_DEVICE_SETS = {
+    "expiring_device_ids": "expiring_device_count",
+    "undeclared_device_ids": "undeclared_device_count",
+}
 
 
 class HealthSnapshot(Commissioning):
@@ -285,7 +298,6 @@ class HealthSnapshot(Commissioning):
             remote_command_lockout_senders.append(item)
 
         alert_outbox = await self._build_alert_outbox_health(now)
-        firmware_liveness_health = self._firmware_liveness_health()
 
         snapshot: dict[str, Any] = {
             "device_id": self._device_id,
@@ -327,12 +339,13 @@ class HealthSnapshot(Commissioning):
             "commissioning": self._commissioning_health(),
             "community_skills": community_skills_health,
             "config_authority": config_authority_health,
-            "firmware_liveness": firmware_liveness_health,
+            "firmware_liveness": await self._firmware_liveness_health(),
             "firmware_reading_age": self._firmware_reading_age_health(),
             "firmware_controller_profiles": (
                 await self._firmware_controller_profiles_health()
             ),
             "telemetry_export": self._telemetry_export_health(),
+            "mqtt_ingress": self._mqtt_ingress_health(),
         }
         # `runtime-health/v3` types this as an array and reads absence as
         # unknown, so a device with no registry omits the key entirely rather
@@ -343,7 +356,6 @@ class HealthSnapshot(Commissioning):
             snapshot["safety_zones"] = safety_zones
         severities = self._health_severities(
             snapshot,
-            firmware_liveness_health=firmware_liveness_health,
             community_skills_health=community_skills_health,
             config_authority_health=config_authority_health,
             safety_zones=safety_zones,
@@ -359,7 +371,7 @@ class HealthSnapshot(Commissioning):
         snapshot["critical"] = status == "critical"
 
         snapshot["degradation_reasons"] = degradation_reasons(
-            firmware_liveness_degraded=bool(firmware_liveness_health["degraded"]),
+            firmware_liveness_degraded=bool(snapshot["firmware_liveness"]["degraded"]),
         )
         return snapshot
 
@@ -367,7 +379,6 @@ class HealthSnapshot(Commissioning):
         self,
         snapshot: dict[str, Any],
         *,
-        firmware_liveness_health: dict[str, Any],
         community_skills_health: dict[str, Any],
         config_authority_health: dict[str, Any],
         safety_zones: list[dict[str, Any]],
@@ -377,16 +388,9 @@ class HealthSnapshot(Commissioning):
         # the order they are evaluated in never lets a degraded condition
         # overwrite a critical one.
         severities: list[str] = []
-        if firmware_liveness_health["degraded"]:
-            # A stopped or stalled liveness loop puts timely publication at
-            # risk for one or more supervised devices while the rest of the
-            # runtime looks healthy. A report that does not say which kind it
-            # is counts as critical.
-            severities.append(
-                "critical"
-                if firmware_liveness_health.get("critical", True)
-                else "degraded"
-            )
+        liveness = firmware_liveness_severity(snapshot["firmware_liveness"])
+        if liveness is not None:
+            severities.append(liveness)
         if self._measurement_degraded:
             # A sensor that connected and then refused a run of windows is not
             # measuring either, and the reasoning one branch below applies to it
@@ -640,20 +644,73 @@ class HealthSnapshot(Commissioning):
             "alarm_channels": alarm_channels,
         }
 
-    def _firmware_liveness_health(self) -> dict[str, Any]:
+    async def _firmware_liveness_health(self) -> dict[str, Any]:
+        """The liveness block, with runtime-health/v4's `state` and undeclared set.
+
+        The set is re-read from the registry for every snapshot, so it follows
+        each manifest acceptance. A registry that cannot be listed makes the
+        block `unavailable` and never serves an empty set.
+        """
         scheduler = self._firmware_liveness_scheduler
         if scheduler is None:
             # Not configured is not degraded: no command egress means this
             # runtime is not the authority for any device, so there is no
             # obligation to be failing.
             return {
+                "state": "disabled",
                 "enabled": False,
                 "running": False,
                 "degraded": False,
             }
-        health = dict(scheduler.health())
+        try:
+            undeclared: tuple[str, ...] | None = await scheduler.undeclared_device_ids()
+        except Exception:
+            logger.exception(
+                "[health] could not list held firmware manifests; "
+                "firmware_liveness is unavailable"
+            )
+            undeclared = None
+        health = dict(scheduler.health(frozenset(undeclared or ())))
         health["enabled"] = True
+        if undeclared is None:
+            health["state"] = "unavailable"
+        elif not health.get("started"):
+            health["state"] = (
+                "unavailable"
+                if past_startup_deadline(
+                    self._process_started_monotonic, time.monotonic()
+                )
+                else "starting"
+            )
+        else:
+            health["state"] = "available"
+            health["undeclared_device_ids"] = list(undeclared)
         return health
+
+    async def _exported_health_snapshot(self) -> dict[str, Any]:
+        """The snapshot the health export sends, without local-only device ids.
+
+        runtime-health/v4 keeps `firmware_liveness`'s two device-id sets on
+        the device and projects each as a count; the scheduler's `last_error`
+        is prose, which stays on the device too.
+        """
+        snapshot = await self._build_health_snapshot()
+        liveness = dict(snapshot["firmware_liveness"])
+        for ids, count in LOCAL_ONLY_DEVICE_SETS.items():
+            if ids in liveness:
+                liveness[count] = len(liveness.pop(ids))
+        liveness.pop("last_error", None)
+        snapshot["firmware_liveness"] = liveness
+        return snapshot
+
+    def _mqtt_ingress_health(self) -> dict[str, Any]:
+        """runtime-health/v4 `mqtt_ingress`: refusals per built gateway route.
+
+        Contributes no condition; the counts are the reader's to judge.
+        """
+        if self._config is None or not bool(self._config.gateway.enabled):
+            return {"state": "disabled"}
+        return {"state": "available", "families": self._gateway_ingress.families()}
 
     def _gateway_broker_posture_health(self) -> dict[str, Any]:
         if self._config is None:

@@ -127,6 +127,32 @@ release is cut.
 
 ## Added
 
+- Health names the devices this runtime signs nothing for:
+  `firmware_liveness.undeclared_device_ids` lists every held device whose
+  accepted manifest does not declare `runtime_key_domains`, re-read from the
+  registry for every snapshot, so a device enters the set when its manifest is
+  accepted and leaves it when a declaring one is, with no restart. Such a
+  device is never counted in `supervised_devices` or listed in
+  `expiring_device_ids`, and a non-empty set degrades `status`. The
+  `firmware_signing_domains_undeclared` token is not named yet: a gateway
+  refuses a heartbeat carrying a token outside its vocabulary, so it waits for
+  gateways that accept it (runtime-health/v4). Manifests that cannot be listed
+  make `firmware_liveness.state` `unavailable` and `status` critical, never an
+  empty set. The block also carries `state` (`disabled`, `starting`,
+  `unavailable` or `available`). A liveness loop not yet started is `starting`
+  and degrades `status`; one still not started 300 seconds after the process
+  started is `unavailable` and makes it critical, so a hung start is never
+  reported healthy.
+- Health reports `mqtt_ingress`: for each gateway-to-runtime route the runtime
+  built, how many messages it refused for size (`payload_too_large`), dropped
+  for volume (`volume_dropped`: past the family's rate or its work in flight)
+  and refused under the Payload Member Rule (`member_refused`), since the
+  process started. A message left for the broker to redeliver is not counted:
+  inbound evidence past its rate or its work in flight is left that way,
+  so it is never `volume_dropped`.
+  The block is `disabled` with no gateway configured and contributes no
+  condition (runtime-health/v4).
+
 - The Tier C approver registry, built against the `tier-c-approvers/v1`
   draft: the runtime-owned record of who may approve a Tier C action, bound to
   the device, a verified `device.site_id` and an identity epoch the runtime
@@ -197,6 +223,13 @@ release is cut.
   and neither affects `status`.
 
 ## Changed
+
+- The gateway `health` export no longer carries device identifiers from
+  `firmware_liveness`: `expiring_device_ids` is exported as
+  `expiring_device_count`, and `undeclared_device_ids` as
+  `undeclared_device_count` (runtime-health/v4 keeps both sets on the device),
+  and its free-text `last_error` is no longer exported. The local health
+  socket still serves all three.
 
 - A firmware manifest may declare `command_results:
   "firmware-command-result/v1"` (`firmware-telemetry/v2` Command Results); any
@@ -681,8 +714,8 @@ release is cut.
   2,000,000 history rows. An oversized inbound evidence message is released
   at the broker so it is not redelivered without end, and one past the rate
   is left with the broker for redelivery. Refusals are logged by topic
-  family, reason and size class, never by contents or device, until
-  runtime-health/v4 names a field for them. As a producer, the runtime never
+  family, reason and size class, never by contents or device, and counted in
+  health's `mqtt_ingress`. As a producer, the runtime never
   publishes a reasoning request over its maximum, fits each export page and
   runtime heartbeat to its topic's maximum (ending an export with
   `item_exceeds_payload_maximum` where one item cannot fit alone), and lists

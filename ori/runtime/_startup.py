@@ -137,6 +137,8 @@ class StartupStages(
         gateway_reasoner = build_gateway_reasoner(
             context.config, context.gateway_envelope_state
         )
+        if gateway_reasoner is not None:
+            self._gateway_ingress.add(gateway_reasoner.ingress)
         context.elevator = IntelligenceElevator(
             local_llm=context.local_llm,
             gateway_reasoner=gateway_reasoner,
@@ -490,6 +492,7 @@ class StartupStages(
             else None
         )
         if hb_subscriber is not None:
+            self._gateway_ingress.add(hb_subscriber.ingress)
             self._background_tasks.append(
                 asyncio.create_task(
                     hb_subscriber.serve_until(self._shutdown_event),
@@ -502,6 +505,7 @@ class StartupStages(
         )
         self._evidence_inbound_subscriber = evidence_inbound_subscriber
         if evidence_inbound_subscriber is not None:
+            self._gateway_ingress.add(evidence_inbound_subscriber.ingress)
             self._background_tasks.append(
                 asyncio.create_task(
                     evidence_inbound_subscriber.serve_until(self._shutdown_event),
@@ -524,29 +528,7 @@ class StartupStages(
             )
             logger.info("[runtime] evidence anchor registration reconciler started")
 
-        evidence_outbound_publisher = build_evidence_outbound_publisher(
-            context.config, context.evidence_attestor, context.gateway_envelope_state
-        )
-        self._evidence_outbound_publisher = evidence_outbound_publisher
-        if (
-            evidence_outbound_publisher is not None
-            and context.evidence_attestor is not None
-        ):
-            context.evidence_attestor.set_sealed_listener(
-                evidence_outbound_publisher.nudge
-            )
-            self._background_tasks.append(
-                asyncio.create_task(
-                    evidence_outbound_publisher.serve_until(self._shutdown_event),
-                    name="evidence-outbound",
-                )
-            )
-            self._background_tasks.append(
-                asyncio.create_task(
-                    self._evidence_checkpoint_loop(context.evidence_attestor),
-                    name="evidence-checkpoint",
-                )
-            )
+        self._start_evidence_outbound(context)
 
         # Built here, not read back from the subscriber, so health reaches the
         # documents and alarm snapshots without holding anything of the stack.
@@ -583,6 +565,9 @@ class StartupStages(
 
         if firmware_command_pair is not None:
             publisher, service = firmware_command_pair
+            # Held before connect() so health reports the loop `starting`, under
+            # the startup deadline, rather than disabled while egress connects.
+            self._firmware_liveness_scheduler = firmware_liveness_scheduler
             try:
                 await publisher.connect()
             except Exception:
@@ -601,13 +586,39 @@ class StartupStages(
             # it. Sequence gaps are legal, but burning them on a race is
             # not a cost to accept when ordering is free.
             if firmware_liveness_scheduler is not None:
-                self._firmware_liveness_scheduler = firmware_liveness_scheduler
                 self._background_tasks.append(
                     asyncio.create_task(
                         firmware_liveness_scheduler.serve_until(self._shutdown_event),
                         name="firmware-liveness",
                     )
                 )
+
+    def _start_evidence_outbound(self, context: StartupContext) -> None:
+        """Build the outbound evidence route, and serve it when evidence is on."""
+        evidence_outbound_publisher = build_evidence_outbound_publisher(
+            context.config, context.evidence_attestor, context.gateway_envelope_state
+        )
+        self._evidence_outbound_publisher = evidence_outbound_publisher
+        if (
+            evidence_outbound_publisher is not None
+            and context.evidence_attestor is not None
+        ):
+            self._gateway_ingress.add(evidence_outbound_publisher.ingress)
+            context.evidence_attestor.set_sealed_listener(
+                evidence_outbound_publisher.nudge
+            )
+            self._background_tasks.append(
+                asyncio.create_task(
+                    evidence_outbound_publisher.serve_until(self._shutdown_event),
+                    name="evidence-outbound",
+                )
+            )
+            self._background_tasks.append(
+                asyncio.create_task(
+                    self._evidence_checkpoint_loop(context.evidence_attestor),
+                    name="evidence-checkpoint",
+                )
+            )
 
     async def _stage_operator_services(self, context: StartupContext) -> None:
         await self._start_firmware_mqtt_operator_if_enabled(context.config)

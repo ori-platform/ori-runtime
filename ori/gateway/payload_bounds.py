@@ -78,7 +78,8 @@ RATE_EXCEEDED = "rate_exceeded"
 #: Admitted by size and rate, then dropped: the family's work already in
 #: flight is at its bound.
 IN_FLIGHT_EXCEEDED = "in_flight_exceeded"
-#: Left with the broker unread because a reconnect that redelivers it is due.
+#: Left with the broker unread for redelivery: a reconnect is due, or the
+#: route keeps a message past its rate or work in flight for the broker.
 REDELIVERY_DUE = "redelivery_due"
 #: The Payload Member Rule's reasons are recorded here too, the same way.
 REFUSAL_REASONS = (
@@ -184,10 +185,9 @@ class IngressBound:
     """Size, then rate, for one gateway-to-runtime family; safe from any thread.
 
     A refused message is counted and logged by family, reason and size class,
-    never by contents or device. runtime-health/v4 does not yet name a field
-    for the counts, so the log is the only report (gateway-api/v2 Payload
-    Volume): refusals are written at most once a second per reason, and every
-    one is in a line, the last within a second of its refusal.
+    never by contents or device. The counts reach health through
+    `IngressFamilies`; the log writes refusals at most once a second per
+    reason, every one in a line, the last within a second of its refusal.
     """
 
     def __init__(
@@ -212,11 +212,15 @@ class IngressBound:
             REFUSAL_REASONS, None
         )
 
-    def admit(self, payload: object) -> str | None:
+    def admit(self, payload: object, *, over_rate: str = RATE_EXCEEDED) -> str | None:
         """None when *payload* may be read; otherwise the reason it is refused.
 
-        Nothing of the payload is read but its length.
+        Nothing of the payload is read but its length. A route that leaves a
+        message past the rate with the broker passes ``REDELIVERY_DUE`` as
+        *over_rate*, since such a message is not dropped.
         """
+        if over_rate not in (RATE_EXCEEDED, REDELIVERY_DUE):
+            raise ValueError(f"{over_rate!r} is not a rate refusal")
         if not self.within_size(payload):
             return PAYLOAD_TOO_LARGE
         length = len(payload)  # type: ignore[arg-type]
@@ -228,8 +232,8 @@ class IngressBound:
             if self._tokens >= 1.0:
                 self._tokens -= 1.0
                 return None
-        self._refuse(RATE_EXCEEDED, length)
-        return RATE_EXCEEDED
+        self._refuse(over_rate, length)
+        return over_rate
 
     def within_size(self, payload: object) -> bool:
         """Whether *payload* is within the maximum; a refusal is counted."""
@@ -240,8 +244,8 @@ class IngressBound:
         return True
 
     def refuse(self, reason: str) -> None:
-        """Count and log a drop the route decided after size and rate,
-        including a refusal under the Payload Member Rule."""
+        """Count and log what the route decided after size and rate: a drop, a
+        message left for redelivery, or a Payload Member Rule refusal."""
         if reason not in (IN_FLIGHT_EXCEEDED, REDELIVERY_DUE, *MEMBER_REASONS):
             raise ValueError(f"{reason!r} is not a route's own refusal")
         self._refuse(reason, -1)
@@ -302,6 +306,13 @@ class IngressBound:
                 ", ".join("unknown" if c < 0 else str(c) for c in classes),
                 self.maximum,
             )
+        elif reason == REDELIVERY_DUE:
+            logger.warning(
+                "[gateway-ingress] %s left %d message(s) with the broker as %s",
+                self.family,
+                count,
+                reason,
+            )
         else:
             logger.warning(
                 "[gateway-ingress] %s dropped %d message(s) as %s",
@@ -309,3 +320,40 @@ class IngressBound:
                 count,
                 reason,
             )
+
+
+#: Reasons each runtime-health/v4 `mqtt_ingress` count sums. A message left
+#: for the broker to redeliver was not dropped, so `redelivery_due` is in none.
+INGRESS_COUNTS: dict[str, tuple[str, ...]] = {
+    "payload_too_large": (PAYLOAD_TOO_LARGE,),
+    "volume_dropped": (RATE_EXCEEDED, IN_FLIGHT_EXCEEDED),
+    "member_refused": tuple(MEMBER_REASONS),
+}
+
+
+class IngressFamilies:
+    """The bound of every gateway-to-runtime route this runtime built.
+
+    One per runtime, filled as each route is built, so a family is reported
+    only once its route exists and its counts last for the process.
+    """
+
+    def __init__(self) -> None:
+        self._bounds: dict[str, IngressBound] = {}
+
+    def add(self, bound: IngressBound) -> None:
+        """Hold *bound*; a second bound for one family is a wiring defect."""
+        if bound.family in self._bounds:
+            raise ValueError(f"{bound.family} already has an ingress bound")
+        self._bounds[bound.family] = bound
+
+    def families(self) -> dict[str, dict[str, int]]:
+        """runtime-health/v4 `mqtt_ingress.families`: counts, keyed by topic."""
+        report: dict[str, dict[str, int]] = {}
+        for family, bound in sorted(self._bounds.items()):
+            refusals = bound.refusals()
+            report[family] = {
+                name: sum(refusals.get(reason, 0) for reason in reasons)
+                for name, reasons in INGRESS_COUNTS.items()
+            }
+        return report

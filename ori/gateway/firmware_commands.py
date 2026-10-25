@@ -279,25 +279,36 @@ class FirmwareCommandService:
             )
         self._provisioner_key_bytes = provisioner_key_bytes
 
-    async def report_undeclared_devices(self) -> tuple[str, ...]:
+    async def undeclared_device_ids(self) -> tuple[str, ...]:
+        """Held, unrevoked devices whose accepted manifest does not declare the domains.
+
+        Read from the registry on every call, so it follows each acceptance.
+        A registry that cannot be listed raises: an empty answer would claim
+        that every device declares them.
+        """
+        manifests = await self._store.list_firmware_device_manifests()
+        return tuple(
+            sorted(
+                device_id
+                for device_id, manifest in manifests
+                if not declares_signing_domains(manifest)
+            )
+        )
+
+    async def report_undeclared_devices(self) -> None:
         """Warn for every held device whose manifest does not declare the domains.
 
         Their runtime_commanded actions are unavailable and nothing is signed
         for them. A store that cannot list devices is reported, not ignored.
         """
         try:
-            manifests = await self._store.list_firmware_device_manifests()
+            undeclared = await self.undeclared_device_ids()
         except Exception:
             logger.exception(
                 "[firmware-commands] could not read device manifests to report "
                 "undeclared signing domains"
             )
-            return ()
-        undeclared = tuple(
-            device_id
-            for device_id, manifest in manifests
-            if not declares_signing_domains(manifest)
-        )
+            return
         for device_id in undeclared:
             logger.warning(
                 "[firmware-commands] device %r does not declare runtime_key_domains; "
@@ -305,7 +316,6 @@ class FirmwareCommandService:
                 "actions are unavailable",
                 device_id,
             )
-        return undeclared
 
     async def publish_provisioning_approval(self, device_id: str) -> bytes:
         row = await self._require_approved_device(device_id)

@@ -507,6 +507,10 @@ EGRESS_CALLEES = frozenset(
         "username_pw_set",
         # Logging only.
         "warning",
+        # The registry read that names devices declaring no signing domain,
+        # and the order it reports them in; neither publishes anything.
+        "undeclared_device_ids",
+        "sorted",
         # Parses a signed liveness message to refuse one not at v 2 before it
         # is published; it publishes nothing.
         "loads",

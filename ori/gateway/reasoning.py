@@ -150,6 +150,11 @@ class MqttGatewayReasoner:
         self._ingress = IngressBound(REASONING_RESPONSE)
 
     @property
+    def ingress(self) -> IngressBound:
+        """This route's size and rate bound, whose counts health reports."""
+        return self._ingress
+
+    @property
     def request_topic(self) -> str:
         return REASONING_REQUEST_TOPIC_TEMPLATE.format(device_id=self._device_id)
 

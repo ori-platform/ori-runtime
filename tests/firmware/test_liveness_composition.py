@@ -570,8 +570,9 @@ class _StubScheduler:
         self._degraded = degraded
         self._critical = critical
 
-    def health(self) -> dict[str, object]:
+    def health(self, undeclared: frozenset[str] = frozenset()) -> dict[str, object]:
         health: dict[str, object] = {
+            "started": True,
             "running": not self._degraded,
             "degraded": self._degraded,
             "supervised_device_count": 3,
@@ -580,6 +581,9 @@ class _StubScheduler:
         if self._critical is not None:
             health["critical"] = self._critical
         return health
+
+    async def undeclared_device_ids(self) -> tuple[str, ...]:
+        return ()
 
 
 def _runtime_with_scheduler(scheduler):

@@ -2797,9 +2797,9 @@ def startup_reports(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     calls: list[int] = []
     original = FirmwareCommandService.report_undeclared_devices
 
-    async def recorded(self: FirmwareCommandService) -> tuple[str, ...]:
+    async def recorded(self: FirmwareCommandService) -> None:
         calls.append(1)
-        return await original(self)
+        await original(self)
 
     monkeypatch.setattr(FirmwareCommandService, "report_undeclared_devices", recorded)
     return calls

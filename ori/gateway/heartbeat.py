@@ -112,6 +112,11 @@ class MqttGatewayHeartbeatSubscriber:
         self._ingress = IngressBound(GATEWAY_HEALTH)
         self._refusal_log = CoalescedWarning(logger)
 
+    @property
+    def ingress(self) -> IngressBound:
+        """This route's size and rate bound, whose counts health reports."""
+        return self._ingress
+
     async def serve_until(self, shutdown_event: asyncio.Event) -> None:
         """Connect to the broker, subscribe, and serve until *shutdown_event* fires.
 

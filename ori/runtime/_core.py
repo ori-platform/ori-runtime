@@ -5,6 +5,7 @@
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from ori.actions.alert_failover import AlertFailoverSender
@@ -21,6 +22,7 @@ from ori.gateway.firmware_commands import (
 )
 from ori.gateway.firmware_liveness_publisher import FirmwareLivenessScheduler
 from ori.gateway.node_heartbeat import MqttRuntimeNodeHeartbeatPublisher
+from ori.gateway.payload_bounds import IngressFamilies
 from ori.hal.base import BaseAdapter
 from ori.hardware.led_indicator import LEDIndicator
 from ori.network.deduplicator import EventDeduplicator
@@ -137,6 +139,8 @@ class RuntimeCore:
         self._measurement_reconciling: set[str] = set()
         self._measurement_disk_recovered: set[str] = set()
         self._runtime_started_at_ms: int = 0
+        # The runtime-health/v4 startup deadline is measured from here.
+        self._process_started_monotonic = time.monotonic()
         self._configured_sensors: list[Any] = []
         self._connected_sensor_ids: set[str] = set()
         self._last_alert_timestamps_by_channel: dict[str, int] = {}
@@ -145,6 +149,8 @@ class RuntimeCore:
         self._operator_socket_server: OperatorSocketServer | None = None
         self._firmware_mqtt_operator_server: FirmwareMqttOperatorServer | None = None
         self._gateway_export_server: MqttGatewayExportServer | None = None
+        # Every gateway-to-runtime route registers its bound here when built.
+        self._gateway_ingress = IngressFamilies()
         self._runtime_node_heartbeat_publisher: (
             MqttRuntimeNodeHeartbeatPublisher | None
         ) = None

@@ -32,7 +32,6 @@ from typing import Any, Callable, cast
 from ori.gateway.mqtt_security import apply_tls_context, parse_gateway_broker_url
 from ori.gateway.payload_bounds import (
     EVIDENCE_INBOUND,
-    IN_FLIGHT_EXCEEDED,
     PAYLOAD_TOO_LARGE,
     REDELIVERY_DUE,
     IngressBound,
@@ -554,6 +553,11 @@ class MqttEvidenceInboundSubscriber:
         self._refusal_log = CoalescedWarning(logger)
 
     @property
+    def ingress(self) -> IngressBound:
+        """This route's size and rate bound, whose counts health reports."""
+        return self._ingress
+
+    @property
     def topic(self) -> str:
         return self._router.topic
 
@@ -817,7 +821,7 @@ class MqttEvidenceInboundSubscriber:
             else:
                 self._release(client, message)
             return
-        refusal = self._ingress.admit(payload)
+        refusal = self._ingress.admit(payload, over_rate=REDELIVERY_DUE)
         if refusal == PAYLOAD_TOO_LARGE:
             # Released, never answered: a message refused for its size would
             # be redelivered and refused without end.
@@ -831,7 +835,7 @@ class MqttEvidenceInboundSubscriber:
             # Nothing is scheduled for it: the message stays with the broker
             # and comes back after the reconnect that follows the backlog.
             self._shed += 1
-            self._ingress.refuse(IN_FLIGHT_EXCEEDED)
+            self._ingress.refuse(REDELIVERY_DUE)
             if self._leave_with_broker(session, loop):
                 logger.warning(
                     "[evidence-inbound] %d messages in flight; further messages "

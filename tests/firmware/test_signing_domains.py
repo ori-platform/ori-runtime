@@ -206,8 +206,10 @@ async def test_the_startup_report_names_held_undeclared_devices(
     store: StateStore, caplog: pytest.LogCaptureFixture
 ) -> None:
     await _provision(store, _bare_message())
+    service = _service(store)
+    assert await service.undeclared_device_ids() == (DEVICE,)
     with caplog.at_level(logging.WARNING):
-        assert await _service(store).report_undeclared_devices() == (DEVICE,)
+        await service.report_undeclared_devices()
     assert any(DEVICE in r.getMessage() for r in caplog.records)
 
 
@@ -215,7 +217,7 @@ async def test_the_startup_report_passes_a_declaring_or_revoked_device(
     store: StateStore,
 ) -> None:
     await _provision(store, declaring_message(SEALED))
-    assert await _service(store).report_undeclared_devices() == ()
+    assert await _service(store).undeclared_device_ids() == ()
 
 
 async def test_the_startup_report_skips_a_revoked_device(store: StateStore) -> None:
@@ -223,7 +225,7 @@ async def test_the_startup_report_skips_a_revoked_device(store: StateStore) -> N
     assert await FirmwareTelemetryGate(store).revoke_device(
         DEVICE, actor="op", reason="gone"
     )
-    assert await _service(store).report_undeclared_devices() == ()
+    assert await _service(store).undeclared_device_ids() == ()
 
 
 async def test_an_unreadable_registry_is_reported_not_ignored(
@@ -233,8 +235,12 @@ async def test_an_unreadable_registry_is_reported_not_ignored(
         raise RuntimeError("store unreadable")
 
     store.list_firmware_device_manifests = broken  # type: ignore[method-assign]
+    service = _service(store)
+    # Never an empty answer: that would claim every device declares them.
+    with pytest.raises(RuntimeError, match="store unreadable"):
+        await service.undeclared_device_ids()
     with caplog.at_level(logging.ERROR):
-        assert await _service(store).report_undeclared_devices() == ()
+        await service.report_undeclared_devices()
     assert any("undeclared signing domains" in r.getMessage() for r in caplog.records)
 
 

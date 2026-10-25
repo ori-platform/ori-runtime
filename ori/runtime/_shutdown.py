@@ -178,7 +178,7 @@ class Shutdown(MeasurementSupervision, EvidenceLoops, SkillReload):
                 logger.exception("[shutdown] error closing firmware command publisher")
             self._firmware_command_publisher = None
             self._firmware_command_service = None
-            self._firmware_liveness_scheduler = None
+        self._firmware_liveness_scheduler = None
         self._firmware_profile_library = None
         self._firmware_alarm_tracker = None
 

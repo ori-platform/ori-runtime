@@ -24,15 +24,48 @@ from typing import Any
 import pytest
 
 from ori.runtime import OriRuntime
+from ori.runtime._health_status import firmware_liveness_severity
 from ori.runtime._health_status import fold_health_status as _fold_health_status
 
 
 class _Scheduler:
-    def __init__(self, *, critical: bool) -> None:
+    def __init__(
+        self,
+        *,
+        critical: bool | None,
+        undeclared: tuple[str, ...] | None = (),
+        started: bool = True,
+    ) -> None:
         self._critical = critical
+        self._undeclared = undeclared
+        self._started = started
 
-    def health(self) -> dict[str, object]:
-        return {"running": True, "degraded": True, "critical": self._critical}
+    async def undeclared_device_ids(self) -> tuple[str, ...]:
+        if self._undeclared is None:
+            raise RuntimeError("registry unreadable")
+        return self._undeclared
+
+    def health(self, undeclared: frozenset[str] = frozenset()) -> dict[str, object]:
+        if self._critical is None:
+            return {"running": True, "started": self._started, "degraded": False}
+        return {
+            "running": True,
+            "started": self._started,
+            "degraded": True,
+            "critical": self._critical,
+        }
+
+
+def _liveness(
+    *,
+    critical: bool | None,
+    undeclared: tuple[str, ...] | None = (),
+    started: bool = True,
+) -> Callable[[OriRuntime], None]:
+    return _set(
+        "_firmware_liveness_scheduler",
+        _Scheduler(critical=critical, undeclared=undeclared, started=started),
+    )
 
 
 class _Commissioning:
@@ -88,14 +121,17 @@ def _heartbeat_clock_out_of_range(runtime: OriRuntime) -> None:
 
 CONDITIONS: dict[str, tuple[str, Callable[[OriRuntime], None]]] = {
     "decision_record_lost": ("critical", _set("_decision_records_lost", lambda: 1)),
-    "liveness_critical": (
+    "liveness_critical": ("critical", _liveness(critical=True)),
+    "liveness_degraded": ("degraded", _liveness(critical=False)),
+    "liveness_manifests_unlisted": (
         "critical",
-        _set("_firmware_liveness_scheduler", _Scheduler(critical=True)),
+        _liveness(critical=None, undeclared=None),
     ),
-    "liveness_degraded": (
+    "liveness_signing_domains_undeclared": (
         "degraded",
-        _set("_firmware_liveness_scheduler", _Scheduler(critical=False)),
+        _liveness(critical=None, undeclared=("fw-01",)),
     ),
+    "liveness_starting": ("degraded", _liveness(critical=None, started=False)),
     "commissioning_problem": (
         "degraded",
         _set("_commissioning_state", _Commissioning()),
@@ -124,8 +160,8 @@ CONDITIONS: dict[str, tuple[str, Callable[[OriRuntime], None]]] = {
     "gateway_signing_refused": ("degraded", _signing_refused),
     "heartbeat_clock_out_of_range": ("degraded", _heartbeat_clock_out_of_range),
 }
-# Both liveness entries drive the one liveness branch.
-BRANCHES = len(CONDITIONS) - 1
+# The five liveness entries drive the one liveness branch.
+BRANCHES = len(CONDITIONS) - 4
 
 
 def _runtime(*names: str) -> OriRuntime:
@@ -160,7 +196,7 @@ async def test_each_condition_alone_reports_its_severity(name: str) -> None:
     [
         pair
         for pair in itertools.combinations(sorted(CONDITIONS), 2)
-        # Both liveness entries set the one scheduler.
+        # Every liveness entry sets the one scheduler.
         if not all(name.startswith("liveness_") for name in pair)
     ],
     ids="+".join,
@@ -248,6 +284,32 @@ def test_every_condition_branch_is_driven() -> None:
         f"the builder has {len(appends)} severity contributions and CONDITIONS "
         f"drives {BRANCHES}; add a row for the new condition"
     )
+    # The liveness branch folds its own conditions: loop (critical or
+    # degraded, two rows), unavailable, starting and an undeclared device.
+    liveness = _severity_appends(_parsed(firmware_liveness_severity))
+    rows = [name for name in CONDITIONS if name.startswith("liveness_")]
+    assert len(liveness) == len(rows) - 1, (
+        f"firmware_liveness_severity has {len(liveness)} conditions and "
+        f"CONDITIONS drives {len(rows) - 1}; add a liveness row"
+    )
+
+
+@pytest.mark.parametrize(
+    ("critical", "undeclared", "status"),
+    [
+        (False, None, "critical"),
+        (True, ("fw-01",), "critical"),
+        (False, ("fw-01",), "degraded"),
+    ],
+    ids=["degraded-loop+unlisted", "critical-loop+undeclared", "both-degraded"],
+)
+async def test_liveness_conditions_together_report_the_most_severe(
+    critical: bool, undeclared: tuple[str, ...] | None, status: str
+) -> None:
+    runtime = _runtime()
+    _liveness(critical=critical, undeclared=undeclared)(runtime)
+    snapshot = await runtime._build_health_snapshot()
+    assert snapshot["status"] == status
 
 
 def test_only_the_fold_assigns_status_and_critical() -> None:

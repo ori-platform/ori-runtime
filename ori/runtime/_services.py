@@ -69,7 +69,7 @@ class OperatorServices(HealthSnapshot):
             responder = GatewayExportResponder(
                 device_id=config.device.id,
                 state_store=self._state_store,
-                health_snapshot_provider=self._build_health_snapshot,
+                health_snapshot_provider=self._exported_health_snapshot,
                 message_auth=_build_gateway_message_auth(config, envelope_state),
                 message_encryptor=build_gateway_message_encryptor(config),
             )
@@ -82,6 +82,7 @@ class OperatorServices(HealthSnapshot):
             logger.exception("[gateway-export] invalid responder configuration")
             return None
         self._gateway_export_server = server
+        self._gateway_ingress.add(server.ingress)
         return asyncio.create_task(
             server.serve_until(self._shutdown_event),
             name="gateway-export-responder",

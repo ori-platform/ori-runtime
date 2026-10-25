@@ -60,6 +60,7 @@ from ori.gateway.payload_bounds import (
     EVIDENCE_OUTBOUND_ACK,
     INGRESS_RATES,
     RATE_EXCEEDED,
+    REDELIVERY_DUE,
 )
 from ori.network.events import OriEvent, SensorReading
 from ori.reasoning.action_dispatcher import ActionDispatcher
@@ -1573,10 +1574,9 @@ class TestTheInFlightSlots:
             assert ran, "the queued trip never ran"
             if latency_bounds_apply():
                 assert ran[0] - unblocked < _TRIP_BOUND_S, ran[0] - unblocked
-            # Refused at the in-flight bound or, earlier, at the family's rate.
-            refused = (
-                subscriber.shed_count + subscriber._ingress.refusals()[RATE_EXCEEDED]
-            )
+            # Left with the broker at the in-flight bound or, earlier, at the
+            # family's rate: both are owed a redelivery, never dropped.
+            refused = subscriber._ingress.refusals()[REDELIVERY_DUE]
             assert refused > 1000, refused
             # The slots still shed what the rate admits past them.
             admitted = INGRESS_RATES[EVIDENCE_INBOUND].burst

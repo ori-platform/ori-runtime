@@ -478,6 +478,11 @@ class MqttEvidenceOutboundPublisher:
         self._refusal_log = CoalescedWarning(logger)
 
     @property
+    def ingress(self) -> IngressBound:
+        """This route's size and rate bound, whose counts health reports."""
+        return self._ingress
+
+    @property
     def topic(self) -> str:
         return EVIDENCE_OUTBOUND_TOPIC_TEMPLATE.format(device_id=self._device_id)
 

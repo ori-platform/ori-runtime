@@ -253,7 +253,14 @@ class FirmwareLivenessScheduler:
 
     # -- health ----------------------------------------------------------
 
-    def health(self) -> dict[str, Any]:
+    async def undeclared_device_ids(self) -> tuple[str, ...]:
+        """Held devices owed no liveness because they do not declare the domains.
+
+        Raises when the held manifests cannot be listed.
+        """
+        return tuple(await self._service.undeclared_device_ids())
+
+    def health(self, undeclared: frozenset[str] = frozenset()) -> dict[str, Any]:
         """State the runtime health snapshot surfaces.
 
         ``degraded`` is the load-bearing field. A scheduler that has
@@ -261,6 +268,9 @@ class FirmwareLivenessScheduler:
         window, is one whose devices are expiring while the rest of the
         runtime looks healthy — the failure this reporting exists to make
         impossible to miss.
+
+        A device in *undeclared* is owed no liveness, so it is never counted
+        supervised or expiring, even before the next tick drops it.
         """
         now = self._clock()
         last = self._last_successful_tick_at
@@ -289,13 +299,18 @@ class FirmwareLivenessScheduler:
         # failing forever is invisible: the fleet-wide counters stay clean
         # because every other device is fine, and that one device sits
         # unsupervised with its backstop re-enabled.
+        owed = {
+            device_id: at
+            for device_id, at in self._last_device_success.items()
+            if device_id not in undeclared
+        }
         expiring = sorted(
             device_id
-            for device_id, at in self._last_device_success.items()
+            for device_id, at in owed.items()
             if not _within_expiry_window(now - at)
         )
 
-        supervised_count = len(self._last_device_success)
+        supervised_count = len(owed)
         capacity = self.supported_device_capacity
         over_capacity = supervised_count > capacity
 
