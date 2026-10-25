@@ -78,7 +78,7 @@ async def runtime(store: StateStore) -> AsyncIterator[OriRuntime]:
         yield rt
     finally:
         shutdown.set()
-        await task
+        await asyncio.wait_for(task, timeout=30.0)
 
 
 # --- Devices that do not declare the signing domains -------------------------
