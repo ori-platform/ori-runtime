@@ -50,10 +50,11 @@ class RemoteCommandExecutionResult:
 
 def classify_remote_command(command: RemoteCommand) -> str:
     """Return the default execution status for an authenticated command."""
-    command_name = str(command.command or "").strip().upper()
-    if command_name in EXECUTABLE_COMMANDS:
+    # Exact: the verifier admits only the name as signed, so nothing here may
+    # map another spelling onto it.
+    if command.command in EXECUTABLE_COMMANDS:
         return STATUS_EXECUTED
-    if command_name in AUDIT_ONLY_COMMANDS:
+    if command.command in AUDIT_ONLY_COMMANDS:
         return STATUS_AUDIT_ONLY
     return STATUS_UNSUPPORTED
 

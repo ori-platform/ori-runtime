@@ -14,7 +14,10 @@ from ori.security.config_signatures import (
     CONFIG_REQUIRE_SIGNED_ENV,
     DEFAULT_CONFIG_TRUST_ANCHOR_ENV,
 )
-from ori.security.remote_commands.commands import normalize_remote_command_sender
+from ori.security.remote_commands.commands import (
+    configured_sender_is_ascii,
+    normalize_configured_sender,
+)
 from ori.security.remote_commands.lockout import normalize_remote_command_lockout_config
 from ori.utils.bool_utils import is_truthy
 
@@ -187,7 +190,13 @@ def _parse_remote_command_allowed_senders(data: Any) -> dict[str, list[str]]:
         seen: set[str] = set()
         normalized: list[str] = []
         for sender in raw_senders:
-            value = normalize_remote_command_sender(normalized_channel, sender)
+            if not configured_sender_is_ascii(sender):
+                raise ConfigValidationError(
+                    f"security.remote_commands.allowed_senders.{normalized_channel} "
+                    "holds a sender with non-ASCII characters; write its digits in "
+                    "ASCII."
+                )
+            value = normalize_configured_sender(normalized_channel, sender)
             if value and value not in seen:
                 seen.add(value)
                 normalized.append(value)

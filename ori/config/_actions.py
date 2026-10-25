@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ori.config._fields import ConfigValidationError
+from ori.security.remote_commands.commands import configured_sender_is_ascii
 from ori.utils.bool_utils import is_truthy
 
 # BCM GPIO pins valid for relay use on Raspberry Pi 4 and CM4 (both BCM2711).
@@ -270,8 +271,8 @@ def parse_actions(data: Any) -> ActionChannelConfig:
 
     return ActionChannelConfig(
         primary_alert_channel=primary,
-        operator_contact=str(data.get("operator_contact") or ""),
-        secondary_contact=str(data.get("secondary_contact") or ""),
+        operator_contact=_ascii_contact(data, "operator_contact"),
+        secondary_contact=_ascii_contact(data, "secondary_contact"),
         approval_require_scoped_replies=approval_require_scoped_replies,
         whatsapp=whatsapp,
         sms=data.get("sms") or {},
@@ -282,3 +283,19 @@ def parse_actions(data: Any) -> ActionChannelConfig:
         alert_outbox=alert_outbox,
         setup_notifications=setup_notifications,
     )
+
+
+def _ascii_contact(data: dict[str, Any], name: str) -> str:
+    """The contact with its whitespace removed, refused when it holds a non-ASCII
+    character.
+
+    Removed here, once, so every consumer, a provider's send and poll included,
+    gets the number the allowlist matches. A look-alike digit would normalise to
+    no number at all, leaving every reply from that contact refused.
+    """
+    value = "".join(str(data.get(name) or "").split())
+    if not configured_sender_is_ascii(value):
+        raise ConfigValidationError(
+            f"actions.{name} holds non-ASCII characters; write its digits in ASCII."
+        )
+    return value

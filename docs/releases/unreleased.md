@@ -616,6 +616,40 @@ release is cut.
 
 ## Security
 
+- Authenticated inbound input now binds exactly what was received. Before, a
+  remote command's HMAC was computed over normalised fields: `command_id` and
+  `device_id` were stripped of Unicode whitespace and `command` was stripped
+  and upper-cased, so one tag verified many wire payloads (`ſet_threshold`
+  read as `SET_THRESHOLD`). No authority was gained, but the signed command
+  and the one received could differ. Now:
+  - a remote command's `command_id` is 1 to 128 of `[A-Za-z0-9._-]`, its
+    `command` an ASCII upper-case name compared case-sensitively,
+    `issued_at_ms` a JSON integer and `args` an object (signed, as before, as
+    canonical JSON); any other value is refused before verification. A
+    producer that sent a lower-case `command`, a string timestamp or a null
+    `args` must send the exact form;
+  - inbound sender identities fold ASCII only, so a non-ASCII digit no longer
+    survives into the identity used for allowlisting and lockout.
+    `actions.operator_contact`, `actions.secondary_contact` and
+    `security.remote_commands.allowed_senders` may still contain spaces of any
+    kind, which are removed at load so every provider call receives the
+    number the allowlist matches (an alert already queued with spaces in its
+    recipient has them removed when it is sent), but one holding any other non-ASCII
+    character now refuses the start;
+  - the SMS webhook compares its token as bytes in constant time and refuses
+    headers that are not UTF-8, a non-ASCII header name, whitespace before a
+    colon, a folded header line, a repeated authentication or framing header,
+    `Transfer-Encoding`, bytes past `Content-Length`, and a `Content-Length`
+    that is empty or not ASCII digits. Its HMAC is verified over the timestamp
+    and nonce text exactly as sent, so a signing bridge must send the text it
+    signed; the timestamp is 1 to 16 ASCII digits and the nonce visible ASCII
+    without spaces;
+  - a Tier C approval reply is case-folded and trimmed in ASCII only, so a
+    look-alike letter in its yes/no word or proposal id no longer reads as an
+    approval. Every ASCII reply is classified as before; a reply that opens
+    with non-ASCII whitespace, such as a non-breaking space, is now invalid,
+    and SMS ingress keeps that character rather than trimming it away.
+
 - A `skills` directory beside the installed `ori` package is no longer
   first-party. On a wheel install that directory is `site-packages/skills`,
   where any distribution can install files, and a skill there loaded with

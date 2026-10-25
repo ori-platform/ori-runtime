@@ -116,6 +116,15 @@ actions:
 The bridge signs the raw body with `ORI_SMS_WEBHOOK_HMAC_SECRET`. The runtime
 verifies HMAC before decoding JSON or form data.
 
+The signature header is `hmac-sha256:` and the lowercase hex HMAC-SHA256,
+keyed by the shared secret, over the timestamp header's text, a LF, the nonce
+header's text, a LF, and the raw body, each exactly as sent. The timestamp is
+the signing time in Unix milliseconds as 1 to 16 ASCII digits, and the nonce,
+when present, is 1 to 128 visible ASCII characters with no space. A header
+outside that form is refused, never normalised, and each of these headers,
+the token, `Authorization`, `Content-Type` and `Content-Length` may appear
+once.
+
 Configure Africa's Talking **Incoming Messages** and **Delivery Reports** URLs
 to reach this bridge. The bridge must preserve the form or JSON fields and sign
 the exact body it forwards. Delivery reports are matched only to a uniquely

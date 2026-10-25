@@ -94,7 +94,9 @@ class AlertFailoverSender:
 
     @staticmethod
     def _normalize_for_channel(channel: str, contact: str) -> str:
-        raw = str(contact or "").strip()
+        # Whitespace of any kind goes: a recipient retained in the outbox from
+        # before contacts were stored without it still reaches a provider whole.
+        raw = "".join(str(contact or "").split())
         if channel == "whatsapp":
             if raw.lower().startswith("whatsapp:"):
                 return raw

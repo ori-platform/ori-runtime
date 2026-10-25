@@ -16,6 +16,7 @@ from ori.config._gateway import GatewayConfig
 from ori.config._security import sms_webhook_source_cidrs_present
 from ori.config._state import StateConfig
 from ori.security.config_signatures import CONFIG_REQUIRE_SIGNED_ENV
+from ori.security.remote_commands.commands import normalize_configured_sender
 from ori.utils.bool_utils import is_truthy
 from ori.utils.net_utils import is_loopback_host
 from ori.utils.path_utils import path_is_relative_to
@@ -113,7 +114,7 @@ def validate_production_security_posture(
     contact = str(actions.operator_contact or "")
     # Normalised as the approval allowlist normalises it: a placeholder or
     # any value with no number in it admits nobody.
-    dialable = "".join(ch for ch in contact if ch.isdigit() or ch == "+")
+    dialable = normalize_configured_sender("sms", contact)
     if approval_channels and (
         "${" in contact or not any(ch.isdigit() for ch in dialable)
     ):

@@ -34,6 +34,8 @@ from ori.reasoning.approval_bounds import MAX_PROPOSAL_LIFETIME_S
 from ori.security.remote_commands.commands import (
     RemoteCommand,
     RemoteCommandVerifier,
+    normalize_configured_sender,
+    normalize_remote_command_sender,
     verify_inbound_remote_command,
 )
 from ori.security.remote_commands.responses import (
@@ -44,6 +46,7 @@ from ori.security.remote_commands.throttle import (
     RemoteCommandThrottleDecision,
     evaluate_rejection_feedback,
 )
+from ori.utils.ascii_text import ASCII_WHITESPACE
 from ori.utils.bool_utils import is_truthy
 from ori.utils.time_utils import now_ms
 
@@ -513,7 +516,7 @@ class SMSAction:
         if not _PYSERIAL_AVAILABLE or _serial_module is None:
             return False
 
-        number = _normalize_phone(to_number)
+        number = normalize_configured_sender("sms", to_number)
         if not number:
             logger.warning("SMSAction._send_gsm_sync: invalid recipient %r", to_number)
             return False
@@ -666,7 +669,7 @@ class SMSAction:
         raw_from = str(payload.get("from") or payload.get("from_number") or "")
         raw_text = str(payload.get("text") or payload.get("message") or "")
         from_number = _normalize_phone(raw_from)
-        message = raw_text.strip()
+        message = raw_text.strip(ASCII_WHITESPACE)
         if not from_number or not message:
             logger.warning(
                 "SMSAction.ingest_incoming_webhook: invalid payload (from=%r text=%r)",
@@ -766,7 +769,7 @@ class SMSAction:
             )
             return None
 
-        normalized_from = _normalize_phone(from_number)
+        normalized_from = normalize_configured_sender("sms", from_number)
         if not normalized_from:
             return None
 
@@ -830,5 +833,5 @@ class SMSAction:
 
 
 def _normalize_phone(value: str) -> str:
-    """Normalize a phone number for stable matching."""
-    return "".join(ch for ch in value if ch.isdigit() or ch == "+")
+    """Normalize a phone number for stable matching; empty when not ASCII."""
+    return normalize_remote_command_sender("sms", value)

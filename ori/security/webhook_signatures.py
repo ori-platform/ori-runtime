@@ -12,6 +12,7 @@ verification authenticates state-mutating commands inside approved channels.
 from __future__ import annotations
 
 import hmac
+import re
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any, Mapping
@@ -25,6 +26,10 @@ _MAX_MEMORY_REPLAY_ENTRIES = 4096
 
 
 _LONGEST_MEANINGFUL_MS = 2**53
+#: A signing time as sent: unsigned ASCII decimal, at most 16 digits.
+_TIMESTAMP = re.compile(r"[0-9]{1,16}")
+#: A nonce as sent: visible ASCII, no space.
+_NONCE = re.compile(r"[\x21-\x7e]{1,128}")
 
 
 class WebhookSignatureError(ValueError):
@@ -133,6 +138,13 @@ class WebhookSignatureVerifier:
     def mode(self) -> str:
         return self._mode
 
+    @property
+    def header_names(self) -> frozenset[str]:
+        """The headers this verifier reads, which a request may carry once."""
+        return frozenset(
+            {self._signature_header, self._timestamp_header, self._nonce_header}
+        )
+
     async def verify(
         self,
         *,
@@ -148,15 +160,18 @@ class WebhookSignatureVerifier:
         normalized_headers = {
             _normalize_header(key): str(value or "") for key, value in headers.items()
         }
-        signature = normalized_headers.get(self._signature_header, "").strip()
+        # Each value is taken exactly as received and the tag is computed over
+        # that text, so one tag binds one request (docs/SMS_WEBHOOK_SECURITY.md).
+        signature = normalized_headers.get(self._signature_header, "")
         if not signature.startswith(SIGNATURE_PREFIX):
             return WebhookVerificationResult(False, "missing_signature")
+        if not signature.isascii():
+            return WebhookVerificationResult(False, "invalid_signature")
 
-        timestamp_text = normalized_headers.get(self._timestamp_header, "").strip()
-        try:
-            signed_at_ms = int(timestamp_text)
-        except (TypeError, ValueError):
+        timestamp_text = normalized_headers.get(self._timestamp_header, "")
+        if not _TIMESTAMP.fullmatch(timestamp_text):
             return WebhookVerificationResult(False, "invalid_timestamp")
+        signed_at_ms = int(timestamp_text)
 
         current_ms = int(now_ms_value if now_ms_value is not None else now_ms())
         if signed_at_ms < current_ms - self._max_skew_ms:
@@ -164,26 +179,18 @@ class WebhookSignatureVerifier:
         if signed_at_ms > current_ms + self._max_skew_ms:
             return WebhookVerificationResult(False, "future_timestamp")
 
-        nonce = normalized_headers.get(self._nonce_header, "").strip()
+        nonce = normalized_headers.get(self._nonce_header, "")
         if self._require_nonce and not nonce:
             return WebhookVerificationResult(False, "missing_nonce")
+        if nonce and not _NONCE.fullmatch(nonce):
+            return WebhookVerificationResult(False, "invalid_nonce")
 
-        expected = sign_webhook_body(
-            body,
-            shared_secret=self._secret,
-            signed_at_ms=signed_at_ms,
-            nonce=nonce,
-        )
+        expected = _tag(body, self._secret, timestamp_text, nonce)
         matched_previous_secret = False
         if not hmac.compare_digest(signature, expected):
             if not self._previous_secret:
                 return WebhookVerificationResult(False, "invalid_signature")
-            expected_previous = sign_webhook_body(
-                body,
-                shared_secret=self._previous_secret,
-                signed_at_ms=signed_at_ms,
-                nonce=nonce,
-            )
+            expected_previous = _tag(body, self._previous_secret, timestamp_text, nonce)
             if not hmac.compare_digest(signature, expected_previous):
                 return WebhookVerificationResult(False, "invalid_signature")
             matched_previous_secret = True
@@ -226,10 +233,13 @@ def sign_webhook_body(
     nonce: str = "",
 ) -> str:
     """Return ``hmac-sha256:<hex>`` for a raw webhook body."""
-    signed = b"\n".join(
-        [str(int(signed_at_ms)).encode("utf-8"), str(nonce or "").encode("utf-8"), body]
-    )
-    digest = hmac.new(str(shared_secret).encode("utf-8"), signed, sha256).hexdigest()
+    return _tag(body, str(shared_secret), str(int(signed_at_ms)), str(nonce or ""))
+
+
+def _tag(body: bytes, secret: str, timestamp_text: str, nonce: str) -> str:
+    """The tag over the timestamp and nonce text as sent, and the raw body."""
+    signed = b"\n".join([timestamp_text.encode("ascii"), nonce.encode("ascii"), body])
+    digest = hmac.new(secret.encode("utf-8"), signed, sha256).hexdigest()
     return f"{SIGNATURE_PREFIX}{digest}"
 
 

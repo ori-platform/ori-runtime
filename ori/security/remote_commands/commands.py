@@ -14,10 +14,12 @@ from __future__ import annotations
 import hmac
 import json
 import logging
+import re
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any, Mapping
 
+from ori.utils.ascii_text import ASCII_WHITESPACE
 from ori.utils.strict_json import unique_members
 from ori.utils.time_utils import now_ms
 
@@ -44,6 +46,11 @@ _FORBIDDEN_COMMANDS = {
 }
 
 _COMMAND_FIELDS = {"command_id", "device_id", "issued_at_ms", "command", "args"}
+
+# The signing input is the field values exactly as received, so each signed
+# field has one grammar and anything outside it is refused, never normalised.
+_COMMAND_ID = re.compile(r"[A-Za-z0-9._-]{1,128}")
+_COMMAND_NAME = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 
 
 @dataclass(frozen=True)
@@ -351,13 +358,15 @@ def extract_remote_command_payload(
         result["from_number"] = from_number
         return result
 
-    raw = str(payload.get("text") or payload.get("message") or "").strip()
+    raw = str(payload.get("text") or payload.get("message") or "").strip(
+        ASCII_WHITESPACE
+    )
     if not raw:
         return None
 
     body = raw
-    if raw.upper().startswith("ORI_COMMAND "):
-        body = raw[len("ORI_COMMAND ") :].strip()
+    if raw[:12].isascii() and raw[:12].upper() == "ORI_COMMAND ":
+        body = raw[len("ORI_COMMAND ") :].strip(ASCII_WHITESPACE)
     elif not raw.startswith("{"):
         return None
 
@@ -394,7 +403,7 @@ def sign_remote_command(
         device_id = str(command.get("device_id", "") or "")
         command_id = str(command.get("command_id", "") or "")
         issued_at_ms = int(command.get("issued_at_ms", 0) or 0)
-        command_name = str(command.get("command", "") or "").strip().upper()
+        command_name = str(command.get("command", "") or "")
         raw_args = command.get("args")
         args = (
             {str(key): value for key, value in raw_args.items()}
@@ -420,6 +429,11 @@ def sign_remote_command(
 
 
 def _parse_command(payload: dict[str, Any]) -> tuple[RemoteCommand | None, str]:
+    """The command exactly as received, or the reason it is refused.
+
+    Nothing is stripped, case-mapped or coerced: a value outside its field's
+    grammar is refused before verification, so one tag binds one payload.
+    """
     fields = [
         str(payload.get(key, "") or "")
         for key in ("command_id", "device_id", "command")
@@ -428,16 +442,20 @@ def _parse_command(payload: dict[str, Any]) -> tuple[RemoteCommand | None, str]:
         *fields, json.dumps(payload.get("args"), ensure_ascii=False, default=str)
     ):
         return None, "invalid_encoding"
-    command_id = str(payload.get("command_id", "") or "").strip()
-    if not command_id:
+    command_id = payload.get("command_id")
+    if command_id is None or command_id == "":
         return None, "missing_command_id"
+    if not isinstance(command_id, str) or not _COMMAND_ID.fullmatch(command_id):
+        return None, "invalid_command_id"
 
-    device_id = str(payload.get("device_id", "") or "").strip()
-    if not device_id:
+    device_id = payload.get("device_id")
+    if device_id is None or device_id == "":
         return None, "missing_device_id"
+    if not isinstance(device_id, str):
+        return None, "invalid_device_id"
 
-    issued_at_ms = _safe_int_or_none(payload.get("issued_at_ms"))
-    if issued_at_ms is None or not _INT64_MIN <= issued_at_ms <= _INT64_MAX:
+    issued_at_ms = payload.get("issued_at_ms")
+    if type(issued_at_ms) is not int or not _INT64_MIN <= issued_at_ms <= _INT64_MAX:
         return None, "invalid_timestamp"
 
     signature = payload.get("signature")
@@ -447,13 +465,13 @@ def _parse_command(payload: dict[str, Any]) -> tuple[RemoteCommand | None, str]:
         # An HMAC tag is ASCII; anything else cannot be compared, only refused.
         return None, "invalid_signature"
 
-    command = str(payload.get("command", "") or "").strip().upper()
-    if not command:
+    command = payload.get("command")
+    if command is None or command == "":
         return None, "missing_command"
+    if not isinstance(command, str) or not _COMMAND_NAME.fullmatch(command):
+        return None, "invalid_command"
 
     args = payload.get("args")
-    if args is None:
-        args = {}
     if not isinstance(args, dict):
         return None, "invalid_args"
 
@@ -502,14 +520,37 @@ def _normalize_allowed_senders(
 
 
 def normalize_remote_command_sender(channel: Any, sender: Any) -> str:
-    """Normalize an ingress sender identity for allowlist matching."""
+    """Normalize an ingress sender identity for allowlist matching.
+
+    Only ASCII is folded: a sender holding anything else normalises to the
+    empty identity, which no allowlist holds, so a look-alike digit or a
+    Unicode case mapping never makes two senders one.
+    """
     normalized_channel = _normalize_channel(channel)
-    value = str(sender or "").strip()
+    value = str(sender or "")
+    if not value.isascii():
+        return ""
+    value = value.strip()
     if normalized_channel == "sms":
-        return "".join(ch for ch in value if ch.isdigit() or ch == "+")
+        return "".join(ch for ch in value if ch in "0123456789+")
     if normalized_channel == "whatsapp":
         return "".join(value.lower().split())
     return value
+
+
+def normalize_configured_sender(channel: Any, sender: Any) -> str:
+    """Normalize a sender written in configuration.
+
+    Whitespace of any kind is layout there, so it is dropped before the inbound
+    rule applies; a non-ASCII digit still normalises to nothing, and the
+    configuration loader refuses one (`configured_sender_is_ascii`).
+    """
+    return normalize_remote_command_sender(channel, "".join(str(sender or "").split()))
+
+
+def configured_sender_is_ascii(sender: Any) -> bool:
+    """Whether a configured sender, with its whitespace dropped, is ASCII."""
+    return "".join(str(sender or "").split()).isascii()
 
 
 def _normalize_channel(value: Any) -> str:
@@ -517,10 +558,10 @@ def _normalize_channel(value: Any) -> str:
 
 
 def _safe_int_or_none(value: Any) -> int | None:
-    try:
-        return int(value)
-    except (TypeError, ValueError, OverflowError):
-        return None
+    """*value* when it is an integer the store holds, recorded as received."""
+    if type(value) is int and _INT64_MIN <= value <= _INT64_MAX:
+        return value
+    return None
 
 
 _INT64_MIN = -(2**63)

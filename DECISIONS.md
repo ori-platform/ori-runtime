@@ -364,8 +364,11 @@ execute runtime commands from an arbitrary phone number or WhatsApp sender.
 Rules:
 
 - `security.remote_commands.allowed_senders` defines approved senders by channel.
-- SMS sender identities are normalized to digits and `+`.
-- WhatsApp sender identities are lowercased and whitespace-stripped.
+- SMS sender identities are normalized to ASCII digits and `+`.
+- WhatsApp sender identities are lowercased and whitespace-stripped, in ASCII.
+- An inbound sender holding any non-ASCII character normalizes to the empty
+  identity, which no allowlist holds. A configured sender drops whitespace of
+  any kind first, and one holding a non-ASCII character is refused at load.
 - When remote commands are enabled and `allow_unlisted_senders=false`, commands
   from senders outside the channel allowlist must be rejected and audited as
   `sender_not_allowed`.

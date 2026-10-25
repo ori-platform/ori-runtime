@@ -9,7 +9,10 @@ from typing import Any
 
 from ori.config import Config
 from ori.security.offline_tokens import OfflineTierCTokenVerifier
-from ori.security.remote_commands.commands import RemoteCommandVerifier
+from ori.security.remote_commands.commands import (
+    RemoteCommandVerifier,
+    normalize_configured_sender,
+)
 from ori.security.remote_commands.lockout import default_remote_command_lockout_config
 from ori.utils.bool_utils import is_truthy
 from ori.utils.net_utils import is_loopback_host
@@ -103,7 +106,7 @@ def build_sms_allowed_senders(config: Config) -> set[str]:
     """
     senders: set[str] = set()
     for raw in (config.actions.operator_contact, config.actions.secondary_contact):
-        normalized = "".join(ch for ch in str(raw or "") if ch.isdigit() or ch == "+")
+        normalized = normalize_configured_sender("sms", raw)
         if normalized:
             senders.add(normalized)
     return senders

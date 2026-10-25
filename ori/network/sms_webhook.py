@@ -4,8 +4,10 @@
 """Minimal async HTTP ingress for Africa's Talking SMS webhooks."""
 
 import asyncio
+import hmac
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from ipaddress import ip_address, ip_network
@@ -21,6 +23,12 @@ logger = logging.getLogger(__name__)
 _MAX_HEADER_BYTES = 64 * 1024
 _MAX_BODY_BYTES = 64 * 1024
 _CHUNK_BYTES = 4096
+_CONTENT_LENGTH = re.compile(r"[0-9]{1,10}")
+#: Headers whose value decides framing or authentication: one of them repeated
+#: would let two readers take different values, so the request is refused.
+_SINGLE_HEADERS = frozenset(
+    {"content-length", "content-type", "authorization", "x-ori-webhook-token"}
+)
 _RATE_WINDOW_SECONDS: float = 60.0
 # Per peer address, before anything is read: a CPU backstop, not an approval
 # budget. Every message arrives from the bridge's one address, so a limit here
@@ -57,6 +65,11 @@ class SMSWebhookServer:
         self._path = path
         self._token = token
         self._signature_verifier = signature_verifier
+        self._single_headers = _SINGLE_HEADERS | (
+            signature_verifier.header_names
+            if signature_verifier is not None
+            else frozenset()
+        )
         self._state_store = state_store
         self._server: asyncio.AbstractServer | None = None
         self._ip_request_log: dict[str, list[float]] = {}
@@ -201,29 +214,47 @@ class SMSWebhookServer:
                 return None
 
         head, body = raw.split(b"\r\n\r\n", 1)
-        lines = head.decode("utf-8", errors="replace").split("\r\n")
+        try:
+            # Strict: a replaced byte could make two header values compare equal.
+            lines = head.decode("utf-8").split("\r\n")
+        except UnicodeDecodeError:
+            return None
         if not lines:
             return None
 
         request_line = lines[0].split(" ")
         if len(request_line) < 3:
             return None
-        method = request_line[0].upper()
+        method = request_line[0]  # case-sensitive (RFC 9110)
         path = request_line[1]
 
         headers: dict[str, str] = {}
         for line in lines[1:]:
+            if line[:1] in (" ", "\t"):
+                return None  # an obsolete folded line (RFC 9112 5.2)
             if ":" not in line:
                 continue
-            key, value = line.split(":", 1)
-            headers[key.strip().lower()] = value.strip()
+            name, value = line.split(":", 1)
+            # No whitespace around a name (RFC 9112 5.1), and ASCII only: a
+            # Unicode case mapping could turn it into a header read here.
+            if not name or name != name.strip(" \t") or not name.isascii():
+                return None
+            name = name.lower()
+            if name in headers and name in self._single_headers:
+                return None
+            headers[name] = value.strip(" \t")
 
-        content_length = int(headers.get("content-length", "0") or "0")
-        if content_length < 0:
+        length_text = headers.get("content-length", "0")
+        if not _CONTENT_LENGTH.fullmatch(length_text) or "transfer-encoding" in headers:
+            # A chunked body is not read here, so one is refused, not misread.
             return None
+        content_length = int(length_text)
         if content_length > _MAX_BODY_BYTES:
             return None
         if len(body) > _MAX_BODY_BYTES:
+            return None
+        if len(body) > content_length:
+            # Bytes past the declared length would be read and signed as body.
             return None
         while len(body) < content_length:
             chunk = await reader.read(content_length - len(body))
@@ -236,13 +267,15 @@ class SMSWebhookServer:
         return _HttpRequest(method=method, path=path, headers=headers, body=body)
 
     def _authorized(self, headers: dict[str, str]) -> bool:
-        token_header = headers.get("x-ori-webhook-token", "")
-        if token_header == self._token:
+        """Whether a header carries the token, compared as bytes in constant time."""
+        token = self._token.encode("utf-8")
+        presented = headers.get("x-ori-webhook-token", "")
+        if hmac.compare_digest(presented.encode("utf-8"), token):
             return True
         auth = headers.get("authorization", "")
-        if auth.lower().startswith("bearer "):
-            return auth[7:].strip() == self._token
-        return False
+        if auth[:7].lower() != "bearer ":
+            return False
+        return hmac.compare_digest(auth[7:].strip(" \t").encode("utf-8"), token)
 
     def _decode_payload(self, headers: dict[str, str], body: bytes) -> dict[str, Any]:
         ctype = headers.get("content-type", "").lower()

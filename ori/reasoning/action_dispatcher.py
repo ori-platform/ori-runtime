@@ -111,6 +111,7 @@ from ori.security.offline_tokens import (
 )
 from ori.security.remote_commands.commands import extract_remote_command_payload
 from ori.state.deferred_writer import DeferredWriter
+from ori.utils.ascii_text import ASCII_WHITESPACE
 from ori.utils.bool_utils import is_truthy
 from ori.utils.time_utils import now_ms
 
@@ -308,14 +309,12 @@ def _stamp_correlation_id(action_result: ActionResult, context: Any) -> None:
 
 
 def _normalize_proposal_id(value: str | None) -> str:
-    return "".join(ch for ch in str(value or "").upper() if ch.isalnum())
+    # ASCII letters and digits only, selected before folding: `ﬀ` upper-cases to FF.
+    return "".join(c for c in str(value or "") if c.isascii() and c.isalnum()).upper()
 
 
 def _safe_int_or_none(value: Any) -> int | None:
-    try:
-        return int(value)
-    except (TypeError, ValueError, OverflowError):
-        return None
+    return value if type(value) is int and -(2**63) <= value < 2**63 else None
 
 
 #: What an unencodable reply is classified as: text that is no decision.
@@ -412,18 +411,17 @@ def _classify_approval_response(
     allow_offline_token: bool = False,
     require_scoped: bool = False,
 ) -> str:
-    """Classify a Tier C response as approve, reject, token, or invalid."""
+    """Classify a Tier C response; only ASCII is folded, so no look-alike reads as one."""
     if response is None:
         return "invalid"
 
-    raw = response.strip()
+    raw = response.strip(ASCII_WHITESPACE)
     if not raw:
         return "invalid"
-    upper = raw.upper()
-    if allow_offline_token and upper.startswith("TOKEN:"):
+    if allow_offline_token and raw[:6].isascii() and raw[:6].upper() == "TOKEN:":
         return "token"
 
-    token = raw.lower()
+    token = raw.lower() if raw.isascii() else ""
     if require_scoped:
         if "-" not in raw:
             return "invalid"
@@ -440,7 +438,7 @@ def _classify_approval_response(
     if not expected or _normalize_proposal_id(suffix) != expected:
         return "invalid"
 
-    head_token = head.strip().lower()
+    head_token = head.strip(ASCII_WHITESPACE).lower() if head.isascii() else ""
     if head_token in _YES_TOKENS:
         return "approve"
     if head_token in _NO_TOKENS:

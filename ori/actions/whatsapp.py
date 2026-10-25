@@ -45,6 +45,8 @@ from ori.security.remote_commands.commands import (
     RemoteCommand,
     RemoteCommandVerifier,
     extract_remote_command_payload,
+    normalize_configured_sender,
+    normalize_remote_command_sender,
     verify_extracted_remote_command,
 )
 from ori.security.remote_commands.responses import (
@@ -481,7 +483,8 @@ class WhatsAppAction:
         if not inbound.provider_message_id:
             logger.warning("WhatsAppAction.send_reply: inbound provider SID is missing")
             return False
-        if _normalize_address(inbound.from_number) != _normalize_address(to_number):
+        sender = normalize_remote_command_sender("whatsapp", inbound.from_number)
+        if not sender or sender != normalize_configured_sender("whatsapp", to_number):
             logger.warning(
                 "WhatsAppAction.send_reply: destination is not the inbound sender"
             )
@@ -599,6 +602,8 @@ class WhatsAppAction:
         since_ms = since_ms if since_ms is not None else now_ms()
         deadline = time.monotonic() + timeout_seconds
         seen_remote_command_ids: set[str] = set()
+        # The configured contact is the sender identity of what is fetched here.
+        sender = normalize_configured_sender("whatsapp", from_number)
 
         while time.monotonic() < deadline:
             messages = await self._provider.get_incoming(from_number, since_ms)
@@ -608,7 +613,7 @@ class WhatsAppAction:
                 extracted_command = extract_remote_command_payload(
                     command_payload,
                     channel="whatsapp",
-                    from_number=from_number,
+                    from_number=sender,
                 )
                 if extracted_command is not None:
                     command_id = str(extracted_command.get("command_id", "") or "")
@@ -654,7 +659,7 @@ class WhatsAppAction:
                         throttle_decision = await evaluate_rejection_feedback(
                             state_store=self._state_store,
                             channel="whatsapp",
-                            from_number=from_number,
+                            from_number=sender,
                         )
                         if throttle_decision.incident_logged:
                             await self._notify_remote_command_incident(
@@ -753,7 +758,3 @@ def _provider_datetime_ms(value: object) -> int | None:
     if value.tzinfo is None:
         value = value.replace(tzinfo=datetime.timezone.utc)
     return int(value.timestamp() * 1000)
-
-
-def _normalize_address(value: str) -> str:
-    return str(value or "").strip().lower()
