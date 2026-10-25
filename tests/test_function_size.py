@@ -22,8 +22,9 @@ MAX_FUNCTION_LINES = 150
 #: Stated in each failure, because the message is what the next reader meets.
 LIMIT = (
     "a function is measured from its first decorator to its last line, nested "
-    "definitions included; a lambda or a module-level block is not a function "
-    "and is held only by the module size limit"
+    "definitions included; a lambda, a class body outside its methods and a "
+    "module-level block are not functions and are held only by the module size "
+    "limit"
 )
 
 OVERSIZE_CEILINGS: dict[str, int] = {
@@ -32,7 +33,6 @@ OVERSIZE_CEILINGS: dict[str, int] = {
     "ori/config/_config.py::Config._interpret": 397,
     "ori/config/_gateway.py::parse_gateway": 343,
     "ori/reasoning/elevator.py::IntelligenceElevator.reason_and_dispatch": 336,
-    "ori/runtime/_health.py::HealthSnapshot._build_health_snapshot": 307,
     "ori/reasoning/action_dispatcher.py::ActionDispatcher._admit_and_run": 280,
     "ori/runtime/_startup_foundation.py::StartupFoundation._stage_dispatcher": 268,
     "ori/reasoning/action_dispatcher.py::ActionDispatcher.dispatch": 250,
@@ -40,7 +40,6 @@ OVERSIZE_CEILINGS: dict[str, int] = {
     "ori/gateway/reasoning.py::MqttGatewayReasoner._round_trip": 246,
     "ori/reasoning/rule_engine.py::RuleEngine.evaluate_all": 226,
     "ori/runtime/_alerts.py::AlertDelivery._send_or_queue_alert": 212,
-    "ori/skills/loader.py::SkillLoader._parse_triggers": 211,
     "ori/state/_migrations.py::StoreMigrations._migrate_sync": 209,
     "ori/installer/linux.py::provision_runtime_config": 198,
     "ori/reasoning/action_dispatcher.py::ActionDispatcher._execute_immediately": 196,
@@ -50,6 +49,7 @@ OVERSIZE_CEILINGS: dict[str, int] = {
     "ori/config/_posture.py::validate_production_security_posture": 187,
     "ori/runtime/_startup_foundation.py::StartupFoundation._stage_safety_envelope": 187,
     "ori/reasoning/elevator.py::IntelligenceElevator._reason_with_rule_result": 186,
+    "ori/runtime/_health.py::HealthSnapshot._build_health_snapshot": 184,
     "ori/state/_history.py::HistoryStore._compact_sync": 184,
     "ori/reasoning/action_dispatcher.py::ActionDispatcher._log_action": 178,
     "ori/runtime/_shutdown.py::Shutdown.stop": 174,

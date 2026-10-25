@@ -109,7 +109,7 @@ from tests.conftest import (
     run_runtime_until,
 )
 from tests.gateway_auth_helpers import cache_for
-from tests.package_layout import patch_runtime, patched_runtime
+from tests.package_layout import patch_runtime, patch_skill_loader, patched_runtime
 from tests.skill_races import POINTS as RACE_POINTS
 from tests.skill_races import swap_at as _swap_at
 from tests.waiting import DEADLINE_S, settle, wait_until
@@ -1394,8 +1394,8 @@ async def test_a_reload_raced_out_of_a_packaged_skill_keeps_the_running_graph(
         shutil.copytree(shipped / name, root / name)
     external = tmp_path / "external" / "energy-anomaly-detector"
     shutil.copytree(shipped / "energy-anomaly-detector", external)
-    monkeypatch.setattr(
-        "ori.skills.loader.first_party_skill_roots", lambda: (root.resolve(),)
+    patch_skill_loader(
+        monkeypatch, "first_party_skill_roots", lambda: (root.resolve(),)
     )
     path = _config_naming_skills(
         tmp_path / "data",

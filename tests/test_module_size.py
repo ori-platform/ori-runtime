@@ -11,13 +11,18 @@ when one does, its ceiling comes down with it, so the room is not spent again.
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MAX_MODULE_LINES = 2500
+MAX_MODULE_LINES = 1500
 
 #: Modules over the limit, each at the size it may not exceed.
 OVERSIZE_CEILINGS: dict[str, int] = {
     "ori/reasoning/action_dispatcher.py": 5006,
     "ori/installer/linux.py": 3377,
     "ori/security/evidence/ledger.py": 2960,
+    "ori/reasoning/elevator.py": 2282,
+    "ori/state/_migrations.py": 2102,
+    "ori/state/_firmware.py": 2097,
+    "ori/cli_bridge.py": 1854,
+    "ori/security/gateway_messages.py": 1529,
 }
 
 

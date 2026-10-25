@@ -318,7 +318,7 @@ class DispatchCoordinator:
         subscribes from, so the discovery set is by construction the set the bus
         would have delivered to.
         """
-        from ori.skills.loader import _unique_sensor_types
+        from ori.skills._manifest import _unique_sensor_types
 
         declared = _unique_sensor_types(getattr(skill, "sensors_required", []) or [])
         if "*" in declared:

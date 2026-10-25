@@ -460,7 +460,9 @@ ori/
 │   │
 │   ├── skills/                ← Skills loader (Layer 5)
 │   │   ├── __init__.py
-│   │   ├── loader.py
+│   │   ├── loader.py          ← the loader's interface; re-exports only
+│   │   ├── _loader.py         ← SkillLoader: discovery, selection, loading
+│   │   ├── _core.py, _manifest.py, _provenance.py, _validation.py, _registration.py
 │   │   ├── hooks_api.py
 │   │   ├── sandbox.py
 │   │   └── signing.py
@@ -950,6 +952,21 @@ suppression, not for Tier D safety cutoffs and not as a model-confidence proxy.
 ```
 
 Run `ruff check --fix` on every file you create before finishing.
+
+**Docstrings and comments:** say what the code does and the one fact a reader
+cannot see from it, and stop.
+
+- A docstring states the contract: what it returns or refuses, and the
+  invariant a caller relies on. A few lines; `Args:` only where a name does not
+  explain itself.
+- A comment explains a non-obvious *why* in one to three lines, beside the line
+  it explains. If it needs more, the reasoning belongs in the commit or PR body,
+  or in `docs/`, and the comment points there.
+- Never record history in code: no "previously", "was changed because", review
+  rounds or issue narratives. `git blame` holds that.
+- Modules are held under 1,500 lines and functions under 150
+  (`tests/test_module_size.py`, `tests/test_function_size.py`), docstrings and
+  comments included. Long prose spends that budget.
 
 **Error handling:**
 

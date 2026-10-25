@@ -341,6 +341,38 @@ class HealthSnapshot(Commissioning):
         if self._safety_registry is not None:
             safety_zones = self._safety_registry.safety_zones()
             snapshot["safety_zones"] = safety_zones
+        severities = self._health_severities(
+            snapshot,
+            firmware_liveness_health=firmware_liveness_health,
+            community_skills_health=community_skills_health,
+            config_authority_health=config_authority_health,
+            safety_zones=safety_zones,
+        )
+
+        # Named reasons for the site view. The rich diagnostics above stay
+        # local: fleet counts reveal deployment topology and per-device
+        # identity is a disclosure this contract does not make. Only closed,
+        # non-sensitive tokens cross the boundary.
+        status = fold_health_status(severities)
+        if status is not None:
+            snapshot["status"] = status
+        snapshot["critical"] = status == "critical"
+
+        snapshot["degradation_reasons"] = degradation_reasons(
+            firmware_liveness_degraded=bool(firmware_liveness_health["degraded"]),
+        )
+        return snapshot
+
+    def _health_severities(
+        self,
+        snapshot: dict[str, Any],
+        *,
+        firmware_liveness_health: dict[str, Any],
+        community_skills_health: dict[str, Any],
+        config_authority_health: dict[str, Any],
+        safety_zones: list[dict[str, Any]],
+    ) -> list[str]:
+        """The severity each condition the snapshot holds contributes to its status."""
         # Each condition contributes its severity and none assigns `status`, so
         # the order they are evaluated in never lets a degraded condition
         # overwrite a critical one.
@@ -478,20 +510,7 @@ class HealthSnapshot(Commissioning):
             # lands, and `degradation_reasons` carries no token for it, so the
             # reason is not nameable until the health contract adds one.
             severities.append("degraded")
-
-        # Named reasons for the site view. The rich diagnostics above stay
-        # local: fleet counts reveal deployment topology and per-device
-        # identity is a disclosure this contract does not make. Only closed,
-        # non-sensitive tokens cross the boundary.
-        status = fold_health_status(severities)
-        if status is not None:
-            snapshot["status"] = status
-        snapshot["critical"] = status == "critical"
-
-        snapshot["degradation_reasons"] = degradation_reasons(
-            firmware_liveness_degraded=bool(firmware_liveness_health["degraded"]),
-        )
-        return snapshot
+        return severities
 
     def _community_skills_health(self) -> dict[str, Any]:
         """Whether community skills can be verified here, and what was dropped.

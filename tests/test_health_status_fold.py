@@ -202,28 +202,48 @@ def _named_keys(args: list[ast.expr], keywords: list[ast.keyword]) -> set[str]:
     return named & {"status", "critical"}
 
 
-def test_every_condition_branch_is_driven() -> None:
-    """A condition added to the builder without a row here fails."""
-    source = textwrap.dedent(inspect.getsource(OriRuntime._build_health_snapshot))
-    appends = [
+def _parsed(method: object) -> ast.Module:
+    return ast.parse(textwrap.dedent(inspect.getsource(method)))  # type: ignore[arg-type]
+
+
+def _severity_appends(tree: ast.Module) -> list[ast.Call]:
+    return [
         node
-        for node in ast.walk(ast.parse(source))
+        for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "append"
         and isinstance(node.func.value, ast.Name)
         and node.func.value.id == "severities"
     ]
-    uses = [
+
+
+def _severity_uses(tree: ast.Module) -> list[ast.Name]:
+    return [
         node
-        for node in ast.walk(ast.parse(source))
+        for node in ast.walk(tree)
         if isinstance(node, ast.Name) and node.id == "severities"
     ]
-    # One declaration, one fold, and every other use an append.
+
+
+def test_every_condition_branch_is_driven() -> None:
+    """A condition added to the builder without a row here fails.
+
+    The conditions are in `_health_severities`, which the builder calls; the
+    builder itself appends nothing and only folds what it returns.
+    """
+    builder = _parsed(OriRuntime._build_health_snapshot)
+    conditions = _parsed(OriRuntime._health_severities)
+    appends = _severity_appends(conditions)
+    uses = _severity_uses(conditions)
+    # One declaration, one return, and every other use an append.
     assert len(uses) == len(appends) + 2, (
-        "`severities` is read or written other than by `.append` and the fold; "
-        f"found {len(uses) - len(appends) - 2} other use(s)"
+        "`severities` is read or written other than by `.append`, its "
+        f"declaration and its return; found {len(uses) - len(appends) - 2} other use(s)"
     )
+    # The builder takes the list once and folds it once, and adds nothing.
+    assert _severity_appends(builder) == []
+    assert len(_severity_uses(builder)) == 2
     assert len(appends) == BRANCHES, (
         f"the builder has {len(appends)} severity contributions and CONDITIONS "
         f"drives {BRANCHES}; add a row for the new condition"
@@ -235,12 +255,17 @@ def test_only_the_fold_assigns_status_and_critical() -> None:
 
     Recognises subscript stores, `update`, `setdefault`, `__setitem__`, `|=`
     and reassignment of the builder's `snapshot` naming `status` or
-    `critical`. It does not follow the snapshot into another name or a helper
-    it is passed to.
+    `critical`, in the builder and in `_health_severities`, the helper it
+    passes the snapshot to. It does not follow the snapshot into another name
+    or any other helper.
     """
-    source = textwrap.dedent(inspect.getsource(OriRuntime._build_health_snapshot))
     writes: list[tuple[int, str, str]] = []
-    for node in ast.walk(ast.parse(source)):
+    nodes = [
+        node
+        for method in (OriRuntime._build_health_snapshot, OriRuntime._health_severities)
+        for node in ast.walk(_parsed(method))
+    ]
+    for node in nodes:
         if isinstance(node, ast.Assign | ast.AugAssign | ast.AnnAssign):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             for target in targets:
@@ -276,11 +301,12 @@ def test_only_the_fold_assigns_status_and_critical() -> None:
     ], (
         "status and critical are assigned once, from fold_health_status; a "
         "condition contributes to `severities` instead. This guard reads the "
-        f"builder's own `snapshot` name only. Found: {writes}"
+        "`snapshot` name in the builder and in `_health_severities` only. "
+        f"Found: {writes}"
     )
     fold = [
         node
-        for node in ast.walk(ast.parse(source))
+        for node in ast.walk(_parsed(OriRuntime._build_health_snapshot))
         if isinstance(node, ast.Assign)
         and isinstance(node.targets[0], ast.Name)
         and node.targets[0].id == "status"

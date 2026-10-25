@@ -28,16 +28,15 @@ from cryptography.hazmat.primitives.serialization import (
 
 from ori.network.event_bus import EventBus
 from ori.network.events import OriEvent, SensorReading
+from ori.skills._manifest import _ACTION_ALLOWED_KEYS, _TRIGGER_ALLOWED_KEYS
+from ori.skills._provenance import _source_checkout
+from ori.skills._registration import _CooldownTracker
 from ori.skills.loader import (
-    _ACTION_ALLOWED_KEYS,
-    _TRIGGER_ALLOWED_KEYS,
     Skill,
     SkillLoader,
     SkillSelectionError,
     SkillValidationError,
     Trigger,
-    _CooldownTracker,
-    _source_checkout,
     first_party_skill_roots,
 )
 from ori.skills.sandbox import SkillAnchorError, SkillSecurityError
@@ -45,6 +44,7 @@ from ori.skills.signing import (
     canonical_skill_payload,
     verify_community_skill_signature,
 )
+from tests.package_layout import patch_skill_loader
 from tests.skill_races import POINTS as RACE_POINTS
 from tests.skill_races import swap_at as _swap_at
 
@@ -490,8 +490,9 @@ class TestLoadOne:
         raw["signature"] = _sign_skill(raw, private_key)
         _write_skill_yaml_mapping(skill_dir, raw)
 
-        monkeypatch.setattr(
-            "ori.skills.loader._HUB_ROOT_PUBLIC_KEY_B64",
+        patch_skill_loader(
+            monkeypatch,
+            "_HUB_ROOT_PUBLIC_KEY_B64",
             public_key_b64,
         )
         loader = _first_party_loader()
@@ -513,8 +514,9 @@ class TestLoadOne:
         raw["version"] = "0.2.0"  # tamper after signature
         _write_skill_yaml_mapping(skill_dir, raw)
 
-        monkeypatch.setattr(
-            "ori.skills.loader._HUB_ROOT_PUBLIC_KEY_B64",
+        patch_skill_loader(
+            monkeypatch,
+            "_HUB_ROOT_PUBLIC_KEY_B64",
             public_key_b64,
         )
         loader = _first_party_loader()
@@ -529,8 +531,9 @@ class TestLoadOne:
         skill_dir = tmp_path / "community-missing-signature"
         raw = _community_skill_mapping()
         _write_skill_yaml_mapping(skill_dir, raw)
-        monkeypatch.setattr(
-            "ori.skills.loader._HUB_ROOT_PUBLIC_KEY_B64",
+        patch_skill_loader(
+            monkeypatch,
+            "_HUB_ROOT_PUBLIC_KEY_B64",
             _A_WELL_FORMED_ANCHOR,
         )
         loader = _first_party_loader()
@@ -546,8 +549,9 @@ class TestLoadOne:
         raw = _community_skill_mapping()
         raw["signature"] = "rsa:abc"
         _write_skill_yaml_mapping(skill_dir, raw)
-        monkeypatch.setattr(
-            "ori.skills.loader._HUB_ROOT_PUBLIC_KEY_B64",
+        patch_skill_loader(
+            monkeypatch,
+            "_HUB_ROOT_PUBLIC_KEY_B64",
             _A_WELL_FORMED_ANCHOR,
         )
         loader = _first_party_loader()
@@ -565,8 +569,9 @@ class TestLoadOne:
         raw = _community_skill_mapping()
         raw["signature"] = "bundled"
         _write_skill_yaml_mapping(skill_dir, raw)
-        monkeypatch.setattr(
-            "ori.skills.loader._HUB_ROOT_PUBLIC_KEY_B64",
+        patch_skill_loader(
+            monkeypatch,
+            "_HUB_ROOT_PUBLIC_KEY_B64",
             _A_WELL_FORMED_ANCHOR,
         )
         loader = _first_party_loader()
@@ -592,8 +597,9 @@ class TestLoadOne:
         raw["signature"] = _sign_skill(raw, private_key)
         _write_skill_yaml_mapping(skill_dir, raw)
 
-        monkeypatch.setattr(
-            "ori.skills.loader._HUB_ROOT_PUBLIC_KEY_B64",
+        patch_skill_loader(
+            monkeypatch,
+            "_HUB_ROOT_PUBLIC_KEY_B64",
             "PENDING_REPLACE_AT_HUB_LAUNCH",
         )
         monkeypatch.setenv("ORI_HUB_ROOT_PUBLIC_KEY_B64", public_key_b64)
@@ -1519,7 +1525,7 @@ def _layout(
     module.parent.mkdir(parents=True)
     (parent / "ori" / "__init__.py").write_text("")
     module.write_text("")
-    monkeypatch.setattr("ori.skills.loader.__file__", str(module))
+    monkeypatch.setattr("ori.skills._provenance.__file__", str(module))
     monkeypatch.setattr(importlib.metadata, "distributions", lambda **_: [])
     _source_checkout.cache_clear()
     return parent
@@ -1842,8 +1848,9 @@ class TestLoadSelected:
         checkout = Path(__file__).resolve().parents[1] / "skills"
         installed = tmp_path / "share" / "skills"
         shutil.copytree(checkout / "pc-system-health", installed / "pc-system-health")
-        monkeypatch.setattr(
-            "ori.skills.loader.first_party_skill_roots",
+        patch_skill_loader(
+            monkeypatch,
+            "first_party_skill_roots",
             lambda: (checkout.resolve(), installed.resolve()),
         )
         skills = SkillLoader().load_selected(
@@ -1872,8 +1879,9 @@ class TestLoadSelected:
     ):
         loader = self._unsigned_community_loader(monkeypatch)
         packaged = loader.load_selected([("pc-system-health", "")], str(tmp_path))
-        monkeypatch.setattr(
-            "ori.skills.loader._MAX_TOTAL_SUBSCRIPTIONS",
+        patch_skill_loader(
+            monkeypatch,
+            "_MAX_TOTAL_SUBSCRIPTIONS",
             loader._subscription_cost(packaged[0]),
         )
         _write_skill_yaml(tmp_path / "community", _minimal_yaml(name="community"))
@@ -1900,8 +1908,8 @@ class TestLoadSelected:
             shutil.copytree(packaged / name, root / name)
         external = tmp_path / "external" / "energy-anomaly-detector"
         shutil.copytree(packaged / "energy-anomaly-detector", external)
-        monkeypatch.setattr(
-            "ori.skills.loader.first_party_skill_roots", lambda: (root.resolve(),)
+        patch_skill_loader(
+            monkeypatch, "first_party_skill_roots", lambda: (root.resolve(),)
         )
 
         def swap() -> None:
@@ -1981,7 +1989,7 @@ class TestRegister:
             return asyncio.ensure_future(coro)
 
         with patch(
-            "ori.skills.loader.asyncio.create_task", side_effect=fake_create_task
+            "ori.skills._registration.asyncio.create_task", side_effect=fake_create_task
         ):
             await bus.publish(event)
             # Flush tasks
@@ -2011,7 +2019,7 @@ class TestRegister:
             return asyncio.ensure_future(coro)
 
         with patch(
-            "ori.skills.loader.asyncio.create_task", side_effect=fake_create_task
+            "ori.skills._registration.asyncio.create_task", side_effect=fake_create_task
         ):
             await bus.publish(event)  # first — fires
             await bus.publish(event)  # second — blocked by cooldown (10s)

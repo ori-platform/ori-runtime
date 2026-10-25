@@ -658,7 +658,7 @@ def test_a_commissioning_anchor_is_refused_where_it_is_loaded() -> None:
 
 
 def test_a_skill_trust_anchor_is_reported_as_the_fault() -> None:
-    from ori.skills.loader import _anchor_fault
+    from ori.skills._provenance import _anchor_fault
 
     fault = _anchor_fault(_b64(IDENTITY), "the Hub anchor")
     assert fault is not None and CLAUSE_SMALL_ORDER in fault

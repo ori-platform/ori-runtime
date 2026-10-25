@@ -275,9 +275,9 @@ release is cut.
   reasoning, measurement and skill state), each in a private module under
   `ori/state/`, with the DDL in `_migrations.py`. The methods moved unchanged:
   the schema, the migrations and every behaviour are the same, and
-  `ori.state.store` still exports every name imported from it. A new test
-  holds every module under `ori/` to 2,500 lines, and those already over it
-  to their current size.
+  `ori.state.store` still exports every name imported from it. Tests hold
+  every module under `ori/` to 1,500 lines and every function to 150, and
+  those already over either limit to their current size.
 - The runtime is split by concern. `OriRuntime.start()` runs nineteen
   ordered stages over one startup context, in the order and with the
   constraints `docs/STARTUP_STAGES.md` records and three tests hold, instead of
@@ -309,6 +309,19 @@ release is cut.
   helpers and the names it happened to import are no longer reachable through
   it; a script that read one imports it from the section module that defines
   it.
+- The skill loader is split by concern. `ori/skills/loader.py` now only
+  re-exports its interface, and the code runs in modules beside it:
+  `_manifest.py` (the data model, the manifest grammar and the workload
+  budgets), `_provenance.py` (which skills ship with the runtime, and the
+  community trust anchor), `_validation.py`, `_registration.py` (handler
+  registration, hook loading and the cooldown tracker) and `_loader.py`
+  (`SkillLoader`). The code moved unchanged: every skill is loaded and refused
+  as before, and log records still carry the `ori.skills.loader` logger name.
+  `ori.skills.loader` exports `SkillLoader`, `Skill`, `Trigger`,
+  `SkillValidationError`, `SkillSelectionError`, `CommunitySkillAdmission`,
+  `first_party_skill_roots` and `MAX_TOTAL_SUBSCRIPTIONS`, listed in its
+  `__all__`; a script that read a private name through it imports it from the
+  module that defines it.
 - The modules beside the configuration loader moved into it:
   `ori.config_fields` is now `ori.config._fields`, `ori.config_skill_entry` is
   `ori.config._skill_entry`, and the signed config installer is

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from ori.cli import EXIT_FAILED, EXIT_OK, EXIT_UNUSABLE, main
-from ori.skills.loader import (
+from ori.skills._manifest import (
     _ACTION_ALLOWED_KEYS,
     _TRIGGER_ALLOWED_KEYS,
 )

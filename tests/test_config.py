@@ -3819,7 +3819,7 @@ actions:
         from ori.config._skill_entry import (
             TRIGGER_OWNED_SKILL_KEYS as _TRIGGER_OWNED_SKILL_KEYS,
         )
-        from ori.skills.loader import _TRIGGER_ALLOWED_KEYS
+        from ori.skills._manifest import _TRIGGER_ALLOWED_KEYS
 
         assert set(_TRIGGER_OWNED_SKILL_KEYS.values()) <= _TRIGGER_ALLOWED_KEYS
         assert _TRIGGER_OWNED_SKILL_KEYS["requires_approval_for_soft_actions"] == (

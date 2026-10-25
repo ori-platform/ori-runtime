@@ -149,7 +149,7 @@ def test_installed_layout_skills_are_first_party_and_loadable(tmp_path) -> None:
         patch.object(sysconfig, "get_path", _fake_get_path),
         # Hide the source checkout so only the installed layout can satisfy it.
         patch(
-            "ori.skills.loader.__file__",
+            "ori.skills._provenance.__file__",
             str(tmp_path / "site-packages" / "ori" / "skills" / "loader.py"),
         ),
     ):

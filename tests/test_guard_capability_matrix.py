@@ -82,6 +82,12 @@ def _guard(repo: Path, *refs: str, body: str = "") -> subprocess.CompletedProces
         "ori/runtime/_startup.py",
         "ori/startup_stages.py",
         "ori/skills/loader.py",
+        "ori/skills/_core.py",
+        "ori/skills/_loader.py",
+        "ori/skills/_manifest.py",
+        "ori/skills/_provenance.py",
+        "ori/skills/_registration.py",
+        "ori/skills/_validation.py",
         "ori/config/_gateway.py",
     ],
 )

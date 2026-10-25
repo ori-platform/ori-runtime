@@ -363,6 +363,17 @@ async def run_loop(hal, event_bus, db, config, dispatcher):
 
 ---
 
+## Docstrings and comments
+
+Say what the code does and the one fact a reader cannot see from it, and stop.
+
+- A docstring states the contract: what it returns or refuses, and the invariant a caller relies on. A few lines; `Args:` only where a name does not explain itself.
+- A comment explains a non-obvious *why* in one to three lines, beside the line it explains. Longer reasoning goes in the commit or PR body, or in `docs/`, with the comment pointing there.
+- Never record history in code: no "previously", "was changed because", review rounds or issue narratives. `git blame` holds that.
+- Modules are held under 1,500 lines and functions under 150 (`tests/test_module_size.py`, `tests/test_function_size.py`), docstrings and comments included. Long prose spends that budget.
+
+---
+
 ## Testing conventions
 
 ```bash
@@ -787,7 +798,7 @@ these rules can compromise the runtime that controls physical hardware.
 | Change reasoning tier selection logic | `ori/reasoning/elevator.py`          |
 | Change how actions are routed by tier | `ori/reasoning/action_dispatcher.py` |
 | Add a new action type                 | `ori/actions/`                       |
-| Change skill loading and validation   | `ori/skills/loader.py`               |
+| Change skill loading and validation   | `ori/skills/` (a module per concern) |
 | Change what gets persisted to SQLite  | `ori/state/` (one module per domain) |
 | Change device configuration format    | `ori/config/` + `ori.yaml.example`   |
 | Change the main event loop            | `ori/runtime/` (a module per domain) |

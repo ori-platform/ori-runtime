@@ -19,6 +19,12 @@ fi
   ori/reasoning/action_dispatcher.py \
   ori/skills/hooks_api.py \
   ori/skills/loader.py \
+  ori/skills/_core.py \
+  ori/skills/_loader.py \
+  ori/skills/_manifest.py \
+  ori/skills/_provenance.py \
+  ori/skills/_registration.py \
+  ori/skills/_validation.py \
   ori/integration/rule_evaluation.py \
   ori/security/gateway_messages.py \
   ori/security/webhook_signatures.py \

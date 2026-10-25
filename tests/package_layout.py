@@ -5,7 +5,8 @@
 
 ``ori.config`` and ``ori.runtime`` are packages whose ``__init__`` only
 re-exports: the code runs in private modules under ``ori/config/`` and
-``ori/runtime/``. Patching a name on the package rebinds the re-export and
+``ori/runtime/``. ``ori.skills.loader`` is a module that does the same for its
+sibling modules in ``ori/skills/``. Patching a name on the package rebinds the re-export and
 leaves the module that calls it untouched, so the patch does nothing and a
 test built on it checks nothing. A private module imports what it calls by
 value, so patch every binding a caller reads, the callers' own bindings among
@@ -51,13 +52,34 @@ from unittest import mock
 
 
 class PackageLayout:
-    """A package that only re-exports, and the private modules behind it."""
+    """A package that only re-exports, and the private modules behind it.
 
-    def __init__(self, name: str, *, min_modules: int, owners_label: str) -> None:
+    A module can stand in for the package: ``ori.skills.loader`` only
+    re-exports, and the modules behind it are its *siblings* in ``ori.skills``,
+    named here, rather than modules under it.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        *,
+        min_modules: int,
+        owners_label: str,
+        siblings: tuple[str, ...] = (),
+    ) -> None:
         self.name = name
         self.min_modules = min_modules
         #: What the refusal calls the owner listing, in its advice.
         self.owners_label = owners_label
+        self.siblings = siblings
+
+    @property
+    def where(self) -> str:
+        """Where the modules behind it are, in the words a refusal uses."""
+        if self.siblings:
+            parent = self.name.rsplit(".", 1)[0].replace(".", "/")
+            return f"the modules beside it in {parent}/"
+        return f"the modules under {self.name.replace('.', '/')}/"
 
     @property
     def package(self) -> types.ModuleType:
@@ -69,6 +91,12 @@ class PackageLayout:
         A module imported on first use, such as ``ori.config.installer``, reads
         its own bindings too, so it is imported up front rather than missed.
         """
+        if self.siblings:
+            parent = self.name.rsplit(".", 1)[0]
+            return tuple(
+                importlib.import_module(f"{parent}.{sibling}")
+                for sibling in self.siblings
+            )
         for found in pkgutil.iter_modules(self.package.__path__):
             importlib.import_module(f"{self.name}.{found.name}")
         return tuple(
@@ -100,9 +128,7 @@ class PackageLayout:
     @functools.cache
     def owners(self) -> dict[str, tuple[str, ...]]:
         """Each name the package exports -> every binding a caller of it reads."""
-        assert len(self.modules()) > self.min_modules, (
-            f"found too few modules under {self.name.replace('.', '/')}/"
-        )
+        assert len(self.modules()) > self.min_modules, f"found too few of {self.where}"
         package = self.package
         return {
             name: self.bindings_of(getattr(package, name)) for name in package.__all__
@@ -118,8 +144,7 @@ class PackageLayout:
     def absent_refusal(self, name: str) -> str:
         return (
             f"{self.name} does not bind {name}, so binding it reaches no caller. "
-            "Patch each binding a caller reads, in the modules under "
-            f"{self.name.replace('.', '/')}/."
+            f"Patch each binding a caller reads, in {self.where}."
         )
 
     def shared_bindings(self) -> list[tuple[str, ...]]:
@@ -174,7 +199,25 @@ class PackageLayout:
 
 CONFIG = PackageLayout("ori.config", min_modules=10, owners_label="config_owners")
 RUNTIME = PackageLayout("ori.runtime", min_modules=20, owners_label="runtime_owners")
-LAYOUTS: tuple[PackageLayout, ...] = (CONFIG, RUNTIME)
+#: Every private module beside the loader, read from disk, so one added later is
+#: watched without an edit. ``tests/test_skill_loader_patch_targets.py`` holds
+#: each name to the policy every path-keyed gate matches.
+SKILL_LOADER_SIBLINGS = tuple(
+    sorted(
+        path.stem
+        for path in (Path(__file__).resolve().parents[1] / "ori" / "skills").glob(
+            "_*.py"
+        )
+        if path.name != "__init__.py"
+    )
+)
+SKILL_LOADER = PackageLayout(
+    "ori.skills.loader",
+    min_modules=5,
+    owners_label="skill_loader_owners",
+    siblings=SKILL_LOADER_SIBLINGS,
+)
+LAYOUTS: tuple[PackageLayout, ...] = (CONFIG, RUNTIME, SKILL_LOADER)
 _BY_NAME = {layout.name: layout for layout in LAYOUTS}
 
 
@@ -204,27 +247,32 @@ def runtime_owners() -> dict[str, tuple[str, ...]]:
     return RUNTIME.owners()
 
 
-def runtime_bindings(name: str) -> tuple[str, ...]:
-    """Every binding under ``ori/runtime/`` a reader of *name* looks up.
+def _bindings_in(layout: PackageLayout, name: str) -> tuple[str, ...]:
+    """Every binding in *layout*'s modules a reader of *name* looks up.
 
-    *name* is the name the runtime's modules import a value under. A function,
-    class or module is found by identity, so a binding under another local
-    name is listed too; any other value, such as a number, only under *name*,
-    because equal numbers can be one object and an unrelated constant would be
-    patched with it. Every module binding *name* must bind the same object.
+    *name* is the name the modules import a value under. A function, class or
+    module is found by identity, so a binding under another local name is
+    listed too; any other value, such as a number, only under *name*, because
+    equal numbers can be one object and an unrelated constant would be patched
+    with it. Every module binding *name* must bind the same object.
     """
     found = {
         module.__name__: vars(module)[name]
-        for module in RUNTIME.modules()
+        for module in layout.modules()
         if name in vars(module)
     }
-    assert found, f"no module under ori/runtime/ binds {name}"
+    assert found, f"no module behind {layout.name} binds {name}"
     values = {id(value) for value in found.values()}
-    assert len(values) == 1, f"ori/runtime/ binds {name} to different objects"
+    assert len(values) == 1, f"{layout.name}'s modules bind {name} to different objects"
     value = next(iter(found.values()))
     if isinstance(value, (types.FunctionType, type, types.ModuleType)):
-        return RUNTIME.bindings_of(value)
+        return layout.bindings_of(value)
     return tuple(sorted(f"{module}.{name}" for module in found))
+
+
+def runtime_bindings(name: str) -> tuple[str, ...]:
+    """Every binding under ``ori/runtime/`` a reader of *name* looks up."""
+    return _bindings_in(RUNTIME, name)
 
 
 def patch_runtime(monkeypatch: Any, name: str, value: object) -> None:
@@ -246,6 +294,25 @@ def patched_runtime(name: str, new: Any = mock.DEFAULT, **kwargs: Any) -> Iterat
         for target in rest:
             stack.enter_context(mock.patch(target, patched))
         yield patched
+
+
+# ── ori.skills.loader ─────────────────────────────────────────────────────────
+
+
+def skill_loader_owners() -> dict[str, tuple[str, ...]]:
+    """Each name ``ori.skills.loader`` exports -> every binding a caller reads."""
+    return SKILL_LOADER.owners()
+
+
+def skill_loader_bindings(name: str) -> tuple[str, ...]:
+    """Every binding behind ``ori.skills.loader`` a reader of *name* looks up."""
+    return _bindings_in(SKILL_LOADER, name)
+
+
+def patch_skill_loader(monkeypatch: Any, name: str, value: object) -> None:
+    """``monkeypatch.setattr`` every binding a loader reader of *name* looks up."""
+    for target in skill_loader_bindings(name):
+        monkeypatch.setattr(target, value)
 
 
 ROOT = Path(__file__).resolve().parents[1]
