@@ -8,8 +8,11 @@
   ],
   "conventions": {
     "readings.where": "sensor_history row, history_point of a Tier 3 request, or reasoning_reading: the Tier 3 request's own reading",
-    "expected.read_as": "the record_kind a consumer reads the row as; null for a row that fails a check",
+    "expected.read_as": "the record_kind a consumer reads the row as; null for a row that fails a check or that it disregards",
+    "expected.tier_read_as": "the tier a consumer reads the row as, under the tier domain; null for a row that fails a check or that it disregards",
+    "expected.disregarded": "whether a consumer disregards the row, as a refusal the tier domain omits",
     "paging.between_pages": "entry i changes the store after page i+1 is returned and before the next is requested; stored is the order the runtime stored the rows",
+    "paging.stored.tier": "a stored row's tier, action_taken and executed where a case gives them; a row without a tier is one the export carries",
     "tokens.gateway.answers": "the runtime's answers to one traversal's requests in order: rows with whether a next page follows and, where given, the next_page_token issued, or an error envelope's error",
     "buckets.expected": "every member of a bucketed row except sensor_id, sensor_type and unit, which the input rows here do not carry"
   },
@@ -523,7 +526,9 @@
       "expected": {
         "verdict": null,
         "read_as": "dispatch",
-        "is_act": true
+        "is_act": true,
+        "tier_read_as": "D",
+        "disregarded": false
       }
     },
     {
@@ -541,7 +546,9 @@
       "expected": {
         "verdict": null,
         "read_as": "dispatch",
-        "is_act": true
+        "is_act": true,
+        "tier_read_as": "D",
+        "disregarded": false
       }
     },
     {
@@ -559,7 +566,9 @@
       "expected": {
         "verdict": null,
         "read_as": "dispatch",
-        "is_act": true
+        "is_act": true,
+        "tier_read_as": "D",
+        "disregarded": false
       }
     },
     {
@@ -577,7 +586,9 @@
       "expected": {
         "verdict": null,
         "read_as": "contributor",
-        "is_act": false
+        "is_act": false,
+        "tier_read_as": "D",
+        "disregarded": false
       }
     },
     {
@@ -595,7 +606,9 @@
       "expected": {
         "verdict": null,
         "read_as": "contributor",
-        "is_act": false
+        "is_act": false,
+        "tier_read_as": "D",
+        "disregarded": false
       }
     },
     {
@@ -613,7 +626,9 @@
       "expected": {
         "verdict": null,
         "read_as": "contributor_legacy",
-        "is_act": false
+        "is_act": false,
+        "tier_read_as": "D",
+        "disregarded": false
       }
     },
     {
@@ -631,7 +646,69 @@
       "expected": {
         "verdict": null,
         "read_as": "contributor_legacy",
-        "is_act": false
+        "is_act": false,
+        "tier_read_as": "D",
+        "disregarded": false
+      }
+    },
+    {
+      "name": "dispatch at tier A",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "A",
+        "timestamp": 1717000000950,
+        "executed": true,
+        "action_taken": "trip_relay",
+        "record_kind": "dispatch",
+        "record_key": "00000000000000000000000000000010",
+        "contributed_to": null
+      },
+      "expected": {
+        "verdict": null,
+        "read_as": "dispatch",
+        "is_act": true,
+        "tier_read_as": "A",
+        "disregarded": false
+      }
+    },
+    {
+      "name": "dispatch at tier B",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "B",
+        "timestamp": 1717000000950,
+        "executed": true,
+        "action_taken": "trip_relay",
+        "record_kind": "dispatch",
+        "record_key": "00000000000000000000000000000011",
+        "contributed_to": null
+      },
+      "expected": {
+        "verdict": null,
+        "read_as": "dispatch",
+        "is_act": true,
+        "tier_read_as": "B",
+        "disregarded": false
+      }
+    },
+    {
+      "name": "contributor at tier C",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "C",
+        "timestamp": 1717000000950,
+        "executed": false,
+        "action_taken": "coalesced",
+        "record_kind": "contributor",
+        "record_key": "00000000000000000000000000000012",
+        "contributed_to": "00000000000000000000000000000001"
+      },
+      "expected": {
+        "verdict": null,
+        "read_as": "contributor",
+        "is_act": false,
+        "tier_read_as": "C",
+        "disregarded": false
       }
     },
     {
@@ -646,7 +723,9 @@
       "expected": {
         "verdict": null,
         "read_as": "dispatch",
-        "is_act": true
+        "is_act": true,
+        "tier_read_as": "D",
+        "disregarded": false
       }
     },
     {
@@ -661,7 +740,9 @@
       "expected": {
         "verdict": null,
         "read_as": "contributor_legacy",
-        "is_act": false
+        "is_act": false,
+        "tier_read_as": "D",
+        "disregarded": false
       }
     },
     {
@@ -676,7 +757,9 @@
       "expected": {
         "verdict": null,
         "read_as": "contributor_legacy",
-        "is_act": false
+        "is_act": false,
+        "tier_read_as": "D",
+        "disregarded": false
       }
     },
     {
@@ -694,7 +777,9 @@
       "expected": {
         "verdict": "record_kind_invalid",
         "read_as": null,
-        "is_act": false
+        "is_act": false,
+        "tier_read_as": null,
+        "disregarded": false
       }
     },
     {
@@ -712,7 +797,9 @@
       "expected": {
         "verdict": "record_kind_invalid",
         "read_as": null,
-        "is_act": false
+        "is_act": false,
+        "tier_read_as": null,
+        "disregarded": false
       }
     },
     {
@@ -730,7 +817,9 @@
       "expected": {
         "verdict": "record_key_invalid",
         "read_as": null,
-        "is_act": false
+        "is_act": false,
+        "tier_read_as": null,
+        "disregarded": false
       }
     },
     {
@@ -748,7 +837,9 @@
       "expected": {
         "verdict": "record_key_invalid",
         "read_as": null,
-        "is_act": false
+        "is_act": false,
+        "tier_read_as": null,
+        "disregarded": false
       }
     },
     {
@@ -765,7 +856,9 @@
       "expected": {
         "verdict": "record_key_invalid",
         "read_as": null,
-        "is_act": false
+        "is_act": false,
+        "tier_read_as": null,
+        "disregarded": false
       }
     },
     {
@@ -783,7 +876,9 @@
       "expected": {
         "verdict": "contributed_to_invalid",
         "read_as": null,
-        "is_act": false
+        "is_act": false,
+        "tier_read_as": null,
+        "disregarded": false
       }
     },
     {
@@ -801,7 +896,9 @@
       "expected": {
         "verdict": "contributed_to_invalid",
         "read_as": null,
-        "is_act": false
+        "is_act": false,
+        "tier_read_as": null,
+        "disregarded": false
       }
     },
     {
@@ -819,7 +916,9 @@
       "expected": {
         "verdict": "contributed_to_invalid",
         "read_as": null,
-        "is_act": false
+        "is_act": false,
+        "tier_read_as": null,
+        "disregarded": false
       }
     },
     {
@@ -836,7 +935,9 @@
       "expected": {
         "verdict": "contributed_to_invalid",
         "read_as": null,
-        "is_act": false
+        "is_act": false,
+        "tier_read_as": null,
+        "disregarded": false
       }
     },
     {
@@ -854,7 +955,9 @@
       "expected": {
         "verdict": "contributed_to_invalid",
         "read_as": null,
-        "is_act": false
+        "is_act": false,
+        "tier_read_as": null,
+        "disregarded": false
       }
     },
     {
@@ -872,7 +975,9 @@
       "expected": {
         "verdict": "contributed_to_invalid",
         "read_as": null,
-        "is_act": false
+        "is_act": false,
+        "tier_read_as": null,
+        "disregarded": false
       }
     },
     {
@@ -890,7 +995,9 @@
       "expected": {
         "verdict": "action_taken_mismatch",
         "read_as": null,
-        "is_act": false
+        "is_act": false,
+        "tier_read_as": null,
+        "disregarded": false
       }
     },
     {
@@ -908,7 +1015,9 @@
       "expected": {
         "verdict": "action_taken_mismatch",
         "read_as": null,
-        "is_act": false
+        "is_act": false,
+        "tier_read_as": null,
+        "disregarded": false
       }
     },
     {
@@ -926,7 +1035,9 @@
       "expected": {
         "verdict": "action_taken_mismatch",
         "read_as": null,
-        "is_act": false
+        "is_act": false,
+        "tier_read_as": null,
+        "disregarded": false
       }
     },
     {
@@ -944,7 +1055,9 @@
       "expected": {
         "verdict": "contributor_executed",
         "read_as": null,
-        "is_act": false
+        "is_act": false,
+        "tier_read_as": null,
+        "disregarded": false
       }
     },
     {
@@ -961,7 +1074,9 @@
       "expected": {
         "verdict": "contributor_executed",
         "read_as": null,
-        "is_act": false
+        "is_act": false,
+        "tier_read_as": null,
+        "disregarded": false
       }
     },
     {
@@ -979,7 +1094,9 @@
       "expected": {
         "verdict": "record_kind_invalid",
         "read_as": null,
-        "is_act": false
+        "is_act": false,
+        "tier_read_as": null,
+        "disregarded": false
       }
     },
     {
@@ -997,7 +1114,9 @@
       "expected": {
         "verdict": "action_taken_mismatch",
         "read_as": null,
-        "is_act": false
+        "is_act": false,
+        "tier_read_as": null,
+        "disregarded": false
       }
     },
     {
@@ -1015,7 +1134,9 @@
       "expected": {
         "verdict": "record_key_invalid",
         "read_as": null,
-        "is_act": false
+        "is_act": false,
+        "tier_read_as": null,
+        "disregarded": false
       }
     },
     {
@@ -1033,7 +1154,9 @@
       "expected": {
         "verdict": "contributed_to_invalid",
         "read_as": null,
-        "is_act": false
+        "is_act": false,
+        "tier_read_as": null,
+        "disregarded": false
       }
     },
     {
@@ -1051,7 +1174,179 @@
       "expected": {
         "verdict": "contributed_to_invalid",
         "read_as": null,
-        "is_act": false
+        "is_act": false,
+        "tier_read_as": null,
+        "disregarded": false
+      }
+    },
+    {
+      "name": "refusal stored with a tier outside A to D",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "Z",
+        "timestamp": 1717000000950,
+        "executed": false,
+        "action_taken": "refused_unknown_tier",
+        "record_kind": "dispatch",
+        "record_key": "0000000000000000000000000000000d",
+        "contributed_to": null
+      },
+      "expected": {
+        "verdict": null,
+        "read_as": null,
+        "is_act": false,
+        "tier_read_as": null,
+        "disregarded": true
+      }
+    },
+    {
+      "name": "tier in lower case",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "d",
+        "timestamp": 1717000000950,
+        "executed": true,
+        "action_taken": "trip_relay",
+        "record_kind": "dispatch",
+        "record_key": "0000000000000000000000000000000e",
+        "contributed_to": null
+      },
+      "expected": {
+        "verdict": null,
+        "read_as": "dispatch",
+        "is_act": true,
+        "tier_read_as": "A",
+        "disregarded": false
+      }
+    },
+    {
+      "name": "tier of another JSON type",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": null,
+        "timestamp": 1717000000950,
+        "executed": true,
+        "action_taken": "trip_relay",
+        "record_kind": "dispatch",
+        "record_key": "0000000000000000000000000000000e",
+        "contributed_to": null
+      },
+      "expected": {
+        "verdict": "tier_invalid",
+        "read_as": null,
+        "is_act": false,
+        "tier_read_as": null,
+        "disregarded": false
+      }
+    },
+    {
+      "name": "tier absent",
+      "row": {
+        "action_name": "trip_relay",
+        "timestamp": 1717000000950,
+        "executed": true,
+        "action_taken": "trip_relay",
+        "record_kind": "dispatch",
+        "record_key": "0000000000000000000000000000000e",
+        "contributed_to": null
+      },
+      "expected": {
+        "verdict": "tier_invalid",
+        "read_as": null,
+        "is_act": false,
+        "tier_read_as": null,
+        "disregarded": false
+      }
+    },
+    {
+      "name": "older runtime: a row with a tier outside A to D",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "Z",
+        "timestamp": 1717000000950,
+        "executed": true,
+        "action_taken": "trip_relay"
+      },
+      "expected": {
+        "verdict": null,
+        "read_as": "dispatch",
+        "is_act": true,
+        "tier_read_as": "A",
+        "disregarded": false
+      }
+    },
+    {
+      "name": "older runtime: a row whose tier is not a string",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": null,
+        "timestamp": 1717000000950,
+        "executed": true,
+        "action_taken": "trip_relay"
+      },
+      "expected": {
+        "verdict": "tier_invalid",
+        "read_as": null,
+        "is_act": false,
+        "tier_read_as": null,
+        "disregarded": false
+      }
+    },
+    {
+      "name": "an earlier release's act named refused_unknown_tier that ran is not disregarded",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "Z",
+        "timestamp": 1717000000950,
+        "executed": true,
+        "action_taken": "refused_unknown_tier"
+      },
+      "expected": {
+        "verdict": null,
+        "read_as": "dispatch",
+        "is_act": true,
+        "tier_read_as": "A",
+        "disregarded": false
+      }
+    },
+    {
+      "name": "refusal of an unknown tier that also fails a check is classified, not disregarded",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": "Z",
+        "timestamp": 1717000000950,
+        "executed": false,
+        "action_taken": "refused_unknown_tier",
+        "record_kind": "contributor",
+        "record_key": "00000000000000000000000000000014",
+        "contributed_to": "00000000000000000000000000000001"
+      },
+      "expected": {
+        "verdict": "action_taken_mismatch",
+        "read_as": null,
+        "is_act": false,
+        "tier_read_as": null,
+        "disregarded": false
+      }
+    },
+    {
+      "name": "contributor marked executed with a tier of another JSON type: step 7 first",
+      "row": {
+        "action_name": "trip_relay",
+        "tier": 7,
+        "timestamp": 1717000000950,
+        "executed": true,
+        "action_taken": "coalesced",
+        "record_kind": "contributor",
+        "record_key": "0000000000000000000000000000000f",
+        "contributed_to": "00000000000000000000000000000001"
+      },
+      "expected": {
+        "verdict": "contributor_executed",
+        "read_as": null,
+        "is_act": false,
+        "tier_read_as": null,
+        "disregarded": false
       }
     }
   ],
@@ -1808,6 +2103,79 @@
           "a"
         ]
       ]
+    },
+    {
+      "name": "a stored refusal of an unknown tier holds no position; an earlier release's row does",
+      "stored": [
+        {
+          "id": "j",
+          "timestamp": 1717000000007,
+          "stored": 1,
+          "tier": "A"
+        },
+        {
+          "id": "k",
+          "timestamp": 1717000000006,
+          "stored": 2,
+          "tier": "Z",
+          "action_taken": "refused_unknown_tier",
+          "executed": false
+        },
+        {
+          "id": "l",
+          "timestamp": 1717000000006,
+          "stored": 3,
+          "tier": "B"
+        },
+        {
+          "id": "m",
+          "timestamp": 1717000000005,
+          "stored": 4,
+          "tier": "C"
+        },
+        {
+          "id": "n",
+          "timestamp": 1717000000004,
+          "stored": 5,
+          "tier": "z"
+        },
+        {
+          "id": "o",
+          "timestamp": 1717000000003,
+          "stored": 6,
+          "tier": "D"
+        },
+        {
+          "id": "p",
+          "timestamp": 1717000000003,
+          "stored": 7,
+          "tier": "Q",
+          "action_taken": "refused_unknown_tier",
+          "executed": false
+        },
+        {
+          "id": "q",
+          "timestamp": 1717000000002,
+          "stored": 8,
+          "tier": "Q"
+        }
+      ],
+      "page_size": 2,
+      "between_pages": [],
+      "expected_pages": [
+        [
+          "j",
+          "l"
+        ],
+        [
+          "m",
+          "n"
+        ],
+        [
+          "o",
+          "q"
+        ]
+      ]
     }
   ],
   "resolution": [
@@ -1942,6 +2310,89 @@
         },
         {
           "record_key": "00000000000000000000000000000008",
+          "holder": null
+        }
+      ]
+    },
+    {
+      "name": "holders received from a runtime that predates the tier domain: an earlier release's row, one that fails step 8, and a refusal of an unknown tier",
+      "pages": [
+        [
+          {
+            "action_name": "trip_relay",
+            "tier": "D",
+            "timestamp": 1717000000950,
+            "executed": false,
+            "action_taken": "coalesced",
+            "record_kind": "contributor",
+            "record_key": "00000000000000000000000000000018",
+            "contributed_to": "00000000000000000000000000000015"
+          },
+          {
+            "action_name": "trip_relay",
+            "tier": "z",
+            "timestamp": 1717000000950,
+            "executed": true,
+            "action_taken": "trip_relay",
+            "record_kind": "dispatch",
+            "record_key": "00000000000000000000000000000015",
+            "contributed_to": null
+          },
+          {
+            "action_name": "trip_relay",
+            "tier": "D",
+            "timestamp": 1717000000950,
+            "executed": false,
+            "action_taken": "coalesced",
+            "record_kind": "contributor",
+            "record_key": "00000000000000000000000000000019",
+            "contributed_to": "00000000000000000000000000000016"
+          }
+        ],
+        [
+          {
+            "action_name": "trip_relay",
+            "tier": null,
+            "timestamp": 1717000000950,
+            "executed": true,
+            "action_taken": "trip_relay",
+            "record_kind": "dispatch",
+            "record_key": "00000000000000000000000000000016",
+            "contributed_to": null
+          },
+          {
+            "action_name": "trip_relay",
+            "tier": "D",
+            "timestamp": 1717000000950,
+            "executed": false,
+            "action_taken": "coalesced",
+            "record_kind": "contributor",
+            "record_key": "0000000000000000000000000000001a",
+            "contributed_to": "00000000000000000000000000000017"
+          },
+          {
+            "action_name": "trip_relay",
+            "tier": "Z",
+            "timestamp": 1717000000950,
+            "executed": false,
+            "action_taken": "refused_unknown_tier",
+            "record_kind": "dispatch",
+            "record_key": "00000000000000000000000000000017",
+            "contributed_to": null
+          }
+        ]
+      ],
+      "expected": [
+        {
+          "record_key": "00000000000000000000000000000018",
+          "holder": "00000000000000000000000000000015"
+        },
+        {
+          "record_key": "00000000000000000000000000000019",
+          "holder": null
+        },
+        {
+          "record_key": "0000000000000000000000000000001a",
           "holder": null
         }
       ]

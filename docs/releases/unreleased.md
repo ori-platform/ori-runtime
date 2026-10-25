@@ -323,10 +323,13 @@ release is cut.
   written with an empty key, so nothing could name or resolve them, and
   `gateway-api/v2` refuses an empty `record_key` on export. The store now
   refuses a new row without one.
-- The gateway `action_log` export carries only tiers `A` to `D`. A refusal row
-  stored with the unrecognised tier it was handed, such as `Z`, was exported
-  as it was; it is now omitted from the export and kept in the store and in
-  `state action-log`.
+- The gateway `action_log` export carries only tiers `A` to `D`, as
+  `gateway-api/v2` now states. A refusal of an unknown tier
+  (`refused_unknown_tier`, not executed) records no act and is omitted before
+  paging. Any other row stored with a tier outside `A` to `D` was written by a
+  release up to v2.3.0, which ran an unknown or lower-case tier as Tier A, and
+  exports as `A`; a `tier` filter selects by the exported tier. The store and
+  `state action-log` keep what was recorded.
 - A skill can no longer declare an action, or a `safe_default_action`, named
   as the runtime records an action not taken: `coalesced`, `suppressed`,
   `no_executor`, `not_performed`, `proposal_not_committed`, a Tier C decision

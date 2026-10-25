@@ -62,27 +62,63 @@ def reading_verdict(row: dict[str, Any], where: str) -> str | None:
 
 
 def action_verdict(row: dict[str, Any]) -> str | None:
-    """Steps 3 to 7: None when the row passes."""
+    """Steps 3 to 8: None when the row passes."""
     kind = row.get("record_kind", _ABSENT)
-    if kind is _ABSENT:
-        return None
-    if kind not in ("dispatch", "contributor", "contributor_legacy"):
-        return "record_kind_invalid"
-    key = row.get("record_key", _ABSENT)
-    if not (key is None or (isinstance(key, str) and key)):
-        return "record_key_invalid"
-    link = row.get("contributed_to", _ABSENT)
-    if kind == "contributor":
-        if not (isinstance(link, str) and link and link != key):
+    if kind is not _ABSENT:
+        if kind not in ("dispatch", "contributor", "contributor_legacy"):
+            return "record_kind_invalid"
+        key = row.get("record_key", _ABSENT)
+        if not (key is None or (isinstance(key, str) and key)):
+            return "record_key_invalid"
+        link = row.get("contributed_to", _ABSENT)
+        if kind == "contributor":
+            if not (isinstance(link, str) and link and link != key):
+                return "contributed_to_invalid"
+        elif link is not None:
             return "contributed_to_invalid"
-    elif link is not None:
-        return "contributed_to_invalid"
-    coalesced = row.get("action_taken") == "coalesced"
-    if coalesced != (kind != "dispatch"):
-        return "action_taken_mismatch"
-    if kind == "contributor" and row.get("executed", _ABSENT) is not False:
-        return "contributor_executed"
+        coalesced = row.get("action_taken") == "coalesced"
+        if coalesced != (kind != "dispatch"):
+            return "action_taken_mismatch"
+        if kind == "contributor" and row.get("executed", _ABSENT) is not False:
+            return "contributor_executed"
+    if not isinstance(row.get("tier", _ABSENT), str):
+        return "tier_invalid"
     return None
+
+
+def action_reading(row: dict[str, Any]) -> dict[str, Any]:
+    """How a consumer reads one exported row, under the tier domain."""
+    if action_verdict(row) is not None:
+        return {
+            "read_as": None,
+            "is_act": False,
+            "tier_read_as": None,
+            "disregarded": False,
+        }
+    if (
+        row["tier"] not in ("A", "B", "C", "D")
+        and row.get("action_taken") == "refused_unknown_tier"
+        and row.get("executed") is False
+    ):
+        return {
+            "read_as": None,
+            "is_act": False,
+            "tier_read_as": None,
+            "disregarded": True,
+        }
+    kind = row.get("record_kind")
+    if kind is None:
+        kind = (
+            "contributor_legacy"
+            if row.get("action_taken") == "coalesced"
+            else "dispatch"
+        )
+    return {
+        "read_as": kind,
+        "is_act": kind == "dispatch",
+        "tier_read_as": row["tier"] if row["tier"] in ("A", "B", "C", "D") else "A",
+        "disregarded": False,
+    }
 
 
 @pytest.mark.parametrize("case", CORPUS["readings"], ids=lambda c: c["name"])
@@ -92,7 +128,10 @@ def test_the_reading_checks_reach_every_corpus_verdict(case: dict) -> None:
 
 @pytest.mark.parametrize("case", CORPUS["action_log"], ids=lambda c: c["name"])
 def test_the_action_checks_reach_every_corpus_verdict(case: dict) -> None:
-    assert action_verdict(case["row"]) == case["expected"]["verdict"]
+    expected = case["expected"]
+    assert action_verdict(case["row"]) == expected["verdict"]
+    reading = action_reading(case["row"])
+    assert reading == {key: expected[key] for key in reading}
 
 
 # ─── the closed table ─────────────────────────────────────────────────────────
@@ -674,6 +713,115 @@ async def test_both_action_readers_emit_only_rows_that_pass_every_check(
         "contributor_legacy",
         "dispatch",
     ]
+
+
+def _store_rows_as_written(conn: sqlite3.Connection, rows: list[dict]) -> None:
+    """Rows as a store holds them, in order: an earlier release wrote no key."""
+    for row in rows:
+        conn.execute(
+            "INSERT INTO action_log (action_name, tier, executed, approved, "
+            "action_taken, trigger_name, timestamp, device_id, correlation_id, "
+            "record_kind, record_key, contributed_to) VALUES "
+            "('trip_relay', ?, ?, NULL, ?, 't', ?, 'dev-01', ?, 'dispatch', '', NULL)",
+            (
+                row.get("tier", "D"),
+                1 if row.get("executed", True) else 0,
+                row.get("action_taken", "trip_relay"),
+                row["timestamp"],
+                row["id"],
+            ),
+        )
+    conn.commit()
+
+
+@pytest.mark.parametrize(
+    "case",
+    [case for case in CORPUS["paging"] if any("tier" in row for row in case["stored"])],
+    ids=lambda c: c["name"],
+)
+async def test_the_export_pages_the_corpus_tier_domain(
+    store: StateStore, case: dict
+) -> None:
+    """Refusals hold no position and earlier releases' rows do, through the export."""
+    assert not case["between_pages"]
+    assert store._conn is not None
+    _store_rows_as_written(store._conn, case["stored"])
+    pages: list[list[str]] = []
+    token = ""
+    responder = _responder(store)
+    for _ in range(len(case["stored"]) + 1):  # bounded: a page holds at least one row
+        response = await responder.handle_request(
+            {
+                "request_id": "req-001",
+                "export_type": "action_log",
+                "device_id": "dev-01",
+                "limit": case["page_size"],
+                "page_token": token,
+                "params": {},
+            }
+        )
+        assert response is not None and response.error is None
+        for item in response.items:
+            assert item["tier"] in ("A", "B", "C", "D"), item
+            assert action_verdict(item) is None, item
+        pages.append([item["correlation_id"] for item in response.items])
+        if response.complete:
+            break
+        token = response.next_page_token
+    assert pages == case["expected_pages"]
+
+
+async def test_an_upgraded_store_exports_what_earlier_releases_ran_as_acts(
+    store: StateStore,
+) -> None:
+    """Releases up to v2.3.0 ran an unknown tier as Tier A and stored it as handed."""
+    assert store._conn is not None
+    _store_rows_as_written(
+        store._conn,
+        [
+            {"id": "ran-unknown", "timestamp": 6, "tier": "Z"},
+            {"id": "ran-lowercase", "timestamp": 5, "tier": "d"},
+            {
+                "id": "named-like-a-refusal",
+                "timestamp": 4,
+                "tier": "Z",
+                "action_taken": "refused_unknown_tier",
+            },
+            {
+                "id": "refusal",
+                "timestamp": 3,
+                "tier": "Z",
+                "action_taken": "refused_unknown_tier",
+                "executed": False,
+            },
+            {"id": "dispatched-d", "timestamp": 2, "tier": "D"},
+        ],
+    )
+    exported = await _export(store, "action_log")
+    tiers = {item["correlation_id"]: item["tier"] for item in exported}
+    assert tiers == {
+        "ran-unknown": "A",
+        "ran-lowercase": "A",
+        "named-like-a-refusal": "A",
+        "dispatched-d": "D",
+    }
+    assert all(action_reading(item)["is_act"] for item in exported)
+
+    def ids(items: list[dict]) -> set[str]:
+        return {item["correlation_id"] for item in items}
+
+    filtered_a = await _export(store, "action_log", params={"tier": "A"})
+    assert ids(filtered_a) == {"ran-unknown", "ran-lowercase", "named-like-a-refusal"}
+    assert ids(await _export(store, "action_log", params={"tier": "d"})) == {
+        "dispatched-d"
+    }
+    assert await _export(store, "action_log", params={"tier": "Z"}) == []
+    # The device's own reader keeps what was recorded, the refusal included.
+    local = {
+        row["correlation_id"]: row["tier"]
+        for row in await store.get_action_log(limit=10)
+    }
+    assert local["refusal"] == "Z" and local["ran-lowercase"] == "d"
 
 
 # ─── each path's basis, pinned against an independent reading of the contract ─

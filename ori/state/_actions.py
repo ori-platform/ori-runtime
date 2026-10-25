@@ -18,6 +18,17 @@ from ori.state._action_records import (
 )
 from ori.state._core import StoreCore
 
+_EXPORTED_TIERS = ("A", "B", "C", "D")
+_TIERS_SQL = "('A', 'B', 'C', 'D')"
+#: The rows gateway-api/v2 omits from the export: a refusal of an unknown tier,
+#: which no release up to v2.3.0 could have written, since those ran an unknown
+#: tier as Tier A; one of theirs literally named this and never executed is
+#: omitted with them, the contract's stated limit.
+_UNKNOWN_TIER_REFUSAL = (
+    f"tier NOT IN {_TIERS_SQL} AND action_taken = 'refused_unknown_tier' "
+    "AND executed = 0"
+)
+
 
 class ActionLogStore(StoreCore):
     """The action log and its attestation."""
@@ -398,10 +409,12 @@ class ActionLogStore(StoreCore):
         tier: str | None,
         limit: int,
     ) -> list[dict]:
-        # A refusal stores the tier it was handed, which may be none of A to D;
-        # the export carries only the four, so such a row is omitted from it,
-        # in the query so paging counts only what is sent. The store keeps it.
-        where = ["tier IN ('A', 'B', 'C', 'D')"]
+        # gateway-api/v2 `action_log`: an exported tier is A to D. A refusal of
+        # an unknown tier records no act and is omitted, in the query so it
+        # holds no page position; every other row outside A to D was written by
+        # a release that ran it as Tier A, and exports as A. The store keeps
+        # what was recorded.
+        where = [f"NOT ({_UNKNOWN_TIER_REFUSAL})"]
         params: list[Any] = []
         if device_id:
             where.append("device_id = ?")
@@ -413,8 +426,15 @@ class ActionLogStore(StoreCore):
             where.append("timestamp <= ?")
             params.append(int(until_ms))
         if tier:
-            where.append("tier = ?")
-            params.append(str(tier).upper())
+            # A filter selects by the exported tier.
+            wanted = str(tier).upper()
+            if wanted == "A":
+                where.append(f"(tier = 'A' OR tier NOT IN {_TIERS_SQL})")
+            elif wanted in _EXPORTED_TIERS:
+                where.append("tier = ?")
+                params.append(wanted)
+            else:
+                where.append("0")
         where_sql = f"WHERE {' AND '.join(where)}"
         params.append(max(1, min(int(limit), 1000)))
         query = (
@@ -438,6 +458,8 @@ class ActionLogStore(StoreCore):
         result = []
         for row in rows:
             item = dict(row)
+            if item["tier"] not in _EXPORTED_TIERS:
+                item["tier"] = "A"
             item["executed"] = bool(item["executed"])
             item["approved"] = (
                 bool(item["approved"]) if item["approved"] is not None else None

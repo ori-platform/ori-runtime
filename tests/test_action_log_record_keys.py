@@ -127,32 +127,56 @@ async def test_the_writer_refuses_a_row_with_no_record_key(
         await store.close()
 
 
-async def test_the_export_omits_a_row_whose_tier_is_not_a_to_d(tmp_path: Path) -> None:
+async def test_the_export_omits_only_unknown_tier_refusals(tmp_path: Path) -> None:
+    """gateway-api/v2: a refusal of an unknown tier is omitted; any other row
+    outside A to D exports as A, and the store keeps what was recorded."""
     store = StateStore(str(tmp_path / "state.db"))
     await store.open()
+    rows = [
+        ("A", "", False),
+        ("Z", "refused_unknown_tier", False),  # a refusal: omitted
+        ("d", "", False),
+        ("D", "", False),
+        ("", "", False),
+    ]
     try:
-        for index, tier in enumerate(["A", "Z", "d", "D", ""]):
+        for index, (tier, taken, executed) in enumerate(rows):
             await store.log_action(
                 ActionResult(
                     action_name="log_to_dashboard",
                     tier=tier,
-                    executed=False,
+                    executed=executed,
                     approved=None,
-                    action_taken="",
+                    action_taken=taken,
                     timestamp=index + 1,
                 ),
                 "t",
                 record_key=f"key-{index}",
             )
+        # An act an earlier release ran under an unknown tier, under the name
+        # a refusal now carries: only such a release could write it.
+        assert store._conn is not None
+        store._conn.execute(
+            "INSERT INTO action_log (action_name, tier, executed, action_taken, "
+            "trigger_name, timestamp, record_key) VALUES "
+            "('log_to_dashboard', 'Z', 1, 'refused_unknown_tier', 't', 6, 'key-5')"
+        )
+        store._conn.commit()
         exported = await store.export_action_log(limit=100)
         filtered = await store.export_action_log(tier="z", limit=100)
         kept = await store.get_action_log(limit=100)
     finally:
         await store.close()
-    assert sorted(row["tier"] for row in exported) == ["A", "D"]
+    assert sorted(row["record_key"] for row in exported) == [
+        "key-0",
+        "key-2",
+        "key-3",
+        "key-4",
+        "key-5",
+    ]
+    assert sorted(row["tier"] for row in exported) == ["A", "A", "A", "A", "D"]
     assert filtered == []
-    # The store keeps what was recorded; only the export holds the vocabulary.
-    assert sorted(row["tier"] for row in kept) == ["", "A", "D", "Z", "d"]
+    assert sorted(row["tier"] for row in kept) == ["", "A", "D", "Z", "Z", "d"]
 
 
 async def test_a_row_from_before_keys_exports_its_key_as_null(tmp_path: Path) -> None:

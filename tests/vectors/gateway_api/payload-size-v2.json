@@ -1822,8 +1822,8 @@
       "name": "runtime_heartbeat_no_triggers",
       "topic": "ori/{device_id}/runtime/heartbeat",
       "configured_maximum": 4096,
-      "length": 1619,
-      "sha256": "3d490a04a44af4a2b488f68158e5c9558f10ea2bb4d09206250778936431e946",
+      "length": 1657,
+      "sha256": "ca750207df3f4a2cb492d8635417f420c8bd7dcd7167c77d78c5a8bd3df9310e",
       "verdict": "admitted"
     },
     {
