@@ -8,6 +8,7 @@ import json
 import logging
 import secrets
 import shutil
+import sysconfig
 import textwrap
 import unicodedata
 from dataclasses import replace
@@ -1491,8 +1492,22 @@ def test_every_example_configuration_names_skills_that_resolve(
 def _layout(
     tmp_path: Path, monkeypatch, *, pyproject: str | None, site: str = "site-packages"
 ) -> Path:
-    """A package directory with a planted ``skills`` beside it, nothing installed."""
+    """A package directory with a planted ``skills`` beside it, nothing installed.
+
+    The installed-data root points at an empty scratch directory too, so a
+    wheel installed in the interpreter running the suite contributes nothing.
+    """
     parent = tmp_path / unicodedata.normalize("NFC", site)
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    real_get_path = sysconfig.get_path
+    monkeypatch.setattr(
+        sysconfig,
+        "get_path",
+        lambda name, *args, **kwargs: (
+            str(data_root) if name == "data" else real_get_path(name, *args, **kwargs)
+        ),
+    )
     packaged = Path(__file__).resolve().parents[1] / "skills"
     shutil.copytree(
         packaged / "energy-anomaly-detector",
