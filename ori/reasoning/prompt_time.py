@@ -5,7 +5,7 @@
 
 import datetime
 import logging
-from typing import TYPE_CHECKING, Any, Callable, Mapping
+from typing import Any, Callable, Mapping
 
 from ori.network.producer_time import (
     NOT_REPORTED,
@@ -14,15 +14,12 @@ from ori.network.producer_time import (
     read_producer_time,
 )
 
-if TYPE_CHECKING:
-    from ori.security.firmware.reading_age import AnchoredBound
-
 logger = logging.getLogger(__name__)
 
 
 def prompt_time(
     reading: Any,
-    liveness_bound: "Callable[[Any], AnchoredBound | None] | None" = None,
+    liveness_bound: Callable[[Any], Any] | None = None,
 ) -> str:
     """The reading's time as a prompt may present it (gateway-api/v2 Producer Time).
 
