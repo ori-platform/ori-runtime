@@ -156,11 +156,11 @@ async def test_a_usb_device_to_auto_detect_that_is_not_plugged_in_is_unavailable
     assert isinstance(refusal, AdapterUnavailableError)
 
 
-def _chained(error: BaseException, *, context_only: bool) -> BaseException:
+def _chained(error: Exception, *, context_only: bool) -> Exception:
     try:
         try:
             raise error
-        except BaseException as inner:
+        except Exception as inner:
             if context_only:
                 raise RuntimeError("wrapped without a cause")  # noqa: B904
             raise RuntimeError("wrapped") from inner

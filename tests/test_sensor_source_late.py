@@ -317,7 +317,7 @@ async def test_a_stop_mid_connect_closes_the_adapter_in_flight(
     stopping = asyncio.create_task(_stop_and_join(runtime, start_task))
     await asyncio.sleep(0.05)
     source.hold.set()
-    await stopping
+    await asyncio.wait_for(stopping, timeout=10)
     assert in_flight.closed
 
 
@@ -335,6 +335,6 @@ async def test_a_stop_never_strands_what_a_threaded_connect_opens(
     stopping = asyncio.create_task(_stop_and_join(runtime, start_task))
     await asyncio.sleep(0.1)
     gate.set()
-    await stopping
+    await asyncio.wait_for(stopping, timeout=10)
     await asyncio.sleep(0.05)
     assert [adapter.handle for adapter in source.opened] == [None]
