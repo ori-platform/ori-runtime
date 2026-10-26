@@ -602,7 +602,9 @@ class ActionDispatcher:
         #    within approval_timeout_seconds (default: 300)
         # 3. Scoped YES → execute action
         # 4. Scoped NO, invalid reply, or timeout → execute safe_default_action
-        # 5. No response after 2x timeout → escalate to secondary_contact
+        # 5. On timeout, after the safe default, notify actions.secondary_contact
+        #    once. The notice carries no approval authority, and nothing re-asks:
+        #    a new proposal needs the trigger to fire again.
         ...
 
     async def _governed_approval_workflow(self, action, context, result, ...) -> ActionResult:
@@ -617,7 +619,8 @@ class ActionDispatcher:
         #    executor; the dispatch marker lands beside it; the outcome is appended
         #    after it and retried while the process lives.
         # 4. Expired, rejected, blocked, or changed: one non-actuating safe-default
-        #    intent per proposal, the operator told why.
+        #    intent per proposal, the operator told why. Expiry also notifies
+        #    actions.secondary_contact once, as in step 5 above.
         ...
 ```
 
@@ -1179,7 +1182,6 @@ async def test_tier_d_bypasses_dispatcher():
 # Alert delivery
 OWNER_WHATSAPP_NUMBER=whatsapp:+234XXXXXXXXXX
 OWNER_PHONE_NUMBER=+234XXXXXXXXXX
-SECONDARY_WHATSAPP=whatsapp:+234XXXXXXXXXX  # Escalation contact for Tier C no-response
 ORI_SMS_WEBHOOK_TOKEN=                # Shared token for inbound SMS webhook
 ORI_SMS_WEBHOOK_HMAC_SECRET=          # Required when webhook signature mode != token_only
 
