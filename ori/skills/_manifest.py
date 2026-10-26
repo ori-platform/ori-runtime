@@ -3,6 +3,7 @@
 
 """The skill manifest: its data model, its grammar and its workload budgets."""
 
+import datetime
 import logging
 import re
 import unicodedata
@@ -16,27 +17,40 @@ import yaml
 # operator's logging configuration may already select.
 logger = logging.getLogger("ori.skills.loader")
 
-TRIGGER_ALLOWED_KEYS = frozenset(
-    {
-        "name",
-        "condition",
-        "action_tier",
-        "cooldown_seconds",
-        "escalate_to",
-        "bypass_llm",
-        "requires_approval",
-        "reasoning_policy",
-        "approval_timeout_seconds",
-        "safe_default_action",
-    }
-)
+# The one YAML type each manifest field the loader reads admits: skills-package
+# v2 types the top-level and trigger fields, and the rest follow the shapes v1
+# describes. Checked once, before any value is read, so no reader coerces: an
+# integer field refuses a bool, and null is not a value. Values under `config`
+# are the skill's own and are checked where they are read.
+TOP_LEVEL_FIELD_TYPES: dict[str, type] = {
+    "name": str,
+    "version": str,
+    "author": str,
+    "signature": str,
+    "triggers": list,
+    "sensors_required": list,
+    "actions": dict,
+    "prompts": dict,
+    "config": dict,
+}
+TRIGGER_FIELD_TYPES: dict[str, type] = {
+    "name": str,
+    "condition": str,
+    "action_tier": str,
+    "cooldown_seconds": int,
+    "escalate_to": str,
+    "bypass_llm": bool,
+    "requires_approval": bool,
+    "reasoning_policy": str,
+    "approval_timeout_seconds": int,
+    "safe_default_action": str,
+}
+ACTIONS_FIELD_TYPES: dict[str, type] = {"available": list, "defaults": dict}
+ACTION_FIELD_TYPES: dict[str, type] = {"name": str, "tier": str}
+SENSOR_FIELD_TYPES: dict[str, type] = {"type": str}
 
-ACTION_ALLOWED_KEYS = frozenset(
-    {
-        "name",
-        "tier",
-    }
-)
+TRIGGER_ALLOWED_KEYS = frozenset(TRIGGER_FIELD_TYPES)
+ACTION_ALLOWED_KEYS = frozenset(ACTION_FIELD_TYPES)
 
 VALID_TIERS = frozenset({"A", "B", "C", "D"})
 
@@ -107,8 +121,24 @@ MAX_VERSION_LENGTH = 32
 # ── Exceptions ────────────────────────────────────────────────────────────────
 
 
+#: The longest refusal a skill can produce. A manifest is untrusted, and every
+#: refusal names what it refused, so the message is bounded where it is made.
+MAX_REFUSAL_CHARS = 1000
+
+
 class SkillValidationError(Exception):
-    """Raised when a skill.yaml violates the Action Tier Framework rules."""
+    """Raised when a skill.yaml violates the Action Tier Framework rules.
+
+    Its message keeps its head and its tail within `MAX_REFUSAL_CHARS`, so text
+    a manifest supplied can neither flood a log nor push the reason out of it.
+    """
+
+    def __init__(self, message: object = "") -> None:
+        text = str(message)
+        if len(text) > MAX_REFUSAL_CHARS:
+            half = (MAX_REFUSAL_CHARS - 5) // 2
+            text = f"{text[:half]} ... {text[-half:]}"
+        super().__init__(text)
 
 
 @dataclass(frozen=True)
@@ -123,6 +153,100 @@ class SelectedSkill:
 
 class SkillSelectionError(Exception):
     """Raised when a deployment's ``skills:`` list names a skill that cannot run."""
+
+
+def _admits(value: Any, expected: type) -> bool:
+    if expected is int or expected is bool:
+        return type(value) is expected  # bool is an int subclass; neither stands in
+    return isinstance(value, expected)
+
+
+_TYPE_NAMES = {
+    str: "a string",
+    int: "an integer",
+    bool: "a YAML boolean",
+    list: "a list",
+    dict: "a mapping",
+}
+
+
+def _refuse(skill: str, label: str, key: str, expected: type, value: Any) -> None:
+    hint = (
+        "; YAML reads an unquoted number, boolean or date as that type, so quote "
+        "the value"
+        if expected is str and isinstance(value, (bool, int, float, datetime.date))
+        else ""
+    )
+    raise SkillValidationError(
+        f"Skill {skill!r}: {label}{key} must be {_TYPE_NAMES[expected]}, got "
+        f"{type(value).__name__}: {key}={_shown(value)}{hint}"
+    )
+
+
+def _shown(value: Any) -> str:
+    """*value* as a refusal echoes it, bounded: a manifest is untrusted input."""
+    text = repr(value)
+    return text if len(text) <= 80 else text[:77] + "..."
+
+
+def _check_fields(
+    mapping: dict[Any, Any], types: dict[str, type], skill: str, label: str = ""
+) -> None:
+    for key, expected in types.items():
+        if key in mapping and not _admits(mapping[key], expected):
+            _refuse(skill, label, key, expected, mapping[key])
+
+
+def _check_items(items: list[Any], expected: type, skill: str, where: str) -> list[Any]:
+    for index, item in enumerate(items):
+        if not _admits(item, expected):
+            _refuse(skill, "", f"{where}[{index}]", expected, item)
+    return items
+
+
+def _named(entry: dict[Any, Any], kind: str, where: str) -> str:
+    """How a refusal names a trigger or action: by its name when it has one."""
+    name = entry.get("name")
+    return (
+        f"{kind} {_shown(name)}: " if isinstance(name, str) and name else f"{where}: "
+    )
+
+
+def check_manifest_field_types(raw: dict[Any, Any], skill_dir_name: str) -> None:
+    """Refuse a manifest value of any type but the one its field admits.
+
+    Walks every field the loader reads (the tables above) before anything reads
+    one, so a wrong type is a refusal naming the skill, the trigger or action,
+    the field and the type received, never a traceback or a value used with
+    another meaning.
+    """
+    name = raw.get("name")
+    skill = name if isinstance(name, str) and name else skill_dir_name
+    _check_fields(raw, TOP_LEVEL_FIELD_TYPES, skill)
+    for index, trigger in enumerate(
+        _check_items(raw.get("triggers", []), dict, skill, "triggers")
+    ):
+        label = _named(trigger, "trigger", f"triggers[{index}]")
+        _check_fields(trigger, TRIGGER_FIELD_TYPES, skill, label)
+    for index, sensor in enumerate(
+        _check_items(raw.get("sensors_required", []), dict, skill, "sensors_required")
+    ):
+        _check_fields(sensor, SENSOR_FIELD_TYPES, skill, f"sensors_required[{index}]: ")
+    actions = raw.get("actions", {})
+    _check_fields(actions, ACTIONS_FIELD_TYPES, skill, "actions: ")
+    for index, entry in enumerate(
+        _check_items(actions.get("available", []), dict, skill, "actions.available")
+    ):
+        label = _named(entry, "action", f"actions.available[{index}]")
+        _check_fields(entry, ACTION_FIELD_TYPES, skill, label)
+    for trigger_name, listed in actions.get("defaults", {}).items():
+        where = f"actions.defaults.{trigger_name}"
+        if not isinstance(listed, list):
+            _refuse(skill, "", where, list, listed)
+        _check_items(listed, str, skill, where)
+    for prompt_name, template in raw.get("prompts", {}).items():
+        if not isinstance(template, str):
+            _refuse(skill, "", f"prompts.{prompt_name}", str, template)
 
 
 def display_unsafe_character(value: str) -> str | None:

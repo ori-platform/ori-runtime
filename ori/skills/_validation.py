@@ -22,7 +22,12 @@ from ori.reasoning.approval_bounds import (
     MAX_PROPOSAL_LIFETIME_S,
     approval_timeout_accepted,
 )
-from ori.reasoning.rule_engine import RESERVED_CONTEXT_NAMES
+from ori.reasoning.rule_engine import (
+    MAX_CONDITION_CHARS,
+    RESERVED_CONTEXT_NAMES,
+    RuleEngineSafetyError,
+    validated_history_calls,
+)
 from ori.skills._core import (
     LoaderCore,
 )
@@ -58,6 +63,20 @@ from ori.skills.sandbox import SkillSecurityError
 logger = logging.getLogger("ori.skills.loader")
 
 
+def _parsed(condition: str) -> ast.Expression | None:
+    """*condition* parsed, or None when the rule engine's own check refuses it.
+
+    The prechecks below read the tree; anything unparseable, over-long or
+    unencodable is left to `_refuse_unevaluable_condition`, never raised here.
+    """
+    if len(condition) > MAX_CONDITION_CHARS:
+        return None
+    try:
+        return ast.parse(condition, mode="eval")
+    except (SyntaxError, ValueError, MemoryError, RecursionError):
+        return None
+
+
 def _refuse_history_in_tier_d_condition(
     skill_name: str, trigger_name: str, condition: str
 ) -> None:
@@ -69,10 +88,9 @@ def _refuse_history_in_tier_d_condition(
     same condition and are not inspected here; the safety-profile migration
     removes hooks from Tier D conditions altogether.
     """
-    try:
-        tree = ast.parse(condition, mode="eval")
-    except SyntaxError:
-        return  # the rule engine refuses an unparsable condition with its own message
+    tree = _parsed(condition)
+    if tree is None:
+        return  # the rule engine's check refuses it with its own message
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and node.id == "history":
             raise SkillValidationError(
@@ -84,6 +102,32 @@ def _refuse_history_in_tier_d_condition(
                 "a reading is. This guard reads the condition text only; it does not "
                 "see a hook, a prompt, or what an executor reads."
             )
+
+
+def _refuse_unevaluable_condition(
+    skill_name: str, trigger_name: str, condition: str, *, tier_d: bool
+) -> None:
+    """Refuse a condition the rule engine cannot evaluate, by its own check.
+
+    Such a trigger never fires. A Tier D trigger must also have a condition:
+    with none, a protective trigger has nothing to decide.
+    """
+    if condition == "" and not tier_d:
+        # The engine reads only "" as no condition; any other text is evaluated.
+        return
+    if not condition.strip():
+        raise SkillValidationError(
+            f"Skill '{skill_name}' trigger '{trigger_name}' has no condition to "
+            "evaluate"
+            + (", so the protective trigger could never fire." if tier_d else ".")
+        )
+    try:
+        validated_history_calls(condition)
+    except RuleEngineSafetyError as exc:
+        raise SkillValidationError(
+            f"Skill '{skill_name}' trigger '{trigger_name}': the rule engine cannot "
+            f"evaluate its condition, so it could never fire. {exc}"
+        ) from exc
 
 
 def refuse_unresolved_names_in_tier_d_condition(
@@ -98,9 +142,8 @@ def refuse_unresolved_names_in_tier_d_condition(
     rule engine gives a Tier D condition, before any hook runs. A configured
     value it names must be a finite number, since nothing coerces it.
     """
-    try:
-        tree = ast.parse(condition, mode="eval")
-    except SyntaxError:
+    tree = _parsed(condition)
+    if tree is None:
         return
     named = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
     unresolved = sorted(named - RESERVED_CONTEXT_NAMES - set(config) - {"history"})
@@ -241,12 +284,20 @@ def _trigger_reasoning(
             "use escalate_to: gateway."
         )
 
+    if raw.get("cooldown_seconds", 0) < 0:
+        raise SkillValidationError(
+            f"Skill '{skill_name}' trigger '{name}' has a negative cooldown_seconds."
+        )
+
     # Tier D: enforce bypass_llm — safety-critical actions never reach LLM
     if action_tier == "D":
         bypass_llm = True
         _refuse_history_in_tier_d_condition(
             skill_name, name, str(raw.get("condition", "") or "")
         )
+    _refuse_unevaluable_condition(
+        skill_name, name, raw.get("condition", ""), tier_d=action_tier == "D"
+    )
 
     # bypass_llm without Tier D is a misconfiguration
     if bypass_llm and action_tier != "D":
@@ -629,7 +680,17 @@ class SkillValidation(LoaderCore):
                     f"{', '.join(sorted(unknown_keys))}"
                 )
 
-            declared = str(entry.get("tier") or "").upper()
+            # A tier letter in either case, as skills-package/v2 shipped: an
+            # unrecognised tier is refused, never read as Tier A.
+            # An omitted tier is decided below; a present one must be a letter,
+            # so `tier: ""` is refused, never read as omitted.
+            raw_tier = entry.get("tier", "")
+            declared = raw_tier.upper() if raw_tier.isascii() else raw_tier
+            if "tier" in entry and declared not in VALID_TIERS:
+                raise SkillValidationError(
+                    f"Skill {skill_name!r}: action {action_name!r} declares "
+                    f"tier={raw_tier!r}; a tier is one of {sorted(VALID_TIERS)}."
+                )
             if not isinstance(action_name, str):
                 continue
             _refuse_reserved_action_name(skill_name, action_name, "actions.available")

@@ -35,6 +35,7 @@ from ori.skills._manifest import (
     SkillSelectionError,
     SkillValidationError,
     UniqueStringKeySafeLoader,
+    check_manifest_field_types,
 )
 from ori.skills._provenance import (
     first_party_skill_roots,
@@ -446,6 +447,7 @@ class SkillLoader(SkillValidation, SkillRegistration):
                 f"Skill {skill_dir.name!r}: skill.yaml must be a mapping"
             )
 
+        check_manifest_field_types(raw, skill_dir.name)
         self._validate_skill_metadata(raw, skill_dir)
         self._validate_identity_fields(raw, skill_dir)
         self._validate_workload_budgets(raw, raw.get("name", "<unknown>"))

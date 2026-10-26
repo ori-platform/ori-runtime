@@ -38,7 +38,7 @@ OVERSIZE_CEILINGS: dict[str, int] = {
     "ori/reasoning/action_dispatcher.py::ActionDispatcher.dispatch": 250,
     "ori/config/_actions.py::parse_actions": 249,
     "ori/gateway/reasoning.py::MqttGatewayReasoner._round_trip": 246,
-    "ori/reasoning/rule_engine.py::RuleEngine.evaluate_all": 226,
+    "ori/reasoning/rule_engine.py::RuleEngine.evaluate_all": 225,
     "ori/runtime/_alerts.py::AlertDelivery._send_or_queue_alert": 212,
     "ori/state/_migrations.py::StoreMigrations._migrate_sync": 209,
     "ori/installer/linux.py::provision_runtime_config": 198,

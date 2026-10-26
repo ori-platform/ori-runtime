@@ -5,6 +5,25 @@ release is cut.
 
 ## Upgrade notes
 
+- Every `skill.yaml` value the loader reads, apart from the skill's own
+  `config` values, now has one YAML type, checked before any is used:
+  strings for names, conditions, tiers and policies, integers for
+  `cooldown_seconds` and `approval_timeout_seconds`, YAML booleans for
+  `bypass_llm` and `requires_approval`, lists for `triggers`,
+  `sensors_required`, `actions.available` and each `actions.defaults` entry,
+  and mappings for `actions`, `prompts` and `config`. A value of another type
+  refuses the skill with the field and the type it received, including
+  `null` (an empty `prompts:`, `reasoning_policy:` or `sensors_required:`)
+  and a float where an integer is expected (`cooldown_seconds: 10.0`). Before,
+  a quoted number such as `cooldown_seconds: "10"` was converted, a float was
+  truncated, an empty value read as none, and `bypass_llm: "no"` read as true.
+  An action's `tier`, when present, must be a tier letter, in either case as
+  before; any other value, `tier: ""` included, is refused rather than read
+  as Tier A or as omitted. A condition longer than 4,096 characters is
+  refused at load and by the engine. A negative
+  `cooldown_seconds` is refused, and a trigger whose condition the rule engine
+  cannot evaluate, or a Tier D trigger with no condition, refuses the skill.
+  Write each value in its own type.
 - `skills:` in `ori.yaml` is now the list of skills that run. Each name
   resolves to the skill of that name that ships with the runtime, or to that
   directory under `skills_dir` (default: `skills` beside `ori.yaml`). A
@@ -362,6 +381,23 @@ release is cut.
   script importing one of the old module paths must use the new one.
 
 ## Fixed
+
+- The skill loader no longer crashes on, or admits, a manifest value of the
+  wrong type. `action_tier: [D]`, a list in `actions.defaults` or a
+  non-numeric `cooldown_seconds` raised a `TypeError` or `ValueError` (a
+  traceback from `ori skills validate`, and the skill silently dropped by a
+  full load); `condition: ["value > 1"]` loaded, so a Tier D trigger's
+  protective condition could never fire; a list or number as a
+  `safe_default_action` or an action's `tier` was read as its text. Each is
+  now a refusal naming the skill, the trigger or action, the field and the
+  type received. A condition the rule engine cannot evaluate, a blank one, an
+  unknown or misused `history` helper, one longer than 4,096 characters, and
+  text the parser cannot take included, is refused at load by the engine's
+  own complete check, and a Tier D trigger must have a condition. Before, one such condition anywhere in a
+  skill made the engine raise for every trigger of that skill, so its Tier D
+  triggers were suspended along with it. Every refusal is bounded to 1,000
+  characters, keeping its start and its end, whatever the manifest put in it. A condition that parses but compares a
+  reading with text is still found only when it is evaluated.
 
 - A cancelled dispatch now hands the cancellation back to whoever cancelled
   it, once the attempt is recorded. Before, the dispatcher recorded the

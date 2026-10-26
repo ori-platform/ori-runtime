@@ -77,6 +77,12 @@ class RuleEngineSafetyError(Exception):
     """Raised when a rule condition contains a forbidden pattern."""
 
 
+#: The longest condition the engine evaluates. A condition is untrusted text
+#: from a skill, and the parser's own limits answer an over-long one with a
+#: MemoryError or a RecursionError rather than a refusal.
+MAX_CONDITION_CHARS = 4096
+
+
 @dataclass
 class RuleResult:
     """Outcome of a single :meth:`RuleEngine.evaluate` call."""
@@ -242,6 +248,29 @@ def _validate_sensor_value(value: Any, rule_name: str) -> None:
             f"Rule {rule_name!r}: sensor value is {'Inf' if value > 0 else '-Inf'}. "
             "Infinite values cannot be safely used in rule expressions."
         )
+
+
+def validated_history_calls(condition: str) -> list[tuple[str, list[Any]]]:
+    """The engine's complete structural check of a condition, and its history calls.
+
+    The one check the engine applies to every rule before it selects any, and
+    the one the skill loader applies at load. Anything it cannot accept, a
+    condition too long, text UTF-8 cannot carry or a parser failure included,
+    is a RuleEngineSafetyError and never another exception.
+    """
+    if len(condition) > MAX_CONDITION_CHARS:
+        raise RuleEngineSafetyError(
+            f"Rule condition is longer than {MAX_CONDITION_CHARS} characters"
+        )
+    try:
+        _check_safety_ast(condition)
+        return _extract_history_calls(condition)
+    # ValueError covers text UTF-8 cannot carry (UnicodeEncodeError) and null
+    # bytes; the others are the parser's own limits.
+    except (ValueError, MemoryError, RecursionError) as exc:
+        raise RuleEngineSafetyError(
+            f"Rule condition cannot be parsed ({type(exc).__name__})"
+        ) from exc
 
 
 def _check_safety_ast(condition: str) -> None:
@@ -491,8 +520,7 @@ class RuleEngine:
         for rule in rules:
             check_condition = _rule_get(rule, "condition", "")
             if check_condition:
-                _check_safety_ast(check_condition)
-                history_calls_by_rule.append(_extract_history_calls(check_condition))
+                history_calls_by_rule.append(validated_history_calls(check_condition))
             else:
                 history_calls_by_rule.append([])
         selected = [
