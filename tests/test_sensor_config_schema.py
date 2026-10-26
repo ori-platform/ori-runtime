@@ -9,9 +9,11 @@ import contextlib
 import json
 import logging
 import random
+from importlib import import_module
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 from typing import Any
+from unittest import mock
 
 import pytest
 
@@ -843,25 +845,28 @@ def test_a_bound_resolving_to_a_non_array_is_refused() -> None:
 # ── Activation wiring ───────────────────────────────────────────────────────
 
 
-def test_every_defined_protocol_loads_both_declarations_without_construction(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def forbid_adapter_construction(
-        cls: type[BaseAdapter], *args: Any, **kwargs: Any
-    ) -> object:
-        raise AssertionError(f"schema resolution constructed {cls.__name__}")
-
+def test_every_defined_protocol_loads_both_declarations_without_construction() -> None:
     def forbid_adapter_initialization(
         self: BaseAdapter, *args: Any, **kwargs: Any
     ) -> None:
-        raise AssertionError("schema resolution initialized an adapter")
+        raise AssertionError(f"schema resolution constructed {type(self).__name__}")
 
-    monkeypatch.setattr(BaseAdapter, "__new__", forbid_adapter_construction)
-    monkeypatch.setattr(BaseAdapter, "__init__", forbid_adapter_initialization)
-    for protocol in registry.PROTOCOL_DEFINITIONS:
-        config_schema, calibration_schemas = registry.protocol_schemas(protocol)
-        assert isinstance(config_schema, ValidatedSchema)
-        assert isinstance(calibration_schemas, dict)
+    # Construction runs __init__, so forbidding it on every class that defines
+    # one forbids construction. __new__ is never patched: CPython keeps a
+    # class's patched constructor slot after the patch is removed.
+    owners = {BaseAdapter}
+    for definition in registry.PROTOCOL_DEFINITIONS.values():
+        adapter_class = getattr(import_module(definition.module), definition.class_name)
+        owners.add(next(k for k in adapter_class.__mro__ if "__init__" in vars(k)))
+    with contextlib.ExitStack() as stack:
+        for owner in owners:
+            stack.enter_context(
+                mock.patch.object(owner, "__init__", forbid_adapter_initialization)
+            )
+        for protocol in registry.PROTOCOL_DEFINITIONS:
+            config_schema, calibration_schemas = registry.protocol_schemas(protocol)
+            assert isinstance(config_schema, ValidatedSchema)
+            assert isinstance(calibration_schemas, dict)
 
 
 # ── Regressions found in review ─────────────────────────────────────────────
