@@ -4,6 +4,7 @@
 """The later startup stages, from reasoning to the announcement, and ``start()``."""
 
 import asyncio
+import functools
 import logging
 import signal
 from typing import Any
@@ -62,6 +63,7 @@ from ori.runtime._sensors import SensorPolling
 from ori.runtime._services import OperatorServices
 from ori.runtime._shutdown import Shutdown
 from ori.security.firmware.controller_profiles import ControllerAlarmTracker
+from ori.security.firmware.reading_age import liveness_bound
 from ori.sensor_connection import note_unconnected_sensor
 from ori.skills.loader import SkillLoader
 from ori.skills.selection import log_tier_configuration, skills_dir_for
@@ -147,6 +149,13 @@ class StartupStages(
             gateway_reasoner=gateway_reasoner,
             config=context.config.reasoning,
             context_enricher=build_context_enricher(context.config),
+            # Set by the dispatcher stage; a prompt's {time} names a firmware
+            # reading's liveness bound only where this process signed it.
+            liveness_bound=(
+                None
+                if self._firmware_reading_age is None
+                else functools.partial(liveness_bound, self._firmware_reading_age)
+            ),
         )
 
     async def _stage_event_path(self, context: StartupContext) -> None:

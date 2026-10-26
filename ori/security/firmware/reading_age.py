@@ -423,10 +423,20 @@ def measured_statement(
     to the instant it was computed (firmware-telemetry/v2 What a receiver may
     present).
     """
-    metadata = getattr(reading, "metadata", None)
-    if not isinstance(metadata, dict) or metadata.get("source") != "firmware":
+    if not _is_firmware(reading):
         return None
     line = "not reported by device"
+    bound = liveness_bound(tracker, reading)
+    if bound is not None:
+        line += f", {bound.text(_local_time(bound.as_of_ms, device_timezone))}"
+    return line
+
+
+def liveness_bound(tracker: ReadingAgeTracker, reading: Any) -> AnchoredBound | None:
+    """The bound this process holds for a firmware reading, or None for any other."""
+    if not _is_firmware(reading):
+        return None
+    metadata = reading.metadata
     device = metadata.get("firmware_device_id")
     key_epoch_id = metadata.get("key_epoch_id")
     boot_id = metadata.get("boot_id")
@@ -438,10 +448,13 @@ def measured_statement(
         and type(boot_id) is int
         and type(seq) is int
     ):
-        bound = tracker.message_bound(device, key_epoch_id, boot_id, seq)
-        if bound is not None:
-            line += f", {bound.text(_local_time(bound.as_of_ms, device_timezone))}"
-    return line
+        return tracker.message_bound(device, key_epoch_id, boot_id, seq)
+    return None
+
+
+def _is_firmware(reading: Any) -> bool:
+    metadata = getattr(reading, "metadata", None)
+    return isinstance(metadata, dict) and metadata.get("source") == "firmware"
 
 
 def _local_time(at_ms: int, device_timezone: str) -> str:

@@ -40,6 +40,12 @@ from ori.reasoning.escalation_policy import (
     attach_gateway_escalation_context,
     evaluate_gateway_escalation,
 )
+from ori.reasoning.prompt_time import (
+    LivenessBound,
+    history_row,
+    latest_time,
+    prompt_time,
+)
 from ori.reasoning.rule_engine import (
     RESERVED_CONTEXT_NAMES,
     RULES_OTHER,
@@ -218,6 +224,7 @@ class IntelligenceElevator:
         rule_engine: RuleEngine | None = None,
         config: Any = None,
         context_enricher: ContextEnricher | None = None,
+        liveness_bound: Callable[[Any], LivenessBound | None] | None = None,
     ) -> None:
         self._local_llm = local_llm
         self._gateway_reasoner = gateway_reasoner
@@ -228,6 +235,7 @@ class IntelligenceElevator:
             config  # ReasoningConfig from ori.yaml; None in test environments
         )
         self._context_enricher = context_enricher
+        self._liveness_bound = liveness_bound
         self._event_bus: Any = None
         self._last_power_mode: str = "normal"
         self._capability_posture: CapabilityPosture | None = None
@@ -1947,7 +1955,7 @@ class IntelligenceElevator:
                 str(r.quality)
             )  # sanitised — AGENTS.md Rule 4.
             lines.append(f"Sensor: {sensor_id} ({sensor_type})")
-            lines.append(f"Current value: {value} {unit}")
+            lines.append(f"Value: {value} {unit}")
             lines.append(f"Quality: {quality}")
         device_id = self._sanitize_prompt_input(
             event.device_id
@@ -1965,10 +1973,6 @@ class IntelligenceElevator:
             prompt_text = str(prompt_template)
             if event.reading is not None:
                 reading = event.reading
-                formatted_time = datetime.datetime.fromtimestamp(
-                    reading.timestamp / 1000,
-                    tz=datetime.timezone.utc,
-                ).strftime("%Y-%m-%d %H:%M:%S UTC")
                 substitutions = {
                     "{value}": self._sanitize_prompt_input(
                         str(reading.value)
@@ -1985,9 +1989,8 @@ class IntelligenceElevator:
                     "{device_id}": self._sanitize_prompt_input(
                         event.device_id
                     ),  # sanitised — AGENTS.md Rule 4.
-                    "{time}": self._sanitize_prompt_input(
-                        formatted_time
-                    ),  # sanitised — AGENTS.md Rule 4.
+                    # Composed by the runtime from integers and fixed phrases.
+                    "{time}": prompt_time(reading, self._liveness_bound),
                     "{quality}": self._sanitize_prompt_input(
                         str(round(reading.quality, 2))
                     ),  # sanitised — AGENTS.md Rule 4.
@@ -2175,7 +2178,7 @@ class IntelligenceElevator:
             return adapter.last_value(sensor_id)
         if method == "last_timestamp":
             sensor_id = self._parse_sensor_single_arg(args, event.sensor_id)
-            return adapter.last_timestamp(sensor_id)
+            return latest_time(adapter.fetch_history(sensor_id, limit=1))
         if method == "fetch_history":
             sensor_id, limit = self._parse_sensor_and_int_arg_pair(
                 args,
@@ -2183,17 +2186,7 @@ class IntelligenceElevator:
                 default_n=1,
             )
             rows = adapter.fetch_history(sensor_id, limit=limit)
-            compact: list[dict[str, Any]] = []
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                compact.append(
-                    {
-                        "value": row.get("value"),
-                        "timestamp": row.get("timestamp"),
-                    }
-                )
-            return compact
+            return [history_row(row) for row in rows if isinstance(row, dict)]
         raise ValueError(f"unsupported history method: {method}")
 
     def _parse_sensor_single_arg(
@@ -2241,12 +2234,7 @@ class IntelligenceElevator:
                 if isinstance(item, (int, float)):
                     normalized.append(item)
                 elif isinstance(item, dict):
-                    normalized.append(
-                        {
-                            "value": item.get("value"),
-                            "timestamp": item.get("timestamp"),
-                        }
-                    )
+                    normalized.append(item)
                 else:
                     normalized.append(str(item))
             text = json.dumps(normalized, separators=(",", ":"))

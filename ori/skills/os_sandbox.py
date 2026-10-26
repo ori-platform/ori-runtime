@@ -27,6 +27,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, cast
 
 from ori.network.events import history_as_of
+from ori.skills.hooks_api import history_row
 from ori.skills.sandbox import SkillSecurityError, load_hooks_restricted
 from ori.utils.platform import os_name, runtime_platform
 
@@ -445,19 +446,7 @@ class OSSandboxHookRunner:
                     or []
                 )
                 if method == "history.fetch_history":
-                    serial = [
-                        {
-                            "sensor_id": r.sensor_id,
-                            "sensor_type": r.sensor_type,
-                            "value": r.value,
-                            "unit": r.unit,
-                            "timestamp": r.timestamp,
-                            "quality": r.quality,
-                            "metadata": r.metadata,
-                            "received_at_ms": r.received_at_ms,
-                        }
-                        for r in history
-                    ]
+                    serial = [history_row(r) for r in history]
                     return {"type": _RPC_RESP, "ok": True, "result": serial}
                 if not history:
                     return {"type": _RPC_RESP, "ok": True, "result": None}

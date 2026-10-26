@@ -5,7 +5,23 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from ori.network.events import OriEvent, event_received_at_ms
+from ori.network.producer_time import read_producer_time
 from ori.utils.time_utils import now_ms
+
+
+def history_row(r: Any) -> dict[str, Any]:
+    """One stored reading as every hook history surface returns it."""
+    return {
+        "sensor_id": r.sensor_id,
+        "sensor_type": r.sensor_type,
+        "value": r.value,
+        "unit": r.unit,
+        "timestamp": r.timestamp,
+        "quality": r.quality,
+        "metadata": r.metadata,
+        "received_at_ms": r.received_at_ms,
+        "producer_time": read_producer_time(getattr(r, "producer_time", None)),
+    }
 
 
 class HookHistoryAdapter:
@@ -81,19 +97,7 @@ class HookHistoryAdapter:
         if not self._store:
             return []
         history = self._read("hooks_get_history", sensor_id, limit, **self._as_of) or []
-        return [
-            {
-                "sensor_id": r.sensor_id,
-                "sensor_type": r.sensor_type,
-                "value": r.value,
-                "unit": r.unit,
-                "timestamp": r.timestamp,
-                "quality": r.quality,
-                "metadata": r.metadata,
-                "received_at_ms": r.received_at_ms,
-            }
-            for r in history
-        ]
+        return [history_row(r) for r in history]
 
     def same_weekday_hour_baseline(
         self,

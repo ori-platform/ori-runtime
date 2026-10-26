@@ -109,7 +109,7 @@ it after each checkpoint stage.
 | alerting | `_safety_alert_sink` | `_alert_sender`, `_operator_contact`, `_primary_alert_channel`, `_safety_alert_sink`, `_secondary_contact`, `_tier_c_deployment_inputs` | `_configure_alert_outbox` |
 | evidence | `_evidence_posture_problems`, `_state_store` | `_evidence_attestor`, `_evidence_posture_problems`, `_firmware_confirmation_coordinator`, `_firmware_confirmation_reconciler` | - |
 | dispatcher | `_binding_seq_in_force`, `_commissioned_actuator`, `_firmware_reading_age`, `_state_store`, `_tier_c_authority_facts` | `_dispatcher`, `_firmware_reading_age` | `_load_cached_device_policy`, `_maybe_refresh_remote_device_policy_once`, `_send_or_queue_alert` |
-| reasoning | `_config_path` | `_capability_posture_tracker`, `_gateway_envelope_state` | - |
+| reasoning | `_config_path`, `_firmware_reading_age` | `_capability_posture_tracker`, `_gateway_envelope_state` | - |
 | event path | - | `_deduplicator`, `_elevator`, `_event_bus`, `_skill_reload_lock` | - |
 | skills | `_config_path`, `_loaded_skills`, `_state_store` | `_dispatch_coordinator`, `_skill_loader`, `_skill_selection`, `_skills_dir` | `_binding_view`, `reload_skills` |
 | signals | `_request_stop` | - | `reload_skills` |

@@ -382,6 +382,17 @@ release is cut.
 
 ## Fixed
 
+- A skill prompt no longer presents a reading's arrival as the time it was
+  measured. For a firmware reading, and any pushed reading whose producer
+  reported no measurement time, `{time}` now reads "not reported by device;
+  arrived at the runtime at …", with the runtime liveness bound before it
+  where this runtime signed the reading's nonce. `{history.fetch_history()}`
+  rows carry `measured_at` or `arrived_at` in place of `timestamp`, and
+  `{history.last_timestamp()}` names an arrival as one. A time of unstated
+  basis is not shown. The runtime's own prompt line reads "Value", not
+  "Current value". `{time}` also keeps its colons, which the prompt sanitiser
+  used to strip. A hook's `history.fetch_history()` rows gain `producer_time`.
+
 - The skill loader no longer crashes on, or admits, a manifest value of the
   wrong type. `action_tier: [D]`, a list in `actions.defaults` or a
   non-numeric `cooldown_seconds` raised a `TypeError` or `ValueError` (a

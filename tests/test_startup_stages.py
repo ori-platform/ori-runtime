@@ -128,7 +128,7 @@ SURFACE: dict[str, tuple[set[str], set[str], set[str]]] = {
         },
     ),
     "reasoning": (
-        {"_config_path", "_gateway_ingress"},
+        {"_config_path", "_firmware_reading_age", "_gateway_ingress"},
         {"_capability_posture_tracker", "_gateway_envelope_state"},
         set(),
     ),
