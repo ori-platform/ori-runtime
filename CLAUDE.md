@@ -195,7 +195,7 @@ confer Tier D**. Provenance is not a stopgap awaiting that contract; for Tier D
 it is the answer. An issuer that could grant Tier D would give autonomous safety
 authority an expiry, a revocation path and a holder the runtime never reviewed —
 which is why `device_policy.py` returns for Tier D before it consults expiry at
-all. Safety authority that can go stale contradicts the 2 a.m. outage this
+all, as `device-policy/v2.md` in `ori-specs` requires. Safety authority that can go stale contradicts the 2 a.m. outage this
 runtime exists for.
 
 **Provenance is containment, not the final model.** It is the answer against a

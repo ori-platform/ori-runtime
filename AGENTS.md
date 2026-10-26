@@ -643,7 +643,8 @@ Violating them creates vulnerabilities that affect physical hardware.
     (a) be initialised at boot regardless of relay.enabled or DevicePolicy state,
     (b) bypass all DevicePolicy checks at dispatch time unconditionally.
     A DevicePolicy enforcement mechanism that prevents Tier D actuation is a safety
-    failure, not a billing control. This invariant is verified by a test matrix covering:
+    failure, not a billing control (`device-policy/v2.md` in `ori-specs`, Tier
+    Semantics). This invariant is verified by a test matrix covering:
     - test_tier_d_relay_fires_when_policy_expired()
     - test_tier_d_relay_fires_when_policy_missing()
     - test_tier_d_relay_fires_when_policy_parse_fails()
@@ -660,6 +661,10 @@ Violating them creates vulnerabilities that affect physical hardware.
     Rejection behaviour: keep current policy, log at WARNING with audit trail.
     NEVER reject silently. NEVER fail open by applying an unverified policy.
     The phrase 'reject silently' must not appear in any policy enforcement code path.
+    These are `device-policy/v2.md`'s Remote Fetch Preconditions, Verification Rules
+    and Rejection Behavior in `ori-specs`. The runtime also refuses a payload that
+    repeats a member name (`ori/utils/strict_json.py`), which the contract does not
+    state and no release has shipped yet.
 
 13. Database compaction logic must always query the physical tables to check for backwards clock skew
     before deleting history. Relying on host clock calculations (`now_ms - 48h < now_ms - 1h`) is a

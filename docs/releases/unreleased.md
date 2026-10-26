@@ -771,7 +771,8 @@ release is cut.
   commands, the SMS webhook body, fetched and cached device policy, the
   shipped safety profile set, the evidence chain's signed envelopes, and
   operator-supplied manifest and evidence files, alongside the readers that
-  already refused one. A guard over all of `ori/` requires the hook at every
+  already refused one. For device policy this goes beyond
+  `device-policy/v2`, which does not state it. A guard over all of `ori/` requires the hook at every
   JSON decode, or an exemption that says why a repeat is harmless there.
 
 - With `gateway.auth.enabled: true`, a gateway reasoning response whose

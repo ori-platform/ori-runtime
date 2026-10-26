@@ -316,7 +316,8 @@ Edge Node responsibility.
 
 ## Device Policy On Phone
 
-The phone runtime uses the same DevicePolicy concept as Pi deployments:
+The phone runtime uses the same DevicePolicy concept as Pi deployments,
+`device-policy/v2.md` in `ori-specs`:
 
 - active trial or paid Starter Phone tier permits Tier A intelligence and
   telemetry export;

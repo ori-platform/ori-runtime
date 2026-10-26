@@ -736,7 +736,8 @@ Rationale:
   data carriers.
 - Fetch-then-verify reuses the existing policy path: HTTPS transport, device
   authentication, Ed25519 signature verification, timestamp skew checks, and
-  monotonic policy-version protection.
+  monotonic policy-version protection, as `device-policy/v2.md` in `ori-specs`
+  specifies them.
 - Inline policy application would create a second policy injection surface and
   increase the chance of bypassing existing verification invariants.
 
