@@ -41,7 +41,6 @@ from ori.reasoning.escalation_policy import (
     evaluate_gateway_escalation,
 )
 from ori.reasoning.prompt_time import (
-    LivenessBound,
     history_row,
     latest_time,
     prompt_time,
@@ -224,7 +223,7 @@ class IntelligenceElevator:
         rule_engine: RuleEngine | None = None,
         config: Any = None,
         context_enricher: ContextEnricher | None = None,
-        liveness_bound: Callable[[Any], LivenessBound | None] | None = None,
+        liveness_bound: Callable[[Any], Any] | None = None,
     ) -> None:
         self._local_llm = local_llm
         self._gateway_reasoner = gateway_reasoner
