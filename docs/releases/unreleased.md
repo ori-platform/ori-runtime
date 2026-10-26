@@ -382,6 +382,15 @@ release is cut.
 
 ## Fixed
 
+- A Tier D trigger's `cooldown_seconds` no longer delays its next Tier D
+  attempt. After an attempt that ran or failed, the rule engine reported no
+  match for the length of the cooldown, however often the condition held. A
+  trip is now dispatched on every matching reading, and the cooldown governs
+  only the trigger's other actions, so its notices come once per window
+  instead of once per reading. A Tier D trigger whose plan holds no Tier D
+  act, one that only notifies, keeps its cooldown. Every bundled Tier D
+  trigger declares `cooldown_seconds: 0` and is unaffected.
+
 - A skill prompt no longer presents a reading's arrival as the time it was
   measured. For a firmware reading, and any pushed reading whose producer
   reported no measurement time, `{time}` now reads "not reported by device;

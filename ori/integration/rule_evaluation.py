@@ -186,8 +186,10 @@ async def _evaluate_with_skill(
         # This path has no dispatch plan to charge against: one evaluation
         # through this API is the trigger firing, as far as this consumer is
         # concerned. Consumption is stated here rather than left inside the
-        # engine, where it charged triggers that matched and never acted.
-        rule_engine.record_fire(rule_result.rule_name, skill.name)
+        # engine, where it charged triggers that matched and never acted. A
+        # Tier D match charges nothing.
+        if str(rule_result.action_tier).upper() != "D":
+            rule_engine.record_fire(rule_result.rule_name, skill.name)
 
     latency_ms = max(0, int((time.perf_counter() - start) * 1000))
 

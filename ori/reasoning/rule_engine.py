@@ -419,6 +419,15 @@ class RuleEngine:
             return False
         return (now_ms() - record.last_fired_ms) < cooldown_seconds * 1000
 
+    def _suppressed_by_cooldown(
+        self, rule_name: str, action_tier: str, cooldown_seconds: int, scope: str
+    ) -> bool:
+        """Never for a Tier D rule: only the rest of its trigger is rate-limited,
+        and the coordinator holds that."""
+        if action_tier.upper() == "D":
+            return False
+        return self.in_cooldown(rule_name, cooldown_seconds, scope)
+
     def record_fire(self, rule_name: str, scope: str = "") -> None:
         """Charge the cooldown. The plan builder is the only caller."""
         self._cooldowns[self._cooldown_key(rule_name, scope)] = _CooldownRecord(
@@ -638,7 +647,7 @@ class RuleEngine:
             if not matched:
                 continue
 
-            if self.in_cooldown(name, cooldown_s, scope):
+            if self._suppressed_by_cooldown(name, action_tier, cooldown_s, scope):
                 logger.debug(
                     "RuleEngine: rule %r suppressed by cooldown (%ds)",
                     name,

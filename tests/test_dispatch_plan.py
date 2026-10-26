@@ -1171,8 +1171,8 @@ class TestARefusedTripCanReRaise:
 
         assert elevator._rule_engine.in_cooldown("trip", 600, "fake-skill") is False
 
-    async def test_a_tier_d_action_that_ran_does_consume_its_cooldown(self):
-        """The control: an executor that ran charges it, whatever it returned."""
+    async def test_a_tier_d_action_that_ran_consumes_no_cooldown(self):
+        """Nor does one that ran: no Tier D outcome charges a cooldown."""
         from ori.network.events import ActionResult
 
         skill = FakeSkill(
@@ -1203,7 +1203,7 @@ class TestARefusedTripCanReRaise:
         await coordinator.dispatch_event(_event())
         await quiesce(what="the event's scheduled work")
 
-        assert elevator._rule_engine.in_cooldown("trip", 600, "fake-skill") is True
+        assert elevator._rule_engine.in_cooldown("trip", 600, "fake-skill") is False
 
 
 # ── what an adversarial review found ─────────────────────────────────────────

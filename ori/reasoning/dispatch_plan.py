@@ -492,10 +492,20 @@ class TriggerPlan:
     # Whether this plan holds its trigger against matching again until it
     # settles. Set by the coordinator; released when the plan's event settles.
     holds_in_flight: bool = False
+    # Whether this plan's non-Tier D actions wait out the trigger's cooldown or
+    # in-flight hold while its Tier D act is attempted anyway.
+    remainder_held: bool = False
 
     @property
     def outcome(self) -> str:
         return strongest_outcome([a.outcome for a in self.actions])
+
+    @property
+    def cooldown_outcome(self) -> str:
+        """The outcome cooldown is charged on: no Tier D act's ever counts."""
+        return strongest_outcome(
+            [a.outcome for a in self.actions if not a.tier_d_granted]
+        )
 
     @property
     def is_tier_d_incident(self) -> bool:

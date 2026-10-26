@@ -511,9 +511,26 @@ not its event: another plan of the same event may be waiting on an operator
 for minutes. The cooldown is read again when the hold is taken, because
 discovery reads it and then awaits other skills' hooks, and another event can
 take and charge the turn meanwhile. A trigger with no cooldown is not
-held, since it promises no window. A plan granting Tier D is never held: a
-trip refused at the gate re-raises on the next reading against the state that
-then obtains, and holding it behind its own notice would sit that out.
+held, since it promises no window.
+
+**No cooldown and no in-flight hold reads or charges against a Tier D
+attempt.** A Tier D rule is never suppressed by the rule engine, and a plan
+granting Tier D is never dropped: its trip is attempted on every matching
+reading, whether the last one ran, failed or was refused, so a trip refused at
+the gate re-raises against the state that then obtains. The plan dispatches
+the trip each time; whether the resource gate lets that drive the actuator or
+joins it to an act already made is the gate's decision, and a held act still
+absorbs later trips while its event is open (#978). Only the plan's other
+actions are held, so its notices still come once per window. The outcome a
+cooldown is charged on leaves the Tier D act out, so a plan whose only action
+is the trip never charges one. A Tier D trigger whose plan grants no Tier D act
+— one that only notifies — has nothing of that kind to protect, and is held
+like any other trigger. A per-trigger number in `skill.yaml` can therefore
+never delay a Tier D attempt. The rule-evaluation API reports a Tier D match on
+every evaluation and charges it no cooldown. The loader's own handler, used
+only without a coordinator, keeps its cooldown, because that path builds no
+plan and attempts no Tier D act: every action it dispatches is capped at Tier
+C.
 
 This requires the rule engine to stop recording a fire while evaluating, and the
 loader to stop recording one before the condition is known to match. Accounting
@@ -676,7 +693,10 @@ tier buys nothing if the field being sealed is not true.
 - Opposing same-resource actions at equal tier are refused, and the refusal is
   recorded.
 - A false condition consumes no cooldown; a preempted trigger consumes none; a
-  failed executor consumes one.
+  failed executor below Tier D consumes one, and no Tier D act consumes one.
+- Repeated matching readings after a Tier D act that ran, failed or was
+  refused each dispatch it again, and the same trigger's notice is sent once
+  per window, including while it is still being sent.
 - An action with no registered executor never reports `executed=True` at any
   tier.
 - The `energy-anomaly-detector` 99 A reproduction reaches the Tier D attempt

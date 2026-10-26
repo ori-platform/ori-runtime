@@ -250,9 +250,11 @@ DISCOVERY BARRIER — one event, every eligible skill, evaluated exhaustively
     and their acts attempted before any hook runs or any history is read; the
     loader refuses a Tier D condition naming anything else.
     Declaration order decides nothing. A trigger in cooldown does not match,
-    and neither does one with a cooldown whose own plan is still in flight —
-    except a plan granting Tier D, which is never held; cooldown is charged
-    later, against the outcome the trigger reached.
+    and neither does one with a cooldown whose own plan is still in flight.
+    No cooldown or in-flight hold reads or charges against a Tier D attempt:
+    a plan granting Tier D dispatches it on every matching reading, and only
+    its other actions wait. Cooldown is charged later, against the outcome
+    those other actions reached.
     │
     ▼
 THE PLAN — each matched trigger's actions, each at its own authority

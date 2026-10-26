@@ -260,10 +260,10 @@ class DispatchCoordinator:
         """Drop a match whose own plan is still in flight, and hold the rest.
 
         Only a trigger with a cooldown is held, since only it promises one
-        dispatch per window. A plan granting Tier D is never held: a trip
-        refused at the gate re-raises on the next reading against the state
-        that then obtains, and holding it behind its own notice would sit that
-        out.
+        dispatch per window. A plan granting Tier D is never dropped: its trip
+        is attempted on every reading, and only its other actions wait, so a
+        trip refused at the gate re-raises against the state that then obtains
+        and its notices still come once per window.
 
         The cooldown is read again here, with no await since the hold was
         checked: discovery awaits other skills' hooks after reading it, and
@@ -272,29 +272,26 @@ class DispatchCoordinator:
         engine = getattr(self._elevator, "_rule_engine", None)
         kept: list[TriggerPlan] = []
         for plan in plans:
-            if (
-                plan.cooldown_seconds > 0
-                and plan.trigger_name
-                and not plan.grants_tier_d
-            ):
+            if plan.cooldown_seconds > 0 and plan.trigger_name:
                 key = (plan.skill_name, plan.trigger_name)
+                waiting = ""
                 if key in self._in_flight:
-                    logger.debug(
-                        "DispatchCoordinator: trigger=%r of skill=%r held while "
-                        "its plan is in flight",
-                        plan.trigger_name,
-                        plan.skill_name,
-                    )
-                    continue
-                if engine is not None and engine.in_cooldown(
+                    waiting = "held while its plan is in flight"
+                elif engine is not None and engine.in_cooldown(
                     plan.trigger_name, plan.cooldown_seconds, plan.skill_name
                 ):
+                    waiting = "in its cooldown"
+                if waiting:
                     logger.debug(
-                        "DispatchCoordinator: trigger=%r of skill=%r entered its "
-                        "cooldown during discovery",
+                        "DispatchCoordinator: trigger=%r of skill=%r %s%s",
                         plan.trigger_name,
                         plan.skill_name,
+                        waiting,
+                        "; its Tier D act is attempted" if plan.grants_tier_d else "",
                     )
+                    if plan.grants_tier_d:
+                        plan.remainder_held = True
+                        kept.append(plan)
                     continue
                 self._in_flight.add(key)
                 plan.holds_in_flight = True
@@ -512,7 +509,7 @@ class DispatchCoordinator:
         scope open until it settles; it is still scheduled rather than awaited
         here, so the Tier D ordering this phase follows is unaffected.
         """
-        if self._elevator is None:
+        if self._elevator is None or plan.remainder_held:
             return None
         skill = self._skill_named(plan.skill_name)
         if skill is None:
@@ -579,7 +576,7 @@ class DispatchCoordinator:
                 continue
             # The reasoning path dispatched it and nothing recorded a refusal.
             planned.outcome = DispatchOutcome.ATTEMPTED
-        outcome = plan.outcome
+        outcome = plan.cooldown_outcome
         if consumes_cooldown(outcome):
             engine.record_fire(plan.trigger_name, plan.skill_name)
         else:
@@ -603,7 +600,7 @@ class DispatchCoordinator:
                     or not plan.trigger_name
                 ):
                     continue
-                outcome = plan.outcome
+                outcome = plan.cooldown_outcome
                 if consumes_cooldown(outcome):
                     engine.record_fire(plan.trigger_name, plan.skill_name)
                 else:

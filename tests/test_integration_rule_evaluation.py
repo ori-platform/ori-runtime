@@ -61,6 +61,7 @@ def _write_skill(
     cooldown_seconds: int = 0,
     config: str = "",
     hooks: str | None = None,
+    action_tier: str = "A",
 ) -> None:
     skill_dir = root / name
     skill_dir.mkdir()
@@ -75,7 +76,7 @@ sensors_required:
 triggers:
   - name: demo_trigger
     condition: "{condition}"
-    action_tier: A
+    action_tier: {action_tier}
     cooldown_seconds: {cooldown_seconds}
 prompts:
   demo_trigger: Demo.
@@ -314,6 +315,33 @@ async def test_session_preserves_trigger_cooldown_state(tmp_path: Path) -> None:
 
     assert first.matched is True
     assert second.matched is False
+
+
+@pytest.mark.asyncio
+async def test_a_tier_d_match_is_not_held_by_its_cooldown(tmp_path: Path) -> None:
+    _write_skill(
+        tmp_path,
+        name="cooldown-skill",
+        condition="value > threshold",
+        cooldown_seconds=600,
+        action_tier="D",
+    )
+    session = RuleEvaluationSession(
+        skill_name="cooldown-skill",
+        skills_root=str(tmp_path),
+    )
+    request = _request(
+        12.0,
+        skill_name="cooldown-skill",
+        skills_root=str(tmp_path),
+    )
+
+    first = await session.evaluate(request)
+    second = await session.evaluate(request)
+
+    assert first.matched is True
+    assert second.matched is True
+    assert not session._rule_engine.in_cooldown("demo_trigger", 600, "cooldown-skill")
 
 
 @pytest.mark.asyncio
