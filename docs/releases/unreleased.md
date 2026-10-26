@@ -399,6 +399,21 @@ release is cut.
   characters, keeping its start and its end, whatever the manifest put in it. A condition that parses but compares a
   reading with text is still found only when it is evaluated.
 
+- A sensor whose source cannot be reached when the runtime starts is no
+  longer skipped until a restart. An OPC-UA server, a serial or USB-serial
+  device (one to auto-detect included), or an I2C device that is not there
+  yet is connected again in the background, under the same bounded, jittered
+  back-off as a dropped MQTT broker, with a fresh adapter each attempt; the
+  sensor stays unconnected, and health degraded, until its first reading is
+  accepted, and the operator is told when it is. Whether a failure is retried
+  is decided by what caused it: a device absent or busy, a host refusing or
+  unreachable, or a timeout is retried; a permission error, a malformed value
+  or a refused login is final, as before, and if a retry meets one the
+  operator and the safety registry are told that the sensor is no longer
+  being read. HTTP, CoAP, Growatt and Solarman sensors recover their data on
+  their own, since their connect does not reach the source, but while such a
+  source is down at start health reads it as connected (ori-runtime#958).
+
 - A cancelled dispatch now hands the cancellation back to whoever cancelled
   it, once the attempt is recorded. Before, the dispatcher recorded the
   attempt and returned normally, so a shutdown or a superseding task could not

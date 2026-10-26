@@ -11,6 +11,7 @@ from ori.hal.base import (
     AdapterReadError,
     BaseAdapter,
     HardwareCircuitBreaker,
+    connection_error,
 )
 from ori.hal.producer_paths import READ_CLOCK, producer_time_for
 from ori.network.events import SensorReading
@@ -86,9 +87,10 @@ class OpcUaAdapter(BaseAdapter):
                 # lifecycle lock, so calling `close()` here would deadlock on
                 # it, and would also record a close this connect did not
                 # receive.
-                raise AdapterConnectionError(
+                raise connection_error(
                     f"OpcUaAdapter: failed to connect to '{url}' "
-                    f"node '{node_id}': {exc}"
+                    f"node '{node_id}': {exc}",
+                    exc,
                 ) from exc
 
     async def read(self, sensor_id: str) -> SensorReading:

@@ -13,8 +13,11 @@ from ori.hal.base import (
     AdapterConnectionError,
     AdapterReadError,
     AdapterTimeoutError,
+    AdapterUnavailableError,
     BaseAdapter,
     HardwareCircuitBreaker,
+    connection_error,
+    reclassified,
     resolve_baud_rate,
 )
 from ori.hal.producer_paths import READ_CLOCK, producer_time_for
@@ -173,7 +176,8 @@ class UsbSerialAdapter(BaseAdapter):
         # replaced the live device path, slave id and sensor type while the
         # adapter stayed connected on the old handle.
         device_path = str(config.get("device_path", "")).strip()
-        if not device_path and bool(config.get("auto_detect_device_path", False)):
+        auto_detect = bool(config.get("auto_detect_device_path", False))
+        if not device_path and auto_detect:
             device_path = _find_direct_serial_device()
         if not device_path:
             termux_devices = await asyncio.to_thread(_list_termux_usb_devices_sync)
@@ -186,6 +190,11 @@ class UsbSerialAdapter(BaseAdapter):
                     "serial port. Configure device_path to a readable "
                     "/dev/ttyUSB*/ttyACM* path or to a pyserial URL such as "
                     "socket://127.0.0.1:7000 from an approved USB-serial bridge."
+                )
+            if auto_detect:
+                # Configured to find the device, which is not plugged in yet.
+                raise AdapterUnavailableError(
+                    "UsbSerialAdapter: no USB serial device found to auto-detect"
                 )
             raise AdapterConnectionError(
                 "UsbSerialAdapter: 'device_path' is required (e.g. /dev/ttyUSB0)"
@@ -219,11 +228,15 @@ class UsbSerialAdapter(BaseAdapter):
             self._breaker = HardwareCircuitBreaker(self.adapter_name, config)
             try:
                 await asyncio.to_thread(self._open_port_sync)
-            except AdapterConnectionError:
-                raise
+            except AdapterConnectionError as exc:
+                again = reclassified(exc)
+                if again is exc:
+                    raise
+                raise again from exc
             except Exception as exc:
-                raise AdapterConnectionError(
-                    f"UsbSerialAdapter: failed to open '{self._device_path}': {exc}"
+                raise connection_error(
+                    f"UsbSerialAdapter: failed to open '{self._device_path}': {exc}",
+                    exc,
                 ) from exc
 
         logger.info(

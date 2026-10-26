@@ -6,11 +6,14 @@
 import asyncio
 import logging
 import signal
+from typing import Any
 
 from ori.config import ConfigValidationError, requires_production_posture
 from ori.gateway.envelope_auth import (
     build_gateway_envelope_state as _build_gateway_envelope_state,
 )
+from ori.hal.base import AdapterUnavailableError, BaseAdapter
+from ori.hal.mqtt_base import reconnect_delay
 from ori.hal.protocol_registry import UnknownProtocolError, make_adapter
 from ori.hardware.led_indicator import RuntimeHealthState
 from ori.network.deduplicator import EventDeduplicator
@@ -292,18 +295,28 @@ class StartupStages(
                 raise ConfigValidationError(str(exc)) from exc
             connect_cfg = adapter_connect_config(sensor_cfg, context.config)
             connected = True
+            unavailable = False
             try:
                 await adapter.connect(connect_cfg)
+            except AdapterUnavailableError as exc:
+                logger.warning(
+                    "[runtime] sensor_id=%s source not reached at start (%s)",
+                    sensor_cfg.id,
+                    exc,
+                )
+                connected = False
+                unavailable = True
             except Exception:
                 logger.exception(
                     "[runtime] failed to connect adapter for sensor_id=%s — skipping",
                     sensor_cfg.id,
                 )
                 connected = False
-            retrying = connected and adapter.connection_retrying
+            retrying = unavailable or (connected and adapter.connection_retrying)
             if connected:
                 # Before any await, so a stop during the notice still closes it.
                 self._adapters.append(adapter)
+            if connected or unavailable:
                 self._sensor_poll_interval_ms[sensor_cfg.id] = (
                     sensor_cfg.poll_interval_ms
                 )
@@ -316,6 +329,13 @@ class StartupStages(
                     registry=self._safety_registry,
                     send=self._safety_notice_sender(),
                 )
+            if unavailable:
+                self._background_tasks.append(
+                    asyncio.create_task(
+                        self._connect_when_available(sensor_cfg, connect_cfg, context),
+                        name=f"connect:{sensor_cfg.id}",
+                    )
+                )
             if not connected:
                 continue
             if not retrying:
@@ -326,22 +346,84 @@ class StartupStages(
                     adapter.adapter_name,
                     sensor_cfg.id,
                 )
+            self._start_polling(adapter, sensor_cfg, context)
 
-            task = asyncio.create_task(
-                self._poll_sensor(
-                    adapter,
-                    sensor_cfg,
-                    context.event_bus,
-                    context.config.device.id,
-                    self._deduplicator,
-                    context.config.device.timezone,
-                    context.config.device.country_code,
-                    context.config.device.location,
-                    context.config.device.site_type,
-                ),
-                name=f"poll:{sensor_cfg.id}",
+    async def _connect_when_available(
+        self, sensor_cfg: Any, connect_cfg: dict[str, Any], context: StartupContext
+    ) -> None:
+        """Retry a source not there at start until it answers, then poll it.
+
+        A fresh adapter per attempt, under the reconnect back-off a dropped
+        broker gets, until a stop cancels this task. The sensor stays
+        unconnected, and health degraded, until its first accepted reading. An
+        error that does not say the source is absent ends the retries and is
+        reported as the start would have reported it.
+        """
+        attempt = 0
+        last_reason = ""
+        while True:
+            await asyncio.sleep(reconnect_delay(attempt))
+            attempt += 1
+            adapter = make_adapter(sensor_cfg.protocol)
+            # Held, and the connect shielded, before the await: a stop cancels
+            # this task, never the connect, so the adapter's own close at
+            # shutdown waits for it and gives back whatever it opened.
+            self._adapters.append(adapter)
+            try:
+                await asyncio.shield(adapter.connect(connect_cfg))
+            except AdapterUnavailableError as exc:
+                self._adapters.remove(adapter)
+                if str(exc) != last_reason:
+                    last_reason = str(exc)
+                    logger.warning(
+                        "[runtime] sensor_id=%s still not reached (attempt %d): %s",
+                        sensor_cfg.id,
+                        attempt,
+                        exc,
+                    )
+                continue
+            except Exception:
+                self._adapters.remove(adapter)
+                logger.exception(
+                    "[runtime] sensor_id=%s can no longer be connected; not retried",
+                    sensor_cfg.id,
+                )
+                self._retrying_sensors_announced.discard(str(sensor_cfg.id))
+                await note_unconnected_sensor(
+                    str(sensor_cfg.id),
+                    retrying=False,
+                    unconnected=self._unconnected_sensors,
+                    announced=self._retrying_sensors_announced,
+                    registry=self._safety_registry,
+                    send=self._safety_notice_sender(),
+                )
+                return
+            logger.info(
+                "[runtime] sensor_id=%s source reached after %d attempt(s)",
+                sensor_cfg.id,
+                attempt,
             )
-            self._background_tasks.append(task)
+            self._start_polling(adapter, sensor_cfg, context)
+            return
+
+    def _start_polling(
+        self, adapter: BaseAdapter, sensor_cfg: Any, context: StartupContext
+    ) -> None:
+        task = asyncio.create_task(
+            self._poll_sensor(
+                adapter,
+                sensor_cfg,
+                context.event_bus,
+                context.config.device.id,
+                self._deduplicator,
+                context.config.device.timezone,
+                context.config.device.country_code,
+                context.config.device.location,
+                context.config.device.site_type,
+            ),
+            name=f"poll:{sensor_cfg.id}",
+        )
+        self._background_tasks.append(task)
 
     async def _stage_loops(self, context: StartupContext) -> None:
         if self._sensor_poll_interval_ms:

@@ -20,9 +20,12 @@ from ori.hal.base import (
     AdapterConnectionError,
     AdapterReadError,
     AdapterTimeoutError,
+    AdapterUnavailableError,
     BaseAdapter,
     HardwareCircuitBreaker,
     MeasurementRefusedError,
+    connection_error,
+    reclassified,
 )
 from ori.hal.producer_paths import READ_CLOCK, producer_time_for
 from ori.network.events import SensorReading
@@ -741,14 +744,21 @@ class I2CAdapter(BaseAdapter):
             self._window = window
             try:
                 await asyncio.to_thread(self._connect_sync, sensor_type)
-            except AdapterConnectionError:
-                raise
+            except AdapterConnectionError as exc:
+                again = reclassified(exc)
+                if again is exc:
+                    raise
+                raise again from exc
             except Exception as exc:
-                raise AdapterConnectionError(
+                message = (
                     f"I2CAdapter: failed to connect to '{sensor_type}' at "
                     f"address 0x{self._address:02X} on bus {self._bus_number}: "
                     f"{exc}"
-                ) from exc
+                )
+                # Blinka reports a chip that does not answer as a ValueError.
+                if isinstance(exc, ValueError) and "No I2C device" in str(exc):
+                    raise AdapterUnavailableError(message) from exc
+                raise connection_error(message, exc) from exc
 
             self._breaker = HardwareCircuitBreaker(
                 getattr(self, "adapter_name", type(self).__name__), config

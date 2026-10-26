@@ -4,9 +4,12 @@
 """A sensor not connected at start: who is told, and when it counts as connected.
 
 Every function takes the runtime's state as arguments and holds none of its
-own. A sensor whose adapter could not connect is skipped; one whose adapter
+own. A sensor whose adapter could not connect is skipped, unless its source was
+unreachable (`AdapterUnavailableError`): that one is connected again in the
+background, under back-off, with a fresh adapter each attempt. One whose adapter
 connected but is still retrying its source (`BaseAdapter.connection_retrying`)
-is polled, and stays unconnected until its first accepted reading.
+is polled. Either way the sensor stays unconnected until its first accepted
+reading.
 """
 
 from __future__ import annotations

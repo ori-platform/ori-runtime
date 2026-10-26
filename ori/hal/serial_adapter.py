@@ -12,6 +12,8 @@ from ori.hal.base import (
     AdapterTimeoutError,
     BaseAdapter,
     HardwareCircuitBreaker,
+    connection_error,
+    reclassified,
     resolve_baud_rate,
 )
 from ori.hal.producer_paths import READ_CLOCK, producer_time_for
@@ -277,11 +279,14 @@ class SerialAdapter(BaseAdapter):
             self._register = register
             try:
                 await asyncio.to_thread(self._open_port)
-            except AdapterConnectionError:
-                raise
+            except AdapterConnectionError as exc:
+                again = reclassified(exc)
+                if again is exc:
+                    raise
+                raise again from exc
             except Exception as exc:
-                raise AdapterConnectionError(
-                    f"SerialAdapter: failed to open '{self._port}': {exc}"
+                raise connection_error(
+                    f"SerialAdapter: failed to open '{self._port}': {exc}", exc
                 ) from exc
 
             self._breaker = HardwareCircuitBreaker(

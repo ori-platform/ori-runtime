@@ -3,8 +3,11 @@
 
 import asyncio
 import enum
+import errno
 import logging
 import math
+import re
+import socket
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
@@ -18,6 +21,93 @@ logger = logging.getLogger(__name__)
 
 class AdapterConnectionError(Exception):
     """Raised when an adapter cannot establish or restore a connection."""
+
+
+class AdapterUnavailableError(AdapterConnectionError):
+    """The source is not there yet: absent, busy, refusing or unreachable.
+
+    Decided by `source_absent` from the error that caused it, never by where it
+    was raised. A later connect may succeed, so the runtime retries it; every
+    other connection error, a permission or a malformed value included, is final
+    for the process.
+    """
+
+
+#: OS errors that say a source is not there yet rather than misconfigured: a
+#: device not present or busy, a host that refuses or cannot be reached.
+_ABSENT_ERRNOS = frozenset(
+    code
+    for code in (
+        getattr(errno, name, None)
+        for name in (
+            "ENOENT",
+            "ENODEV",
+            "ENXIO",
+            "EIO",
+            "EBUSY",
+            "ECONNREFUSED",
+            "ECONNRESET",
+            "ECONNABORTED",
+            "EHOSTUNREACH",
+            "EHOSTDOWN",
+            "ENETUNREACH",
+            "ENETDOWN",
+            "ETIMEDOUT",
+        )
+    )
+    if code is not None
+) | {getattr(errno, "EREMOTEIO", 121)}  # Linux's value where errno lacks it
+
+#: How asyncio's `create_connection` reports a host whose every address failed:
+#: one OSError, no errno, each member's `[Errno N]` in its text.
+_MULTIPLE = re.compile(r"\[Errno (\d+)\]")
+
+
+def source_absent(exc: BaseException | None) -> bool:
+    """Whether *exc*, or an error that caused it, says the source is not there yet.
+
+    A timeout, a temporary name-resolution failure, an OS error in
+    `_ABSENT_ERRNOS` (pyserial's errors carry an errno too), or asyncio's error
+    for a host whose every address failed that way. A permission error, a value
+    the source refused and anything else is not.
+    """
+    seen: set[int] = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        if isinstance(exc, TimeoutError):
+            return True
+        if isinstance(exc, socket.gaierror):
+            return exc.errno == socket.EAI_AGAIN
+        code = getattr(exc, "errno", None)
+        if isinstance(code, int) and code in _ABSENT_ERRNOS:
+            return True
+        if code is None and isinstance(exc, OSError):
+            text = str(exc)
+            members = [int(found) for found in _MULTIPLE.findall(text)]
+            if text.startswith("Multiple exceptions:") and members:
+                return all(member in _ABSENT_ERRNOS for member in members)
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+def reclassified(exc: AdapterConnectionError) -> AdapterConnectionError:
+    """*exc*, made unavailable when an error it wraps says the source is absent.
+
+    A connection error raised over a bus or socket failure, such as a chip
+    readback that hit EREMOTEIO, is retried like the failure itself; one with
+    no such cause, such as a quarantine or a configuration refusal, is final.
+    """
+    if isinstance(exc, AdapterUnavailableError) or not source_absent(exc):
+        return exc
+    return AdapterUnavailableError(str(exc))
+
+
+def connection_error(message: str, cause: BaseException) -> AdapterConnectionError:
+    """The connection error *cause* calls for: unavailable only if the source
+    is absent."""
+    if source_absent(cause):
+        return AdapterUnavailableError(message)
+    return AdapterConnectionError(message)
 
 
 class AdapterTimeoutError(Exception):
@@ -420,12 +510,12 @@ class BaseAdapter(ABC):
     #     that was closed did not connect.
     #   * A connect that fails for any reason gives back what it took.
     #
-    # What the runtime does with that refusal: it connects adapters
-    # sequentially and appends each to its list only after `connect()` returns,
-    # closing only what is in that list, so an in-flight adapter is never
-    # closed in production and the refusal is not reachable there. It is a
-    # contract, held at the boundary, rather than a live bug being papered
-    # over. During shutdown the refusal would surface the same way any other
+    # What the runtime does with that refusal: at start it connects adapters
+    # sequentially and appends each to its list only after `connect()` returns.
+    # A source retried after start (`AdapterUnavailableError`) is the exception:
+    # its adapter is appended before the connect, which is shielded, so a stop
+    # closes it once the connect settles and the refusal is reachable there.
+    # During shutdown the refusal surfaces the same way any other
     # connect failure does — logged, the adapter not added, the runtime
     # continuing — which is the correct outcome for an adapter that is being
     # torn down anyway. `ori/runtime/` does more than log: it records the
