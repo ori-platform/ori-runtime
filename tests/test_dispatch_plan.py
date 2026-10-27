@@ -1461,6 +1461,9 @@ class TestACancelledTripDoesNotFreeTheResource:
         resolved: list[tuple[object, bool]] = []
 
         class _Gate:
+            async def mark_proposal(self, _token: Any, _proposal_id: str) -> None:
+                return None
+
             async def resolve_uncertain(self, token: object, accepted: bool) -> None:
                 resolved.append((token, accepted))
 
@@ -1929,17 +1932,19 @@ class TestScopesBelongToTheirEvent:
 
         running_a = asyncio.create_task(event_a.dispatch_event(_event()))
         await asyncio.wait_for(reached.wait(), 10)
-        assert gate.state_of(ZONE) == HolderState.HELD
+        assert gate.foreclosures(ZONE) == [("open_protected_circuit", "D")]
 
+        # Event B's trip is its own act, never absorbed by event A's.
         await asyncio.wait_for(event_b.dispatch_event(_event()), 10)
-        assert gate.state_of(ZONE) == HolderState.HELD, (
+        assert gate.foreclosures(ZONE) == [("open_protected_circuit", "D")], (
             "event B's close released event A's foreclosure"
         )
 
         proceed.set()
         await asyncio.wait_for(running_a, 10)
         await event_a.drain()
-        assert ran == ["close_gas_valve"], ran
+        assert ran == ["close_gas_valve", "trip_relay"], ran
+        assert gate.foreclosures(ZONE) == []
 
 
 class TestATriggerInFlightDoesNotMatchAgain:

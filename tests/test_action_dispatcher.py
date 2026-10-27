@@ -2536,6 +2536,9 @@ class TestOfflineTokenApproval:
 
     async def test_a_late_refusal_survives_an_indicator_fault(self):
         class _Gate:
+            async def mark_proposal(self, _token: Any, _proposal_id: str) -> None:
+                return None
+
             async def reply_admitted(self, _token: object) -> bool:
                 return False
 

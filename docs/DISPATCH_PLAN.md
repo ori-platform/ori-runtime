@@ -334,6 +334,71 @@ retroactively un-perform it: the later arrival is refused against a holder that
 stands, and the pair is recorded as a conflict resolved by timing rather than by
 authority — which is a defect in the skill set and has to be visible as one.
 
+### Foreclosure belongs to the event
+
+A completed act still matters after its executor returns. A Tier D trip that
+opened a circuit must keep the same event's lower-authority close out for as
+long as that event runs. The resource's record cannot carry that: it describes
+one attempt, and it is replaced, retired or resolved as attempts come and go.
+An event's foreclosure has to survive all three, so the gate keeps it per
+event, apart from the record.
+
+- **Recorded when an attempt ends.** When an admitted act retires, whether it
+  ran or failed, or is left uncertain, the gate records an entry under every
+  event that claimed it: the event that admitted it, and each event whose
+  request joined it while in flight. Each entry holds the resource, the
+  outcome and join key, the highest tier that event put behind the act,
+  whether the executor was entered, and whether it *ran*. When an uncertain
+  command's driver reports, success or failure, the entries are recorded
+  again for every claimant still open, so an event whose request joined
+  while the command was uncertain claims it too. Until then the uncertain
+  command refuses every opposite itself. Ran means the executor reported success; it is neither the start of
+  execution nor proof of the physical outcome. A proposal that never reached
+  its executor (declined, expired or invalidated) records an entry that
+  forecloses nothing. If its operator was asked, meaning the ask was accepted
+  for delivery or a local console was listening, the same event does not ask
+  again. An operator's NO grants no authority, and no Tier D request joins it.
+  An entry is a fact recorded once; a completion or resolution arriving after
+  its event closed records nothing.
+- **Refusing.** While the entry's event is open, an opposing request on that
+  resource at or below the entry's tier is refused with
+  `foreclosed_by_completed_act`. This holds from any event, whatever has since
+  happened to the resource's record. A strictly higher tier is a new act. An
+  opposing Tier D request against a Tier D entry is an unresolved safety
+  conflict, the same as against an in-flight holder.
+- **Joining.** Only a request from the entry's own event can join it. A Tier D
+  request joins it only if the act ran. A request below Tier D joins it if the
+  act ran, or if it was a proposal whose operator was asked and whose
+  executor was never entered, so the event does not ask its NO again. A
+  request that joins an act that ran records its own authority under its
+  event. Anything else is a new attempt. An
+  execution that failed is never joined, an approved one included, and a later
+  event's request is never absorbed by an earlier event's completed act.
+- **Clearing.** An entry clears only when its event closes. Nothing else
+  removes it: a later record on the resource does not, a retire does not, and
+  neither does the resolution of an uncertain command. Closing an event clears
+  its own entries and nothing else: an uncertain command stays in flight and
+  keeps an opposing outcome out until the driver reports.
+
+The gate decides a request in this order, and the first rule that applies
+decides it:
+
+1. An opposing Tier D request against an in-flight Tier D holder or an open
+   Tier D entry is an unresolved safety conflict.
+2. An opposing request against an uncertain command is refused.
+3. An opposing request at or below the tier of any open entry, from any event,
+   is refused. This is decided before any join, so a matching entry cannot
+   hide a conflicting one.
+4. An in-flight holder decides by the table above.
+5. A matching entry of the requester's own event is joined under the joining
+   rule.
+6. Otherwise the request is admitted.
+
+An act admitted outside any event records no entry, so its foreclosure ends
+with its attempt. Entries live only as long as open events, and an event is
+closed on every exit from its dispatch, a cancellation or an exception
+included.
+
 ### Joining is keyed on more than the outcome
 
 A join makes one physical act stand for several contributors, so the key must
@@ -353,9 +418,11 @@ and through the holder's own handling; nothing yet degrades safety status on a
 joiner's behalf when the attempt it joined fails, so that remains a gap, not a
 property.
 
-Coalescing spans the in-flight attempt only. Once the record retires, a later
-request for the same outcome is a new act: a repeat trip after a repeat
-condition is a real event and must not be silently absorbed.
+Coalescing spans the in-flight attempt, and within one event it also spans the
+acts that event completed, as the previous section limits. A later event's
+request for the same outcome is a new act once no attempt is in flight. A
+repeat trip after a repeat condition is a real event and must not be silently
+absorbed.
 
 **Two Tier D outcomes that oppose on one resource are an unresolved safety
 conflict, not an ordinary refusal.** Nothing acts, so nothing is protected, and
@@ -408,6 +475,19 @@ So the rule here is a constraint on the gate, not a second retry mechanism:
   circuit, no previously scheduled retry of that trip's open command may
   execute. The gate participates in that serialisation rather than defining its
   own.
+
+**Until the registry is the Tier D path, a legacy Tier D trigger has no retry
+of its own.** Its only re-attempt is the next matching reading that
+reaches dispatch, which is a fresh evaluation, not a retry. This is an interim
+limit, and it is weaker than the registry's loop in kind, not only in timing.
+If readings stop, stop matching, or never reach dispatch, nothing is attempted
+again. The registry retries a failing command about once a second whatever
+readings do. The deduplicator forwards a reading whose fingerprint (rounded to
+0.1) repeats within 5 s only once. A steady hazard is therefore re-evaluated
+no more often than every 5 s, and later still when polling, delivery or
+execution is slower. That window is not an upper bound on retry latency. If
+pilots are to ship relying on legacy Tier D, that needs a fresh safety
+decision first.
 
 ### An executor that never returns
 
@@ -519,8 +599,8 @@ granting Tier D is never dropped: its trip is attempted on every matching
 reading, whether the last one ran, failed or was refused, so a trip refused at
 the gate re-raises against the state that then obtains. The plan dispatches
 the trip each time; whether the resource gate lets that drive the actuator or
-joins it to an act already made is the gate's decision, and a held act still
-absorbs later trips while its event is open (#978). Only the plan's other
+joins it to an act its own event already made is the gate's decision. An
+earlier event's completed act never absorbs it. Only the plan's other
 actions are held, so its notices still come once per window. The outcome a
 cooldown is charged on leaves the Tier D act out, so a plan whose only action
 is the trip never charges one. A Tier D trigger whose plan grants no Tier D act
@@ -692,6 +772,14 @@ tier buys nothing if the field being sealed is not true.
   and a coalescing record.
 - Opposing same-resource actions at equal tier are refused, and the refusal is
   recorded.
+- While an open event holds an entry for a completed act, an opposing request
+  at or below its tier is refused. A seeded model test drives random sequences
+  of request, mark_running, retire, mark_uncertain, resolve_uncertain and
+  event open and close. A differential against the previous gate classifies
+  every divergence as one of the intended changes.
+- A later event's trip is attempted after an earlier event's trip ran or
+  failed, while that earlier event is still open. A Tier C proposal for the
+  outcome of a failed act asks the operator.
 - A false condition consumes no cooldown; a preempted trigger consumes none; a
   failed executor below Tier D consumes one, and no Tier D act consumes one.
 - Repeated matching readings after a Tier D act that ran, failed or was
