@@ -39,7 +39,7 @@ OVERSIZE_CEILINGS: dict[str, int] = {
     "ori/config/_actions.py::parse_actions": 249,
     "ori/gateway/reasoning.py::MqttGatewayReasoner._round_trip": 246,
     "ori/reasoning/rule_engine.py::RuleEngine.evaluate_all": 225,
-    "ori/runtime/_alerts.py::AlertDelivery._send_or_queue_alert": 205,
+    "ori/runtime/_alerts.py::AlertDelivery._send_or_queue_alert": 166,
     "ori/state/_migrations.py::StoreMigrations._migrate_sync": 209,
     "ori/installer/linux.py::provision_runtime_config": 198,
     "ori/reasoning/action_dispatcher.py::ActionDispatcher._execute_immediately": 174,

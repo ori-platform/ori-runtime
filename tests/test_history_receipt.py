@@ -628,7 +628,7 @@ async def test_the_tier_a_template_slot_is_the_time_ori_detected_the_risk() -> N
     class _Capture:
         alert = None
 
-        async def send(self, *, alert, to_number, preferred_channel):
+        async def send(self, *, alert, to_number, preferred_channel, may_use=None):
             from ori.actions.alert_delivery import AlertSendReceipt
 
             self.alert = alert
@@ -754,7 +754,7 @@ async def test_a_legacy_outbox_row_is_resent_with_the_queue_receipt_in_its_slot(
         class _Capture:
             alert = None
 
-            async def send(self, *, alert, to_number, preferred_channel):
+            async def send(self, *, alert, to_number, preferred_channel, may_use=None):
                 from ori.actions.alert_delivery import AlertSendReceipt
 
                 self.alert = alert

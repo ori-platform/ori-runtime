@@ -17,7 +17,7 @@ from ori.actions.alert_delivery import (
     build_outbound_alert,
     notice_is_mandatory,
 )
-from ori.actions.alert_failover import AlertFailoverSender
+from ori.actions.alert_failover import CAP_SPENT, AlertFailoverSender
 from ori.config import Config
 from ori.policy.alert_classes import alert_class_for_trigger
 from ori.reasoning.action_taken import SUPPRESSED
@@ -27,15 +27,18 @@ from ori.runtime._alert_text import (
     coerce_alert_send_receipt,
     count_active_triggers,
     format_alert_timestamp,
-    preference_disabled_key,
     resolve_setup_notification_channels,
     setup_success_message,
+    withheld_tally_key,
 )
 from ori.runtime._core import RuntimeCore
 from ori.utils.bool_utils import is_truthy
 from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger("ori.runtime")
+
+# The recorded cause of each kind of withheld optional notice.
+_WITHHELD_REASONS = {"disabled": "customer_preference", "capped": "monthly_cap"}
 
 
 class AlertDelivery(RuntimeCore):
@@ -92,31 +95,27 @@ class AlertDelivery(RuntimeCore):
             skill_is_first_party,
             trigger_name,
             action_tier,
-            original_ts,
             notice_kind,
         ):
             return SUPPRESSED
 
+        if await self._withheld_by_cap(
+            channel,
+            skill_name,
+            skill_is_first_party,
+            trigger_name,
+            action_tier,
+            notice_kind,
+        ):
+            return False
+
         if not recipient:
-            # Checked after the preference, because a notice the customer
-            # switched off was not going to be sent to anyone. Reporting it as
-            # a missing recipient would record a configuration fault the
+            # Checked after the preference and the cap, because a notice either
+            # withheld was not going to be sent to anyone. Reporting it as a
+            # missing recipient would record a configuration fault the
             # deployment does not have.
             logger.warning(
                 "[runtime] %s alert skipped: operator_contact not configured", channel
-            )
-            return False
-
-        if not await self._policy_permits_external_alert(
-            channel=channel,
-            action_tier=action_tier,
-            notice_kind=notice_kind,
-        ):
-            logger.info(
-                "[runtime] %s alert suppressed by DevicePolicy monthly cap tier=%s trigger=%s",
-                channel,
-                action_tier,
-                trigger_name,
             )
             return False
 
@@ -175,48 +174,14 @@ class AlertDelivery(RuntimeCore):
         if trigger_name:
             self._last_alert_timestamps_by_trigger[trigger_name] = alert_ts
 
-        try:
-            if allow_failover:
-                receipt = coerce_alert_send_receipt(
-                    await alert_sender.send(
-                        alert=alert,
-                        to_number=recipient,
-                        preferred_channel=channel,
-                    ),
-                    fallback_channel=channel,
-                )
-            else:
-                exact_sender = getattr(alert_sender, "send_exact", None)
-                if callable(exact_sender):
-                    # `callable()` narrows to a callable returning `object`,
-                    # which is not awaitable. The cast names the contract a
-                    # duck-typed sender must satisfy; the guard is unchanged,
-                    # so a non-callable attribute still falls through to
-                    # `send()` rather than being invoked.
-                    send_exact = cast(Callable[..., Awaitable[object]], exact_sender)
-                    receipt = coerce_alert_send_receipt(
-                        await send_exact(
-                            alert=alert,
-                            to_number=recipient,
-                            channel=channel,
-                        ),
-                        fallback_channel=channel,
-                    )
-                else:
-                    receipt = coerce_alert_send_receipt(
-                        await alert_sender.send(
-                            alert=alert,
-                            to_number=recipient,
-                            preferred_channel=channel,
-                        ),
-                        fallback_channel=channel,
-                    )
-        except Exception:
-            logger.exception(
-                "[runtime] unexpected %s send failure; falling back to outbox queue",
-                channel,
-            )
-            receipt = AlertSendReceipt.refused(channel=channel, error="sender_raised")
+        receipt = await self._submit(
+            alert_sender,
+            alert,
+            recipient,
+            channel,
+            allow_failover=allow_failover,
+            budget=self._budget_check(notice_kind, action_tier),
+        )
 
         if receipt.accepted:
             if self._state_store is not None:
@@ -242,9 +207,8 @@ class AlertDelivery(RuntimeCore):
             return True
 
         if inserted:
-            await self._record_policy_counted_alert(
-                channel, action_tier=action_tier, notice_kind=notice_kind
-            )
+            # Not counted against the cap: nothing was delivered. The retry
+            # that a provider accepts is counted then.
             logger.info(
                 "[runtime] queued refused %s alert id=%s tier=%s trigger=%s original_ts=%d",
                 channel,
@@ -358,6 +322,114 @@ class AlertDelivery(RuntimeCore):
         logger.error("[safety] notice submission failed and StateStore is unavailable")
         return False
 
+    async def _submit(
+        self,
+        alert_sender: AlertFailoverSender,
+        alert: OutboundAlert,
+        recipient: str,
+        channel: str,
+        *,
+        allow_failover: bool,
+        budget: dict[str, Any],
+    ) -> AlertSendReceipt:
+        """One submission of a first send, under *budget*'s per-channel cap check."""
+        try:
+            if allow_failover:
+                receipt = coerce_alert_send_receipt(
+                    await alert_sender.send(
+                        alert=alert,
+                        to_number=recipient,
+                        preferred_channel=channel,
+                        **budget,
+                    ),
+                    fallback_channel=channel,
+                )
+            elif budget and not await budget["may_use"](channel):
+                receipt = AlertSendReceipt.refused(channel=channel, error=CAP_SPENT)
+            else:
+                exact_sender = getattr(alert_sender, "send_exact", None)
+                if callable(exact_sender):
+                    # `callable()` narrows to a callable returning `object`,
+                    # which is not awaitable. The cast names the contract a
+                    # duck-typed sender must satisfy; the guard is unchanged,
+                    # so a non-callable attribute still falls through to
+                    # `send()` rather than being invoked.
+                    send_exact = cast(Callable[..., Awaitable[object]], exact_sender)
+                    receipt = coerce_alert_send_receipt(
+                        await send_exact(
+                            alert=alert,
+                            to_number=recipient,
+                            channel=channel,
+                        ),
+                        fallback_channel=channel,
+                    )
+                else:
+                    receipt = coerce_alert_send_receipt(
+                        await alert_sender.send(
+                            alert=alert,
+                            to_number=recipient,
+                            preferred_channel=channel,
+                            **budget,
+                        ),
+                        fallback_channel=channel,
+                    )
+        except Exception:
+            logger.exception(
+                "[runtime] unexpected %s send failure; falling back to outbox queue",
+                channel,
+            )
+            receipt = AlertSendReceipt.refused(channel=channel, error="sender_raised")
+        return receipt
+
+    def _budget_check(self, notice_kind: object, action_tier: str) -> dict[str, Any]:
+        """``may_use`` for an optional notice's send: the cap, judged per channel.
+
+        Empty for a mandatory notice, and wherever no cap can apply, so those
+        sends are unchanged.
+        """
+        if notice_is_mandatory(notice_kind):
+            return {}
+        if self._dispatcher is None or self._state_store is None:
+            return {}
+
+        async def may_use(channel: str) -> bool:
+            return await self._policy_permits_external_alert(
+                channel=channel, action_tier=action_tier, notice_kind=str(notice_kind)
+            )
+
+        return {"may_use": may_use}
+
+    async def _withheld_by_cap(
+        self,
+        channel: str,
+        skill_name: str,
+        first_party: bool,
+        trigger_name: str,
+        action_tier: str,
+        notice_kind: str,
+    ) -> bool:
+        """Whether the channel's monthly cap withholds this notice; tally it if so."""
+        if await self._policy_permits_external_alert(
+            channel=channel, action_tier=action_tier, notice_kind=notice_kind
+        ):
+            return False
+        logger.info(
+            "[runtime] %s alert suppressed by DevicePolicy monthly cap tier=%s trigger=%s",
+            channel,
+            action_tier,
+            trigger_name,
+        )
+        await self._record_withheld_alert(
+            "capped",
+            channel=channel,
+            alert_class=alert_class_for_trigger(
+                skill_name, trigger_name, first_party=first_party
+            ),
+            trigger_name=trigger_name,
+            action_tier=action_tier,
+        )
+        return True
+
     async def _withheld_by_preference(
         self,
         channel: str,
@@ -365,7 +437,6 @@ class AlertDelivery(RuntimeCore):
         first_party: bool,
         trigger_name: str,
         action_tier: str,
-        original_ts: int,
         notice_kind: str,
     ) -> bool:
         """Whether a customer preference withholds this notice; record it if so."""
@@ -388,12 +459,12 @@ class AlertDelivery(RuntimeCore):
             trigger_name,
             alert_class,
         )
-        await self._record_preference_disabled_alert(
+        await self._record_withheld_alert(
+            "disabled",
             channel=channel,
             alert_class=alert_class,
             trigger_name=trigger_name,
             action_tier=action_tier,
-            original_ts=original_ts,
         )
         return True
 
@@ -425,26 +496,25 @@ class AlertDelivery(RuntimeCore):
             alert_class, action_tier=action_tier
         )
 
-    async def _record_preference_disabled_alert(
+    async def _record_withheld_alert(
         self,
+        reason: str,
         *,
         channel: str,
         alert_class: str | None,
         trigger_name: str,
         action_tier: str,
-        original_ts: int,
     ) -> None:
-        """Record that a notice was withheld by preference, and send nothing.
+        """Tally an optional notice withheld by preference (``disabled``) or cap (``capped``).
 
-        Bounded to one row per channel, class and month, like the cap counter
-        beside it. Keying by event timestamp instead would add a row per
-        suppression, and a class with no cooldown suppressing at the poll rate
-        would grow the state store without limit for a record nothing reads
-        back yet.
+        One row per reason, channel, class and month, like the cap counter
+        beside it, so a trigger withheld at the poll rate adds no rows within a
+        month. Earlier months are not pruned. The month is the runtime's clock
+        at the decision, never the event's own time.
         """
         if self._state_store is None:
             return
-        key = preference_disabled_key(channel, alert_class, original_ts)
+        key = withheld_tally_key(reason, channel, alert_class, now_ms())
         try:
             raw = await self._state_store.get_skill_state(
                 "__runtime_alert_preferences__", key
@@ -459,8 +529,8 @@ class AlertDelivery(RuntimeCore):
                 key,
                 json.dumps(
                     {
-                        "outcome": "disabled",
-                        "reason": "customer_preference",
+                        "outcome": reason,
+                        "reason": _WITHHELD_REASONS[reason],
                         "channel": channel,
                         "alert_class": alert_class,
                         "action_tier": action_tier,
@@ -472,9 +542,7 @@ class AlertDelivery(RuntimeCore):
                 ),
             )
         except Exception:
-            logger.exception(
-                "[runtime] failed to record a preference-disabled alert outcome"
-            )
+            logger.exception("[runtime] failed to record a withheld alert outcome")
 
     async def _policy_permits_external_alert(
         self,
@@ -517,17 +585,17 @@ class AlertDelivery(RuntimeCore):
             return
         if self._state_store is None:
             return
+        observed_at = now_ms()  # one sample: the key's month is the recorded one
         try:
-            key = alert_policy_count_key(channel, now_ms())
-            current = await self._current_policy_counted_alerts(channel)
-            await self._state_store.set_skill_state(
+            await self._state_store.increment_skill_counter(
                 "__runtime_alert_policy__",
-                key,
-                str(current + 1),
+                alert_policy_count_key(channel, observed_at),
+                observed_at,
             )
         except Exception:
-            logger.warning(
-                "[runtime] failed to persist %s alert policy count; accepted or queued alert remains valid",
+            logger.error(
+                "[runtime] an observed %s provider acceptance was not recorded; "
+                "this month's alert usage now undercounts it",
                 channel,
                 exc_info=True,
             )
@@ -693,6 +761,7 @@ class AlertDelivery(RuntimeCore):
                             alert=outbound_alert,
                             to_number=recipient,
                             preferred_channel=preferred_channel,
+                            **self._budget_check(alert.get("notice_kind"), action_tier),
                         ),
                         fallback_channel=preferred_channel,
                     )
@@ -720,6 +789,10 @@ class AlertDelivery(RuntimeCore):
                         accepted_at_ms=accepted_ts,
                         delivered_at_ms=receipt.delivered_at_ms,
                     )
+                    if not mandatory:  # accepted now, so counted now
+                        await self._record_policy_counted_alert(
+                            receipt.channel, action_tier=action_tier
+                        )
                     logger.info(
                         "[runtime] provider accepted queued alert id=%s channel=%s "
                         "status=%s sid=%s after %d attempt(s)",
@@ -731,6 +804,11 @@ class AlertDelivery(RuntimeCore):
                     )
                     continue
 
+                if receipt.error == CAP_SPENT:
+                    # Nothing was submitted: behind other eligible work, with
+                    # no attempt charged, until a channel has budget again.
+                    await self._state_store.defer_alert(alert_id)
+                    continue
                 await self._state_store.mark_alert_attempt_failed(alert_id)
                 failed_ts = now_ms()
                 self._last_alert_timestamps_by_channel[channel] = failed_ts

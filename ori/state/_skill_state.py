@@ -35,6 +35,30 @@ class SkillStateStore(StoreCore):
     async def set_skill_state(self, skill_name: str, key: str, value: str) -> None:
         await self._run_write(self._set_skill_state_sync, skill_name, key, value)
 
+    async def increment_skill_counter(
+        self, skill_name: str, key: str, at_ms: int
+    ) -> None:
+        """Add one to an integer state value in one statement, so no increment is lost."""
+        await self._run_write(
+            self._increment_skill_counter_sync, skill_name, key, at_ms
+        )
+
+    def _increment_skill_counter_sync(
+        self, skill_name: str, key: str, at_ms: int
+    ) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            INSERT INTO skill_state (skill_name, key, value, updated_at)
+            VALUES (?, ?, '1', ?)
+            ON CONFLICT(skill_name, key) DO UPDATE SET
+                value      = CAST(CAST(value AS INTEGER) + 1 AS TEXT),
+                updated_at = excluded.updated_at
+            """,
+            (skill_name, key, at_ms),
+        )
+        self._conn.commit()
+
     def hooks_set_skill_state(self, skill_name: str, key: str, value: str) -> None:
         """Stable sync facade for hook skill-state writes, on the hooks' connection."""
         self._run_hook(self._set_skill_state_on, skill_name, key, value)

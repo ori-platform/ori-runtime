@@ -254,6 +254,22 @@ class AlertOutboxStore(StoreCore):
         ).fetchall()
         return [dict(row) for row in rows]
 
+    async def defer_alert(self, alert_id: str) -> None:
+        """Move a queued row behind every other one, charging it no attempt."""
+        await self._run_write(self._defer_alert_sync, alert_id)
+
+    def _defer_alert_sync(self, alert_id: str) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            UPDATE alert_outbox
+               SET retry_seq = (SELECT COALESCE(MAX(retry_seq), 0) + 1 FROM alert_outbox)
+             WHERE alert_id = ? AND status IN ('pending', 'failed')
+            """,
+            (alert_id,),
+        )
+        self._conn.commit()
+
     async def requeue_alert_receipt_poll(self, alert_id: str) -> None:
         """Move an accepted row awaiting its receipt behind every other one."""
         await self._run_write(self._requeue_alert_receipt_poll_sync, alert_id)
