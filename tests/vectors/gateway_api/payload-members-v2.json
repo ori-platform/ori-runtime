@@ -377,6 +377,7 @@
       "status"
     ],
     "ori/{device_id}/runtime/posture": [
+      "alert_classes",
       "auth",
       "boot_generation",
       "ciphertext",
