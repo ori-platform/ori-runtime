@@ -51,11 +51,6 @@ class HolderState:
     """How far the current holder of a resource has got."""
 
     RESERVED = "reserved"
-    # The act completed and the resource stays foreclosed until the event that
-    # licensed it is settled. Without it a Tier D trip retired the moment its
-    # executor returned, and the same event's lower-authority opposite was
-    # admitted against an empty gate.
-    HELD = "held"
     PROPOSAL = "proposal"
     RUNNING = "running"
     UNCERTAIN = "uncertain"
@@ -100,6 +95,9 @@ class Contributor:
     # The holder's own record, settled when its row is handed to the writer, so
     # a joiner's row is written after it, never before.
     record_future: Any = None
+    # The event this claim was made in, set by the gate. A joiner's event
+    # forecloses on the act it joined as the admitting event does.
+    scope: str = ""
 
 
 @dataclass
@@ -113,6 +111,11 @@ class _Record:
     invalidated: bool = False
     result: Any = None
     scope: str = ""
+    # Set when the executor is entered, by mark_running or an approved reply.
+    entered: bool = False
+    # Set when the operator was asked: the ask was accepted, or a console listens.
+    asked: bool = False
+    entries: dict[str, _Entry] = field(default_factory=dict)
     done: asyncio.Event = field(default_factory=asyncio.Event)
 
     @property
@@ -121,12 +124,35 @@ class _Record:
 
 
 @dataclass
+class _Entry:
+    """What one event's completed act still forecloses, kept apart from the record.
+
+    The record describes one attempt and is replaced, retired or resolved; the
+    event's foreclosure has to outlive all three.
+    """
+
+    identity: ResourceIdentity
+    tier: str
+    entered: bool
+    ran: bool
+    holds_tier_d: bool
+    asked: bool = False
+    # A copy taken when the attempt ended: a joiner's row names the holder's
+    # reserved key and is written after the holder's row.
+    contributors: tuple[Contributor, ...] = ()
+
+    @property
+    def forecloses(self) -> bool:
+        return self.entered
+
+
+@dataclass
 class GateDecision:
     """The gate's answer, and the record it attaches to."""
 
     admission: str
     reason: str = ""
-    token: _Record | None = None
+    token: Any = None
     displaced: _Record | None = None
     safety_conflict: bool = False
 
@@ -142,10 +168,9 @@ class ResourceGate:
         self._records: dict[tuple[str, ...], _Record] = {}
         self._lock = asyncio.Lock()
         self._suppressions: list[dict[str, Any]] = []
-        # Open arbitration scopes, one per event being dispatched. A record
-        # admitted inside one is foreclosed for the rest of that event rather
-        # than freed when its own attempt finishes.
-        self._scopes: set[str] = set()
+        # Open arbitration scopes, one per event being dispatched, each with the
+        # entries its completed acts left. They clear only when the scope closes.
+        self._scopes: dict[str, list[_Entry]] = {}
 
     @property
     def suppressions(self) -> list[dict[str, Any]]:
@@ -181,22 +206,30 @@ class ResourceGate:
         :meth:`close_scope` from the same task, which is the only place it is
         valid to reset.
         """
-        self._scopes.add(scope)
+        self._scopes.setdefault(scope, [])
         return _ARBITRATION_SCOPE.set(scope)
 
     async def close_scope(
         self, scope: str, token: contextvars.Token[str] | None = None
     ) -> None:
-        """End the scope and free everything it was holding."""
+        """End the scope and clear its entries, and nothing else.
+
+        Done before any await, so a cancelled close still clears them. An
+        uncertain command stays in flight: closing its event does not let an
+        opposing outcome past it.
+        """
         if token is not None:
             _ARBITRATION_SCOPE.reset(token)
-        async with self._lock:
-            self._scopes.discard(scope)
-            for key, record in list(self._records.items()):
-                if record.scope == scope and record.state == HolderState.HELD:
-                    record.state = HolderState.RETIRED
-                    record.done.set()
-                    self._records.pop(key, None)
+        self._scopes.pop(scope, None)
+
+    def foreclosures(self, resource_key: tuple[str, ...]) -> list[tuple[str, str]]:
+        """``(outcome, tier)`` of every open event's foreclosing entry on *resource_key*."""
+        return [
+            (entry.identity.desired_outcome, entry.tier)
+            for entries in self._scopes.values()
+            for entry in entries
+            if entry.forecloses and entry.identity.resource_key == resource_key
+        ]
 
     @property
     def _current_scope(self) -> str:
@@ -222,7 +255,17 @@ class ResourceGate:
         """
         async with self._lock:
             holder = self._records.get(identity.resource_key)
-            if holder is None or holder.state == HolderState.RETIRED:
+            if holder is not None and holder.state == HolderState.RETIRED:
+                holder = None
+
+            refused = self._refuse_opposing(holder, identity, tier, contributor)
+            if refused is not None:
+                return refused
+
+            if holder is None:
+                joined = self._join_completed(identity, tier, contributor)
+                if joined is not None:
+                    return joined
                 return self._admit(
                     identity, tier, contributor, awaits_operator=awaits_operator
                 )
@@ -254,6 +297,100 @@ class ResourceGate:
                 Admission.REFUSED, OPPOSING_HIGHER_TIER_HOLDS, token=None
             )
 
+    def _refuse_opposing(
+        self,
+        holder: _Record | None,
+        identity: ResourceIdentity,
+        tier: str,
+        contributor: Contributor,
+    ) -> GateDecision | None:
+        """Rules 1 to 3 of the order in ``docs/DISPATCH_PLAN.md``, before any join."""
+        arriving_d = tier_rank(tier) >= tier_rank("D")
+        entries = [
+            entry
+            for scoped in self._scopes.values()
+            for entry in scoped
+            if entry.forecloses
+            and entry.identity.resource_key == identity.resource_key
+            and opposes(entry.identity, identity)
+        ]
+        holder_opposes = holder is not None and opposes(holder.identity, identity)
+        if arriving_d and (
+            (holder_opposes and holder is not None and holder.holds_tier_d)
+            or any(entry.holds_tier_d for entry in entries)
+        ):
+            # Nothing acts, so nothing is protected. Filing it as a routine
+            # refusal would let a device that protects nothing look like a
+            # device that made a decision.
+            self._record_event(
+                "safety_conflict",
+                resource=identity.resource_key,
+                arriving=identity.desired_outcome,
+                contributor=contributor.trigger_name,
+            )
+            return GateDecision(
+                Admission.REFUSED, UNRESOLVED_SAFETY_CONFLICT, safety_conflict=True
+            )
+        if holder_opposes and holder is not None:
+            if holder.state == HolderState.UNCERTAIN:
+                # A timeout must not become two contradictory commands to one
+                # actuator, however long the uncertainty lasts.
+                self._record_event(
+                    "refused",
+                    resource=identity.resource_key,
+                    reason=OPPOSING_COMMAND_UNCERTAIN,
+                    contributor=contributor.trigger_name,
+                )
+                return GateDecision(Admission.REFUSED, OPPOSING_COMMAND_UNCERTAIN)
+        foreclosing = [e for e in entries if tier_rank(tier) <= tier_rank(e.tier)]
+        if foreclosing:
+            self._record_event(
+                "refused",
+                resource=identity.resource_key,
+                reason=FORECLOSED_BY_COMPLETED_ACT,
+                contributor=contributor.trigger_name,
+                holder=foreclosing[0].identity.desired_outcome,
+            )
+            return GateDecision(Admission.REFUSED, FORECLOSED_BY_COMPLETED_ACT)
+        return None
+
+    def _join_completed(
+        self, identity: ResourceIdentity, tier: str, contributor: Contributor
+    ) -> GateDecision | None:
+        """Join a completed act of the requester's own event, or return None.
+
+        Tier D joins only an act that ran. Below Tier D, a proposal whose
+        operator was asked and whose executor was never entered is joined too,
+        so the event does not ask its NO again; a failed execution never is.
+        """
+        arriving_d = tier_rank(tier) >= tier_rank("D")
+        entries = self._scopes.get(self._current_scope)
+        for entry in entries or ():
+            if entry.identity.join_key != identity.join_key:
+                continue
+            if entry.ran or (not arriving_d and not entry.entered and entry.asked):
+                if entry.ran and entries is not None:
+                    # The joiner's authority stands behind the act too, so the
+                    # event forecloses at it. Execution is merged, licence not.
+                    entries.append(
+                        _Entry(
+                            identity=entry.identity,
+                            tier=tier,
+                            entered=True,
+                            ran=True,
+                            holds_tier_d=contributor.tier_d_granted,
+                            contributors=entry.contributors,
+                        )
+                    )
+                self._record_event(
+                    "coalesced",
+                    resource=identity.resource_key,
+                    holder_state="completed",
+                    contributor=contributor.trigger_name,
+                )
+                return GateDecision(Admission.JOINED, token=entry)
+        return None
+
     def _admit(
         self,
         identity: ResourceIdentity,
@@ -262,6 +399,7 @@ class ResourceGate:
         *,
         awaits_operator: bool = False,
     ) -> GateDecision:
+        contributor.scope = self._current_scope
         record = _Record(
             identity=identity,
             tier=tier,
@@ -298,6 +436,7 @@ class ResourceGate:
             decision.displaced = displaced
             return decision
 
+        contributor.scope = self._current_scope
         holder.contributors.append(contributor)
         self._record_event(
             "coalesced",
@@ -316,58 +455,9 @@ class ResourceGate:
         *,
         awaits_operator: bool = False,
     ) -> GateDecision:
+        # The safety conflict and an uncertain holder were decided in
+        # _refuse_opposing, ahead of this.
         arriving_d = tier_rank(tier) >= tier_rank("D")
-
-        if holder.holds_tier_d and arriving_d:
-            # Nothing acts, so nothing is protected. Filing it as a routine
-            # refusal would let a device that protects nothing look like a
-            # device that made a decision.
-            self._record_event(
-                "safety_conflict",
-                resource=identity.resource_key,
-                holder=holder.identity.desired_outcome,
-                arriving=identity.desired_outcome,
-                contributor=contributor.trigger_name,
-            )
-            return GateDecision(
-                Admission.REFUSED,
-                UNRESOLVED_SAFETY_CONFLICT,
-                safety_conflict=True,
-            )
-
-        # Checked after the safety conflict above, deliberately. Both can be
-        # true at once, and a device with two opposing Tier D outcomes is
-        # unprotected whatever the in-flight command is doing; filing that as a
-        # routine uncertainty would lose the condition that must degrade safety
-        # status.
-        if holder.state == HolderState.UNCERTAIN:
-            # A timeout must not become two contradictory commands to one
-            # actuator, however long the uncertainty lasts.
-            self._record_event(
-                "refused",
-                resource=identity.resource_key,
-                reason=OPPOSING_COMMAND_UNCERTAIN,
-                contributor=contributor.trigger_name,
-            )
-            return GateDecision(Admission.REFUSED, OPPOSING_COMMAND_UNCERTAIN)
-
-        if holder.state == HolderState.HELD:
-            # The act completed inside this event and still forecloses lower
-            # authority on its resource. A strictly higher authority may still
-            # act — that is a new act, not a preemption, because there is
-            # nothing in flight to displace.
-            if tier_rank(tier) > tier_rank(holder.tier):
-                return self._admit(
-                    identity, tier, contributor, awaits_operator=awaits_operator
-                )
-            self._record_event(
-                "refused",
-                resource=identity.resource_key,
-                reason=FORECLOSED_BY_COMPLETED_ACT,
-                contributor=contributor.trigger_name,
-                holder=holder.identity.desired_outcome,
-            )
-            return GateDecision(Admission.REFUSED, FORECLOSED_BY_COMPLETED_ACT)
 
         if holder.state == HolderState.RUNNING:
             # Issuing opposite commands concurrently to one actuator is worse
@@ -475,19 +565,22 @@ class ResourceGate:
                 )
                 return False
             token.state = HolderState.RUNNING
+            token.entered = True
             return True
 
     async def mark_proposal(self, token: _Record, proposal_id: str) -> None:
         """The holder has asked an operator and is waiting."""
         async with self._lock:
+            token.asked = True
+            token.proposal_id = proposal_id
             if token.state in (HolderState.RESERVED,):
                 token.state = HolderState.PROPOSAL
-                token.proposal_id = proposal_id
 
     async def mark_running(self, token: _Record) -> None:
         """The holder's executor has been entered."""
         async with self._lock:
             token.state = HolderState.RUNNING
+            token.entered = True
 
     async def mark_uncertain(self, token: _Record) -> None:
         """The driver call did not return within its timeout.
@@ -498,6 +591,8 @@ class ResourceGate:
         """
         async with self._lock:
             token.state = HolderState.UNCERTAIN
+            token.entered = True
+            self._record_entries(token, ran=False)
             self._record_event(
                 "command_uncertain",
                 resource=token.identity.resource_key,
@@ -513,11 +608,8 @@ class ResourceGate:
                 return
             token.result = result
             token.done.set()
-            if token.scope and token.scope in self._scopes:
-                # The attempt is over; the foreclosure is not. It lasts until
-                # the event that licensed it is settled.
-                token.state = HolderState.HELD
-                return
+            # The attempt is over; its event's foreclosure is not.
+            self._record_entries(token, ran=result is True)
             token.state = HolderState.RETIRED
             if self._records.get(token.identity.resource_key) is token:
                 self._records.pop(token.identity.resource_key, None)
@@ -530,6 +622,8 @@ class ResourceGate:
             token.state = HolderState.RETIRED
             token.result = accepted
             token.done.set()
+            # Every open claimant, joiners since the uncertainty included, either way.
+            self._record_entries(token, ran=accepted)
             if self._records.get(token.identity.resource_key) is token:
                 self._records.pop(token.identity.resource_key, None)
             self._record_event(
@@ -537,6 +631,52 @@ class ResourceGate:
                 resource=token.identity.resource_key,
                 accepted=accepted,
             )
+
+    def _record_entries(self, token: _Record, *, ran: bool) -> None:
+        """Record *token*'s current account under every open event that claims it.
+
+        The admitting event and each event whose request joined the attempt
+        foreclose alike, each at its own highest claim. Called whenever the
+        attempt's account changes: it ends, it becomes uncertain, or the driver
+        reports, either way, so a request that joined while it was uncertain is
+        counted then; until then the uncertain record refuses every opposite
+        itself. An existing entry is
+        replaced, never mutated; a closed event gets nothing, so a late callback
+        cannot recreate its foreclosure.
+        """
+        for scope in self._claiming_scopes(token):
+            entries = self._scopes.get(scope)
+            if entries is None:
+                continue
+            new = self._entry_for(token, scope, ran=ran)
+            old = token.entries.get(scope)
+            if old is not None and old in entries:
+                entries[entries.index(old)] = new
+            else:
+                entries.append(new)
+            token.entries[scope] = new
+
+    @staticmethod
+    def _claiming_scopes(token: _Record) -> list[str]:
+        scopes = [token.scope, *(c.scope for c in token.contributors)]
+        return [s for s in dict.fromkeys(scopes) if s]
+
+    @staticmethod
+    def _entry_for(token: _Record, scope: str, *, ran: bool) -> _Entry:
+        # The highest authority this event put behind the act.
+        claims = [c for c in token.contributors if c.scope == scope]
+        tiers = [c.dispatch_tier for c in claims]
+        if token.scope == scope:
+            tiers.append(token.tier)
+        return _Entry(
+            identity=token.identity,
+            tier=max(tiers, key=tier_rank),
+            entered=token.entered,
+            ran=ran and token.entered,
+            holds_tier_d=any(c.tier_d_granted for c in claims),
+            asked=token.asked,
+            contributors=tuple(token.contributors),
+        )
 
     def state_of(self, resource_key: tuple[str, ...]) -> str:
         """The holder state for *resource_key*, or ``retired`` when unheld."""

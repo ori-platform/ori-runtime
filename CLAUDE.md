@@ -270,9 +270,10 @@ THE PLAN — each matched trigger's actions, each at its own authority
 TIER D FIRST — attempted across the whole discovery set
     Before any reasoning task is scheduled anywhere in it. Tier A notices still
     run, and an opposing act already running is not interrupted. What it does
-    foreclose lasts for the event, not just while its executor runs: the record
-    stays held after the act completes, so the same event's lower-authority
-    opposite is refused rather than admitted against an empty gate.
+    foreclose lasts for the event, not just while its executor runs: the event
+    keeps it after the act completes, so the same event's lower-authority
+    opposite is refused rather than admitted against an empty gate. A later
+    event's trip is never absorbed by it, and a failed act is never joined.
     │
     ▼
 LOCAL SLM — for what remains. Returns reasoning text. Confidence is

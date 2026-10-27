@@ -1542,6 +1542,48 @@ class ActionDispatcher:
                 action,
             )
 
+    async def _ask_operator(
+        self,
+        approval_alert: Any,
+        operator_contact: str,
+        has_comms: bool,
+        action: str,
+        gate_token: Any,
+        proposal_id: str,
+    ) -> tuple[AlertSendReceipt, bool]:
+        """Send the ask; return its receipt and whether a console listens.
+
+        Accepted for delivery, or a listening console, counts as asked at the gate.
+        """
+        channel = str(self._config.get("primary_alert_channel", "sms"))
+        receipt = AlertSendReceipt.refused(
+            channel=channel, error="approval_not_submitted"
+        )
+        if has_comms and self._alert_sender is not None and operator_contact:
+            try:
+                receipt = _coerce_alert_send_receipt(
+                    await self._alert_sender.send(
+                        alert=approval_alert, to_number=operator_contact
+                    ),
+                    fallback_channel=channel,
+                )
+            except Exception:
+                logger.exception(
+                    "ActionDispatcher: failed to send approval request for action=%r",
+                    action,
+                )
+                receipt = AlertSendReceipt.refused(
+                    channel=channel, error="sender_raised"
+                )
+        console = bool(not has_comms and self._local_console_enabled)
+        if (
+            gate_token is not None
+            and self._resource_gate is not None
+            and (console or receipt.accepted)
+        ):
+            await self._resource_gate.mark_proposal(gate_token, proposal_id)
+        return receipt, console
+
     def _retire_when_settled(self, token: Any, finished: Any) -> None:
         """Clear an uncertain command once its shielded executor finally reports."""
         if self._resource_gate is None:
@@ -2597,29 +2639,9 @@ class ActionDispatcher:
                 lifetime_s,
             ),
         )
-        approval_receipt = AlertSendReceipt.refused(
-            channel=str(self._config.get("primary_alert_channel", "sms")),
-            error="approval_not_submitted",
+        approval_receipt, local_console_mode = await self._ask_operator(
+            approval_alert, operator_contact, has_comms, action, gate_token, proposal_id
         )
-        if has_comms and self._alert_sender is not None and operator_contact:
-            try:
-                approval_receipt = _coerce_alert_send_receipt(
-                    await self._alert_sender.send(
-                        alert=approval_alert, to_number=operator_contact
-                    ),
-                    fallback_channel=str(
-                        self._config.get("primary_alert_channel", "sms")
-                    ),
-                )
-            except Exception:
-                logger.exception(
-                    "ActionDispatcher: failed to send approval request for %r", action
-                )
-                approval_receipt = AlertSendReceipt.refused(
-                    channel=str(self._config.get("primary_alert_channel", "sms")),
-                    error="sender_raised",
-                )
-        local_console_mode = bool(not has_comms and self._local_console_enabled)
 
         # 3. Listen, and admit.
         inbound: InboundApprovalResponse | None = None
@@ -3582,30 +3604,9 @@ class ActionDispatcher:
 
         # Send approval request (best-effort only when comms are available).
         operator_contact = self._config.get("operator_contact", "")
-        approval_receipt = AlertSendReceipt.refused(
-            channel=str(self._config.get("primary_alert_channel", "sms")),
-            error="approval_not_submitted",
+        approval_receipt, local_console_mode = await self._ask_operator(
+            approval_alert, operator_contact, has_comms, action, gate_token, proposal_id
         )
-        if has_comms and self._alert_sender is not None and operator_contact:
-            try:
-                approval_receipt = _coerce_alert_send_receipt(
-                    await self._alert_sender.send(
-                        alert=approval_alert,
-                        to_number=operator_contact,
-                    ),
-                    fallback_channel=str(
-                        self._config.get("primary_alert_channel", "sms")
-                    ),
-                )
-            except Exception:
-                logger.exception(
-                    "ActionDispatcher: failed to send approval request for action=%r",
-                    action,
-                )
-                approval_receipt = AlertSendReceipt.refused(
-                    channel=str(self._config.get("primary_alert_channel", "sms")),
-                    error="sender_raised",
-                )
         progress.approval_receipt = approval_receipt
 
         # Wait for response
@@ -3616,7 +3617,6 @@ class ActionDispatcher:
         # Why an unanswered approval ended, for every record and message that
         # reports it: only a window that ran out is a timeout.
         approval_end = ""
-        local_console_mode = bool(not has_comms and self._local_console_enabled)
         store = self._resolve_state_store(context)
         if local_console_mode:
             local_from_number = operator_contact or "local-operator"

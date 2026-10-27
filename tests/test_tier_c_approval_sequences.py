@@ -355,6 +355,9 @@ class Replay:
         class _Gate:
             """Admits every act; contention is the harness's to decide at dispatch."""
 
+            async def mark_proposal(self, _token: Any, _proposal_id: str) -> None:
+                return None
+
             async def request(
                 self, identity: Any, tier: str, contributor: Any, **_k: Any
             ) -> Any:

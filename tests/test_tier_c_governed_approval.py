@@ -714,6 +714,9 @@ class TestBindingAndBlocking:
         self, tmp_path: Any, caplog: Any
     ) -> None:
         class _Gate:
+            async def mark_proposal(self, _token: Any, _proposal_id: str) -> None:
+                return None
+
             async def request(self, *_a: Any, **_k: Any) -> Any:
                 raise AssertionError("not reached: no identity resolves here")
 
