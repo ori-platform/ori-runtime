@@ -202,6 +202,7 @@ class AlertOutboxStore(StoreCore):
             """
             UPDATE alert_outbox
                SET status = 'accepted',
+                   retry_seq = (SELECT COALESCE(MAX(retry_seq), 0) + 1 FROM alert_outbox),
                    accepted_channel = ?,
                    provider_message_id = ?,
                    provider_status = ?,
@@ -246,12 +247,28 @@ class AlertOutboxStore(StoreCore):
              WHERE status = 'accepted'
                AND delivered_at_ms IS NULL
                AND provider_message_id != ''
-             ORDER BY accepted_at_ms ASC, id ASC
+             ORDER BY retry_seq ASC, id ASC
              LIMIT ?
             """,
             (limit,),
         ).fetchall()
         return [dict(row) for row in rows]
+
+    async def requeue_alert_receipt_poll(self, alert_id: str) -> None:
+        """Move an accepted row awaiting its receipt behind every other one."""
+        await self._run_write(self._requeue_alert_receipt_poll_sync, alert_id)
+
+    def _requeue_alert_receipt_poll_sync(self, alert_id: str) -> None:
+        assert self._conn is not None
+        self._conn.execute(
+            """
+            UPDATE alert_outbox
+               SET retry_seq = (SELECT COALESCE(MAX(retry_seq), 0) + 1 FROM alert_outbox)
+             WHERE alert_id = ? AND status = 'accepted' AND delivered_at_ms IS NULL
+            """,
+            (alert_id,),
+        )
+        self._conn.commit()
 
     async def record_alert_delivery_status(
         self,
