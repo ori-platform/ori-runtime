@@ -284,17 +284,14 @@ class TestForeclosureOutlivesTheRecord:
 
 
 class TestEntriesLiveOnlyAsLongAsOpenEvents:
-    async def test_a_cancelled_close_still_clears_its_entries(self):
+    async def test_a_close_finishes_in_its_first_step(self):
+        """No suspension point, so a cancellation cannot land part-way through."""
         gate = ResourceGate()
         a = gate.open_scope("a")
         await _completed(gate, OPEN, "D", True)
-        closing = asyncio.ensure_future(gate.close_scope("a", a))
-        closing.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await closing
-        # A coroutine cancelled before its first step never ran; the
-        # coordinator awaits it directly, so model that path too.
-        await gate.close_scope("a")
+        closing = gate.close_scope("a", a)
+        with pytest.raises(StopIteration):
+            closing.send(None)
         assert gate.foreclosures(ZONE) == []
 
     async def test_a_cancelled_event_closes_its_scope(self):
