@@ -9,7 +9,7 @@ import json
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from ori.actions.alert_delivery import AlertSendReceipt, OutboundAlert
+from ori.actions.alert_delivery import AlertSendReceipt, NoticeKind, OutboundAlert
 from ori.config import Config
 from ori.reasoning.elevator import SkillContext
 from ori.utils.time_utils import now_ms
@@ -197,6 +197,32 @@ def resolve_trigger_name(ctx: SkillContext) -> str:
     return ""
 
 
+def resolve_notice_kind(ctx: SkillContext) -> str:
+    """``tier_d`` for a notice of a first-party skill's matched Tier D trigger.
+
+    Read from the exact trigger the dispatch names, never from the action's
+    declared tier, and never with the sensor-id fallback: a notice whose
+    trigger is absent, unmatched or community-owned is optional.
+    """
+    skill = getattr(ctx, "skill", None) if ctx else None
+    name = getattr(ctx, "trigger_name", "") if ctx else ""
+    if skill is None or getattr(skill, "first_party", False) is not True:
+        return NoticeKind.OPTIONAL.value
+    if not isinstance(name, str) or not name.strip():
+        return NoticeKind.OPTIONAL.value
+    for trigger in getattr(skill, "triggers", None) or ():
+        if isinstance(trigger, dict):
+            trigger_name, tier = trigger.get("name"), trigger.get("action_tier")
+        else:
+            trigger_name = getattr(trigger, "name", None)
+            tier = getattr(trigger, "action_tier", None)
+        if trigger_name == name.strip():
+            if str(tier or "").strip().upper() == "D":
+                return NoticeKind.TIER_D.value
+            return NoticeKind.OPTIONAL.value
+    return NoticeKind.OPTIONAL.value
+
+
 def resolve_original_ts(ctx: SkillContext) -> int:
     if ctx and ctx.event:
         try:
@@ -204,24 +230,6 @@ def resolve_original_ts(ctx: SkillContext) -> int:
         except Exception:
             pass  # an unreadable timestamp falls back to now
     return now_ms()
-
-
-def resolve_action_declared_tier(ctx: SkillContext, action_name: str) -> str:
-    """Resolve declared tier for an action from skill capability metadata."""
-    if ctx and hasattr(ctx, "skill") and hasattr(ctx.skill, "actions"):
-        available = None
-        if isinstance(ctx.skill.actions, dict):
-            available = ctx.skill.actions.get("available")
-        if isinstance(available, list):
-            for item in available:
-                if not isinstance(item, dict):
-                    continue
-                if str(item.get("name", "")) != action_name:
-                    continue
-                tier = str(item.get("tier", "")).upper().strip()
-                if tier in {"A", "B", "C", "D"}:
-                    return tier
-    return "A"
 
 
 def build_alert_id(

@@ -5,6 +5,21 @@ release is cut.
 
 ## Upgrade notes
 
+- The alert outbox gains a `notice_kind` column. A notice that must never be
+  dropped, a Tier D trigger's notice or a notice that a protection is absent,
+  failed or degraded, is now retried without limit rather than abandoned after
+  `max_non_tier_d_attempts`, and passes no customer preference or monthly cap.
+  Rows an earlier release wrote are classified when the store opens: Tier D
+  rows, and rows whose trigger name is one the runtime's protection notices
+  use, become mandatory, a skill trigger sharing one of those names included.
+  A Tier D trigger's notice queued by an earlier release cannot be recognised
+  from its row and stays optional. Rolling back keeps the store usable, but
+  the earlier release ignores the column and abandons these notices again.
+- `alert_whatsapp` and `alert_sms` now record Tier A whatever tier a skill
+  declares for them. A skill that declared one at Tier D previously had its
+  notices exempted from the monthly cap and from abandonment; that exemption
+  now belongs only to the notices of a first-party Tier D trigger.
+
 - Every `skill.yaml` value the loader reads, apart from the skill's own
   `config` values, now has one YAML type, checked before any is used:
   strings for names, conditions, tiers and policies, integers for

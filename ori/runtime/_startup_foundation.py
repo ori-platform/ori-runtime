@@ -41,7 +41,7 @@ from ori.reasoning.action_taken import NOT_PERFORMED
 from ori.reasoning.elevator import SkillContext
 from ori.runtime._alert_text import (
     message_from_context,
-    resolve_action_declared_tier,
+    resolve_notice_kind,
     resolve_original_ts,
     resolve_skill_identity,
     resolve_trigger_name,
@@ -606,7 +606,6 @@ class StartupFoundation(Commissioning, RemoteCommands):
         # alert_whatsapp executor
         async def _exec_alert_whatsapp(action: str, ctx: SkillContext) -> bool | str:
             msg = message_from_context(ctx, action, channel="whatsapp")
-            action_tier = resolve_action_declared_tier(ctx, action)
             trigger_name = resolve_trigger_name(ctx)
             skill_name, first_party = resolve_skill_identity(ctx)
             original_ts = resolve_original_ts(ctx)
@@ -616,11 +615,12 @@ class StartupFoundation(Commissioning, RemoteCommands):
                 skill_is_first_party=first_party,
                 message=msg,
                 recipient=context.operator_contact,
-                action_tier=action_tier,
+                action_tier="A",  # informational: a declared tier is not authority
                 trigger_name=trigger_name,
                 original_ts=original_ts,
                 received_at_ms=event_received_at_ms(ctx.event if ctx else None),
                 alert_sender=context.alert_sender,
+                notice_kind=resolve_notice_kind(ctx),
             )
 
         context.dispatcher.register_executor("alert_whatsapp", _exec_alert_whatsapp)
@@ -628,7 +628,6 @@ class StartupFoundation(Commissioning, RemoteCommands):
         # alert_sms executor
         async def _exec_alert_sms(action: str, ctx: SkillContext) -> bool | str:
             msg = message_from_context(ctx, action, channel="sms")
-            action_tier = resolve_action_declared_tier(ctx, action)
             trigger_name = resolve_trigger_name(ctx)
             skill_name, first_party = resolve_skill_identity(ctx)
             original_ts = resolve_original_ts(ctx)
@@ -638,11 +637,12 @@ class StartupFoundation(Commissioning, RemoteCommands):
                 skill_is_first_party=first_party,
                 message=msg,
                 recipient=context.operator_contact,
-                action_tier=action_tier,
+                action_tier="A",  # informational: a declared tier is not authority
                 trigger_name=trigger_name,
                 original_ts=original_ts,
                 received_at_ms=event_received_at_ms(ctx.event if ctx else None),
                 alert_sender=context.alert_sender,
+                notice_kind=resolve_notice_kind(ctx),
             )
 
         context.dispatcher.register_executor("alert_sms", _exec_alert_sms)

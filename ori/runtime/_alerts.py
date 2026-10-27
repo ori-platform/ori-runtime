@@ -12,8 +12,10 @@ from typing import Any, cast
 from ori.actions.alert_delivery import (
     AlertIntent,
     AlertSendReceipt,
+    NoticeKind,
     OutboundAlert,
     build_outbound_alert,
+    notice_is_mandatory,
 )
 from ori.actions.alert_failover import AlertFailoverSender
 from ori.config import Config
@@ -67,6 +69,7 @@ class AlertDelivery(RuntimeCore):
         outbound_alert: OutboundAlert | None = None,
         skill_name: str = "",
         skill_is_first_party: bool = False,
+        notice_kind: str = NoticeKind.OPTIONAL.value,
     ) -> bool | str:
         """Durably record an alert, then attempt provider acceptance.
 
@@ -78,32 +81,20 @@ class AlertDelivery(RuntimeCore):
         exists, False if neither holds, or `SUPPRESSED` when a customer
         preference withheld the notice. Suppression is deliberate non-action,
         not a failed attempt. Provider acceptance is not handset delivery.
+
+        *notice_kind* is the caller's, decided when the notice is created and
+        stored on the row: a mandatory notice passes no preference or cap and
+        is never abandoned.
         """
-        if not self._policy_permits_alert_class(
+        if await self._withheld_by_preference(
+            channel,
             skill_name,
+            skill_is_first_party,
             trigger_name,
-            action_tier=action_tier,
-            first_party=skill_is_first_party,
+            action_tier,
+            original_ts,
+            notice_kind,
         ):
-            logger.info(
-                "[runtime] %s alert suppressed by customer preference "
-                "skill=%s trigger=%s class=%s",
-                channel,
-                skill_name,
-                trigger_name,
-                alert_class_for_trigger(
-                    skill_name, trigger_name, first_party=skill_is_first_party
-                ),
-            )
-            await self._record_preference_disabled_alert(
-                channel=channel,
-                alert_class=alert_class_for_trigger(
-                    skill_name, trigger_name, first_party=skill_is_first_party
-                ),
-                trigger_name=trigger_name,
-                action_tier=action_tier,
-                original_ts=original_ts,
-            )
             return SUPPRESSED
 
         if not recipient:
@@ -119,6 +110,7 @@ class AlertDelivery(RuntimeCore):
         if not await self._policy_permits_external_alert(
             channel=channel,
             action_tier=action_tier,
+            notice_kind=notice_kind,
         ):
             logger.info(
                 "[runtime] %s alert suppressed by DevicePolicy monthly cap tier=%s trigger=%s",
@@ -164,6 +156,7 @@ class AlertDelivery(RuntimeCore):
                 action_tier=action_tier,
                 trigger_name=trigger_name,
                 original_ts=original_ts,
+                notice_kind=notice_kind,
             )
             if not inserted:
                 logger.debug(
@@ -237,7 +230,7 @@ class AlertDelivery(RuntimeCore):
                     delivered_at_ms=receipt.delivered_at_ms,
                 )
             await self._record_policy_counted_alert(
-                receipt.channel, action_tier=action_tier
+                receipt.channel, action_tier=action_tier, notice_kind=notice_kind
             )
             logger.info(
                 "[runtime] provider accepted alert id=%s channel=%s status=%s sid=%s",
@@ -249,7 +242,9 @@ class AlertDelivery(RuntimeCore):
             return True
 
         if inserted:
-            await self._record_policy_counted_alert(channel, action_tier=action_tier)
+            await self._record_policy_counted_alert(
+                channel, action_tier=action_tier, notice_kind=notice_kind
+            )
             logger.info(
                 "[runtime] queued refused %s alert id=%s tier=%s trigger=%s original_ts=%d",
                 channel,
@@ -326,6 +321,7 @@ class AlertDelivery(RuntimeCore):
                 action_tier="A",
                 trigger_name=trigger_name,
                 original_ts=alert_ts,
+                notice_kind=NoticeKind.PROTECTION_DEGRADED.value,
             )
             if not inserted:
                 return True
@@ -362,6 +358,45 @@ class AlertDelivery(RuntimeCore):
         logger.error("[safety] notice submission failed and StateStore is unavailable")
         return False
 
+    async def _withheld_by_preference(
+        self,
+        channel: str,
+        skill_name: str,
+        first_party: bool,
+        trigger_name: str,
+        action_tier: str,
+        original_ts: int,
+        notice_kind: str,
+    ) -> bool:
+        """Whether a customer preference withholds this notice; record it if so."""
+        if self._policy_permits_alert_class(
+            skill_name,
+            trigger_name,
+            action_tier=action_tier,
+            first_party=first_party,
+            notice_kind=notice_kind,
+        ):
+            return False
+        alert_class = alert_class_for_trigger(
+            skill_name, trigger_name, first_party=first_party
+        )
+        logger.info(
+            "[runtime] %s alert suppressed by customer preference "
+            "skill=%s trigger=%s class=%s",
+            channel,
+            skill_name,
+            trigger_name,
+            alert_class,
+        )
+        await self._record_preference_disabled_alert(
+            channel=channel,
+            alert_class=alert_class,
+            trigger_name=trigger_name,
+            action_tier=action_tier,
+            original_ts=original_ts,
+        )
+        return True
+
     def _policy_permits_alert_class(
         self,
         skill_name: str,
@@ -369,6 +404,7 @@ class AlertDelivery(RuntimeCore):
         *,
         action_tier: str = "A",
         first_party: bool = False,
+        notice_kind: str = NoticeKind.OPTIONAL.value,
     ) -> bool:
         """Whether a customer preference leaves this trigger's notice on.
 
@@ -376,7 +412,7 @@ class AlertDelivery(RuntimeCore):
         `_send_or_queue_safety_alert`, which does not call this and must not.
         No policy means no preference, so the notice stands.
         """
-        if str(action_tier).upper() == "D":
+        if notice_is_mandatory(notice_kind):
             return True
         alert_class = alert_class_for_trigger(
             skill_name, trigger_name, first_party=first_party
@@ -445,8 +481,9 @@ class AlertDelivery(RuntimeCore):
         *,
         channel: str,
         action_tier: str,
+        notice_kind: str = NoticeKind.OPTIONAL.value,
     ) -> bool:
-        if str(action_tier).upper() == "D":
+        if notice_is_mandatory(notice_kind):
             return True
         if self._dispatcher is None or self._state_store is None:
             return True
@@ -474,8 +511,9 @@ class AlertDelivery(RuntimeCore):
         channel: str,
         *,
         action_tier: str,
+        notice_kind: str = NoticeKind.OPTIONAL.value,
     ) -> None:
-        if str(action_tier).upper() == "D":
+        if notice_is_mandatory(notice_kind):
             return
         if self._state_store is None:
             return
@@ -593,9 +631,7 @@ class AlertDelivery(RuntimeCore):
             await self._reconcile_alert_delivery_receipts(alert_sender)
 
             try:
-                pending = await self._state_store.get_retryable_alerts(
-                    self._alert_outbox_batch_size
-                )
+                pending = await self._next_retry_batch(self._alert_outbox_batch_size)
             except Exception:
                 logger.exception("[runtime] alert outbox fetch failed")
                 continue
@@ -606,6 +642,7 @@ class AlertDelivery(RuntimeCore):
                     message = str(alert["message"])
                     recipient = str(alert["recipient"])
                     action_tier = str(alert["action_tier"]).upper()
+                    mandatory = notice_is_mandatory(alert.get("notice_kind"))
                     trigger_name = str(alert.get("trigger_name", "") or "")
                     attempt_count = int(alert.get("attempt_count", 0))
                     alert_id = str(alert["alert_id"])
@@ -708,25 +745,51 @@ class AlertDelivery(RuntimeCore):
                     attempts_after,
                 )
 
-                if action_tier == "D":
-                    if attempts_after >= self._alert_outbox_tier_d_critical_threshold:
-                        logger.critical(
-                            "[runtime] Tier D notification delivery still failing id=%s "
-                            "channel=%s attempts=%d (will keep retrying)",
-                            alert_id,
-                            channel,
-                            attempts_after,
-                        )
-                    continue
+                await self._settle_failed_retry(
+                    alert_id, channel, attempts_after, mandatory=mandatory
+                )
 
-                if attempts_after >= self._alert_outbox_max_non_tier_d_attempts:
-                    await self._state_store.mark_alert_abandoned(alert_id)
-                    logger.warning(
-                        "[runtime] abandoning queued alert id=%s channel=%s after %d attempts",
-                        alert_id,
-                        channel,
-                        attempts_after,
-                    )
+    async def _next_retry_batch(self, size: int) -> list[dict[str, Any]]:
+        """A batch from two lanes, mandatory and optional, each first in first out.
+
+        Each lane gets at least half the batch, rounded down, and an odd batch's
+        spare slot alternates between them, so neither lane's traffic can keep
+        the other's rows waiting for ever. Room one lane leaves goes to the
+        other.
+        """
+        assert self._state_store is not None
+        mandatory = await self._state_store.get_retryable_alerts(size, mandatory=True)
+        optional = await self._state_store.get_retryable_alerts(size, mandatory=False)
+        share = (size + int(self._mandatory_takes_spare_slot)) // 2
+        self._mandatory_takes_spare_slot = not self._mandatory_takes_spare_slot
+        take = min(len(mandatory), max(share, size - len(optional)))
+        return mandatory[:take] + optional[: size - take]
+
+    async def _settle_failed_retry(
+        self, alert_id: str, channel: str, attempts_after: int, *, mandatory: bool
+    ) -> None:
+        """Keep a mandatory notice queued, warning past the threshold; abandon an
+        optional one at its limit. The store abandons only an optional row."""
+        assert self._state_store is not None
+        if mandatory:
+            if attempts_after >= self._alert_outbox_tier_d_critical_threshold:
+                logger.critical(
+                    "[runtime] mandatory notification delivery still failing "
+                    "id=%s channel=%s attempts=%d (will keep retrying)",
+                    alert_id,
+                    channel,
+                    attempts_after,
+                )
+            return
+        if attempts_after < self._alert_outbox_max_non_tier_d_attempts:
+            return
+        if await self._state_store.mark_alert_abandoned(alert_id):
+            logger.warning(
+                "[runtime] abandoning queued alert id=%s channel=%s after %d attempts",
+                alert_id,
+                channel,
+                attempts_after,
+            )
 
     async def _reconcile_alert_delivery_receipts(
         self,
@@ -773,7 +836,7 @@ class AlertDelivery(RuntimeCore):
                     provider_message_id,
                 )
             elif receipt.terminal_failure:
-                action_tier = str(alert.get("action_tier", "A") or "A").upper()
+                mandatory = notice_is_mandatory(alert.get("notice_kind"))
                 attempts_after = int(alert.get("attempt_count", 0) or 0) + 1
                 logger.warning(
                     "[runtime] provider reported terminal delivery failure id=%s "
@@ -784,17 +847,19 @@ class AlertDelivery(RuntimeCore):
                     provider_message_id,
                     attempts_after,
                 )
-                if action_tier == "D":
+                if mandatory:
                     if attempts_after >= self._alert_outbox_tier_d_critical_threshold:
                         logger.critical(
-                            "[runtime] Tier D notification reached terminal provider "
-                            "failure id=%s channel=%s attempts=%d (will keep retrying)",
+                            "[runtime] mandatory notification reached terminal "
+                            "provider failure id=%s channel=%s attempts=%d "
+                            "(will keep retrying)",
                             alert_id,
                             channel,
                             attempts_after,
                         )
                 elif attempts_after >= self._alert_outbox_max_non_tier_d_attempts:
-                    await self._state_store.mark_alert_abandoned(alert_id)
+                    if not await self._state_store.mark_alert_abandoned(alert_id):
+                        continue
                     logger.warning(
                         "[runtime] abandoning alert id=%s channel=%s after %d "
                         "terminal provider failures",

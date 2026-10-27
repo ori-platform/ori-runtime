@@ -192,6 +192,8 @@ class RuntimeCore:
         )
         self._alert_outbox_retry_interval_s: float = ALERT_OUTBOX_RETRY_INTERVAL_S
         self._alert_outbox_batch_size: int = ALERT_OUTBOX_BATCH_SIZE
+        # Which retry lane takes an odd batch's spare slot next pass.
+        self._mandatory_takes_spare_slot: bool = True
         self._alert_outbox_max_non_tier_d_attempts: int = (
             ALERT_OUTBOX_MAX_ATTEMPTS_NON_TIER_D
         )

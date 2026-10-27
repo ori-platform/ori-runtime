@@ -760,6 +760,7 @@ class TestAlertOutbox:
             action_tier="A",
             trigger_name="high_draw",
             original_ts=1234,
+            notice_kind="optional",
         )
         assert inserted is True
 
@@ -778,6 +779,7 @@ class TestAlertOutbox:
             action_tier="A",
             trigger_name="high_draw",
             original_ts=1234,
+            notice_kind="optional",
         )
         second = await store.enqueue_alert(
             alert_id="dup-1",
@@ -787,6 +789,7 @@ class TestAlertOutbox:
             action_tier="A",
             trigger_name="high_draw",
             original_ts=1234,
+            notice_kind="optional",
         )
         assert first is True
         assert second is False
@@ -803,6 +806,7 @@ class TestAlertOutbox:
             action_tier="B",
             trigger_name="high_draw",
             original_ts=1234,
+            notice_kind="optional",
         )
 
         await store.mark_alert_attempt_failed("f1")
@@ -823,6 +827,7 @@ class TestAlertOutbox:
             action_tier="A",
             trigger_name="high_draw",
             original_ts=1234,
+            notice_kind="optional",
         )
 
         await store.mark_alert_accepted(
@@ -858,6 +863,7 @@ class TestAlertOutbox:
             action_tier="A",
             trigger_name="high_draw",
             original_ts=2000,
+            notice_kind="optional",
         )
         await store.enqueue_alert(
             alert_id="older",
@@ -867,6 +873,7 @@ class TestAlertOutbox:
             action_tier="B",
             trigger_name="high_draw",
             original_ts=1000,
+            notice_kind="optional",
         )
         await store.enqueue_alert(
             alert_id="delivered",
@@ -876,6 +883,7 @@ class TestAlertOutbox:
             action_tier="A",
             trigger_name="high_draw",
             original_ts=500,
+            notice_kind="optional",
         )
         await store.mark_alert_accepted(
             "delivered",
@@ -901,6 +909,7 @@ class TestAlertOutbox:
             action_tier="A",
             trigger_name="high_draw",
             original_ts=1234,
+            notice_kind="optional",
         )
 
         await store.mark_alert_abandoned("ab1")
@@ -918,6 +927,7 @@ class TestAlertOutbox:
             action_tier="A",
             trigger_name="high_draw",
             original_ts=1234,
+            notice_kind="optional",
         )
 
         rows = await store.get_retryable_alerts(limit=10)
@@ -938,6 +948,7 @@ class TestAlertOutbox:
             action_tier="A",
             trigger_name="high_draw",
             original_ts=1234,
+            notice_kind="optional",
         )
         await store.mark_alert_accepted(
             "receipt-1",
@@ -977,6 +988,7 @@ class TestAlertOutbox:
             action_tier="A",
             trigger_name="high_draw",
             original_ts=1234,
+            notice_kind="optional",
         )
         await store.mark_alert_accepted(
             "receipt-failed",
@@ -1007,6 +1019,7 @@ class TestAlertOutbox:
             action_tier="A",
             trigger_name="high_draw",
             original_ts=1234,
+            notice_kind="optional",
         )
         await store.mark_alert_accepted(
             "sms-receipt-1",

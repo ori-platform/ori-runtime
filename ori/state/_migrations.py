@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Optional
 
 from ori.state._action_records import _action_record_members
+from ori.state._outbox_migrations import migrate_alert_outbox
 from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger("ori.state.store")
@@ -390,6 +391,7 @@ CREATE TABLE IF NOT EXISTS alert_outbox (
     trigger_name    TEXT    NOT NULL DEFAULT '',
     original_ts     INTEGER NOT NULL,   -- the event's producer time, kept raw
     queued_at_ms    INTEGER NOT NULL DEFAULT 0,  -- the store's clock at enqueue; 0 only before migration
+    notice_kind     TEXT,   -- optional|tier_d|protection_degraded; NULL only from an earlier release
     attempt_count   INTEGER NOT NULL DEFAULT 0,
     last_attempt_ts INTEGER,
     status          TEXT    NOT NULL DEFAULT 'pending', -- queue: pending|failed|accepted|abandoned
@@ -1066,9 +1068,6 @@ _HISTORY_RECEIPT_COLUMNS: dict[str, str] = {
 _LEGACY_HISTORY_INDEXES: tuple[str, ...] = ("idx_sensor_history_sensor_id_ts",)
 
 
-_LEGACY_OUTBOX_INDEXES: tuple[str, ...] = ("idx_alert_outbox_status_tier_ts",)
-
-
 def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
 
@@ -1224,7 +1223,7 @@ class StoreMigrations:
             conn, "approver_registry", "device_id", "TEXT"
         )
         self._add_history_producer_time(conn)
-        self._migrate_alert_outbox_receipt(conn)
+        migrate_alert_outbox(conn)
         self._key_firmware_fault_events_by_epoch(conn)
         # Add columns that may be missing from databases created before this
         # migration.  SQLite does not support ALTER TABLE ADD COLUMN IF NOT EXISTS
@@ -1899,20 +1898,6 @@ class StoreMigrations:
             sum(counts.values()),
             counts,
         )
-
-    def _migrate_alert_outbox_receipt(self, conn: sqlite3.Connection) -> None:
-        """Queue order is arrival; rows from before the column get the migration moment."""
-        if "queued_at_ms" not in _table_columns(conn, "alert_outbox"):
-            self._add_column_if_missing_on_conn(
-                conn, "alert_outbox", "queued_at_ms", "INTEGER NOT NULL DEFAULT 0"
-            )
-        conn.execute(
-            "UPDATE alert_outbox SET queued_at_ms = ? WHERE queued_at_ms <= 0",
-            (now_ms(),),
-        )
-        for name in _LEGACY_OUTBOX_INDEXES:
-            conn.execute(f"DROP INDEX IF EXISTS {name}")
-        conn.commit()
 
     def _add_action_record_kind(self, conn: sqlite3.Connection) -> None:
         """record_kind on an action log, held on every open, not only the first.

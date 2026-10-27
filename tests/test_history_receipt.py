@@ -356,6 +356,7 @@ async def _enqueue(store: StateStore, alert_id: str, original_ts: int) -> None:
         action_tier="A",
         trigger_name="t",
         original_ts=original_ts,
+        notice_kind="optional",
     )
 
 
@@ -743,6 +744,7 @@ async def test_a_legacy_outbox_row_is_resent_with_the_queue_receipt_in_its_slot(
             trigger_name="anomalous_draw",
             original_ts=FAR_FUTURE,
             template_variables=(),
+            notice_kind="optional",
         )
         runtime = _runtime_with_policy(None)
         runtime._state_store = store

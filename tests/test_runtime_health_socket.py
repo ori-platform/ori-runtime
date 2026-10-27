@@ -485,6 +485,7 @@ async def test_health_snapshot_includes_alert_outbox_backlog(tmp_path):
             action_tier="A",
             trigger_name="high_draw",
             original_ts=original_ts,
+            notice_kind="optional",
         )
 
         snapshot = await runtime._build_health_snapshot()

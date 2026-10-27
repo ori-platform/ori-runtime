@@ -27,6 +27,7 @@ class AlertOutboxStore(StoreCore):
         action_tier: str,
         trigger_name: str,
         original_ts: int,
+        notice_kind: str,
     ) -> bool:
         """Insert an outbound alert row into alert_outbox.
 
@@ -45,6 +46,7 @@ class AlertOutboxStore(StoreCore):
             action_tier,
             trigger_name,
             original_ts,
+            notice_kind,
         )
 
     def _enqueue_alert_sync(
@@ -58,6 +60,7 @@ class AlertOutboxStore(StoreCore):
         action_tier: str,
         trigger_name: str,
         original_ts: int,
+        notice_kind: str,
     ) -> bool:
         assert self._conn is not None
         cur = self._conn.execute(
@@ -65,8 +68,9 @@ class AlertOutboxStore(StoreCore):
             INSERT INTO alert_outbox
                 (alert_id, channel, recipient, message, intent,
                  template_variables_json, action_tier, trigger_name, original_ts,
-                 queued_at_ms, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                 queued_at_ms, notice_kind, retry_seq, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    (SELECT COALESCE(MAX(retry_seq), 0) + 1 FROM alert_outbox), 'pending')
             ON CONFLICT(alert_id) DO NOTHING
             """,
             (
@@ -80,31 +84,43 @@ class AlertOutboxStore(StoreCore):
                 trigger_name,
                 original_ts,
                 now_ms(),
+                notice_kind,
             ),
         )
         self._conn.commit()
         return int(cur.rowcount) > 0
 
-    async def get_retryable_alerts(self, limit: int = 50) -> list[dict]:
-        """Fetch pending/failed outbox alerts in oldest-first order."""
-        return await self._run_read(self._get_retryable_alerts_sync, limit)
+    async def get_retryable_alerts(
+        self, limit: int = 50, *, mandatory: bool | None = None
+    ) -> list[dict]:
+        """Fetch pending/failed outbox alerts in queue order, first in first out.
+
+        A row takes the next ``retry_seq`` when it is queued and again when an
+        attempt fails, so a failed row goes behind every row queued before then
+        and none can be overtaken for ever. The order reads no clock. With
+        *mandatory*, only mandatory (``True``) or optional (``False``) rows.
+        """
+        return await self._run_read(self._get_retryable_alerts_sync, limit, mandatory)
 
     def _get_retryable_alerts_sync(
         self,
         conn: sqlite3.Connection,
         limit: int,
+        mandatory: bool | None,
     ) -> list[dict]:
         rows = conn.execute(
             """
             SELECT alert_id, channel, recipient, message, intent,
                    template_variables_json, action_tier, trigger_name,
-                   original_ts, queued_at_ms, attempt_count, last_attempt_ts, status
+                   original_ts, queued_at_ms, attempt_count, last_attempt_ts, status,
+                   notice_kind
             FROM alert_outbox
             WHERE status IN ('pending', 'failed')
-            ORDER BY id ASC
+              AND (? IS NULL OR (COALESCE(notice_kind, '') != 'optional') = ?)
+            ORDER BY retry_seq ASC, id ASC
             LIMIT ?
             """,
-            (limit,),
+            (mandatory, mandatory, limit),
         ).fetchall()
         result = []
         for row in rows:
@@ -224,7 +240,8 @@ class AlertOutboxStore(StoreCore):
         rows = conn.execute(
             """
             SELECT alert_id, accepted_channel, provider_message_id,
-                   provider_status, accepted_at_ms, action_tier, attempt_count
+                   provider_status, accepted_at_ms, action_tier, attempt_count,
+                   notice_kind
               FROM alert_outbox
              WHERE status = 'accepted'
                AND delivered_at_ms IS NULL
@@ -327,7 +344,8 @@ class AlertOutboxStore(StoreCore):
                    SET status = 'failed',
                        provider_status = ?,
                        last_status_at_ms = ?,
-                       attempt_count = attempt_count + 1
+                       attempt_count = attempt_count + 1,
+                       retry_seq = (SELECT COALESCE(MAX(retry_seq), 0) + 1 FROM alert_outbox)
                  WHERE alert_id = ? AND status = 'accepted'
                 """,
                 (provider_status, observed_at_ms, alert_id),
@@ -361,7 +379,8 @@ class AlertOutboxStore(StoreCore):
             UPDATE alert_outbox
             SET attempt_count = attempt_count + 1,
                 last_attempt_ts = ?,
-                status = 'failed'
+                status = 'failed',
+                retry_seq = (SELECT COALESCE(MAX(retry_seq), 0) + 1 FROM alert_outbox)
             WHERE alert_id = ?
             """,
             (failed_ts_ms, alert_id),
@@ -370,22 +389,28 @@ class AlertOutboxStore(StoreCore):
 
     async def mark_alert_abandoned(
         self, alert_id: str, abandoned_ts_ms: int | None = None
-    ) -> None:
-        await self._run_write(
+    ) -> bool:
+        """Abandon an optional notice; return whether a row was abandoned.
+
+        Only ``notice_kind = 'optional'`` is ever abandoned, whoever asks, so a
+        mandatory or unrecognised notice stays queued.
+        """
+        return await self._run_write(
             self._mark_alert_abandoned_sync,
             alert_id,
             abandoned_ts_ms if abandoned_ts_ms is not None else now_ms(),
         )
 
-    def _mark_alert_abandoned_sync(self, alert_id: str, abandoned_ts_ms: int) -> None:
+    def _mark_alert_abandoned_sync(self, alert_id: str, abandoned_ts_ms: int) -> bool:
         assert self._conn is not None
-        self._conn.execute(
+        cur = self._conn.execute(
             """
             UPDATE alert_outbox
             SET status = 'abandoned',
                 last_attempt_ts = ?
-            WHERE alert_id = ?
+            WHERE alert_id = ? AND notice_kind = 'optional'
             """,
             (abandoned_ts_ms, alert_id),
         )
         self._conn.commit()
+        return int(cur.rowcount) > 0
