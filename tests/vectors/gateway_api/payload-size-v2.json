@@ -1502,6 +1502,182 @@
       "sha256": "210260f892464ec0a18ff601a02de4c0973605cf3192a67015f3969991842af7",
       "verdict": "configuration_refused",
       "note": "configuration never lowers a maximum below the floor"
+    },
+    {
+      "name": "runtime_alert-delivery_at_maximum",
+      "topic": "ori/{device_id}/runtime/alert-delivery",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 4096,
+      "sha256": "0b6125b2d6cfd84082a56048bb75f4225659a01beefdd5c63ba29132be016dc7",
+      "verdict": "admitted",
+      "note": "exactly the maximum"
+    },
+    {
+      "name": "runtime_alert-delivery_one_over",
+      "topic": "ori/{device_id}/runtime/alert-delivery",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 4097,
+      "sha256": "9c880206dd9d4e944ab748ae0f0271c071b11aa5cdc115b50e5b82f7ae3a2206",
+      "verdict": "payload_too_large",
+      "note": "one byte over the maximum"
+    },
+    {
+      "name": "runtime_alert-delivery_four_times",
+      "topic": "ori/{device_id}/runtime/alert-delivery",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 16384,
+      "sha256": "2bc32546c535d7c6e1ef528b3139c41cdf1fa7c95ee08115853abc8f044f43f9",
+      "verdict": "payload_too_large",
+      "note": "refused without reading past the length"
+    },
+    {
+      "name": "runtime_alert-delivery_invalid_utf8_one_over",
+      "topic": "ori/{device_id}/runtime/alert-delivery",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": null,
+      "construction": "invalid_utf8",
+      "length": 4097,
+      "sha256": "ea9c097317ba6d33927a94480040f58d128b94831dfb1873a31bf50b305acab1",
+      "verdict": "payload_too_large",
+      "note": "size is decided before the Payload Member Rule's invalid_unicode"
+    },
+    {
+      "name": "runtime_alert-delivery_configured_half_at",
+      "topic": "ori/{device_id}/runtime/alert-delivery",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": 2048,
+      "construction": "json_object",
+      "length": 2048,
+      "sha256": "fe294e0be6072459448ab2a59bd73c1a9eb591bb7423337742b4ded00b90d85c",
+      "verdict": "configuration_refused",
+      "note": "half this topic's maximum is below the floor"
+    },
+    {
+      "name": "runtime_alert-delivery_configured_half_over",
+      "topic": "ori/{device_id}/runtime/alert-delivery",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": 2048,
+      "construction": "json_object",
+      "length": 2049,
+      "sha256": "660496e1d6f42efe1caeb42c60ae993b8b1f38c84255551984f248dcfdf63287",
+      "verdict": "configuration_refused",
+      "note": "half this topic's maximum is below the floor"
+    },
+    {
+      "name": "runtime_alert-delivery_configured_above_table",
+      "topic": "ori/{device_id}/runtime/alert-delivery",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": 4097,
+      "construction": "json_object",
+      "length": 4096,
+      "sha256": "0b6125b2d6cfd84082a56048bb75f4225659a01beefdd5c63ba29132be016dc7",
+      "verdict": "configuration_refused",
+      "note": "configuration may lower a maximum, never raise it"
+    },
+    {
+      "name": "runtime_alert-delivery_configured_below_floor",
+      "topic": "ori/{device_id}/runtime/alert-delivery",
+      "direction": "runtime_to_gateway",
+      "configured_maximum": 4095,
+      "construction": "json_object",
+      "length": 4095,
+      "sha256": "210260f892464ec0a18ff601a02de4c0973605cf3192a67015f3969991842af7",
+      "verdict": "configuration_refused",
+      "note": "configuration never lowers a maximum below the floor"
+    },
+    {
+      "name": "runtime_alert-delivery_ack_at_maximum",
+      "topic": "ori/{device_id}/runtime/alert-delivery/ack",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 4096,
+      "sha256": "0b6125b2d6cfd84082a56048bb75f4225659a01beefdd5c63ba29132be016dc7",
+      "verdict": "admitted",
+      "note": "exactly the maximum"
+    },
+    {
+      "name": "runtime_alert-delivery_ack_one_over",
+      "topic": "ori/{device_id}/runtime/alert-delivery/ack",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 4097,
+      "sha256": "9c880206dd9d4e944ab748ae0f0271c071b11aa5cdc115b50e5b82f7ae3a2206",
+      "verdict": "payload_too_large",
+      "note": "one byte over the maximum"
+    },
+    {
+      "name": "runtime_alert-delivery_ack_four_times",
+      "topic": "ori/{device_id}/runtime/alert-delivery/ack",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": null,
+      "construction": "json_object",
+      "length": 16384,
+      "sha256": "2bc32546c535d7c6e1ef528b3139c41cdf1fa7c95ee08115853abc8f044f43f9",
+      "verdict": "payload_too_large",
+      "note": "refused without reading past the length"
+    },
+    {
+      "name": "runtime_alert-delivery_ack_invalid_utf8_one_over",
+      "topic": "ori/{device_id}/runtime/alert-delivery/ack",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": null,
+      "construction": "invalid_utf8",
+      "length": 4097,
+      "sha256": "ea9c097317ba6d33927a94480040f58d128b94831dfb1873a31bf50b305acab1",
+      "verdict": "payload_too_large",
+      "note": "size is decided before the Payload Member Rule's invalid_unicode"
+    },
+    {
+      "name": "runtime_alert-delivery_ack_configured_half_at",
+      "topic": "ori/{device_id}/runtime/alert-delivery/ack",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": 2048,
+      "construction": "json_object",
+      "length": 2048,
+      "sha256": "fe294e0be6072459448ab2a59bd73c1a9eb591bb7423337742b4ded00b90d85c",
+      "verdict": "configuration_refused",
+      "note": "half this topic's maximum is below the floor"
+    },
+    {
+      "name": "runtime_alert-delivery_ack_configured_half_over",
+      "topic": "ori/{device_id}/runtime/alert-delivery/ack",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": 2048,
+      "construction": "json_object",
+      "length": 2049,
+      "sha256": "660496e1d6f42efe1caeb42c60ae993b8b1f38c84255551984f248dcfdf63287",
+      "verdict": "configuration_refused",
+      "note": "half this topic's maximum is below the floor"
+    },
+    {
+      "name": "runtime_alert-delivery_ack_configured_above_table",
+      "topic": "ori/{device_id}/runtime/alert-delivery/ack",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": 4097,
+      "construction": "json_object",
+      "length": 4096,
+      "sha256": "0b6125b2d6cfd84082a56048bb75f4225659a01beefdd5c63ba29132be016dc7",
+      "verdict": "configuration_refused",
+      "note": "configuration may lower a maximum, never raise it"
+    },
+    {
+      "name": "runtime_alert-delivery_ack_configured_below_floor",
+      "topic": "ori/{device_id}/runtime/alert-delivery/ack",
+      "direction": "gateway_to_runtime",
+      "configured_maximum": 4095,
+      "construction": "json_object",
+      "length": 4095,
+      "sha256": "210260f892464ec0a18ff601a02de4c0973605cf3192a67015f3969991842af7",
+      "verdict": "configuration_refused",
+      "note": "configuration never lowers a maximum below the floor"
     }
   ],
   "paging": [
@@ -1832,6 +2008,14 @@
       "configured_maximum": 4096,
       "length": 538,
       "sha256": "53fc1009809af2799515934a58145d701bb8a1a8c86ceae0d5a10c441142e0d4",
+      "verdict": "admitted"
+    },
+    {
+      "name": "alert_delivery_ack",
+      "topic": "ori/{device_id}/runtime/alert-delivery/ack",
+      "configured_maximum": 4096,
+      "length": 478,
+      "sha256": "284a1899ab3160b7e679b017357cd25fa2ee556cc78fd34ba4243ff3f171acce",
       "verdict": "admitted"
     }
   ]

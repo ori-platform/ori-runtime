@@ -25,6 +25,8 @@ logger = logging.getLogger(__name__)
 GATEWAY_HEALTH = "ori/gateway/health"
 RUNTIME_HEARTBEAT = "ori/{device_id}/runtime/heartbeat"
 RUNTIME_POSTURE = "ori/{device_id}/runtime/posture"
+ALERT_DELIVERY = "ori/{device_id}/runtime/alert-delivery"
+ALERT_DELIVERY_ACK = "ori/{device_id}/runtime/alert-delivery/ack"
 REASONING_REQUEST = "ori/{device_id}/reasoning/request"
 REASONING_RESPONSE = "ori/{device_id}/reasoning/response"
 ENRICHMENT_REQUEST = "ori/{device_id}/tier_c/enrichment/request"
@@ -45,6 +47,8 @@ PAYLOAD_MAXIMA: dict[str, int] = {
     GATEWAY_HEALTH: 16384,
     RUNTIME_HEARTBEAT: 65536,
     RUNTIME_POSTURE: 4096,
+    ALERT_DELIVERY: 4096,
+    ALERT_DELIVERY_ACK: 4096,
     REASONING_REQUEST: 262144,
     REASONING_RESPONSE: 262144,
     ENRICHMENT_REQUEST: 262144,

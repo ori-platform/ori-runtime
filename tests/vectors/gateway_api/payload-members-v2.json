@@ -355,6 +355,50 @@
       "text",
       "tokens_used"
     ],
+    "ori/{device_id}/runtime/alert-delivery": [
+      "alert_id",
+      "attempt_seq",
+      "attempted_at_ms",
+      "auth",
+      "channel",
+      "ciphertext",
+      "class",
+      "count",
+      "delivery_attempt_id",
+      "detail",
+      "device_id",
+      "encrypted",
+      "encryption",
+      "issued_at_ms",
+      "key_identity",
+      "kind",
+      "month",
+      "nonce",
+      "notice",
+      "observation_seq",
+      "outcome",
+      "prior_outcome",
+      "reason",
+      "scheme",
+      "signature",
+      "signed_at_ms",
+      "v"
+    ],
+    "ori/{device_id}/runtime/alert-delivery/ack": [
+      "acknowledged_at_ms",
+      "auth",
+      "ciphertext",
+      "device_id",
+      "encrypted",
+      "encryption",
+      "nonce",
+      "outcome",
+      "reason",
+      "record_digest",
+      "scheme",
+      "signature",
+      "signed_at_ms"
+    ],
     "ori/{device_id}/runtime/heartbeat": [
       "action_event_type",
       "active_triggers",
@@ -2017,26 +2061,74 @@
       "expected": "not_an_object"
     },
     {
+      "name": "clean_alert_delivery_record",
+      "description": "The alert-delivery record of its section's example.",
+      "payload_hex": "7b22616c6572745f6964223a2271334a78306253366c5662386e543261587739653167222c22617474656d70745f736571223a34312c22617474656d707465645f61745f6d73223a313738373030303030303530302c226368616e6e656c223a22736d73222c22636c617373223a22677269645f706f7765725f726573746f726564222c2264656c69766572795f617474656d70745f6964223a225a7434516d38794b326352377650316e4c3073573561222c2264657461696c223a6e756c6c2c226465766963655f6964223a22736974652d612d656467652d3031222c226973737565645f61745f6d73223a313738373030303030313030302c226b65795f6964656e74697479223a227368613235363a3030222c226b696e64223a227375626d697373696f6e222c226e6f74696365223a226f7074696f6e616c222c226f62736572766174696f6e5f736571223a312c226f7574636f6d65223a226163636570746564222c227072696f725f6f7574636f6d65223a6e756c6c2c227369676e6174757265223a223030222c2276223a317d",
+      "payload_text": null,
+      "family": "ori/{device_id}/runtime/alert-delivery",
+      "expected": "accept"
+    },
+    {
+      "name": "alert_delivery_record_notice_variant",
+      "description": "Notice in an alert-delivery record, whose example names notice.",
+      "payload_hex": "7b22616c6572745f6964223a2271334a78306253366c5662386e543261587739653167222c22617474656d70745f736571223a34312c22617474656d707465645f61745f6d73223a313738373030303030303530302c226368616e6e656c223a22736d73222c22636c617373223a22677269645f706f7765725f726573746f726564222c2264656c69766572795f617474656d70745f6964223a225a7434516d38794b326352377650316e4c3073573561222c2264657461696c223a6e756c6c2c226465766963655f6964223a22736974652d612d656467652d3031222c226973737565645f61745f6d73223a313738373030303030313030302c226b65795f6964656e74697479223a227368613235363a3030222c226b696e64223a227375626d697373696f6e222c226e6f74696365223a226f7074696f6e616c222c226f62736572766174696f6e5f736571223a312c226f7574636f6d65223a226163636570746564222c227072696f725f6f7574636f6d65223a6e756c6c2c227369676e6174757265223a223030222c2276223a312c224e6f74696365223a226d616e6461746f7279227d",
+      "payload_text": null,
+      "family": "ori/{device_id}/runtime/alert-delivery",
+      "expected": "case_variant_member"
+    },
+    {
+      "name": "clean_alert_delivery_tally",
+      "description": "The withholding tally of its section's example.",
+      "payload_hex": "7b226368616e6e656c223a227768617473617070222c22636c617373223a22756e757375616c5f636f6e73756d7074696f6e5f7370696b65222c22636f756e74223a332c226465766963655f6964223a22736974652d612d656467652d3031222c226973737565645f61745f6d73223a313738373030303030323030302c226b65795f6964656e74697479223a227368613235363a3030222c226b696e64223a227769746868656c645f74616c6c79222c226d6f6e7468223a22323032362d3130222c22726561736f6e223a2264697361626c6564222c227369676e6174757265223a223030222c2276223a317d",
+      "payload_text": "{\"channel\":\"whatsapp\",\"class\":\"unusual_consumption_spike\",\"count\":3,\"device_id\":\"site-a-edge-01\",\"issued_at_ms\":1787000002000,\"key_identity\":\"sha256:00\",\"kind\":\"withheld_tally\",\"month\":\"2026-10\",\"reason\":\"disabled\",\"signature\":\"00\",\"v\":1}",
+      "family": "ori/{device_id}/runtime/alert-delivery",
+      "expected": "accept"
+    },
+    {
+      "name": "alert_delivery_tally_count_variant",
+      "description": "Count in a withholding tally, whose example names count.",
+      "payload_hex": "7b226368616e6e656c223a227768617473617070222c22636c617373223a22756e757375616c5f636f6e73756d7074696f6e5f7370696b65222c22436f756e74223a332c226465766963655f6964223a22736974652d612d656467652d3031222c226973737565645f61745f6d73223a313738373030303030323030302c226b65795f6964656e74697479223a227368613235363a3030222c226b696e64223a227769746868656c645f74616c6c79222c226d6f6e7468223a22323032362d3130222c22726561736f6e223a2264697361626c6564222c227369676e6174757265223a223030222c2276223a317d",
+      "payload_text": "{\"channel\":\"whatsapp\",\"class\":\"unusual_consumption_spike\",\"Count\":3,\"device_id\":\"site-a-edge-01\",\"issued_at_ms\":1787000002000,\"key_identity\":\"sha256:00\",\"kind\":\"withheld_tally\",\"month\":\"2026-10\",\"reason\":\"disabled\",\"signature\":\"00\",\"v\":1}",
+      "family": "ori/{device_id}/runtime/alert-delivery",
+      "expected": "case_variant_member"
+    },
+    {
+      "name": "clean_alert_delivery_ack",
+      "description": "The custody acknowledgement of its section's example.",
+      "payload_hex": "7b2261636b6e6f776c65646765645f61745f6d73223a313738373030303030313030302c2261757468223a7b22736368656d65223a22686d61632d736861323536222c227369676e6174757265223a22686d61632d7368613235363a3030222c227369676e65645f61745f6d73223a313738373030303030313030307d2c226465766963655f6964223a22736974652d612d656467652d3031222c226f7574636f6d65223a22717565756564222c22726561736f6e223a22222c227265636f72645f646967657374223a227368613235363a3030227d",
+      "payload_text": "{\"acknowledged_at_ms\":1787000001000,\"auth\":{\"scheme\":\"hmac-sha256\",\"signature\":\"hmac-sha256:00\",\"signed_at_ms\":1787000001000},\"device_id\":\"site-a-edge-01\",\"outcome\":\"queued\",\"reason\":\"\",\"record_digest\":\"sha256:00\"}",
+      "family": "ori/{device_id}/runtime/alert-delivery/ack",
+      "expected": "accept"
+    },
+    {
+      "name": "alert_delivery_ack_digest_variant",
+      "description": "Record_Digest in a custody acknowledgement, whose example names record_digest.",
+      "payload_hex": "7b226465766963655f6964223a22736974652d612d656467652d3031222c226f7574636f6d65223a22717565756564222c225265636f72645f446967657374223a227368613235363a3030227d",
+      "payload_text": "{\"device_id\":\"site-a-edge-01\",\"outcome\":\"queued\",\"Record_Digest\":\"sha256:00\"}",
+      "family": "ori/{device_id}/runtime/alert-delivery/ack",
+      "expected": "case_variant_member"
+    },
+    {
       "name": "envelope_variant_00",
-      "description": "AUTH on ori/gateway/health.",
-      "payload_hex": "7b2241555448223a7b22736368656d65223a22686d61632d736861323536222c227369676e65645f61745f6d73223a302c227369676e6174757265223a22686d61632d7368613235363a3030227d7d",
-      "payload_text": "{\"AUTH\":{\"scheme\":\"hmac-sha256\",\"signed_at_ms\":0,\"signature\":\"hmac-sha256:00\"}}",
+      "description": "ENCRYPTED on ori/gateway/health.",
+      "payload_hex": "7b22454e43525950544544223a747275657d",
+      "payload_text": "{\"ENCRYPTED\":true}",
       "family": "ori/gateway/health",
       "expected": "case_variant_member"
     },
     {
       "name": "envelope_variant_01",
-      "description": "Auth on ori/{device_id}/evidence/inbound.",
-      "payload_hex": "7b2241757468223a7b22736368656d65223a22686d61632d736861323536222c227369676e65645f61745f6d73223a302c227369676e6174757265223a22686d61632d7368613235363a3030227d7d",
-      "payload_text": "{\"Auth\":{\"scheme\":\"hmac-sha256\",\"signed_at_ms\":0,\"signature\":\"hmac-sha256:00\"}}",
+      "description": "Encrypted on ori/{device_id}/evidence/inbound.",
+      "payload_hex": "7b22456e63727970746564223a747275657d",
+      "payload_text": "{\"Encrypted\":true}",
       "family": "ori/{device_id}/evidence/inbound",
       "expected": "case_variant_member"
     },
     {
       "name": "envelope_variant_02",
-      "description": "AUTH on ori/{device_id}/evidence/inbound/ack.",
-      "payload_hex": "7b2241555448223a7b22736368656d65223a22686d61632d736861323536222c227369676e65645f61745f6d73223a302c227369676e6174757265223a22686d61632d7368613235363a3030227d7d",
-      "payload_text": "{\"AUTH\":{\"scheme\":\"hmac-sha256\",\"signed_at_ms\":0,\"signature\":\"hmac-sha256:00\"}}",
+      "description": "ENCRYPTED on ori/{device_id}/evidence/inbound/ack.",
+      "payload_hex": "7b22454e43525950544544223a747275657d",
+      "payload_text": "{\"ENCRYPTED\":true}",
       "family": "ori/{device_id}/evidence/inbound/ack",
       "expected": "case_variant_member"
     },
@@ -2050,9 +2142,9 @@
     },
     {
       "name": "envelope_variant_04",
-      "description": "AUTH on ori/{device_id}/evidence/outbound/ack.",
-      "payload_hex": "7b2241555448223a7b22736368656d65223a22686d61632d736861323536222c227369676e65645f61745f6d73223a302c227369676e6174757265223a22686d61632d7368613235363a3030227d7d",
-      "payload_text": "{\"AUTH\":{\"scheme\":\"hmac-sha256\",\"signed_at_ms\":0,\"signature\":\"hmac-sha256:00\"}}",
+      "description": "ENCRYPTED on ori/{device_id}/evidence/outbound/ack.",
+      "payload_hex": "7b22454e43525950544544223a747275657d",
+      "payload_text": "{\"ENCRYPTED\":true}",
       "family": "ori/{device_id}/evidence/outbound/ack",
       "expected": "case_variant_member"
     },
@@ -2074,33 +2166,33 @@
     },
     {
       "name": "envelope_variant_07",
-      "description": "Auth on ori/{device_id}/lan/disclosure/request.",
-      "payload_hex": "7b2241757468223a7b22736368656d65223a22686d61632d736861323536222c227369676e65645f61745f6d73223a302c227369676e6174757265223a22686d61632d7368613235363a3030227d7d",
-      "payload_text": "{\"Auth\":{\"scheme\":\"hmac-sha256\",\"signed_at_ms\":0,\"signature\":\"hmac-sha256:00\"}}",
+      "description": "Encrypted on ori/{device_id}/lan/disclosure/request.",
+      "payload_hex": "7b22456e63727970746564223a747275657d",
+      "payload_text": "{\"Encrypted\":true}",
       "family": "ori/{device_id}/lan/disclosure/request",
       "expected": "case_variant_member"
     },
     {
       "name": "envelope_variant_08",
-      "description": "AUTH on ori/{device_id}/lan/disclosure/response/{request_id}.",
-      "payload_hex": "7b2241555448223a7b22736368656d65223a22686d61632d736861323536222c227369676e65645f61745f6d73223a302c227369676e6174757265223a22686d61632d7368613235363a3030227d7d",
-      "payload_text": "{\"AUTH\":{\"scheme\":\"hmac-sha256\",\"signed_at_ms\":0,\"signature\":\"hmac-sha256:00\"}}",
+      "description": "ENCRYPTED on ori/{device_id}/lan/disclosure/response/{request_id}.",
+      "payload_hex": "7b22454e43525950544544223a747275657d",
+      "payload_text": "{\"ENCRYPTED\":true}",
       "family": "ori/{device_id}/lan/disclosure/response/{request_id}",
       "expected": "case_variant_member"
     },
     {
       "name": "envelope_variant_09",
-      "description": "Auth on ori/{device_id}/lan/proposal.",
-      "payload_hex": "7b2241757468223a7b22736368656d65223a22686d61632d736861323536222c227369676e65645f61745f6d73223a302c227369676e6174757265223a22686d61632d7368613235363a3030227d7d",
-      "payload_text": "{\"Auth\":{\"scheme\":\"hmac-sha256\",\"signed_at_ms\":0,\"signature\":\"hmac-sha256:00\"}}",
+      "description": "Encrypted on ori/{device_id}/lan/proposal.",
+      "payload_hex": "7b22456e63727970746564223a747275657d",
+      "payload_text": "{\"Encrypted\":true}",
       "family": "ori/{device_id}/lan/proposal",
       "expected": "case_variant_member"
     },
     {
       "name": "envelope_variant_10",
-      "description": "AUTH on ori/{device_id}/lan/reply.",
-      "payload_hex": "7b2241555448223a7b22736368656d65223a22686d61632d736861323536222c227369676e65645f61745f6d73223a302c227369676e6174757265223a22686d61632d7368613235363a3030227d7d",
-      "payload_text": "{\"AUTH\":{\"scheme\":\"hmac-sha256\",\"signed_at_ms\":0,\"signature\":\"hmac-sha256:00\"}}",
+      "description": "ENCRYPTED on ori/{device_id}/lan/reply.",
+      "payload_hex": "7b22454e43525950544544223a747275657d",
+      "payload_text": "{\"ENCRYPTED\":true}",
       "family": "ori/{device_id}/lan/reply",
       "expected": "case_variant_member"
     },
@@ -2122,14 +2214,30 @@
     },
     {
       "name": "envelope_variant_13",
-      "description": "Auth on ori/{device_id}/runtime/heartbeat.",
+      "description": "Auth on ori/{device_id}/runtime/alert-delivery.",
       "payload_hex": "7b2241757468223a7b22736368656d65223a22686d61632d736861323536222c227369676e65645f61745f6d73223a302c227369676e6174757265223a22686d61632d7368613235363a3030227d7d",
       "payload_text": "{\"Auth\":{\"scheme\":\"hmac-sha256\",\"signed_at_ms\":0,\"signature\":\"hmac-sha256:00\"}}",
-      "family": "ori/{device_id}/runtime/heartbeat",
+      "family": "ori/{device_id}/runtime/alert-delivery",
       "expected": "case_variant_member"
     },
     {
       "name": "envelope_variant_14",
+      "description": "ENCRYPTED on ori/{device_id}/runtime/alert-delivery/ack.",
+      "payload_hex": "7b22454e43525950544544223a747275657d",
+      "payload_text": "{\"ENCRYPTED\":true}",
+      "family": "ori/{device_id}/runtime/alert-delivery/ack",
+      "expected": "case_variant_member"
+    },
+    {
+      "name": "envelope_variant_15",
+      "description": "Encrypted on ori/{device_id}/runtime/heartbeat.",
+      "payload_hex": "7b22456e63727970746564223a747275657d",
+      "payload_text": "{\"Encrypted\":true}",
+      "family": "ori/{device_id}/runtime/heartbeat",
+      "expected": "case_variant_member"
+    },
+    {
+      "name": "envelope_variant_16",
       "description": "AUTH on ori/{device_id}/runtime/posture.",
       "payload_hex": "7b2241555448223a7b22736368656d65223a22686d61632d736861323536222c227369676e65645f61745f6d73223a302c227369676e6174757265223a22686d61632d7368613235363a3030227d7d",
       "payload_text": "{\"AUTH\":{\"scheme\":\"hmac-sha256\",\"signed_at_ms\":0,\"signature\":\"hmac-sha256:00\"}}",
@@ -2137,7 +2245,7 @@
       "expected": "case_variant_member"
     },
     {
-      "name": "envelope_variant_15",
+      "name": "envelope_variant_17",
       "description": "Auth on ori/{device_id}/tier_c/enrichment/request.",
       "payload_hex": "7b2241757468223a7b22736368656d65223a22686d61632d736861323536222c227369676e65645f61745f6d73223a302c227369676e6174757265223a22686d61632d7368613235363a3030227d7d",
       "payload_text": "{\"Auth\":{\"scheme\":\"hmac-sha256\",\"signed_at_ms\":0,\"signature\":\"hmac-sha256:00\"}}",
@@ -2145,7 +2253,7 @@
       "expected": "case_variant_member"
     },
     {
-      "name": "envelope_variant_16",
+      "name": "envelope_variant_18",
       "description": "AUTH on ori/{device_id}/tier_c/enrichment/response.",
       "payload_hex": "7b2241555448223a7b22736368656d65223a22686d61632d736861323536222c227369676e65645f61745f6d73223a302c227369676e6174757265223a22686d61632d7368613235363a3030227d7d",
       "payload_text": "{\"AUTH\":{\"scheme\":\"hmac-sha256\",\"signed_at_ms\":0,\"signature\":\"hmac-sha256:00\"}}",

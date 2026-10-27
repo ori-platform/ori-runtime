@@ -44,6 +44,7 @@ from ori.gateway.node_heartbeat import (
 )
 from ori.gateway.payload_bounds import (
     ACTIVE_TRIGGERS_MAX,
+    ALERT_DELIVERY_ACK,
     ENRICHMENT_RESPONSE,
     EVIDENCE_INBOUND,
     EVIDENCE_OUTBOUND_ACK,
@@ -144,7 +145,12 @@ def test_every_case_is_the_bytes_its_construction_gives():
 
 
 #: Gateway-to-runtime families with no runtime subscriber, so nothing to bound.
-_NOT_SUBSCRIBED = {ENRICHMENT_RESPONSE, LAN_REPLY, LAN_DISCLOSURE_REQUEST}
+_NOT_SUBSCRIBED = {
+    ALERT_DELIVERY_ACK,
+    ENRICHMENT_RESPONSE,
+    LAN_REPLY,
+    LAN_DISCLOSURE_REQUEST,
+}
 
 
 @pytest.mark.parametrize(
