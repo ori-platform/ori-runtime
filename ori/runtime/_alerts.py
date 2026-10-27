@@ -817,6 +817,12 @@ class AlertDelivery(RuntimeCore):
                 channel=channel,
                 provider_message_id=provider_message_id,
             )
+            if receipt is None or (
+                receipt.delivered_at_ms is None and not receipt.terminal_failure
+            ):
+                # Nothing settled: behind every other awaiting row, so rows the
+                # provider never reports on cannot hold the batch.
+                await self._state_store.requeue_alert_receipt_poll(alert_id)
             if receipt is None:
                 continue
             await self._state_store.record_alert_delivery_status(
