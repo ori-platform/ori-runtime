@@ -19,6 +19,7 @@ import pytest
 
 from ori.hal.base import AdapterReadError, CircuitState
 from tests.test_cached_sensor_freshness import (
+    _COAP_CONTENT,
     ALL_CACHED,
     CLEAR,
     HAZARD,
@@ -58,12 +59,7 @@ async def _refuse(source: Any) -> None:
         with pytest.raises(AdapterReadError):
             await source.adapter._poll_once()
     elif isinstance(source, _CoapSource):
-        import asyncio
-        from types import SimpleNamespace
-
-        future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
-        future.set_result(SimpleNamespace(payload=json.dumps({"metrics": {}}).encode()))
-        source.futures.append(future)
+        source._answer(_COAP_CONTENT, json.dumps({"metrics": {}}).encode())
         with pytest.raises(AdapterReadError):
             await source.adapter._poll_once()
     else:  # pragma: no cover
@@ -163,16 +159,9 @@ async def test_a_failing_endpoint_still_opens_the_breaker(
 async def test_a_coap_value_that_overflows_withdraws_the_cached_value(
     clock: _Clock,
 ) -> None:
-    import asyncio
-    from types import SimpleNamespace
-
     async with _running(_CoapSource) as source:
         await source.send(12.0)
-        future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
-        future.set_result(
-            SimpleNamespace(payload=b'{"metrics":{"current":1' + b"0" * 400 + b"}}")
-        )
-        source.futures.append(future)
+        source._answer(_COAP_CONTENT, b'{"metrics":{"current":1' + b"0" * 400 + b"}}")
         with pytest.raises(AdapterReadError):
             await source.adapter._poll_once()
         with pytest.raises(AdapterReadError, match="refused"):

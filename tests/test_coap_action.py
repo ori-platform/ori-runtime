@@ -26,8 +26,26 @@ def _config() -> dict:
     }
 
 
+class _Code(int):
+    """An int that prints as aiocoap's `Code` does, such as "2.04 Changed"."""
+
+    _text: str
+
+    def __new__(cls, value: int, text: str) -> "_Code":
+        code = super().__new__(cls, value)
+        code._text = text
+        return code
+
+    def __str__(self) -> str:
+        return self._text
+
+
+CHANGED = _Code(68, "2.04 Changed")
+UNAUTHORIZED = _Code(129, "4.01 Unauthorized")
+
+
 class _FakeResponse:
-    def __init__(self, code: str):
+    def __init__(self, code: object):
         self.code = code
 
 
@@ -76,7 +94,7 @@ class TestCoAPAction:
     async def test_successful_command(self):
         action = CoAPAction(_config())
         fake_context = _FakeContext(asyncio.Future())
-        fake_context._response.set_result(_FakeResponse("2.04 Changed"))
+        fake_context._response.set_result(_FakeResponse(CHANGED))
         fake_aiocoap = SimpleNamespace(
             POST="POST",
             GET="GET",
@@ -111,10 +129,24 @@ class TestCoAPAction:
         assert await action.execute_command("open_bypass_valve") is False
 
     @pytest.mark.asyncio
-    async def test_non_success_response_returns_false(self):
+    @pytest.mark.parametrize(
+        "code",
+        [
+            pytest.param(_Code(0x00, "0.00 EMPTY"), id="0.00"),
+            pytest.param(_Code(0x20, "1.00 (unknown)"), id="1.00"),
+            pytest.param(UNAUTHORIZED, id="4.01"),
+            pytest.param(_Code(163, "5.03 Service Unavailable"), id="5.03"),
+            pytest.param(_Code(255, "7.31 (unknown)"), id="unregistered-class"),
+            # Read as the adapter reads it: a text code, even one that
+            # prints as a success, is not one.
+            pytest.param("2.04 Changed", id="text"),
+            pytest.param(None, id="no-code"),
+        ],
+    )
+    async def test_non_success_response_returns_false(self, code):
         action = CoAPAction(_config())
         fake_context = _FakeContext(asyncio.Future())
-        fake_context._response.set_result(_FakeResponse("4.01 Unauthorized"))
+        fake_context._response.set_result(_FakeResponse(code))
         fake_aiocoap = SimpleNamespace(
             POST="POST",
             GET="GET",
