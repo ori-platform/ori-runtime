@@ -255,7 +255,7 @@ async def test_a_safety_notice_that_consulted_a_preference_would_raise() -> None
     sent: list[dict] = []
 
     class _Sender:
-        async def send(self, *, alert, to_number, preferred_channel):
+        async def send(self, *, alert, to_number, preferred_channel, may_use=None):
             sent.append(
                 {
                     "message": alert.sms_body,

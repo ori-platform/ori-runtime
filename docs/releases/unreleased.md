@@ -5,6 +5,19 @@ release is cut.
 
 ## Upgrade notes
 
+- The DevicePolicy monthly external-alert cap now counts observed provider
+  acceptances, on the first submission or on a retry, and never a refusal, so
+  a provider outage no longer uses up a month's budget. The cap is checked
+  before every optional provider call, so failover no longer carries an
+  optional notice onto a channel whose cap is spent. A queued optional notice
+  with no channel under its cap now waits for budget instead of using retry
+  attempts, so it can be delivered late, in a later month. The cap is a budget
+  limit, not an exact billing guarantee: concurrent sends can exceed it, and a
+  lost provider response undercounts. Tier C approval traffic and the
+  emergency SMS for a failed Tier D action stay outside the cap. An optional notice the cap withholds is
+  now tallied, as one withheld by a customer preference already was, and both
+  tallies take their month from the runtime's clock.
+
 - The alert outbox gains a `notice_kind` column. A notice that must never be
   dropped, a Tier D trigger's notice or a notice that a protection is absent,
   failed or degraded, is now retried without limit rather than abandoned after

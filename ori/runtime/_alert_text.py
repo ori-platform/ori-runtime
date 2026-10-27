@@ -278,15 +278,20 @@ def coerce_alert_send_receipt(
     return AlertSendReceipt.refused(channel=fallback_channel, error="sender_refused")
 
 
-def preference_disabled_key(
-    channel: str, alert_class: str | None, timestamp_ms: int
+def withheld_tally_key(
+    reason: str, channel: str, alert_class: str | None, timestamp_ms: int
 ) -> str:
+    """The tally of optional notices withheld for *reason* on one channel, class and month.
+
+    *reason* is ``disabled`` (a customer preference) or ``capped`` (a spent
+    monthly cap).
+    """
     month = dt.datetime.fromtimestamp(
         max(0, int(timestamp_ms)) / 1000,
         tz=dt.UTC,
     ).strftime("%Y-%m")
     normalized = str(channel or "").strip().lower() or "unknown"
-    return f"disabled:{normalized}:{alert_class or 'unclassified'}:{month}"
+    return f"{reason}:{normalized}:{alert_class or 'unclassified'}:{month}"
 
 
 def alert_policy_count_key(channel: str, timestamp_ms: int) -> str:

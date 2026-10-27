@@ -1996,7 +1996,13 @@ def _install_leaves(
                         getattr(getattr(alert, "intent", None), "value", None),
                         getattr(alert, "sms_body", None),
                         getattr(alert, "template_variables", None),
-                        sorted((k, v) for k, v in named.items() if k != "alert"),
+                        # A budget check is a fresh closure per send; compare
+                        # that one was passed, not its address.
+                        sorted(
+                            (k, "<callable>" if callable(v) else v)
+                            for k, v in named.items()
+                            if k != "alert"
+                        ),
                     ]
                 )
             )

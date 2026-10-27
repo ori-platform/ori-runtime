@@ -28,6 +28,10 @@ from ori.reasoning.capability_posture import CapabilityPosture
 
 logger = logging.getLogger(__name__)
 
+#: The refusal `send` returns when `may_use` allowed no channel: nothing was
+#: submitted anywhere, so it is not a delivery failure.
+CAP_SPENT = "cap_spent"
+
 
 class AlertFailoverSender:
     """Wraps SMS and WhatsApp senders with primary/secondary failover."""
@@ -113,9 +117,21 @@ class AlertFailoverSender:
         to_number: str,
         *,
         preferred_channel: str | None = None,
+        may_use: Callable[[str], Awaitable[bool]] | None = None,
     ) -> AlertSendReceipt:
-        """Submit via the preferred transport; fail over on refusal."""
+        """Submit via the preferred transport; fail over on refusal.
+
+        *may_use*, when given, is asked before each provider call whether that
+        channel may carry the alert; a channel it refuses is skipped. When it
+        refuses every channel, nothing is submitted and the refusal is
+        :data:`CAP_SPENT`.
+        """
+        tried = blocked = False
         for channel_name, sender in self._ordered_senders(preferred_channel):
+            if may_use is not None and not await may_use(channel_name):
+                blocked = True
+                continue
+            tried = True
             channel_contact = self._normalize_for_channel(channel_name, to_number)
             try:
                 receipt = cast(
@@ -134,7 +150,7 @@ class AlertFailoverSender:
                 return receipt
         return AlertSendReceipt.refused(
             channel=str(preferred_channel or self._primary_channel),
-            error="all_channels_refused",
+            error=CAP_SPENT if blocked and not tried else "all_channels_refused",
         )
 
     async def send_exact(

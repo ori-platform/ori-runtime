@@ -77,7 +77,7 @@ EXEMPT: dict[tuple[str, str], tuple[int, str]] = {
         1,
         "the runtime's own outbound message, checked before it leaves",
     ),
-    ("runtime/_alerts.py", "AlertDelivery._record_preference_disabled_alert"): (
+    ("runtime/_alerts.py", "AlertDelivery._record_withheld_alert"): (
         1,
         _OWN_ROWS,
     ),
