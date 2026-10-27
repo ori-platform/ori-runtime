@@ -22,6 +22,7 @@ from ori.hal.base import (
 )
 from ori.hal.producer_paths import READ_CLOCK, producer_time_for
 from ori.network.events import SensorReading
+from ori.utils.coap_codes import response_code_error
 from ori.utils.path_utils import shown
 from ori.utils.time_utils import now_ms
 
@@ -269,8 +270,17 @@ class CoapAdapter(BaseAdapter):
                     f"CoapAdapter: request failed for uri={self._uri}: {exc}"
                 ) from exc
 
-            # The endpoint answered: a payload that cannot be read is refused,
-            # and withdraws the value it would have replaced.
+            # An error response is a failed poll whatever its payload, as an
+            # HTTP 4xx or 5xx is: the last value is kept within the silence
+            # bound, and the breaker counts it.
+            error = response_code_error(getattr(response, "code", None))
+            if error is not None:
+                raise AdapterReadError(
+                    f"CoapAdapter: uri={self._uri} answered with {error}"
+                )
+
+            # The endpoint answered with a success: a payload that cannot be
+            # read is refused, and withdraws the value it would have replaced.
             try:
                 value = self._extract(
                     self._decode_payload(response.payload), self._json_path

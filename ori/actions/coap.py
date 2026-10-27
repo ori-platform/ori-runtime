@@ -10,6 +10,7 @@ import json
 import logging
 from urllib.parse import urlparse
 
+from ori.utils.coap_codes import response_code_error
 from ori.utils.path_utils import shown
 
 logger = logging.getLogger(__name__)
@@ -161,13 +162,14 @@ class CoAPAction:
                 context.request(request).response,
                 timeout=self._timeout_s,
             )
-            response_code = str(response.code)
-            if response_code.startswith("2."):
+            # Decided as the sensor adapter decides it: only a 2.xx succeeds.
+            error = response_code_error(getattr(response, "code", None))
+            if error is None:
                 return True
             logger.warning(
-                "CoAPAction: non-success response for uri=%s code=%s",
+                "CoAPAction: non-success response for uri=%s: %s",
                 shown(uri),
-                response_code,
+                error,
             )
             return False
         except asyncio.TimeoutError:
