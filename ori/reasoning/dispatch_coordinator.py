@@ -241,9 +241,13 @@ class DispatchCoordinator:
             self._charge_cooldowns(plans)
         finally:
             try:
-                if scheduled:
-                    await asyncio.gather(*scheduled, return_exceptions=True)
-                await self._gate.close_scope(scope, scope_token)
+                try:
+                    if scheduled:
+                        await asyncio.gather(*scheduled, return_exceptions=True)
+                finally:
+                    # A cancellation landing in the gather must not leave the
+                    # event's foreclosure open for good.
+                    await self._gate.close_scope(scope, scope_token)
             finally:
                 # Each plan releases itself when it is charged. This only
                 # catches one that never reached its charge, so no path leaves

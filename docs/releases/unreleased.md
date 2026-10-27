@@ -578,6 +578,14 @@ release is cut.
   every MQTT-family adapter, HTTP and CoAP, a payload refused for a sensor
   withdraws that sensor's cached value, so reads refuse and name the refusal
   until an accepted payload arrives.
+- A CoAP sensor reads only a 2.xx response. An error response, or one whose
+  code cannot be read, is a failed poll whatever its payload, as an HTTP 4xx
+  or 5xx is: the circuit breaker counts it and the last value is kept within
+  the silence bound. Before, the response code was not checked, so an error
+  response with a text or empty payload withdrew the cached value, and one
+  whose JSON payload carried the configured path was read as a reading.
+  The CoAP action executor decides success with the same check, so the two
+  cannot drift apart (#791).
 - A sensor source that has not yet published, or whose last payload was
   refused, no longer counts against the circuit breaker, and a fresh value
   closes an open breaker, so a Tier D source that starts late is observed

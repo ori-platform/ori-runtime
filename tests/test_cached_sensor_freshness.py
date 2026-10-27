@@ -143,10 +143,13 @@ class _MqttSource:
 
 
 class _HttpResponse:
-    def __init__(self, payload: Any) -> None:
+    def __init__(self, payload: Any, *, status: Exception | None = None) -> None:
         self._payload = payload
+        self._status = status
 
     def raise_for_status(self) -> None:
+        if self._status is not None:
+            raise self._status
         if isinstance(self._payload, Exception):
             raise self._payload
 
@@ -215,6 +218,12 @@ class _HttpSource:
         with pytest.raises(AdapterReadError):
             await self.adapter._poll_once()
 
+    async def error_carrying(self, value: float) -> None:
+        body = {"main": {"current": value, "quality": 1.0}}
+        self.responses.append(_HttpResponse(body, status=RuntimeError("503")))
+        with pytest.raises(AdapterReadError):
+            await self.adapter._poll_once()
+
     async def reconnect(self) -> None:
         await self.adapter.close()
         await self.adapter.connect(self.config)
@@ -223,6 +232,11 @@ class _HttpSource:
         with contextlib.suppress(Exception):
             await self.adapter.close()
         self._stack.close()
+
+
+_COAP_CONTENT = 69  # 2.05
+_COAP_NOT_FOUND = 132  # 4.04
+_COAP_SERVICE_UNAVAILABLE = 163  # 5.03
 
 
 class _CoapSource:
@@ -284,17 +298,24 @@ class _CoapSource:
         body: dict[str, Any] = {"metrics": {"current": value, "quality": quality}}
         if ts is not None:
             body["timestamp_ms"] = ts
-        future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
-        future.set_result(SimpleNamespace(payload=json.dumps(body).encode()))
-        self.futures.append(future)
+        self._answer(_COAP_CONTENT, json.dumps(body).encode())
         await self.adapter._poll_once()
 
     async def fail(self) -> None:
-        future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
-        future.set_exception(RuntimeError("4.04 not found"))
-        self.futures.append(future)
+        self._answer(_COAP_NOT_FOUND, b"")
         with pytest.raises(AdapterReadError):
             await self.adapter._poll_once()
+
+    async def error_carrying(self, value: float) -> None:
+        body = {"metrics": {"current": value, "quality": 1.0}}
+        self._answer(_COAP_SERVICE_UNAVAILABLE, json.dumps(body).encode())
+        with pytest.raises(AdapterReadError):
+            await self.adapter._poll_once()
+
+    def _answer(self, code: int, payload: bytes) -> None:
+        future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+        future.set_result(SimpleNamespace(code=code, payload=payload))
+        self.futures.append(future)
 
     async def reconnect(self) -> None:
         await self.adapter.close()
@@ -379,6 +400,10 @@ UNBOUNDED = [
 ]
 ALL_CACHED = [
     *MQTT_FAMILY,
+    pytest.param(_HttpSource, id="http"),
+    pytest.param(_CoapSource, id="coap"),
+]
+POLLED = [
     pytest.param(_HttpSource, id="http"),
     pytest.param(_CoapSource, id="coap"),
 ]
@@ -497,6 +522,24 @@ async def test_a_reconnect_does_not_refresh_an_old_value(
         clock.advance_ms(BOUND_MS + 1)
         await source.reconnect()
         with pytest.raises(AdapterReadError):
+            await source.adapter.read(SENSOR)
+
+
+@pytest.mark.parametrize("factory", POLLED)
+async def test_an_error_response_keeps_the_last_value_within_the_bound(
+    factory: Callable[[], Any], clock: _Clock
+) -> None:
+    """HTTP and CoAP agree: an error response is a failed poll.
+
+    The error carries the configured path with another value, which neither
+    poller may read, and the last value is still served until the bound.
+    """
+    async with _running(factory) as source:
+        await source.send(12.0)
+        await source.error_carrying(99.0)
+        assert _value(await source.adapter.read(SENSOR)) == pytest.approx(12.0)
+        clock.advance_ms(BOUND_MS + 1)
+        with pytest.raises(AdapterReadError, match="past the silence bound"):
             await source.adapter.read(SENSOR)
 
 
