@@ -16,6 +16,7 @@ import shutil
 import sys
 import textwrap
 import time
+import types
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -4931,11 +4932,12 @@ class TestAlertOutbox:
                 channel="sms",
                 message="tier d alert",
                 recipient="+2340000000000",
-                action_tier="D",
+                action_tier="A",
                 trigger_name="dangerous_overcurrent",
                 original_ts=1234567890,
                 received_at_ms=1234567890,
                 alert_sender=alert_sender,
+                notice_kind="tier_d",
             )
             assert delivered is True
             alert_sender.send.assert_awaited_once()
@@ -5964,6 +5966,7 @@ class TestRemoteDevicePolicy:
             action_tier="A",
             trigger_name="high_draw",
             original_ts=1234,
+            notice_kind="optional",
         )
 
         async def _send_and_stop(
@@ -6003,6 +6006,7 @@ class TestRemoteDevicePolicy:
             action_tier="A",
             trigger_name="high_draw",
             original_ts=1234,
+            notice_kind="optional",
         )
         await runtime._state_store.mark_alert_accepted(
             "receipt-1",
@@ -6053,6 +6057,7 @@ class TestRemoteDevicePolicy:
             action_tier="A",
             trigger_name="high_draw",
             original_ts=1234,
+            notice_kind="optional",
         )
         await runtime._state_store.mark_alert_accepted(
             "terminal-1",
@@ -6101,6 +6106,7 @@ class TestRemoteDevicePolicy:
             action_tier="D",
             trigger_name="critical",
             original_ts=1234,
+            notice_kind="tier_d",
         )
         await runtime._state_store.mark_alert_attempt_failed("tierd-1")
         await runtime._state_store.mark_alert_attempt_failed("tierd-1")
@@ -6137,6 +6143,7 @@ class TestRemoteDevicePolicy:
             action_tier="A",
             trigger_name="high_draw",
             original_ts=1234,
+            notice_kind="optional",
         )
         for _ in range(9):
             await runtime._state_store.mark_alert_attempt_failed("aband-1")
@@ -6424,3 +6431,59 @@ class TestEvidencePostureNeverGatesStartup:
         assert observed["health"]["evidence"]["posture_problems"] == expected
         assert (observed["health"].get("status") == "degraded") is bool(expected)
         assert observed["health"].get("critical", False) is False
+
+
+class TestTheAlertExecutorsGrantNoAuthority:
+    """The registered `alert_sms`/`alert_whatsapp` executors record Tier A and
+    take a mandatory kind only from a first-party skill's matched Tier D
+    trigger, never from the tier a skill declares for the action."""
+
+    @pytest.mark.parametrize("action", ["alert_sms", "alert_whatsapp"])
+    async def test_a_declared_tier_d_is_not_authority(
+        self, minimal_config, monkeypatch, action
+    ):
+        _patch_external(monkeypatch)
+        _treat_scratch_skills_as_packaged(monkeypatch)
+        runtime = OriRuntime(config_path=str(minimal_config))
+        captured: list[dict[str, Any]] = []
+
+        async def capture(**kwargs: Any) -> bool:
+            captured.append(kwargs)
+            return True
+
+        def ctx(first_party: bool, trigger: str, tier: str) -> Any:
+            skill = types.SimpleNamespace(
+                name="lookalike",
+                first_party=first_party,
+                triggers=[{"name": trigger, "action_tier": tier}],
+                actions={"available": [{"name": action, "tier": "D"}]},
+                config={},
+                prompts={},
+            )
+            return types.SimpleNamespace(skill=skill, trigger_name=trigger, event=None)
+
+        async def observe_then_stop() -> None:
+            # The dispatcher is published before its alert executors register.
+            await wait_until(
+                lambda: (
+                    runtime._dispatcher is not None
+                    and action in runtime._dispatcher._executors
+                ),
+                what=f"the {action} executor",
+            )
+            assert runtime._dispatcher is not None
+            monkeypatch.setattr(runtime, "_send_or_queue_alert", capture)
+            executor = runtime._dispatcher._executors[action]
+            await executor(action, ctx(False, "spam", "A"))
+            await executor(action, ctx(False, "spam", "D"))
+            await executor(action, ctx(True, "dangerous_overcurrent", "D"))
+            await runtime.stop()
+
+        await asyncio.gather(runtime.start(), observe_then_stop())
+
+        assert [c["action_tier"] for c in captured] == ["A", "A", "A"]
+        assert [c["notice_kind"] for c in captured] == [
+            "optional",
+            "optional",
+            "tier_d",
+        ]

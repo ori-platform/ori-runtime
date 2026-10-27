@@ -473,6 +473,7 @@ def test_the_safety_path_names_no_preference_symbol_in_its_body() -> None:
     """A source check kept alongside the behavioural one, not instead of it."""
     source = inspect.getsource(OriRuntime._send_or_queue_safety_alert)
     assert "_policy_permits_alert_class" not in source
+    assert "_withheld_by_preference" not in source
     assert "alert_class_for_trigger" not in source
     assert "_policy_permits_external_alert" not in source
 
@@ -495,6 +496,7 @@ def test_the_safety_path_reaches_no_policy_gate_through_any_call_it_makes() -> N
     assert target is not None, "the safety path was renamed; update this guard"
 
     forbidden = {
+        "_withheld_by_preference",
         "_policy_permits_alert_class",
         "_policy_permits_external_alert",
         "permits_alert_class",
@@ -515,7 +517,9 @@ def test_the_safety_path_reaches_no_policy_gate_through_any_call_it_makes() -> N
 def test_the_ordinary_path_does_consult_the_preference() -> None:
     """The counterpart, so the guard above cannot pass by the gate not existing."""
     source = inspect.getsource(OriRuntime._send_or_queue_alert)
-    assert "_policy_permits_alert_class" in source
+    assert "_withheld_by_preference" in source
+    helper = inspect.getsource(OriRuntime._withheld_by_preference)
+    assert "_policy_permits_alert_class" in helper
 
 
 def test_no_safety_notice_names_a_trigger_the_map_can_reach() -> None:

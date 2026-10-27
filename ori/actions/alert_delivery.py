@@ -27,6 +27,27 @@ class AlertIntent(str, Enum):
     TIER_C_ESCALATION = "tier_c_escalation"
 
 
+class NoticeKind(str, Enum):
+    """Why a notice must or need not reach the operator, decided once at creation.
+
+    Kept apart from the action tier: a mandatory notice is still a Tier A act
+    and gains no authority from the incident it reports.
+    """
+
+    OPTIONAL = "optional"
+    TIER_D = "tier_d"
+    PROTECTION_DEGRADED = "protection_degraded"
+
+
+def notice_is_mandatory(kind: object) -> bool:
+    """Whether a notice of *kind* may never be withheld or abandoned.
+
+    Anything but ``optional`` is mandatory, an unknown stored value included,
+    so a value this release does not recognise is never treated as disposable.
+    """
+    return str(kind) != NoticeKind.OPTIONAL.value
+
+
 # Variable order is part of the provider contract.  Each tuple position has an
 # independent ceiling so an approved template cannot become a free-form-message
 # tunnel by placing arbitrary model output in one variable.

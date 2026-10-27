@@ -710,6 +710,7 @@ async def test_a_recipient_retained_from_before_reaches_the_provider_whole(
         action_tier="A",
         trigger_name="t",
         original_ts=1,
+        notice_kind="optional",
     )
     (row,) = await store.get_retryable_alerts(10)
     sms = AsyncMock()
