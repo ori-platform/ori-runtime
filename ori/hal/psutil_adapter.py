@@ -50,6 +50,17 @@ _SUPPORTED = frozenset(
     }
 )
 
+
+def refuse_unusable_config(config: dict) -> None:
+    """Refuse a sensor type this adapter does not read; config load runs it too."""
+    sensor_type = config.get("sensor_type", "")
+    if sensor_type not in _SUPPORTED:
+        raise AdapterConnectionError(
+            f"PsutilAdapter: unsupported sensor_type '{sensor_type}'. "
+            f"Supported: {sorted(_SUPPORTED)}"
+        )
+
+
 _DISK_IO_META = {"note": "cumulative since boot - use delta between readings for rate"}
 
 
@@ -83,12 +94,8 @@ class PsutilAdapter(BaseAdapter):
         Raises:
             :exc:`AdapterConnectionError`: If ``sensor_type`` is not supported.
         """
+        refuse_unusable_config(config)
         sensor_type = config.get("sensor_type", "")
-        if sensor_type not in _SUPPORTED:
-            raise AdapterConnectionError(
-                f"PsutilAdapter: unsupported sensor_type '{sensor_type}'. "
-                f"Supported: {sorted(_SUPPORTED)}"
-            )
         sensor_id = config.get("sensor_id", "")
         # Nothing is awaited and `close()` releases nothing, so this adapter
         # has no race to lose; it takes the guarantee from `BaseAdapter` so

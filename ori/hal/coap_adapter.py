@@ -67,6 +67,44 @@ _DEFAULT_TIMEOUT_S = 2.0
 _ALLOWED_METHODS = frozenset({"GET", "POST", "PUT", "DELETE"})
 
 
+def _allowed_hosts(config: dict) -> set[str]:
+    hosts = config.get("allowed_hosts", []) or []
+    return {str(host).strip().lower() for host in hosts if str(host).strip()}
+
+
+def refuse_unusable_config(config: dict) -> None:
+    """Refuse what connect would from the configuration alone; config load runs it.
+
+    The URI's scheme and host, and the host's place in ``allowed_hosts``, are
+    security constraints: a value accepted here is the one the adapter polls.
+    """
+    for key in ("sensor_type", "uri", "json_path"):
+        if not str(config.get(key, "")).strip():
+            raise AdapterConnectionError(f"CoapAdapter: '{key}' is required")
+    if str(config.get("method", "GET")).strip().upper() not in _ALLOWED_METHODS:
+        raise AdapterConnectionError(
+            f"CoapAdapter: method must be one of {sorted(_ALLOWED_METHODS)}"
+        )
+    if int(config.get("poll_interval_ms", _DEFAULT_POLL_INTERVAL_MS)) < 100:
+        raise AdapterConnectionError("CoapAdapter: poll_interval_ms must be >= 100")
+
+    parsed = urlparse(str(config.get("uri", "")).strip())
+    if parsed.scheme not in {"coap", "coaps"}:
+        raise AdapterConnectionError("CoapAdapter: uri must use coap/coaps scheme")
+    host = (parsed.hostname or "").strip().lower()
+    if not host:
+        raise AdapterConnectionError("CoapAdapter: uri host is required")
+    allowed = _allowed_hosts(config)
+    if not allowed:
+        raise AdapterConnectionError(
+            "CoapAdapter: allowed_hosts is required and must be non-empty"
+        )
+    if host not in allowed:
+        raise AdapterConnectionError(
+            f"CoapAdapter: host {host!r} is not in allowed_hosts"
+        )
+
+
 class CoapAdapter(BaseAdapter):
     """Virtual sensor adapter that polls CoAP endpoints and caches latest value."""
 
@@ -117,24 +155,8 @@ class CoapAdapter(BaseAdapter):
             config.get("timeout_s", _DEFAULT_TIMEOUT_S), "CoapAdapter"
         )
         payload = self._encode_payload(config.get("payload", ""))
-
-        allowed_hosts = config.get("allowed_hosts", []) or []
-        allowed = {
-            str(host).strip().lower() for host in allowed_hosts if str(host).strip()
-        }
-
-        if not sensor_type:
-            raise AdapterConnectionError("CoapAdapter: 'sensor_type' is required")
-        if not uri:
-            raise AdapterConnectionError("CoapAdapter: 'uri' is required")
-        if not json_path:
-            raise AdapterConnectionError("CoapAdapter: 'json_path' is required")
-        if method not in _ALLOWED_METHODS:
-            raise AdapterConnectionError(
-                f"CoapAdapter: method must be one of {sorted(_ALLOWED_METHODS)}"
-            )
-        if poll_interval_ms < 100:
-            raise AdapterConnectionError("CoapAdapter: poll_interval_ms must be >= 100")
+        allowed = _allowed_hosts(config)
+        refuse_unusable_config(config)
 
         async with self._connecting(f"'{uri}'", release=self._teardown):
             self._sensor_id = sensor_id
@@ -149,7 +171,6 @@ class CoapAdapter(BaseAdapter):
             self._allowed_hosts = allowed
             self._breaker = HardwareCircuitBreaker(self.adapter_name, config)
             self._breaker.probe_every(poll_interval_ms / 1000.0)
-            self._validate_target()
 
             try:
                 self._context = await _aiocoap.Context.create_client_context()
@@ -323,24 +344,6 @@ class CoapAdapter(BaseAdapter):
             await context.shutdown()
         except Exception:
             logger.debug("CoapAdapter: context shutdown failed", exc_info=True)
-
-    def _validate_target(self) -> None:
-        parsed = urlparse(self._uri)
-        if parsed.scheme not in {"coap", "coaps"}:
-            raise AdapterConnectionError("CoapAdapter: uri must use coap/coaps scheme")
-
-        host = (parsed.hostname or "").strip().lower()
-        if not host:
-            raise AdapterConnectionError("CoapAdapter: uri host is required")
-
-        if not self._allowed_hosts:
-            raise AdapterConnectionError(
-                "CoapAdapter: allowed_hosts is required and must be non-empty"
-            )
-        if host not in self._allowed_hosts:
-            raise AdapterConnectionError(
-                f"CoapAdapter: host {host!r} is not in allowed_hosts"
-            )
 
     @staticmethod
     def _encode_payload(payload: object) -> bytes:

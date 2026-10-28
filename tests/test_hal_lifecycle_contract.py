@@ -332,8 +332,18 @@ ADAPTER_CASES = [
     ),
     pytest.param(
         CoapAdapter,
-        {"sensor_type": "power", "uri": "coap://h/1", "json_path": "v"},
-        {"sensor_type": "voltage", "uri": "coap://h/2", "json_path": "w"},
+        {
+            "sensor_type": "power",
+            "uri": "coap://h/1",
+            "json_path": "v",
+            "allowed_hosts": ["h"],
+        },
+        {
+            "sensor_type": "voltage",
+            "uri": "coap://h/2",
+            "json_path": "w",
+            "allowed_hosts": ["h"],
+        },
         ("_sensor_type", "_uri", "_json_path"),
         id="coap",
     ),
@@ -346,36 +356,44 @@ ADAPTER_CASES = [
     ),
     pytest.param(
         MqttAdapter,
-        {"sensor_type": "power", "topic": "a/1"},
-        {"sensor_type": "voltage", "topic": "a/2"},
+        {"sensor_type": "power", "topic": "a/1", "broker_host": "b"},
+        {"sensor_type": "voltage", "topic": "a/2", "broker_host": "b"},
         ("_sensor_type", "_topic"),
         id="mqtt",
     ),
     pytest.param(
         MqttPerceptionAdapter,
-        {"sensor_type": "ppe_hardhat_violation_score", "topic": "p/1"},
-        {"sensor_type": "ppe_vest_violation_score", "topic": "p/2"},
+        {
+            "sensor_type": "ppe_hardhat_violation_score",
+            "topic": "p/1",
+            "broker_host": "b",
+        },
+        {"sensor_type": "ppe_vest_violation_score", "topic": "p/2", "broker_host": "b"},
         ("_sensor_type", "_topic"),
         id="mqtt_perception",
     ),
     pytest.param(
         LoraWanAdapter,
-        {"sensor_type": "lorawan_humidity", "topic": "l/1"},
-        {"sensor_type": "lorawan_battery_percent", "topic": "l/2"},
+        {"sensor_type": "lorawan_humidity", "topic": "l/1", "broker_host": "b"},
+        {"sensor_type": "lorawan_battery_percent", "topic": "l/2", "broker_host": "b"},
         ("_sensor_type", "_topic"),
         id="lorawan",
     ),
     pytest.param(
         ZigbeeAdapter,
-        {"sensor_type": "battery_percent", "topic": "z/1"},
-        {"sensor_type": "contact", "topic": "z/2"},
+        {"sensor_type": "battery_percent", "topic": "z/1", "broker_host": "b"},
+        {"sensor_type": "contact", "topic": "z/2", "broker_host": "b"},
         ("_sensor_type", "_topic"),
         id="zigbee",
     ),
     pytest.param(
         VictronAdapter,
-        {"sensor_type": "victron_battery_soc", "portal_id": "AAA"},
-        {"sensor_type": "victron_battery_power", "portal_id": "BBB"},
+        {"sensor_type": "victron_battery_soc", "portal_id": "AAA", "broker_host": "b"},
+        {
+            "sensor_type": "victron_battery_power",
+            "portal_id": "BBB",
+            "broker_host": "b",
+        },
         ("_sensor_type", "_portal_id"),
         id="victron",
     ),
@@ -420,7 +438,6 @@ def stub_drivers(monkeypatch):
 
     monkeypatch.setattr(coap, "_aiocoap", SimpleNamespace(Context=_Context))
     monkeypatch.setattr(CoapAdapter, "_poll_loop", _noop)
-    monkeypatch.setattr(CoapAdapter, "_validate_target", lambda self: None)
     monkeypatch.setattr(CoapAdapter, "_shutdown_context", _noop)
 
     class _UaClient:

@@ -36,6 +36,7 @@ from ori.config._sensors import (
     SensorConfig,
     parse_sensors,
     refuse_persistent_mqtt_session,
+    refuse_unusable_sensor_config,
     refuse_wildcard_mqtt_topic,
     validate_coap_sensor_allowlist,
 )
@@ -220,39 +221,8 @@ class Config:
                     # unchanged rather than resolving to the config directory.
                     section[key] = anchor_to_config(declared, path)
 
-        # A sensor carries its own transport material and device endpoint.
-        # The schema canonicalises every deprecated TLS spelling into
-        # `mqtt.tls.*` before this runs, so anchoring the canonical name covers
-        # each of them; a sweep over the aliases as well anchored nothing.
-        for sensor in sensors:
-            mqtt_cfg = sensor.metadata.get("mqtt")
-            if sensor.protocol in MQTT_FAMILY_PROTOCOLS:
-                refuse_persistent_mqtt_session(sensor.id, sensor.metadata)
-                refuse_wildcard_mqtt_topic(sensor.id, sensor.metadata)
-            tls = mqtt_cfg.get("tls") if isinstance(mqtt_cfg, dict) else None
-            if isinstance(tls, dict):
-                for key in ("ca_certfile", "certfile", "keyfile"):
-                    declared = tls.get(key)
-                    if isinstance(declared, str):
-                        tls[key] = anchor_to_config(declared, path)
-
-            # `usb_serial` opens a URL through `serial_for_url`; `serial` does
-            # not, so what each may name is checked against its own consumer.
-            endpoint = {
-                "serial": "port",
-                "usb_serial": "device_path",
-                # Passed verbatim as an argv element to `smartctl`, which takes
-                # a device path and no URL form. Requiring it absolute also
-                # keeps a value that begins with `-` from arriving as an option.
-                "smart": "device",
-            }.get(sensor.protocol)
-            declared = sensor.metadata.get(endpoint) if endpoint else None
-            if endpoint and isinstance(declared, str):
-                sensor.metadata[endpoint] = _checked_device_endpoint(
-                    declared,
-                    f"sensors[{sensor.id}].{endpoint}",
-                    urls_supported=sensor.protocol == "usb_serial",
-                )
+        for index, sensor in enumerate(sensors):
+            _check_sensor(index, sensor, path)
 
         gsm = actions.sms.get("gsm") if isinstance(actions.sms, dict) else None
         if isinstance(gsm, dict) and isinstance(gsm.get("port"), str):
@@ -515,3 +485,40 @@ class Config:
             database_path=database_path,
             raw=data,
         )
+
+
+def _check_sensor(index: int, sensor: SensorConfig, path: str) -> None:
+    """Anchor a sensor's files and endpoint, then run its adapter's checks on them."""
+    # A sensor carries its own transport material and device endpoint.
+    # The schema canonicalises every deprecated TLS spelling into
+    # `mqtt.tls.*` before this runs, so anchoring the canonical name covers
+    # each of them; a sweep over the aliases as well anchored nothing.
+    mqtt_cfg = sensor.metadata.get("mqtt")
+    if sensor.protocol in MQTT_FAMILY_PROTOCOLS:
+        refuse_persistent_mqtt_session(sensor.id, sensor.metadata)
+        refuse_wildcard_mqtt_topic(sensor.id, sensor.metadata)
+    tls = mqtt_cfg.get("tls") if isinstance(mqtt_cfg, dict) else None
+    if isinstance(tls, dict):
+        for key in ("ca_certfile", "certfile", "keyfile"):
+            declared = tls.get(key)
+            if isinstance(declared, str):
+                tls[key] = anchor_to_config(declared, path)
+
+    # `usb_serial` opens a URL through `serial_for_url`; `serial` does
+    # not, so what each may name is checked against its own consumer.
+    endpoint = {
+        "serial": "port",
+        "usb_serial": "device_path",
+        # Passed verbatim as an argv element to `smartctl`, which takes
+        # a device path and no URL form. Requiring it absolute also
+        # keeps a value that begins with `-` from arriving as an option.
+        "smart": "device",
+    }.get(sensor.protocol)
+    declared = sensor.metadata.get(endpoint) if endpoint else None
+    if endpoint and isinstance(declared, str):
+        sensor.metadata[endpoint] = _checked_device_endpoint(
+            declared,
+            f"sensors[{sensor.id}].{endpoint}",
+            urls_supported=sensor.protocol == "usb_serial",
+        )
+    refuse_unusable_sensor_config(index, sensor)

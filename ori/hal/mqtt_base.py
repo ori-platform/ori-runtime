@@ -64,6 +64,23 @@ def topic_wildcards(topic: str) -> tuple[str, ...]:
     return tuple(char for char in MQTT_TOPIC_WILDCARDS if char in topic)
 
 
+def refuse_unusable_mqtt_connection(
+    config: dict,
+    adapter_name: str,
+    *,
+    default_port: int = 1883,
+    broker_host_key: str = "broker_host",
+    port_key: str = "port",
+) -> None:
+    """Refuse a blank broker host or a non-positive port, from the config alone."""
+    if not str(config.get(broker_host_key, "")).strip():
+        raise AdapterConnectionError(
+            f"{adapter_name}: '{broker_host_key}' is required in sensor config."
+        )
+    if int(config.get(port_key, default_port)) <= 0:
+        raise AdapterConnectionError(f"{adapter_name}: '{port_key}' must be > 0.")
+
+
 def reconnect_delay(attempt: int, rng: random.Random | None = None) -> float:
     """Seconds before reconnect *attempt* (0-based): uniform in [0, ceiling]."""
     ceiling = min(RECONNECT_CAP_S, RECONNECT_BASE_S * (2 ** min(attempt, 16)))
@@ -759,15 +776,13 @@ class MqttCachedAdapter(BaseAdapter):
             config, DEFAULT_POLL_INTERVAL_MS, self.adapter_name
         )
         self._breaker = HardwareCircuitBreaker(self.adapter_name, config)
-
-        if not self._broker_host:
-            raise AdapterConnectionError(
-                f"{self.adapter_name}: '{broker_host_key}' is required in sensor config."
-            )
-        if self._port <= 0:
-            raise AdapterConnectionError(
-                f"{self.adapter_name}: '{port_key}' must be > 0."
-            )
+        refuse_unusable_mqtt_connection(
+            config,
+            self.adapter_name,
+            default_port=default_port,
+            broker_host_key=broker_host_key,
+            port_key=port_key,
+        )
         # A value is cached under the topic of the message that carried it and
         # read back under the subscribed one, so a filter would never read.
         topics = tuple(topics)

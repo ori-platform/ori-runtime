@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from importlib import import_module
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from ori.hal.base import BaseAdapter
 from ori.hal.config_schema import ValidatedSchema, validate_schema
@@ -143,3 +143,53 @@ def protocol_schemas(
         validate_schema(config_schema, name=f"{protocol}.CONFIG_SCHEMA"),
         validated_calibrations,
     )
+
+
+def connect_config(
+    metadata: Mapping[str, Any],
+    *,
+    sensor_id: str,
+    sensor_type: str,
+    poll_interval_ms: int,
+    calibration: Mapping[str, Any],
+) -> dict[str, Any]:
+    """The mapping an adapter connects with, short of ``circuit_breaker``.
+
+    Metadata first and the runtime's values over it, never the reverse, so a
+    metadata key cannot displace the sensor's declared identity.
+    """
+    return {
+        **metadata,
+        "sensor_id": sensor_id,
+        "sensor_type": sensor_type,
+        # Adapters that run their own poll loop refresh a cache the runtime
+        # reads on this schedule; at their own default they would serve one
+        # stale reading repeatedly as though it were fresh.
+        "poll_interval_ms": poll_interval_ms,
+        # Its own block, not flattened: flattening let a documented
+        # `sensitivity` sit unread beside the adapter's own default.
+        "calibration": dict(calibration),
+    }
+
+
+# The function every adapter module exposes for the checks its connect() makes
+# from the configuration alone, so config load runs the same ones.
+CONFIG_CHECK_NAME = "refuse_unusable_config"
+
+
+def protocol_config_check(protocol: str) -> Callable[[dict[str, Any]], object]:
+    """Return the protocol's configuration check without constructing its adapter.
+
+    The check takes the mapping ``connect()`` receives and raises
+    ``AdapterConnectionError`` for a value connect would refuse. A module
+    without one is refused here, never treated as having nothing to check.
+    """
+    definition = protocol_definition(protocol)
+    module = import_module(definition.module)
+    check = getattr(module, CONFIG_CHECK_NAME, None)
+    if not callable(check):
+        raise ValueError(
+            f"protocol {protocol!r} module {definition.module!r} is missing "
+            f"{CONFIG_CHECK_NAME}"
+        )
+    return check

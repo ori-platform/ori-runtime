@@ -34,6 +34,13 @@ except ImportError:
     _ASYNCUA_AVAILABLE = False
 
 
+def refuse_unusable_config(config: dict) -> None:
+    """Refuse a blank required field; config load runs this as connect does."""
+    for key in ("sensor_type", "url", "node_id"):
+        if not str(config.get(key, "")).strip():
+            raise AdapterConnectionError(f"OpcUaAdapter: '{key}' is required")
+
+
 class OpcUaAdapter(BaseAdapter):
     """OPC-UA adapter for PLC/SCADA sensor values."""
 
@@ -56,16 +63,10 @@ class OpcUaAdapter(BaseAdapter):
                 "OpcUaAdapter: 'asyncua' is not installed. Run: pip install asyncua"
             )
 
+        refuse_unusable_config(config)
         sensor_type = str(config.get("sensor_type", "")).strip()
         url = str(config.get("url", "")).strip()
         node_id = str(config.get("node_id", "")).strip()
-
-        if not sensor_type:
-            raise AdapterConnectionError("OpcUaAdapter: 'sensor_type' is required")
-        if not url:
-            raise AdapterConnectionError("OpcUaAdapter: 'url' is required")
-        if not node_id:
-            raise AdapterConnectionError("OpcUaAdapter: 'node_id' is required")
 
         async with self._connecting(
             f"'{url}' node '{node_id}'", release=self._teardown

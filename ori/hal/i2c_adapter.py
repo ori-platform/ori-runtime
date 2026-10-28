@@ -172,6 +172,9 @@ def _load_drivers() -> None:
 
 # Sensor types that require the ADS1115 ADC
 _ADS_SENSOR_TYPES = frozenset({"ads1115_current", "ads1115_voltage"})
+# Read through the shared Adafruit `busio` bus, which only bus 1 provides; bme280
+# opens its bus through smbus2 and is not limited to it.
+_BUSIO_SENSOR_TYPES = _ADS_SENSOR_TYPES | {"scd40"}
 
 # One ADS1115 serves one adapter per process. The chip has a single mux, and
 # the pinned driver keeps its own idea of the selected pin per driver object:
@@ -544,14 +547,23 @@ def _resolve_calibration(config: dict) -> dict[str, float]:
     return resolved
 
 
-def refuse_unusable_calibration(sensor_type: str, calibration: dict) -> None:
-    """Raise AdapterConnectionError for a calibration connect would refuse.
+def refuse_unusable_config(config: dict) -> None:
+    """Refuse what connect would from the configuration alone; config load runs it.
 
-    Config load calls this so a value the schema admits but the measurement
-    cannot use is refused before any adapter is built.
+    That covers a calibration the schema admits but the measurement cannot use.
     """
+    sensor_type = config.get("sensor_type", "")
+    if sensor_type not in _SUPPORTED:
+        raise AdapterConnectionError(
+            f"I2CAdapter: unsupported sensor_type '{sensor_type}'. "
+            f"Supported: {sorted(_SUPPORTED)}"
+        )
+    for key, default in (("address", 0x00), ("bus", 1), ("channel", 0)):
+        _require_int(config.get(key, default), key)
+    if sensor_type in _BUSIO_SENSOR_TYPES:
+        _refuse_unsupported_busio_bus(_require_int(config.get("bus", 1), "bus"))
     if sensor_type == "ads1115_current":
-        _window_spec(_resolve_calibration({"calibration": calibration}))
+        _window_spec(_resolve_calibration(config))
 
 
 def _positive(value: Any, key: str) -> float:
@@ -610,13 +622,17 @@ _shared_busio_refs: dict[int, int] = {}
 _shared_busio_lock = threading.Lock()
 
 
-def _get_shared_busio_i2c(bus_number: int) -> Any:
-    """Return a shared busio.I2C instance for the given bus number."""
+def _refuse_unsupported_busio_bus(bus_number: int) -> None:
     if bus_number != 1:
         raise AdapterConnectionError(
             f"I2CAdapter: Adafruit sensor drivers currently only support "
             f"I2C bus 1 on Raspberry Pi. You requested bus {bus_number}."
         )
+
+
+def _get_shared_busio_i2c(bus_number: int) -> Any:
+    """Return a shared busio.I2C instance for the given bus number."""
+    _refuse_unsupported_busio_bus(bus_number)
 
     if _busio is None or _board is None:
         raise AdapterConnectionError(
@@ -720,13 +736,8 @@ class I2CAdapter(BaseAdapter):
             :exc:`AdapterConnectionError`: Unsupported sensor type, missing
                 hardware library, or I2C bus cannot be opened.
         """
+        refuse_unusable_config(config)
         sensor_type = config.get("sensor_type", "")
-        if sensor_type not in _SUPPORTED:
-            raise AdapterConnectionError(
-                f"I2CAdapter: unsupported sensor_type '{sensor_type}'. "
-                f"Supported: {sorted(_SUPPORTED)}"
-            )
-
         # Validated into locals here and applied to the adapter only under the
         # lock. Written straight to `self`, two concurrent connects overwrite
         # each other's address, channel and calibration while one of them is

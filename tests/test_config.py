@@ -1550,7 +1550,7 @@ class TestLoadExample:
             tmp_path / "data",
             sensors="""
               - id: meter
-                type: energy
+                type: energy_kwh
                 protocol: serial
                 poll_interval_ms: 1000
                 port: ttyUSB0""",
@@ -1569,7 +1569,7 @@ class TestLoadExample:
             tmp_path / "data",
             sensors="""
               - id: meter
-                type: energy
+                type: energy_kwh
                 protocol: serial
                 poll_interval_ms: 1000
                 port: socket://127.0.0.1:7000""",
@@ -1584,7 +1584,7 @@ class TestLoadExample:
             tmp_path / "data",
             sensors="""
               - id: meter
-                type: energy
+                type: usb_energy
                 protocol: usb_serial
                 poll_interval_ms: 1000
                 device_path: socket://127.0.0.1:7000""",
@@ -1599,7 +1599,7 @@ class TestLoadExample:
             tmp_path / "data",
             sensors="""
               - id: meter
-                type: energy
+                type: energy_kwh
                 protocol: serial
                 poll_interval_ms: 1000
                 port: /dev/ttyUSB0""",
@@ -1627,7 +1627,7 @@ class TestLoadExample:
             tmp_path / "data",
             sensors="""
               - id: disk
-                type: disk_health
+                type: drive_temp_celsius
                 protocol: smart
                 poll_interval_ms: 60000
                 device: disk0""",
@@ -1643,7 +1643,7 @@ class TestLoadExample:
             tmp_path / "data",
             sensors="""
               - id: disk
-                type: disk_health
+                type: drive_temp_celsius
                 protocol: smart
                 poll_interval_ms: 60000
                 device: -d""",
@@ -1657,7 +1657,7 @@ class TestLoadExample:
             tmp_path / "data",
             sensors="""
               - id: disk
-                type: disk_health
+                type: drive_temp_celsius
                 protocol: smart
                 poll_interval_ms: 60000
                 device: /dev/sda""",
@@ -3406,7 +3406,7 @@ actions:
         yaml_path = _write_yaml(
             tmp_path,
             self._base_yaml(
-                "  - id: s1\n    type: current_clamp\n    protocol: i2c\n    poll_interval_ms: 50"
+                "  - id: s1\n    type: ads1115_voltage\n    protocol: i2c\n    poll_interval_ms: 50"
             ),
         )
         with pytest.raises(ConfigValidationError, match="poll_interval_ms"):
@@ -3416,7 +3416,7 @@ actions:
         yaml_path = _write_yaml(
             tmp_path,
             self._base_yaml(
-                "  - id: s1\n    type: voltage\n    protocol: i2c\n    poll_interval_ms: 999999"
+                "  - id: s1\n    type: ads1115_voltage\n    protocol: i2c\n    poll_interval_ms: 999999"
             ),
         )
         with pytest.raises(ConfigValidationError, match="poll_interval_ms"):
@@ -3427,7 +3427,7 @@ actions:
             yaml_path = _write_yaml(
                 tmp_path,
                 self._base_yaml(
-                    f"  - id: s1\n    type: voltage\n    protocol: i2c\n    poll_interval_ms: {ms}"
+                    f"  - id: s1\n    type: ads1115_voltage\n    protocol: i2c\n    poll_interval_ms: {ms}"
                 ),
             )
             cfg = Config.load(yaml_path)
@@ -3437,7 +3437,7 @@ actions:
         yaml_path = _write_yaml(
             tmp_path,
             self._base_yaml(
-                "  - id: s1\n    type: current_clamp\n    protocol: i2c\n"
+                "  - id: s1\n    type: ads1115_voltage\n    protocol: i2c\n"
                 "    poll_interval_ms: 1000\n    address: 0x48\n    channel: 0"
             ),
         )
@@ -3653,8 +3653,9 @@ actions:
     @pytest.mark.parametrize(
         ("uri", "timeout_s", "message"),
         [
-            ("http://192.168.1.70/x", "", "coap:// or coaps://"),
-            ("file:///etc/passwd", "", "host is required"),
+            ("http://192.168.1.70/x", "", "uri must use coap/coaps"),
+            ("file:///etc/passwd", "", "uri must use coap/coaps"),
+            ("coap:///x", "", "uri host is required"),
             ("coap://192.168.1.70/x", "    timeout_s: 0\n", "timeout_s: 0 is below"),
             (
                 "coap://192.168.1.70/x",

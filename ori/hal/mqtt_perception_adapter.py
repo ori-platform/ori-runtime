@@ -8,6 +8,7 @@ from ori.hal.mqtt_base import (
     MQTT_CONNECTION_SCHEMA,
     MqttCachedAdapter,
     load_json_payload,
+    refuse_unusable_mqtt_connection,
 )
 from ori.hal.producer_paths import ARRIVAL_CLOCK, producer_time_for
 from ori.network.events import SensorReading
@@ -28,6 +29,23 @@ CONFIG_SCHEMA = {
 CALIBRATION_SCHEMAS: dict[str, dict] = {}
 
 
+def refuse_unusable_config(config: dict) -> None:
+    """Refuse what connect would from the configuration alone; config load runs it."""
+    sensor_type = str(config.get("sensor_type", "")).strip()
+    if sensor_type not in _SUPPORTED_SENSOR_TYPES:
+        raise AdapterConnectionError(
+            f"MqttPerceptionAdapter: unsupported sensor_type '{sensor_type}'. "
+            f"Supported: {sorted(_SUPPORTED_SENSOR_TYPES)}"
+        )
+    if not str(config.get("topic", "")).strip():
+        raise AdapterConnectionError(
+            "MqttPerceptionAdapter: 'topic' is required in sensor config."
+        )
+    refuse_unusable_mqtt_connection(
+        config, "MqttPerceptionAdapter", default_port=_DEFAULT_PORT
+    )
+
+
 def _clamp_quality(value: float) -> float:
     return max(0.0, min(1.0, value))
 
@@ -41,17 +59,9 @@ class MqttPerceptionAdapter(MqttCachedAdapter):
         self._topic: str = ""
 
     async def connect(self, config: dict) -> None:
+        refuse_unusable_config(config)
         sensor_type = str(config.get("sensor_type", "")).strip()
-        if sensor_type not in _SUPPORTED_SENSOR_TYPES:
-            raise AdapterConnectionError(
-                f"MqttPerceptionAdapter: unsupported sensor_type '{sensor_type}'. "
-                f"Supported: {sorted(_SUPPORTED_SENSOR_TYPES)}"
-            )
         topic = str(config.get("topic", "")).strip()
-        if not topic:
-            raise AdapterConnectionError(
-                "MqttPerceptionAdapter: 'topic' is required in sensor config."
-            )
 
         async with self._connecting(f"'{topic}'", release=self._close_mqtt):
             self._sensor_type = sensor_type

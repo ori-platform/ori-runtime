@@ -104,6 +104,27 @@ _DIRECT_SERIAL_GLOBS = ("/dev/ttyUSB*", "/dev/ttyACM*")
 _TERMUX_USB_TIMEOUT_S = 2.0
 
 
+def refuse_unusable_config(config: dict) -> None:
+    """Refuse what connect would from the configuration alone; config load runs it."""
+    sensor_type = str(config.get("sensor_type", ""))
+    if sensor_type not in _SUPPORTED:
+        raise AdapterConnectionError(
+            f"UsbSerialAdapter: unsupported sensor_type '{sensor_type}'. "
+            f"Supported: {sorted(_SUPPORTED)}"
+        )
+    # Written blank only: an absent path is refused by the schema at load, and
+    # at connect is first explained by what termux-usb can see.
+    written = config.get("device_path")
+    if (
+        isinstance(written, str)
+        and not written.strip()
+        and not bool(config.get("auto_detect_device_path", False))
+    ):
+        raise AdapterConnectionError(
+            "UsbSerialAdapter: 'device_path' is required (e.g. /dev/ttyUSB0)"
+        )
+
+
 def _crc16(data: bytes) -> int:
     crc = 0xFFFF
     for byte in data:
@@ -167,12 +188,8 @@ class UsbSerialAdapter(BaseAdapter):
                 "UsbSerialAdapter: 'pyserial' is not installed. Run: pip install pyserial"
             )
 
+        refuse_unusable_config(config)
         sensor_type = str(config.get("sensor_type", ""))
-        if sensor_type not in _SUPPORTED:
-            raise AdapterConnectionError(
-                f"UsbSerialAdapter: unsupported sensor_type '{sensor_type}'. "
-                f"Supported: {sorted(_SUPPORTED)}"
-            )
         # Validated into locals and applied to the adapter only inside the
         # guard: assigning first would leave a refused connect having already
         # replaced the live device path, slave id and sensor type while the
