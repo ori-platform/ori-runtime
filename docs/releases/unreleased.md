@@ -231,6 +231,14 @@ release is cut.
   so it is never `volume_dropped`.
   The block is `disabled` with no gateway configured and contributes no
   condition (runtime-health/v4).
+- Health reports `gateway_publication`, with two flags (runtime-health/v4).
+  `heartbeat_clock_out_of_range` is true while the wall clock gives a
+  `last_seen_ms` gateway-api/v2 refuses, so no node heartbeat is sent, and
+  clears on the first in-range tick. `signing_clock_refusing` is true while no
+  signed gateway envelope can be sent. Either reads `degraded`, as both did
+  before without saying which. The token `gateway_publication_clock_refused`
+  waits for the gateways to accept it. The block is `disabled` with no gateway
+  configured.
 
 - The Tier C approver registry, built against the `tier-c-approvers/v1`
   draft: the runtime-owned record of who may approve a Tier C action, bound to

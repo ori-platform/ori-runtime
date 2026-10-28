@@ -369,7 +369,7 @@ async def test_a_failing_store_is_retried_at_its_own_pace(tmp_path, monkeypatch)
         with pytest.raises(SigningClockUnavailableError):
             clock.issue()
     # The writer is woken by each refusal; give it every chance to act on one.
-    await wait_until(lambda: clock._refusing, what="the clock to report refusing")
+    await wait_until(clock.refusing, what="the clock to report refusing")
     assert attempts[0] == 1
     clock.stop()
 
@@ -515,3 +515,22 @@ async def test_two_clocks_through_an_alias_of_one_store_never_repeat(tmp_path):
     assert len(issued) == len(set(issued))
     one.stop()
     two.stop()
+
+
+async def test_refusing_reports_now_without_a_signing_attempt(tmp_path):
+    """`refusing()` answers whether `issue()` would refuse, and issues nothing."""
+    store = tmp_path / "later" / "state.db"
+    wall = _Clock(80_000_000)
+    clock = SigningClock(str(store), clock=wall, reservation_ms=30_000)
+    # Nothing claimed and nothing attempted yet: signing would be refused.
+    assert clock.refusing()
+    store.parent.mkdir()
+    await wait_until(lambda: not clock.refusing(), what="the claim to land")
+    assert clock._last is None
+    # A clock stepped back past the reservation: refused before any attempt.
+    wall.at_ms -= 600_000
+    assert clock.refusing()
+    wall.at_ms += 600_000
+    assert not clock.refusing()
+    assert clock._last is None
+    clock.stop()

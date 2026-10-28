@@ -199,37 +199,7 @@ class HealthSnapshot(Commissioning):
             else 0.0
         )
 
-        posture = (
-            vars(self._capability_posture_tracker.get_snapshot())
-            if self._capability_posture_tracker is not None
-            else None
-        )
-        if posture is None:
-            capability_posture = {
-                "available": False,
-                "sms_available": False,
-                "whatsapp_available": False,
-                "gateway_reachable": False,
-                "local_slm_loaded": False,
-                "relay_connected": False,
-                "internet_available": False,
-                "checked_at_ms": 0,
-                "expires_at_ms": 0,
-                "gateway_last_heartbeat_ms": None,
-            }
-        else:
-            capability_posture = {
-                "available": True,
-                "sms_available": bool(posture["sms_available"]),
-                "whatsapp_available": bool(posture["whatsapp_available"]),
-                "gateway_reachable": bool(posture["gateway_reachable"]),
-                "local_slm_loaded": bool(posture["local_slm_loaded"]),
-                "relay_connected": bool(posture["relay_connected"]),
-                "internet_available": bool(posture["internet_available"]),
-                "checked_at_ms": int(posture["checked_at_ms"]),
-                "expires_at_ms": int(posture["expires_at_ms"]),
-                "gateway_last_heartbeat_ms": posture["gateway_last_heartbeat_ms"],
-            }
+        capability_posture = self._capability_posture_health()
 
         sensors: list[dict[str, Any]] = []
         for sensor_cfg in self._configured_sensors:
@@ -346,6 +316,7 @@ class HealthSnapshot(Commissioning):
             ),
             "telemetry_export": self._telemetry_export_health(),
             "mqtt_ingress": self._mqtt_ingress_health(),
+            "gateway_publication": self._gateway_publication_health(),
         }
         # `runtime-health/v3` types this as an array and reads absence as
         # unknown, so a device with no registry omits the key entirely rather
@@ -434,19 +405,13 @@ class HealthSnapshot(Commissioning):
             # Evidence trust not established is degraded, not critical: the
             # safety path is unaffected, and what is at risk is the record.
             severities.append("degraded")
-        envelope_state = getattr(self, "_gateway_envelope_state", None)
-        if envelope_state is not None and envelope_state.signing_clock.refusing():
-            # No claimed signing time is left while the state store stalls, so
-            # runtime-gateway envelopes go unsigned and unsent: heartbeats,
-            # reasoning requests, export responses and inbound acks. Degraded,
-            # and no token: the vocabulary is closed and carries none for it.
-            severities.append("degraded")
-        heartbeat = getattr(self, "_runtime_node_heartbeat_publisher", None)
-        if heartbeat is not None and heartbeat.clock_out_of_range:
-            # A wall clock outside what gateway-api/v2 admits for
-            # `last_seen_ms` sends no node heartbeat, so the site sees this
-            # node go stale; this is where the runtime says why. Degraded, and
-            # no token: the vocabulary is closed and carries none for it.
+        publication = snapshot["gateway_publication"]
+        if publication.get("heartbeat_clock_out_of_range") or publication.get(
+            "signing_clock_refusing"
+        ):
+            # runtime-health/v4 `gateway_publication_clock_refused`, degraded.
+            # The token is adopted gateway first, so the block is served
+            # without it until the gateways accept it.
             severities.append("degraded")
         if snapshot["evidence"].get("application_storage_fault") is True:
             # The record of what the authority said is what is at risk, so
@@ -702,6 +667,60 @@ class HealthSnapshot(Commissioning):
         liveness.pop("last_error", None)
         snapshot["firmware_liveness"] = liveness
         return snapshot
+
+    def _capability_posture_health(self) -> dict[str, Any]:
+        """The capability posture block, or every member unavailable."""
+        posture = (
+            vars(self._capability_posture_tracker.get_snapshot())
+            if self._capability_posture_tracker is not None
+            else None
+        )
+        if posture is None:
+            return {
+                "available": False,
+                "sms_available": False,
+                "whatsapp_available": False,
+                "gateway_reachable": False,
+                "local_slm_loaded": False,
+                "relay_connected": False,
+                "internet_available": False,
+                "checked_at_ms": 0,
+                "expires_at_ms": 0,
+                "gateway_last_heartbeat_ms": None,
+            }
+        return {
+            "available": True,
+            "sms_available": bool(posture["sms_available"]),
+            "whatsapp_available": bool(posture["whatsapp_available"]),
+            "gateway_reachable": bool(posture["gateway_reachable"]),
+            "local_slm_loaded": bool(posture["local_slm_loaded"]),
+            "relay_connected": bool(posture["relay_connected"]),
+            "internet_available": bool(posture["internet_available"]),
+            "checked_at_ms": int(posture["checked_at_ms"]),
+            "expires_at_ms": int(posture["expires_at_ms"]),
+            "gateway_last_heartbeat_ms": posture["gateway_last_heartbeat_ms"],
+        }
+
+    def _gateway_publication_health(self) -> dict[str, Any]:
+        """runtime-health/v4 `gateway_publication`: a clock stopping publication.
+
+        The heartbeat flag is false while the node heartbeat is disabled, and
+        the signing flag while gateway authentication is, since neither clock
+        then runs.
+        """
+        if self._config is None or not bool(self._config.gateway.enabled):
+            return {"state": "disabled"}
+        heartbeat = getattr(self, "_runtime_node_heartbeat_publisher", None)
+        envelope_state = getattr(self, "_gateway_envelope_state", None)
+        return {
+            "state": "available",
+            "heartbeat_clock_out_of_range": bool(
+                heartbeat is not None and heartbeat.clock_out_of_range
+            ),
+            "signing_clock_refusing": bool(
+                envelope_state is not None and envelope_state.signing_clock.refusing()
+            ),
+        }
 
     def _mqtt_ingress_health(self) -> dict[str, Any]:
         """runtime-health/v4 `mqtt_ingress`: refusals per built gateway route.
