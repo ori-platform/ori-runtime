@@ -14,6 +14,7 @@ import contextlib
 import subprocess
 import sys
 import textwrap
+from collections.abc import Iterator
 from importlib import import_module
 from pathlib import Path
 from types import SimpleNamespace
@@ -191,18 +192,31 @@ def _load(tmp_path: Path, sensors: list[tuple[str, str]]) -> Config:
 
 
 class _Forbidden:
-    """A driver stand-in: any use of it means the refusal came too late."""
+    """A driver stand-in: any use of it means the refusal came too late.
+
+    Attribute access records the touch and raises AttributeError, as Python
+    expects; `drivers_present` fails the test on any recorded touch, so code
+    that catches the AttributeError or probes with a default is still caught.
+    """
+
+    def __init__(self, touches: list[str]) -> None:
+        self._touches = touches
 
     def __getattr__(self, name: str) -> Any:
-        raise AssertionError(f"driver touched: {name}")
+        if name.startswith("__"):
+            raise AttributeError(name)
+        self._touches.append(name)
+        raise AttributeError(f"driver touched: {name}")
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        self._touches.append("__call__")
         raise AssertionError("driver called")
 
 
 @pytest.fixture
-def drivers_present(monkeypatch: pytest.MonkeyPatch) -> None:
+def drivers_present(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Make every optional driver look installed, so connect reaches its checks."""
+    touches: list[str] = []
     for module, flag, handle in (
         ("ori.hal.opcua_adapter", "_ASYNCUA_AVAILABLE", "_AsyncUaClient"),
         ("ori.hal.http_adapter", "_HTTPX_AVAILABLE", "_httpx"),
@@ -215,7 +229,9 @@ def drivers_present(monkeypatch: pytest.MonkeyPatch) -> None:
     ):
         target = import_module(module)
         monkeypatch.setattr(target, flag, True)
-        monkeypatch.setattr(target, handle, _Forbidden())
+        monkeypatch.setattr(target, handle, _Forbidden(touches))
+    yield
+    assert not touches, f"a driver was touched before the refusal: {touches}"
 
 
 def _connect_config(sensor: str) -> dict[str, Any]:
