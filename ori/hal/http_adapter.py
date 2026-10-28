@@ -42,6 +42,15 @@ _DEFAULT_POLL_INTERVAL_MS = 10_000
 _DEFAULT_TIMEOUT_S = 5.0
 
 
+def refuse_unusable_config(config: dict) -> None:
+    """Refuse what connect would from the configuration alone; config load runs it."""
+    for key in ("sensor_type", "url", "json_path"):
+        if not str(config.get(key, "")).strip():
+            raise AdapterConnectionError(f"HttpAdapter: '{key}' is required")
+    if int(config.get("poll_interval_ms", _DEFAULT_POLL_INTERVAL_MS)) < 100:
+        raise AdapterConnectionError("HttpAdapter: poll_interval_ms must be >= 100")
+
+
 class HttpAdapter(BaseAdapter):
     """Virtual sensor adapter that polls JSON-over-HTTP endpoints."""
 
@@ -85,15 +94,7 @@ class HttpAdapter(BaseAdapter):
         timeout_s = timeout_seconds(
             config.get("timeout_s", _DEFAULT_TIMEOUT_S), "HttpAdapter"
         )
-
-        if not sensor_type:
-            raise AdapterConnectionError("HttpAdapter: 'sensor_type' is required")
-        if not url:
-            raise AdapterConnectionError("HttpAdapter: 'url' is required")
-        if not json_path:
-            raise AdapterConnectionError("HttpAdapter: 'json_path' is required")
-        if poll_interval_ms < 100:
-            raise AdapterConnectionError("HttpAdapter: poll_interval_ms must be >= 100")
+        refuse_unusable_config(config)
 
         async with self._connecting(f"'{url}'", release=self._teardown):
             self._sensor_id = sensor_id

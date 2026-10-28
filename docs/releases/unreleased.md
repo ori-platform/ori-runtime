@@ -5,6 +5,26 @@ release is cut.
 
 ## Upgrade notes
 
+- A sensor setting an adapter's `connect()` refuses from the configuration
+  alone is now refused at config load, naming the sensor, before any adapter
+  is built. Each adapter module exposes one check, `refuse_unusable_config`,
+  which its `connect()` and config load both run, and a protocol without one
+  is refused. Configurations that loaded before and then failed at connect
+  now fail at load: a sensor `type` the adapter does not read (for `psutil`,
+  `i2c`, `serial`, `usb_serial`, `growatt`, `victron`, `smart` and
+  `mqtt_perception`, and a `solarman_modbus` type its profile has no metric
+  for), an unknown inverter `profile`, a blank required string (`url`,
+  `node_id`, `host`, `serial`, `portal_id`, `topic`, `broker_host`, `device`,
+  `json_path`, `uri`, `port`, or a written `device_path` without
+  `auto_detect_device_path`), an empty `value_path` on a Zigbee or LoRaWAN
+  sensor, or a Zigbee or LoRaWAN type with no default path and no
+  `value_path`, a CoAP `uri` whose host is not in the sensor's own
+  `allowed_hosts`, and an `ads1115_current`, `ads1115_voltage` or `scd40`
+  sensor on an I2C `bus` other than 1, which the Adafruit drivers they use do
+  not support (`bme280` reads through smbus2 and may use another bus). The CoAP URI and ADS1115 calibration checks are now these
+  same checks, so their refusals carry the adapter's wording. A missing driver,
+  missing hardware or an unreachable endpoint is still found at connect.
+
 - The DevicePolicy monthly external-alert cap now counts observed provider
   acceptances, on the first submission or on a retry, and never a refusal, so
   a provider outage no longer uses up a month's budget. The cap is checked

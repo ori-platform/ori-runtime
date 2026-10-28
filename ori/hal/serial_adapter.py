@@ -74,6 +74,20 @@ _DEFAULT_TIMEOUT = 1.0  # seconds
 _DEFAULT_SLAVE_ID = 1  # Modbus slave address
 
 
+def refuse_unusable_config(config: dict) -> None:
+    """Refuse what connect would from the configuration alone; config load runs it."""
+    sensor_type = config.get("sensor_type", "")
+    if sensor_type not in _SUPPORTED:
+        raise AdapterConnectionError(
+            f"SerialAdapter: unsupported sensor_type '{sensor_type}'. "
+            f"Supported: {sorted(_SUPPORTED)}"
+        )
+    if not config.get("port", ""):
+        raise AdapterConnectionError(
+            "SerialAdapter: 'port' is required in sensor config (e.g. /dev/ttyUSB0)"
+        )
+
+
 def _crc16(data: bytes) -> int:
     """Compute Modbus RTU CRC-16."""
     crc = 0xFFFF
@@ -236,22 +250,13 @@ class SerialAdapter(BaseAdapter):
                 "SerialAdapter: 'pyserial' is not installed. Run: pip install pyserial"
             )
 
+        refuse_unusable_config(config)
         sensor_type = config.get("sensor_type", "")
-        if sensor_type not in _SUPPORTED:
-            raise AdapterConnectionError(
-                f"SerialAdapter: unsupported sensor_type '{sensor_type}'. "
-                f"Supported: {sorted(_SUPPORTED)}"
-            )
-
         # Validated into locals and applied to the adapter only inside the
         # guard: assigning first would leave a refused connect having already
         # replaced the live port, slave id and sensor type while the adapter
         # stayed connected on the old handle.
         port = config.get("port", "")
-        if not port:
-            raise AdapterConnectionError(
-                "SerialAdapter: 'port' is required in sensor config (e.g. /dev/ttyUSB0)"
-            )
 
         baudrate = resolve_baud_rate(
             has_canonical="baud_rate" in config,

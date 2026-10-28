@@ -122,7 +122,7 @@ def test_a_calibration_connect_would_refuse_is_refused_at_load(
     sensor = "\n".join(
         line for line in ADS_SENSOR.splitlines() if not line.strip().startswith(key)
     )
-    with pytest.raises(ConfigValidationError, match=r"calibration: I2CAdapter"):
+    with pytest.raises(ConfigValidationError, match=r"protocol='i2c'\): I2CAdapter"):
         _load(tmp_path, "", sensor=f"{sensor}\n  {setting}\n")
 
 

@@ -621,7 +621,7 @@ def test_usb_readiness_warns_for_raw_termux_usb_without_serial(monkeypatch):
 def _lan_only_sensor_block() -> str:
     return """
   - id: inverter
-    type: solarman_inverter
+    type: deye_grid_power
     protocol: solarman_modbus
     profile: deye_hybrid
     host: "192.168.1.20"

@@ -7,7 +7,11 @@ from ori.hal.base import (
     AdapterConnectionError,
     AdapterReadError,
 )
-from ori.hal.mqtt_base import MQTT_CONNECTION_SCHEMA, MqttCachedAdapter
+from ori.hal.mqtt_base import (
+    MQTT_CONNECTION_SCHEMA,
+    MqttCachedAdapter,
+    refuse_unusable_mqtt_connection,
+)
 from ori.hal.producer_paths import ARRIVAL_CLOCK, producer_time_for
 from ori.network.events import SensorReading
 
@@ -31,6 +35,23 @@ CONFIG_SCHEMA = {
 CALIBRATION_SCHEMAS: dict[str, dict] = {}
 
 
+def refuse_unusable_config(config: dict) -> None:
+    """Refuse what connect would from the configuration alone; config load runs it."""
+    sensor_type = str(config.get("sensor_type", "")).strip()
+    if sensor_type not in _SUPPORTED:
+        raise AdapterConnectionError(
+            f"VictronAdapter: unsupported sensor_type '{sensor_type}'. "
+            f"Supported: {sorted(_SUPPORTED)}"
+        )
+    if not str(config.get("portal_id", "")).strip():
+        raise AdapterConnectionError(
+            "VictronAdapter: 'portal_id' is required in sensor config."
+        )
+    refuse_unusable_mqtt_connection(
+        config, "VictronAdapter", default_port=_DEFAULT_PORT
+    )
+
+
 class VictronAdapter(MqttCachedAdapter):
     """Victron VenusOS MQTT adapter (subscribe + cache)."""
 
@@ -47,18 +68,9 @@ class VictronAdapter(MqttCachedAdapter):
         self._portal_id: str = ""
 
     async def connect(self, config: dict) -> None:
+        refuse_unusable_config(config)
         sensor_type = str(config.get("sensor_type", "")).strip()
-        if sensor_type not in _SUPPORTED:
-            raise AdapterConnectionError(
-                f"VictronAdapter: unsupported sensor_type '{sensor_type}'. "
-                f"Supported: {sorted(_SUPPORTED)}"
-            )
-
         portal_id = str(config.get("portal_id", "")).strip()
-        if not portal_id:
-            raise AdapterConnectionError(
-                "VictronAdapter: 'portal_id' is required in sensor config."
-            )
 
         async with self._connecting(f"portal '{portal_id}'", release=self._close_mqtt):
             self._sensor_type = sensor_type

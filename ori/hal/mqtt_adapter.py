@@ -12,6 +12,7 @@ from ori.hal.mqtt_base import (
     MQTT_CONNECTION_SCHEMA,
     MqttCachedAdapter,
     load_json_payload,
+    refuse_unusable_mqtt_connection,
 )
 from ori.hal.producer_paths import ARRIVAL_CLOCK, producer_time_for
 from ori.network.events import SensorReading
@@ -27,6 +28,14 @@ CONFIG_SCHEMA = {
     "unit": {"type": "string", "default": ""},
 }
 CALIBRATION_SCHEMAS: dict[str, dict] = {}
+
+
+def refuse_unusable_config(config: dict) -> None:
+    """Refuse what connect would from the configuration alone; config load runs it."""
+    for key in ("sensor_type", "topic"):
+        if not str(config.get(key, "")).strip():
+            raise AdapterConnectionError(f"MqttAdapter: '{key}' is required")
+    refuse_unusable_mqtt_connection(config, "MqttAdapter", default_port=_DEFAULT_PORT)
 
 
 def _extract_path(data: Any, path: str) -> Any:
@@ -88,13 +97,9 @@ class MqttAdapter(MqttCachedAdapter):
         self._unit: str = ""
 
     async def connect(self, config: dict) -> None:
+        refuse_unusable_config(config)
         sensor_type = str(config.get("sensor_type", "")).strip()
-        if not sensor_type:
-            raise AdapterConnectionError("MqttAdapter: 'sensor_type' is required")
-
         topic = str(config.get("topic", "")).strip()
-        if not topic:
-            raise AdapterConnectionError("MqttAdapter: 'topic' is required")
 
         async with self._connecting(f"'{topic}'", release=self._close_mqtt):
             self._sensor_type = sensor_type

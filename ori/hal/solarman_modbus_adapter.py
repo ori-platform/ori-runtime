@@ -43,6 +43,63 @@ except ImportError:
     _PYSOLARMAN_AVAILABLE = False
 
 
+def refuse_unusable_config(config: dict) -> InverterProfile:
+    """Return the profile, refusing what connect would from the configuration alone.
+
+    Config load runs this too. It reads the bundled profile and nothing else.
+    """
+    profile_name = str(config.get("profile", "")).strip()
+    if not profile_name:
+        raise AdapterConnectionError("SolarmanModbusAdapter: 'profile' is required.")
+    try:
+        profile = load_profile(profile_name)
+    except InverterProfileError as exc:
+        raise AdapterConnectionError(f"SolarmanModbusAdapter: {exc}") from exc
+
+    if profile.transport != "solarman_v5":
+        raise AdapterConnectionError(
+            f"SolarmanModbusAdapter: profile {profile_name!r} declares "
+            f"transport={profile.transport!r}; this adapter only supports "
+            "transport='solarman_v5'."
+        )
+    if profile.status == ProfileStatus.EXPERIMENTAL:
+        raise AdapterConnectionError(
+            f"SolarmanModbusAdapter: profile {profile_name!r} is experimental "
+            "and cannot be used for live perception."
+        )
+
+    sensor_type = str(config.get("sensor_type", ""))
+    if sensor_type not in profile.metrics:
+        raise AdapterConnectionError(
+            f"SolarmanModbusAdapter: profile {profile_name!r} has no metric "
+            f"{sensor_type!r}. Available: {sorted(profile.metrics)}"
+        )
+    metric = profile.metric(sensor_type)
+    if metric.value_type != "numeric":
+        raise AdapterConnectionError(
+            f"SolarmanModbusAdapter: metric {sensor_type!r} has "
+            f"value_type={metric.value_type!r}; live SensorReading values "
+            "must be numeric."
+        )
+
+    host = str(config.get("host", "")).strip()
+    serial = str(config.get("serial", "")).strip()
+    port = int(config.get("port", profile.default_port))
+    if not host:
+        raise AdapterConnectionError(
+            "SolarmanModbusAdapter: 'host' is required in sensor config."
+        )
+    if not serial:
+        raise AdapterConnectionError(
+            "SolarmanModbusAdapter: 'serial' logger serial is required."
+        )
+    if port <= 0:
+        raise AdapterConnectionError(
+            "SolarmanModbusAdapter: 'port' must be greater than zero."
+        )
+    return profile
+
+
 class SolarmanModbusAdapter(BaseAdapter):
     """Profile-driven SolarmanV5 inverter adapter.
 
@@ -63,57 +120,11 @@ class SolarmanModbusAdapter(BaseAdapter):
         self._breaker: HardwareCircuitBreaker | None = None
 
     async def connect(self, config: dict) -> None:
-        profile_name = str(config.get("profile", "")).strip()
-        if not profile_name:
-            raise AdapterConnectionError(
-                "SolarmanModbusAdapter: 'profile' is required."
-            )
-        try:
-            profile = load_profile(profile_name)
-        except InverterProfileError as exc:
-            raise AdapterConnectionError(f"SolarmanModbusAdapter: {exc}") from exc
-
-        if profile.transport != "solarman_v5":
-            raise AdapterConnectionError(
-                f"SolarmanModbusAdapter: profile {profile_name!r} declares "
-                f"transport={profile.transport!r}; this adapter only supports "
-                "transport='solarman_v5'."
-            )
-        if profile.status == ProfileStatus.EXPERIMENTAL:
-            raise AdapterConnectionError(
-                f"SolarmanModbusAdapter: profile {profile_name!r} is experimental "
-                "and cannot be used for live perception."
-            )
-
+        profile = refuse_unusable_config(config)
         sensor_type = str(config.get("sensor_type", ""))
-        if sensor_type not in profile.metrics:
-            raise AdapterConnectionError(
-                f"SolarmanModbusAdapter: profile {profile_name!r} has no metric "
-                f"{sensor_type!r}. Available: {sorted(profile.metrics)}"
-            )
-        metric = profile.metric(sensor_type)
-        if metric.value_type != "numeric":
-            raise AdapterConnectionError(
-                f"SolarmanModbusAdapter: metric {sensor_type!r} has "
-                f"value_type={metric.value_type!r}; live SensorReading values "
-                "must be numeric."
-            )
-
         host = str(config.get("host", "")).strip()
         serial = str(config.get("serial", "")).strip()
         port = int(config.get("port", profile.default_port))
-        if not host:
-            raise AdapterConnectionError(
-                "SolarmanModbusAdapter: 'host' is required in sensor config."
-            )
-        if not serial:
-            raise AdapterConnectionError(
-                "SolarmanModbusAdapter: 'serial' logger serial is required."
-            )
-        if port <= 0:
-            raise AdapterConnectionError(
-                "SolarmanModbusAdapter: 'port' must be greater than zero."
-            )
         if not _PYSOLARMAN_AVAILABLE:
             raise AdapterConnectionError(
                 "SolarmanModbusAdapter: 'pysolarmanv5' is not installed. "

@@ -48,6 +48,20 @@ _SENSOR_UNITS = {
 }
 
 
+def refuse_unusable_config(config: dict) -> None:
+    """Refuse what connect would from the configuration alone; config load runs it."""
+    sensor_type = str(config.get("sensor_type", "")).strip()
+    if sensor_type not in _SUPPORTED_SENSOR_TYPES:
+        raise AdapterConnectionError(
+            f"SmartAdapter: unsupported sensor_type '{sensor_type}'. "
+            f"Supported: {sorted(_SUPPORTED_SENSOR_TYPES)}"
+        )
+    if not str(config.get("device", "")).strip():
+        raise AdapterConnectionError(
+            "SmartAdapter: 'device' is required (e.g. /dev/sda, /dev/nvme0n1)"
+        )
+
+
 def _to_float(value: Any) -> float | None:
     if isinstance(value, bool):
         return 1.0 if value else 0.0
@@ -223,18 +237,9 @@ class SmartAdapter(BaseAdapter):
         self._breaker: HardwareCircuitBreaker | None = None
 
     async def connect(self, config: dict) -> None:
+        refuse_unusable_config(config)
         sensor_type = str(config.get("sensor_type", "")).strip()
-        if sensor_type not in _SUPPORTED_SENSOR_TYPES:
-            raise AdapterConnectionError(
-                f"SmartAdapter: unsupported sensor_type '{sensor_type}'. "
-                f"Supported: {sorted(_SUPPORTED_SENSOR_TYPES)}"
-            )
-
         device = str(config.get("device", "")).strip()
-        if not device:
-            raise AdapterConnectionError(
-                "SmartAdapter: 'device' is required (e.g. /dev/sda, /dev/nvme0n1)"
-            )
 
         # Nothing is awaited here and `close()` releases nothing, so this
         # adapter has no race to lose; it takes the guarantee from

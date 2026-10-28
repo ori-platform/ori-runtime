@@ -8,6 +8,7 @@ from ori.hal.mqtt_base import (
     MQTT_CONNECTION_SCHEMA,
     MqttCachedAdapter,
     load_json_payload,
+    refuse_unusable_mqtt_connection,
 )
 from ori.hal.producer_paths import ARRIVAL_CLOCK, producer_time_for
 from ori.network.events import SensorReading
@@ -35,6 +36,30 @@ CONFIG_SCHEMA = {
     "unit": {"type": "string"},
 }
 CALIBRATION_SCHEMAS: dict[str, dict] = {}
+
+
+def _value_path_and_unit(config: dict) -> tuple[str, str]:
+    sensor_type = str(config.get("sensor_type", "")).strip()
+    default_path, default_unit = _SENSOR_MAP.get(sensor_type, ("", ""))
+    value_path = str(config.get("value_path", default_path)).strip()
+    return value_path, str(config.get("unit", default_unit)).strip()
+
+
+def refuse_unusable_config(config: dict) -> None:
+    """Refuse what connect would from the configuration alone; config load runs it."""
+    if not str(config.get("sensor_type", "")).strip():
+        raise AdapterConnectionError("ZigbeeAdapter: 'sensor_type' is required")
+    value_path, _unit = _value_path_and_unit(config)
+    if not value_path:
+        raise AdapterConnectionError(
+            "ZigbeeAdapter: 'value_path' is empty, and sensor_type has no default "
+            f"path. Known sensor types: {sorted(_SENSOR_MAP)}"
+        )
+    if not str(config.get("topic", "")).strip():
+        raise AdapterConnectionError(
+            "ZigbeeAdapter: 'topic' is required (e.g. zigbee2mqtt/living-room)"
+        )
+    refuse_unusable_mqtt_connection(config, "ZigbeeAdapter", default_port=_DEFAULT_PORT)
 
 
 def _clamp_quality(value: float) -> float:
@@ -108,24 +133,10 @@ class ZigbeeAdapter(MqttCachedAdapter):
         self._unit: str = ""
 
     async def connect(self, config: dict) -> None:
+        refuse_unusable_config(config)
         sensor_type = str(config.get("sensor_type", "")).strip()
-        if not sensor_type:
-            raise AdapterConnectionError("ZigbeeAdapter: 'sensor_type' is required")
-
-        default_path, default_unit = _SENSOR_MAP.get(sensor_type, ("", ""))
-        value_path = str(config.get("value_path", default_path)).strip()
-        unit = str(config.get("unit", default_unit)).strip()
-        if not value_path:
-            raise AdapterConnectionError(
-                "ZigbeeAdapter: unsupported sensor_type without value_path override. "
-                f"Known sensor types: {sorted(_SENSOR_MAP)}"
-            )
-
+        value_path, unit = _value_path_and_unit(config)
         topic = str(config.get("topic", "")).strip()
-        if not topic:
-            raise AdapterConnectionError(
-                "ZigbeeAdapter: 'topic' is required (e.g. zigbee2mqtt/living-room)"
-            )
 
         async with self._connecting(f"'{topic}'", release=self._close_mqtt):
             self._sensor_type = sensor_type

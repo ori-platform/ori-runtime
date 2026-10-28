@@ -7,6 +7,7 @@ CoAP command resolved from a skill context, and the status indicator's state."""
 from typing import Any
 
 from ori.config import Config, SensorConfig
+from ori.hal.protocol_registry import connect_config
 from ori.hardware.led_indicator import LEDIndicator, NetworkState, PowerState
 from ori.reasoning.capability_posture import CapabilityPosture
 from ori.reasoning.elevator import SkillContext
@@ -26,19 +27,14 @@ def adapter_connect_config(sensor_cfg: SensorConfig, config: Config) -> dict[str
     a real adapter, rather than ten lines inside an eight-hundred-line method.
     """
     connect_cfg: dict[str, Any] = {
-        **sensor_cfg.metadata,
-        "sensor_id": sensor_cfg.id,
-        "sensor_type": sensor_cfg.type,
+        **connect_config(
+            sensor_cfg.metadata,
+            sensor_id=sensor_cfg.id,
+            sensor_type=sensor_cfg.type,
+            poll_interval_ms=sensor_cfg.poll_interval_ms,
+            calibration=sensor_cfg.calibration,
+        ),
         "circuit_breaker": config.hal.circuit_breaker,
-        # Adapters that run their own poll loop refresh a cache the runtime then
-        # reads on the same schedule. Without this the cache refreshed at the
-        # adapter's default while the runtime read at the operator's rate,
-        # serving one stale reading repeatedly as though it were fresh.
-        "poll_interval_ms": sensor_cfg.poll_interval_ms,
-        # Calibration is passed as its own block rather than flattened into the
-        # same namespace. Flattening is what let a documented `sensitivity` sit
-        # unread beside the adapter's own default.
-        "calibration": dict(sensor_cfg.calibration),
     }
     return connect_cfg
 

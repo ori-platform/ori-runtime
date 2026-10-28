@@ -49,6 +49,23 @@ _SENSOR_MAP: dict[str, tuple[int, int, float, str, bool]] = {
 _SUPPORTED = frozenset(_SENSOR_MAP)
 
 
+def refuse_unusable_config(config: dict) -> None:
+    """Refuse what connect would from the configuration alone; config load runs it."""
+    sensor_type = str(config.get("sensor_type", ""))
+    if sensor_type not in _SUPPORTED:
+        raise AdapterConnectionError(
+            f"GrowattAdapter: unsupported sensor_type '{sensor_type}'. "
+            f"Supported: {sorted(_SUPPORTED)}"
+        )
+    for key in ("host", "serial"):
+        if not str(config.get(key, "")).strip():
+            raise AdapterConnectionError(
+                f"GrowattAdapter: '{key}' is required in sensor config."
+            )
+    if int(config.get("port", _DEFAULT_PORT)) <= 0:
+        raise AdapterConnectionError("GrowattAdapter: 'port' must be > 0.")
+
+
 class GrowattAdapter(BaseAdapter):
     """Growatt SolarmanV5 adapter.
 
@@ -70,27 +87,11 @@ class GrowattAdapter(BaseAdapter):
         self._client: Any = None
 
     async def connect(self, config: dict) -> None:
+        refuse_unusable_config(config)
         sensor_type = str(config.get("sensor_type", ""))
-        if sensor_type not in _SUPPORTED:
-            raise AdapterConnectionError(
-                f"GrowattAdapter: unsupported sensor_type '{sensor_type}'. "
-                f"Supported: {sorted(_SUPPORTED)}"
-            )
-
         host = str(config.get("host", "")).strip()
         serial = str(config.get("serial", "")).strip()
         port = int(config.get("port", _DEFAULT_PORT))
-
-        if not host:
-            raise AdapterConnectionError(
-                "GrowattAdapter: 'host' is required in sensor config."
-            )
-        if not serial:
-            raise AdapterConnectionError(
-                "GrowattAdapter: 'serial' is required in sensor config."
-            )
-        if port <= 0:
-            raise AdapterConnectionError("GrowattAdapter: 'port' must be > 0.")
 
         if not _PYSOLARMAN_AVAILABLE:
             raise AdapterConnectionError(

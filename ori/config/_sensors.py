@@ -15,10 +15,11 @@ from ori.hal.config_schema import (
     validate_document,
     validate_schema,
 )
-from ori.hal.i2c_adapter import refuse_unusable_calibration
 from ori.hal.mqtt_base import topic_wildcards
 from ori.hal.protocol_registry import (
     SUPPORTED_SENSOR_PROTOCOLS,
+    connect_config,
+    protocol_config_check,
     protocol_schemas,
 )
 
@@ -124,8 +125,6 @@ def parse_sensors(
                 context=f"{section} (protocol={protocol!r})",
                 external=external,
             )
-            if protocol == "coap":
-                _validate_coap_sensor_metadata(metadata, section)
             calibration = item.get("calibration", {})
             if not isinstance(calibration, dict):
                 raise ConfigValidationError(
@@ -145,10 +144,6 @@ def parse_sensors(
                     context=f"{section}.calibration (protocol={protocol!r}, type={sensor_type!r})",
                     external=external,
                 )
-                if protocol == "i2c":
-                    refuse_unusable_calibration(sensor_type, calibration)
-        except AdapterConnectionError as exc:
-            raise ConfigValidationError(f"{section}.calibration: {exc}") from exc
         except (DocumentError, SchemaError, ValueError) as exc:
             raise ConfigValidationError(str(exc)) from exc
 
@@ -163,6 +158,29 @@ def parse_sensors(
             )
         )
     return sensors
+
+
+def refuse_unusable_sensor_config(index: int, sensor: SensorConfig) -> None:
+    """Run the adapter's own configuration check, as its connect() would.
+
+    It imports the adapter's module and constructs nothing, so a missing driver
+    or an unreachable endpoint stays a connect-time failure.
+    """
+    try:
+        check = protocol_config_check(sensor.protocol)
+        check(
+            connect_config(
+                sensor.metadata,
+                sensor_id=sensor.id,
+                sensor_type=sensor.type,
+                poll_interval_ms=sensor.poll_interval_ms,
+                calibration=sensor.calibration,
+            )
+        )
+    except (AdapterConnectionError, ValueError) as exc:
+        raise ConfigValidationError(
+            f"sensors[{index}] (id={sensor.id!r}, protocol={sensor.protocol!r}): {exc}"
+        ) from exc
 
 
 def _refuse_reserved_sensor_metadata(
@@ -227,23 +245,6 @@ def validate_coap_sensor_allowlist(
             raise ConfigValidationError(
                 f"sensors[{sensor.id!r}]: coap uri host {host!r} is not listed in actions.coap.allowed_hosts."
             )
-
-
-def _validate_coap_sensor_metadata(metadata: dict[str, Any], section: str) -> None:
-    """Enforce URI semantics that the declarative grammar cannot express.
-
-    The schema owns field presence, scalar types and the timeout's bounds.  URI
-    scheme and host validity are security constraints: a value accepted here
-    reaches the CoAP allowlist and adapter unchanged.
-    """
-    uri = str(metadata.get("uri", "")).strip()
-    parsed = urlparse(uri)
-    if not parsed.hostname:
-        raise ConfigValidationError(f"{section}.uri: host is required.")
-    if parsed.scheme not in {"coap", "coaps"}:
-        raise ConfigValidationError(
-            f"{section}.uri: must start with coap:// or coaps://."
-        )
 
 
 _CLEAN_SESSION_SPELLINGS = ("clean_session", "mqtt_clean_session")
