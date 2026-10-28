@@ -221,7 +221,7 @@ async def test_an_error_that_cannot_succeed_fails_the_connect(
         pytest.param(lambda v: {"timeout": v}, id="timeout"),
     ],
 )
-@pytest.mark.parametrize("value", [0, 0.0, -1, float("nan"), float("inf")])
+@pytest.mark.parametrize("value", [0, 0.0, 0.0009, -1, float("nan"), float("inf")])
 async def test_a_timeout_that_cannot_wait_fails_the_connect(
     where: Any, value: float
 ) -> None:

@@ -196,6 +196,29 @@ def refuse_unusable_reading(reading: Any) -> None:
 SILENCE_INTERVALS = 2
 SILENCE_FLOOR_MS = 200
 DEFAULT_POLL_INTERVAL_MS = 1000
+# Below this a network timeout expires before any exchange can complete, so
+# every connect or poll fails at once. Refused at config load.
+MIN_TIMEOUT_S = 0.001
+
+
+def timeout_seconds(value: Any, owner: str) -> float:
+    """A finite timeout of at least MIN_TIMEOUT_S, or AdapterConnectionError.
+
+    Config load refuses the same values through the schema; this holds a direct
+    caller to them. A boolean is not a number, and nothing is coerced.
+    """
+    try:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise TypeError
+        seconds = float(value)
+    except (TypeError, OverflowError):
+        seconds = math.nan
+    if not math.isfinite(seconds) or seconds < MIN_TIMEOUT_S:
+        raise AdapterConnectionError(
+            f"{owner}: the timeout must be a finite number of seconds of at least "
+            f"{MIN_TIMEOUT_S}, got {value!r}"
+        )
+    return seconds
 
 
 def silence_bound_ms(poll_interval_ms: int) -> int:

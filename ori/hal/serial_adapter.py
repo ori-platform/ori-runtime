@@ -7,6 +7,7 @@ import struct
 from typing import Any
 
 from ori.hal.base import (
+    MIN_TIMEOUT_S,
     AdapterConnectionError,
     AdapterReadError,
     AdapterTimeoutError,
@@ -15,6 +16,7 @@ from ori.hal.base import (
     connection_error,
     reclassified,
     resolve_baud_rate,
+    timeout_seconds,
 )
 from ori.hal.producer_paths import READ_CLOCK, producer_time_for
 from ori.network.events import SensorReading
@@ -29,7 +31,7 @@ CONFIG_SCHEMA = {
     "bytesize": {"type": "integer", "default": 8, "enum": [5, 6, 7, 8]},
     "parity": {"type": "string", "default": "N", "enum": ["N", "E", "O"]},
     "stopbits": {"type": "integer", "default": 1, "enum": [1, 2]},
-    "timeout": {"type": "number", "default": 1.0, "minimum": 0},
+    "timeout": {"type": "number", "default": 1.0, "minimum": MIN_TIMEOUT_S},
     "slave_id": {"type": "integer", "default": 1, "minimum": 1, "maximum": 247},
     "register": {"type": "integer", "minimum": 0},
 }
@@ -262,7 +264,9 @@ class SerialAdapter(BaseAdapter):
         bytesize = int(config.get("bytesize", _DEFAULT_BYTESIZE))
         parity = str(config.get("parity", _DEFAULT_PARITY))
         stopbits = int(config.get("stopbits", _DEFAULT_STOPBITS))
-        timeout = float(config.get("timeout", _DEFAULT_TIMEOUT))
+        timeout = timeout_seconds(
+            config.get("timeout", _DEFAULT_TIMEOUT), "SerialAdapter"
+        )
         slave_id = int(config.get("slave_id", _DEFAULT_SLAVE_ID))
         reg = config.get("register")
         register = int(reg) if reg is not None else None

@@ -3655,7 +3655,13 @@ actions:
         [
             ("http://192.168.1.70/x", "", "coap:// or coaps://"),
             ("file:///etc/passwd", "", "host is required"),
-            ("coap://192.168.1.70/x", "    timeout_s: 0\n", "timeout_s: must be > 0"),
+            ("coap://192.168.1.70/x", "    timeout_s: 0\n", "timeout_s: 0 is below"),
+            (
+                "coap://192.168.1.70/x",
+                "    timeout_s: 0.0009\n",
+                "timeout_s: 0.0009 is below",
+            ),
+            ("coap://192.168.1.70/x", "    timeout_s: .nan\n", "not a finite"),
         ],
     )
     def test_rejects_coap_sensor_uri_or_timeout_outside_security_contract(

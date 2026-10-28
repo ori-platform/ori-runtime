@@ -8,12 +8,14 @@ from typing import Any
 from urllib.parse import urlparse
 
 from ori.config._fields import ConfigValidationError
+from ori.hal.base import AdapterConnectionError
 from ori.hal.config_schema import (
     DocumentError,
     SchemaError,
     validate_document,
     validate_schema,
 )
+from ori.hal.i2c_adapter import refuse_unusable_calibration
 from ori.hal.mqtt_base import topic_wildcards
 from ori.hal.protocol_registry import (
     SUPPORTED_SENSOR_PROTOCOLS,
@@ -143,6 +145,10 @@ def parse_sensors(
                     context=f"{section}.calibration (protocol={protocol!r}, type={sensor_type!r})",
                     external=external,
                 )
+                if protocol == "i2c":
+                    refuse_unusable_calibration(sensor_type, calibration)
+        except AdapterConnectionError as exc:
+            raise ConfigValidationError(f"{section}.calibration: {exc}") from exc
         except (DocumentError, SchemaError, ValueError) as exc:
             raise ConfigValidationError(str(exc)) from exc
 
@@ -226,9 +232,9 @@ def validate_coap_sensor_allowlist(
 def _validate_coap_sensor_metadata(metadata: dict[str, Any], section: str) -> None:
     """Enforce URI semantics that the declarative grammar cannot express.
 
-    The schema owns field presence and scalar types.  URI scheme/host validity
-    and a strictly positive request timeout are security constraints: a value
-    accepted here reaches the CoAP allowlist and adapter unchanged.
+    The schema owns field presence, scalar types and the timeout's bounds.  URI
+    scheme and host validity are security constraints: a value accepted here
+    reaches the CoAP allowlist and adapter unchanged.
     """
     uri = str(metadata.get("uri", "")).strip()
     parsed = urlparse(uri)
@@ -238,8 +244,6 @@ def _validate_coap_sensor_metadata(metadata: dict[str, Any], section: str) -> No
         raise ConfigValidationError(
             f"{section}.uri: must start with coap:// or coaps://."
         )
-    if float(metadata.get("timeout_s", 0)) <= 0:
-        raise ConfigValidationError(f"{section}.timeout_s: must be > 0.")
 
 
 _CLEAN_SESSION_SPELLINGS = ("clean_session", "mqtt_clean_session")

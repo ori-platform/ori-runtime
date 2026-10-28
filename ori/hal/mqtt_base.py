@@ -16,6 +16,7 @@ from typing import Any, ClassVar, Iterable
 
 from ori.hal.base import (
     DEFAULT_POLL_INTERVAL_MS,
+    MIN_TIMEOUT_S,
     AdapterConnectionError,
     AdapterReadError,
     BaseAdapter,
@@ -23,6 +24,7 @@ from ori.hal.base import (
     cache_arrival,
     poll_interval_from,
     refuse_stale_cache,
+    timeout_seconds,
 )
 from ori.utils.mqtt_suback import subscription_refusal
 from ori.utils.time_utils import now_ms
@@ -185,7 +187,7 @@ MQTT_CONNECTION_SCHEMA: dict[str, dict[str, Any]] = {
                 "deprecated": True,
                 "supersedes": "transport",
             },
-            "timeout": {"type": "number", "minimum": 0},
+            "timeout": {"type": "number", "minimum": MIN_TIMEOUT_S},
             "mqtt_timeout_s": {
                 "type": "number",
                 "deprecated": True,
@@ -644,16 +646,14 @@ class MqttCachedAdapter(BaseAdapter):
         kwargs["clean_session"] = True
         if transport not in (None, ""):
             kwargs["transport"] = str(transport)
-        if timeout not in (None, ""):
-            seconds = float(timeout)
-            # aiomqtt times out at once on zero, and the connect would be
-            # retried forever as an unreachable broker.
-            if not math.isfinite(seconds) or seconds <= 0:
-                raise AdapterConnectionError(
-                    f"{self.adapter_name}: the MQTT timeout must be a finite "
-                    f"number of seconds above zero, got {timeout!r}"
-                )
-            kwargs["timeout"] = seconds
+        # A spelling written as null or empty is a malformed timeout, not an
+        # absent one. aiomqtt times out at once on zero, and the connect would
+        # be retried forever as an unreachable broker.
+        timeout_written = any(
+            key in config or key in mqtt_cfg for key in ("mqtt_timeout_s", "timeout")
+        )
+        if timeout_written:
+            kwargs["timeout"] = timeout_seconds(timeout, self.adapter_name)
 
         tls_cfg = mqtt_cfg.get("tls")
         if not isinstance(tls_cfg, dict):

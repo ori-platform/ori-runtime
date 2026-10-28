@@ -511,6 +511,13 @@ def _schema_path(fields: dict[str, Any], path: str, where: str) -> dict[str, Any
 # ── Value checking, shared by both phases ────────────────────────────────────
 
 
+def _finite_number(value: int | float) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
+
+
 def _check_value(
     value: Any, descriptor: dict, where: str, *, schema_phase: bool
 ) -> None:
@@ -532,6 +539,12 @@ def _check_value(
             f"{where}: expected {kind}, got {type(value).__name__} ({_show(value)}). "
             f"Values are not coerced."
         )
+
+    # NaN compares false against every bound and infinity exceeds any minimum,
+    # so a non-finite number would pass the bounds checks below. An integer too
+    # large for a float has no finite value for a consumer to read either.
+    if kind == "number" and not _finite_number(value):
+        raise error(f"{where}: {_show(value)} is not a finite number")
 
     if "enum" in descriptor and value not in descriptor["enum"]:
         raise error(
