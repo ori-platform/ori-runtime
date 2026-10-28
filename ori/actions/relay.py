@@ -193,7 +193,7 @@ class RelayAction:
         to be pushed to an executor.
 
         Args:
-            gpio_pin: BCM GPIO pin number (e.g. ``26`` per CLAUDE.md).
+            gpio_pin: BCM GPIO pin number (e.g. ``26`` as in ``ori.yaml.example``).
             active_high: ``True`` if the relay activates on a HIGH signal
                 (default).  Set ``False`` for opto-isolated relay boards
                 that trigger on LOW — verify the relay datasheet.

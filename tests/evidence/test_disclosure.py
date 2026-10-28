@@ -1403,6 +1403,11 @@ PATTERN_AUDIT_EXEMPT = {
         "Capability reference for contributors. It describes the evidence "
         "capability in implementation terms on purpose."
     ),
+    "docs/CAPABILITY_DETAILS.md": (
+        "The capability matrix's full notes, for contributors. It describes the "
+        "evidence capability in implementation terms on purpose."
+    ),
+    "docs/releases/capability-history.md": HISTORICAL_RELEASE_NOTE,
     "docs/evidence/2026-09-01-pi4-gpio-controller-loss.md": (
         "Bench measurement record for GPIO controller-loss behaviour, not "
         "evidence-chain evidence; its wiring, kernel, library versions and "

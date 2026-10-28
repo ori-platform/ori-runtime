@@ -61,7 +61,7 @@ from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
-# ── Approval message template (canonical form from CLAUDE.md) ────────────────
+# ── Approval message template (canonical form) ──────────────────────────────
 
 _APPROVAL_TEMPLATE = """\
 ORI ALERT — Action Required

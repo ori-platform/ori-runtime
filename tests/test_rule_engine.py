@@ -556,7 +556,7 @@ class TestEvaluateRejectsInvalidSensorValue:
 class TestCheckSafetyAstHappyPath:
     """Conditions that MUST pass AST validation.
 
-    Every expression pattern used in bundled skills, CLAUDE.md examples,
+    Every expression pattern used in bundled skills, the skill template,
     and the ori.yaml.example blueprint is covered here.
     """
 
