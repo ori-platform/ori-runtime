@@ -6,12 +6,14 @@ import logging
 from typing import Any
 
 from ori.hal.base import (
+    MIN_TIMEOUT_S,
     AdapterConnectionError,
     AdapterReadError,
     BaseAdapter,
     HardwareCircuitBreaker,
     cache_arrival,
     refuse_stale_cache,
+    timeout_seconds,
 )
 from ori.hal.producer_paths import READ_CLOCK, producer_time_for
 from ori.network.events import SensorReading
@@ -24,7 +26,7 @@ CONFIG_SCHEMA = {
     "url": {"type": "string", "required": True},
     "json_path": {"type": "string", "required": True},
     "unit": {"type": "string", "default": ""},
-    "timeout_s": {"type": "number", "default": 5.0, "minimum": 0},
+    "timeout_s": {"type": "number", "default": 5.0, "minimum": MIN_TIMEOUT_S},
 }
 CALIBRATION_SCHEMAS: dict[str, dict] = {}
 
@@ -80,7 +82,9 @@ class HttpAdapter(BaseAdapter):
         poll_interval_ms = int(
             config.get("poll_interval_ms", _DEFAULT_POLL_INTERVAL_MS)
         )
-        timeout_s = float(config.get("timeout_s", _DEFAULT_TIMEOUT_S))
+        timeout_s = timeout_seconds(
+            config.get("timeout_s", _DEFAULT_TIMEOUT_S), "HttpAdapter"
+        )
 
         if not sensor_type:
             raise AdapterConnectionError("HttpAdapter: 'sensor_type' is required")
@@ -90,8 +94,6 @@ class HttpAdapter(BaseAdapter):
             raise AdapterConnectionError("HttpAdapter: 'json_path' is required")
         if poll_interval_ms < 100:
             raise AdapterConnectionError("HttpAdapter: poll_interval_ms must be >= 100")
-        if timeout_s <= 0:
-            raise AdapterConnectionError("HttpAdapter: timeout_s must be > 0")
 
         async with self._connecting(f"'{url}'", release=self._teardown):
             self._sensor_id = sensor_id

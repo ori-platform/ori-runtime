@@ -12,6 +12,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from ori.hal.base import (
+    MIN_TIMEOUT_S,
     AdapterConnectionError,
     AdapterReadError,
     AdapterTimeoutError,
@@ -19,6 +20,7 @@ from ori.hal.base import (
     HardwareCircuitBreaker,
     cache_arrival,
     refuse_stale_cache,
+    timeout_seconds,
 )
 from ori.hal.producer_paths import READ_CLOCK, producer_time_for
 from ori.network.events import SensorReading
@@ -40,7 +42,7 @@ CONFIG_SCHEMA = {
     "timeout_s": {
         "type": "number",
         "fallback_from": "actions.coap.timeout_s",
-        "minimum": 0,
+        "minimum": MIN_TIMEOUT_S,
     },
     "payload": {"type": "string", "default": ""},
     "allowed_hosts": {
@@ -111,7 +113,9 @@ class CoapAdapter(BaseAdapter):
         poll_interval_ms = int(
             config.get("poll_interval_ms", _DEFAULT_POLL_INTERVAL_MS)
         )
-        timeout_s = float(config.get("timeout_s", _DEFAULT_TIMEOUT_S))
+        timeout_s = timeout_seconds(
+            config.get("timeout_s", _DEFAULT_TIMEOUT_S), "CoapAdapter"
+        )
         payload = self._encode_payload(config.get("payload", ""))
 
         allowed_hosts = config.get("allowed_hosts", []) or []
@@ -131,8 +135,6 @@ class CoapAdapter(BaseAdapter):
             )
         if poll_interval_ms < 100:
             raise AdapterConnectionError("CoapAdapter: poll_interval_ms must be >= 100")
-        if timeout_s <= 0:
-            raise AdapterConnectionError("CoapAdapter: timeout_s must be > 0")
 
         async with self._connecting(f"'{uri}'", release=self._teardown):
             self._sensor_id = sensor_id

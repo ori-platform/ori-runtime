@@ -385,6 +385,19 @@ def test_bounds_and_enums_are_enforced() -> None:
         validate_document({"a": "X"}, schema, context="s")
 
 
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize(
+    "descriptor",
+    [{"type": "number"}, {"type": "number", "minimum": 0, "maximum": 10}],
+    ids=["unbounded", "bounded"],
+)
+def test_a_non_finite_number_is_refused(descriptor: dict, value: float) -> None:
+    """NaN compares false against any bound, so it would pass both checks."""
+    schema = _ok({"a": descriptor})
+    with pytest.raises(DocumentError, match="not a finite number"):
+        validate_document({"a": value}, schema, context="s")
+
+
 def test_declared_defaults_are_applied() -> None:
     schema = _ok({"a": {"type": "integer", "default": 9600}, "b": {"type": "string"}})
     assert validate_document({}, schema, context="s") == {"a": 9600}

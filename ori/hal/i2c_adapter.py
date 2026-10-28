@@ -544,6 +544,16 @@ def _resolve_calibration(config: dict) -> dict[str, float]:
     return resolved
 
 
+def refuse_unusable_calibration(sensor_type: str, calibration: dict) -> None:
+    """Raise AdapterConnectionError for a calibration connect would refuse.
+
+    Config load calls this so a value the schema admits but the measurement
+    cannot use is refused before any adapter is built.
+    """
+    if sensor_type == "ads1115_current":
+        _window_spec(_resolve_calibration({"calibration": calibration}))
+
+
 def _positive(value: Any, key: str) -> float:
     try:
         number = float(value)

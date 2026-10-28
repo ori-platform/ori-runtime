@@ -102,6 +102,18 @@ release is cut.
   to anything but `true` is refused at config load, so a deployment that
   asked for a persistent session no longer starts. Remove the setting, or set
   it to `true`, before upgrading.
+- A sensor's I/O timeout below 1 ms is refused at config load: an
+  MQTT-family `mqtt.timeout` in every spelling (`mqtt.mqtt_timeout_s`,
+  top-level `mqtt_timeout_s` and `timeout`), an HTTP, CoAP or USB-serial
+  `timeout_s`, and a serial `timeout`. Any sensor setting that is a number
+  must also be finite, so `.nan`, `.inf` or an integer too large for a float
+  is refused. Such a timeout used to load and then fail every connect. Set at
+  least `0.001` before upgrading.
+- An `ads1115_current` calibration the measurement cannot use is refused at
+  config load, where it was refused only at connect: a zero
+  `sensitivity_v_per_amp`, `gain`, `overrun_tolerance` or `clip_margin_volts`,
+  a `gain` or `data_rate` the ADS1115 does not have, or a `data_rate` too low
+  for the mains frequency.
 - `gateway.firmware_commands.publish_timeout_s` must be finite. A value such
   as `.inf` loaded before and is now refused at config load; set a finite
   number of seconds before upgrading.
