@@ -105,7 +105,6 @@ class SigningClock:
         # Claimed, inclusive, ascending, none overlapping.
         self._ranges: deque[tuple[int, int]] = deque()
         self._stopped = False
-        self._refusing = False
         self._warning = CoalescedWarning(logger)
         self._conn: sqlite3.Connection | None = None
         self._thread: threading.Thread | None = None
@@ -126,9 +125,25 @@ class SigningClock:
         return self._durable
 
     def refusing(self) -> bool:
-        """Whether signing is refused now: nothing claimed is left."""
+        """Whether `issue()` would refuse now; issues and consumes nothing."""
         with self._lock:
-            return self._refusing
+            if not self._durable:
+                return False
+            return self._next(self._clock())[1] is not None
+
+    def _next(self, wall: int) -> tuple[int, str | None]:
+        """The next signing time and why it would be refused, under the lock.
+
+        Spent claimed ranges are not dropped here; `issue()` drops them.
+        """
+        value = wall if self._last is None else max(wall, self._last + 1)
+        live = next((r for r in self._ranges if value <= r[1]), None)
+        if live is None:
+            return value, "signing_clock_unavailable"
+        value = max(value, live[0])
+        if value > wall + self._reservation_ms:
+            return value, "signing_clock_ahead"
+        return value, None
 
     def issue(self) -> int:
         """The next signing time; raises `SigningClockUnavailableError`."""
@@ -141,8 +156,8 @@ class SigningClock:
             ranges = self._ranges
             while ranges and value > ranges[0][1]:
                 ranges.popleft()
-            if not ranges:
-                self._refusing = True
+            value, refusal = self._next(wall)
+            if refusal == "signing_clock_unavailable":
                 self._wake.notify_all()
                 self._warning.warn(
                     "unclaimed",
@@ -151,12 +166,10 @@ class SigningClock:
                     value,
                 )
                 raise SigningClockUnavailableError("signing_clock_unavailable")
-            value = max(value, ranges[0][0])
-            if value > wall + self._reservation_ms:
+            if refusal == "signing_clock_ahead":
                 # A clock stepped back, live or across a start, under values
                 # already claimed or issued: never more than a reservation
                 # ahead of it, whatever is claimed.
-                self._refusing = True
                 self._warning.warn(
                     "ahead",
                     "[gateway-auth] signing refused: the next signing time %d "
@@ -166,7 +179,6 @@ class SigningClock:
                 )
                 raise SigningClockUnavailableError("signing_clock_ahead")
             self._last = value
-            self._refusing = False
             if self._wanted_mark() is not None:
                 self._wake.notify_all()
             return value

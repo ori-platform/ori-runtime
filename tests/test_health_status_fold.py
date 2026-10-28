@@ -23,9 +23,13 @@ from typing import Any
 
 import pytest
 
+from ori.config import Config
 from ori.runtime import OriRuntime
 from ori.runtime._health_status import firmware_liveness_severity
 from ori.runtime._health_status import fold_health_status as _fold_health_status
+from tests.test_health_signing_domains_and_ingress import (
+    _gateway_config as gateway_config,
+)
 
 
 class _Scheduler:
@@ -107,13 +111,25 @@ class _RefusingClock:
         return True
 
 
+# runtime-health/v4 `gateway_publication` is `disabled` without a gateway, so
+# its two conditions need one; built once per module by `_gateway_config`.
+_GATEWAY: dict[str, Config] = {}
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _gateway_config(tmp_path_factory: pytest.TempPathFactory) -> None:
+    _GATEWAY["config"] = gateway_config(tmp_path_factory.mktemp("gw"), enabled=True)
+
+
 def _signing_refused(runtime: OriRuntime) -> None:
+    runtime._config = _GATEWAY["config"]
     runtime._gateway_envelope_state = SimpleNamespace(  # type: ignore[assignment]
         signing_clock=_RefusingClock()
     )
 
 
 def _heartbeat_clock_out_of_range(runtime: OriRuntime) -> None:
+    runtime._config = _GATEWAY["config"]
     runtime._runtime_node_heartbeat_publisher = SimpleNamespace(  # type: ignore[assignment]
         clock_out_of_range=True
     )
@@ -160,8 +176,9 @@ CONDITIONS: dict[str, tuple[str, Callable[[OriRuntime], None]]] = {
     "gateway_signing_refused": ("degraded", _signing_refused),
     "heartbeat_clock_out_of_range": ("degraded", _heartbeat_clock_out_of_range),
 }
-# The five liveness entries drive the one liveness branch.
-BRANCHES = len(CONDITIONS) - 4
+# The five liveness entries drive the one liveness branch, and the two
+# `gateway_publication` entries drive one branch.
+BRANCHES = len(CONDITIONS) - 5
 
 
 def _runtime(*names: str) -> OriRuntime:
@@ -446,3 +463,12 @@ async def test_the_evidence_block_reports_the_storage_fault_signal(
     health = await runtime._evidence_health()
 
     assert health["application_storage_fault"] is reported
+
+
+@pytest.mark.parametrize("case", HEALTH_V4["fold_cases"], ids=lambda c: c["name"])
+def test_the_fold_matches_runtime_health_v4s_fold_cases(case: dict[str, Any]) -> None:
+    """Status and `critical` only: the runtime emits no tokens yet (#955)."""
+    severities = [HEALTH_V4["conditions"][name] for name in case["holding"]]
+    status = _fold_health_status(severities) or "ok"
+    assert status == case["expected"]["status"]
+    assert (status == "critical") is case["expected"]["critical"]
