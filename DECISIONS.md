@@ -3,6 +3,9 @@
 This file records security- and architecture-relevant decisions that future
 contributors must preserve unless a superseding decision is explicitly added.
 
+Entries are not rewritten. Where later work reversed or narrowed one, a dated
+**Status** line under its heading says what is true now; read that line first.
+
 ## 2026-06-01 — Runtime Exposes Data, Gateway Owns Cloud (AI) SDKs
 
 **Status:** Accepted
@@ -76,6 +79,8 @@ Rationale:
 ---
 
 ## 2026-06-06 — Runtime-Gateway MQTT Envelopes Are Authenticated
+
+> **Status (2026-10-28):** Partly superseded. Replay protection is no longer in-memory: it is gateway-api/v2 Envelope Freshness and Replay, with a persistent replay store and floor (`ori/security/gateway_messages.py`), and signers take time from `ori/security/signing_clock.py`.
 
 **Status:** Accepted
 
@@ -151,6 +156,8 @@ Rationale:
 ---
 
 ## 2026-06-04 — Local SLM Confidence Is Non-Authoritative
+
+> **Status (2026-10-28):** Partly superseded. An unmatched gateway proposal above Tier A is dropped to Tier A `log_to_dashboard` (`ori/reasoning/elevator.py`); only a matched trigger carries physical authority.
 
 **Status:** Accepted
 
@@ -277,6 +284,8 @@ weakening offline GSM fallback paths.
 ---
 
 ## 2026-06-01 — Approval Replies Are Not Remote Commands
+
+> **Status (2026-10-28):** Partly superseded. A v1 offline token approves no Tier C and no physical action; a v2 token binds one proposal (`ori/security/offline_tokens.py`). A physical Tier C reply is an approval only once the store commits it.
 
 **Status:** Accepted
 
@@ -424,6 +433,8 @@ Rationale:
 
 ## 2026-06-01 — Remote Command Lockout Tuning Is Configurable, Enforcement Is Not
 
+> **Status (2026-10-28):** Partly superseded. Lockout enforcement exists (`security.remote_commands.lockout.enforcement_enabled`), health reports the configured value, and production posture requires it. The tuning keys below are current.
+
 **Status:** Accepted
 
 Operators may tune advisory remote command lockout risk windows and thresholds
@@ -460,6 +471,8 @@ Rationale:
 
 ## 2026-06-01 — Remote Command Lockout Health Rebuilds From Persisted Incidents
 
+> **Status (2026-10-28):** Partly superseded. The rebuild is current; enforcement is now configurable and required in production.
+
 **Status:** Accepted
 
 Advisory remote command lockout state is cached in memory for health snapshots,
@@ -491,6 +504,8 @@ Rationale:
 
 ## 2026-06-01 — Remote Command Lockout Health State Can Be Stale
 
+> **Status (2026-10-28):** Partly superseded. Enforcement is live, and re-evaluates per command rather than reading stale health state.
+
 **Status:** Accepted
 
 Advisory remote command lockout state is updated when abuse incidents fire, not
@@ -518,6 +533,8 @@ Rationale:
 ---
 
 ## 2026-06-01 — Remote Command Lockout Is Advisory Until Recovery Is Designed
+
+> **Status (2026-10-28):** Superseded. Lockout is enforced when `enforcement_enabled: true` (`ori/security/remote_commands/lockout.py`, `ori/runtime/_remote_commands.py`) and production posture requires it. No later entry records the recovery and override design this entry asked for.
 
 **Status:** Accepted
 
@@ -551,6 +568,8 @@ Rationale:
 ---
 
 ## 2026-06-01 — Remote Command Abuse Incidents Escalate Separately From Throttling
+
+> **Status (2026-10-28):** Partly superseded. Incident counts now feed critical risk, which blocks the sender under enforcement. The incident-log rules are current.
 
 **Status:** Accepted
 
@@ -649,6 +668,8 @@ Rationale:
 ---
 
 ## 2026-05-31 — SET_THRESHOLD Remote Command Handler Spec
+
+> **Status (2026-10-28):** Current. Its "AGENTS.md §13" references now mean AGENTS.md security invariant 12.
 
 **Status:** Accepted
 
@@ -793,6 +814,8 @@ contract provider-neutral and LAN-compatible.
 
 ## 2026-06-08 — Alert Outbox Health Is Runtime Health
 
+> **Status (2026-10-28):** Partly superseded. The split is now mandatory versus optional notices: only an optional notice may be withheld, capped or abandoned (`ori/actions/alert_delivery.py`).
+
 **Status:** Accepted
 
 Failed operator notifications are queued locally and retried by the runtime.
@@ -853,6 +876,8 @@ guess or trusting model-reported confidence.
 ---
 
 ## 2026-06-08 — Retail Occupancy Optimizer Uses Occupancy-Gated Actuation
+
+> **Status (2026-10-28):** Partly superseded. The skill ships notifications only; no load-shed or HVAC action exists, and no deployment setting binds one (CLAUDE.md, Skills).
 
 **Status:** Accepted
 
@@ -936,6 +961,8 @@ Rationale:
 ---
 
 ## 2026-06-10 — Gateway Heartbeat MQTT Subscription and Auth
+
+> **Status (2026-10-28):** Partly superseded. Staging and production refuse auth-disabled brokers, loopback included; only development accepts unsigned heartbeats. Replay protection is gateway-api/v2's persistent store.
 
 **Status:** Accepted
 
@@ -1043,6 +1070,8 @@ infrastructure-only payloads.
 ---
 
 ## 2026-06-14 — Production Security Posture Fails Closed
+
+> **Status (2026-10-28):** Partly superseded. Gateway auth and encryption are required on every enabled broker, loopback included; TLS and credentials stay non-loopback only. Posture also requires lockout enforcement and a signed config.
 
 **Status:** Accepted
 
@@ -1404,6 +1433,8 @@ Non-goals:
 
 ## 2026-07-15 — Firmware Telemetry Verification Lands In The Runtime Store, Chain Atomicity Stays The Verifier-Grade Target
 
+> **Status (2026-10-28):** Partly superseded. The receiver contract is now firmware-telemetry/v2.
+
 **Status:** Accepted
 
 The runtime now verifies device-signed firmware telemetry per
@@ -1562,6 +1593,8 @@ Non-goals:
   property of the interface, not of how many people have adopted it.
 
 ## 2026-08-15 — Action Authority Belongs To The Runtime, Not The Skill
+
+> **Status (2026-10-28):** Partly superseded. The registry is enforced both ways: `register_executor()` refuses an action with no entry, and an action declared above Tier A must be in the registry at skill load. See "Physical capability is an outcome on a zone".
 
 **Status:** Accepted
 
@@ -2008,6 +2041,8 @@ supervision mechanism, its health and evidence state, the reset qualification
 boundary, and the connect-time contention case.
 
 ## 2026-09-12 — The tier letter is two decisions, and reading it as one scale produced defects
+
+> **Status (2026-10-28):** Partly superseded. `emergency_cutoff` was retired; the example is now `trip_relay`.
 
 `A` through `D` looks like a severity scale, and the framework was reasoned
 about as one for long enough to produce three defects. It is not a scale. Each

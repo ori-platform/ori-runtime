@@ -1,36 +1,25 @@
 # CLAUDE.md — Ori Runtime: AI Developer Context
 
-This file is read automatically by Claude Code at the start of every session.
-Read it completely before writing any code. It contains every architectural
-decision that has been made. Do not relitigate them.
+Read automatically at the start of every session. It holds the architectural
+decisions; do not relitigate them. The design philosophy is in `PRINCIPLES.md`;
+read it before any structural change. Navigation and extension recipes are in
+`AGENTS.md`; the reasoning behind each decision is in `DECISIONS.md`.
+
+This file states rules and points to where their detail lives. Do not copy code,
+schemas or examples into it: name the file instead.
 
 ---
 
 ## What Ori Is
 
-Ori is an open-source, offline-first **agentic** IoT runtime. It gives physical
-devices the ability to reason about sensor data AND take autonomous physical
-actions based on that reasoning. It is the production implementation of the
-Agents of Things (AoT) concept from the 2013 IEEE paper by Mzahm, Ahmad, and Tang.
+Ori is an open-source, offline-first **agentic** IoT runtime: devices reason
+about sensor data and take autonomous physical actions on that reasoning. It is
+the production implementation of Agents of Things (Mzahm, Ahmad and Tang, IEEE
+2013).
 
-**Critical framing:** Ori is not a monitoring and alerting system. A monitoring
-system detects and reports. An agent detects, reasons, and acts. Every design
-decision must preserve and reinforce Ori's agency — the ability to take
-physical actions autonomously when configured to do so.
-
-**The distinction that matters:**
-
-- Traditional IoT: "Current draw is 8.2A. ALERT: threshold exceeded."
-- Ori: "Your AC unit has been drawing 40% above baseline for three afternoons.
-  Pattern suggests refrigerant depletion. Estimated failure: 2 weeks.
-  I have sent a service reminder to your maintenance contact."
-  OR: "Dangerous overcurrent detected. I have tripped the safety relay."
-
-**Elevator pitch:** Ori is to IoT what Grafana was to observability — an
-open-source runtime that becomes the intelligence and action layer every
-physical system runs on, monetised through ori-cloud and enterprise features.
-
-**The design philosophy governing every architectural decision in this codebase is documented in PRINCIPLES.md. Read it before making any structural change.**
+Ori is not a monitoring and alerting system. A monitor detects and reports; an
+agent detects, reasons and acts ("Overcurrent detected. I have tripped the
+safety relay."). Every design decision must preserve that agency.
 
 ---
 
@@ -45,1168 +34,338 @@ Layer 2  Network        EventBus · ProtocolNormaliser · Deduplicator
 Layer 1  Perception     Sensor HAL (GPIO, I2C, Serial, MQTT, psutil)
 ```
 
-Layers 1–4 run on the device. Layer 5 is the community. Layer 6 is the business.
-**Layers 3 and 4 are paired systems** — reasoning and action are inseparable.
-Every reasoning result carries an action tier. Every action tier determines
-the approval model before execution.
+Layers 1–4 run on the device. Layers 3 and 4 are paired: every reasoning result
+carries an action tier, and the tier decides the approval model.
 
 ---
 
-## The Intelligence Elevator (Layer 4) — Reasoning
+## The Intelligence Elevator (Layer 4)
 
 ```text
-Tier 1  RULE ENGINE    microseconds  always available  safety-critical + Tier D actions
-Tier 2  LOCAL SLM      3-8 seconds   offline-capable   most everyday reasoning
-Tier 3  GATEWAY LLM    1-3 seconds   LAN required      cross-device or cloud-backed reasoning
+Tier 1  RULE ENGINE   microseconds  always available  safety-critical + Tier D
+Tier 2  LOCAL SLM     3-8 seconds   offline-capable   most everyday reasoning
+Tier 3  GATEWAY LLM   1-3 seconds   LAN required      cross-device or cloud-backed
 ```
 
-The runtime selects the cheapest tier that can answer the question.
-Tier 1 is always evaluated first. Gateway reasoning is reached only through
-deterministic escalation policy or an explicit trigger floor. Cloud reasoning,
-when used, is a gateway backend, not a runtime dependency. The reasoning tier
-and action tier are selected together — they are not independent decisions.
+The runtime selects the cheapest tier that can answer, evaluating Tier 1 first.
 
-Runtime-gateway MQTT envelopes are optionally HMAC-authenticated. Staging and
-production posture requires `gateway.auth.enabled: true` and
-`gateway.encryption.enabled: true` for every enabled gateway broker — loopback
-included, since local processes can still reach a loopback broker — and
-additionally requires TLS, broker credentials, and declared broker posture for
-non-loopback brokers at config load; development deployments log a
-consolidated WARNING instead. The shared secret is provided through the environment
-variable named by `gateway.auth.shared_secret_env`. The gateway
-secret is separate from remote-command secrets. During rotation,
-`gateway.auth.previous_shared_secret_env` is verify-only; new outbound runtime
-messages are signed with the current secret. Authenticated deployments sign
-runtime reasoning requests and export responses, and verify gateway reasoning
-responses and export requests before using them.
+- **Escalation is deterministic.** The gateway is reached only by signals
+  evaluated before local inference: explicit `escalate_to: gateway`, a missing
+  baseline, a history query failure, a calibrated range breach or a
+  related-sensor conflict. Local SLM confidence is telemetry only (currently 0.0
+  for base completion backends) and is never the sole reason to stay on-device
+  or escalate.
+- **Gateway reasoning is MQTT request/response** on
+  `ori/{device_id}/reasoning/request` and `ori/{device_id}/reasoning/response`,
+  provider-neutral. Cloud reasoning is a gateway backend: no cloud SDK enters
+  the runtime.
+- **Reasoning grants no authority.** For a matched trigger the trigger's tier
+  is authoritative. Unmatched gateway reasoning never creates physical action
+  authority: a proposal above Tier A is dropped to `log_to_dashboard`.
 
-Sensitive runtime export responses can also be encrypted with
-`gateway.encryption.enabled: true`. Encryption requires authenticated gateway
-envelopes and applies to `sensor_history`, `action_log`, `reasoning_log`, and
-`tier_c_decision_log` responses. The runtime derives a separate AES-GCM key from
-the gateway shared secret with HKDF domain separation; TLS remains transport
-defense-in-depth, not a replacement for HMAC or payload encryption.
+**Gateway transport security** (`docs/MQTT_SECURITY.md`):
 
-Broker hardening is documented in `docs/MQTT_SECURITY.md`. Production brokers
-must disable anonymous access, use separate runtime/gateway MQTT users, and
-apply per-device topic ACLs.
-Runtime-gateway transport supports `mqtts://` and `gateway.tls`; TLS is
-defense-in-depth and does not replace HMAC envelope authentication.
+- Runtime-gateway MQTT envelopes are HMAC-authenticated with the secret named by
+  `gateway.auth.shared_secret_env`, separate from remote-command secrets.
+  `previous_shared_secret_env` is verify-only during rotation.
+- `gateway.encryption.enabled` encrypts the `sensor_history`, `action_log`,
+  `reasoning_log` and `tier_c_decision_log` export responses with an
+  HKDF-derived AES-GCM key. It requires authenticated envelopes.
+- TLS (`mqtts://`, `gateway.tls`) is defense-in-depth and replaces neither HMAC
+  nor payload encryption.
+- Staging and production require auth and encryption on every enabled gateway
+  broker, loopback included, plus TLS, credentials and declared broker posture
+  for non-loopback brokers, at config load. Development logs one WARNING.
+- Production brokers disable anonymous access, use separate runtime and gateway
+  users, and apply per-device topic ACLs.
 
-SMS webhook ingress hardening is documented in `docs/SMS_WEBHOOK_SECURITY.md`.
-Runtime sender allowlisting is necessary but cannot prove carrier-origin
-identity. Internet-exposed Africa's Talking ingress must use source CIDR
-allowlisting plus an HMAC signing bridge or equivalent raw-body signing path.
+**SMS webhook ingress** (`docs/SMS_WEBHOOK_SECURITY.md`): a sender allowlist
+cannot prove carrier origin. Internet-exposed Africa's Talking ingress needs
+source CIDR allowlisting plus an HMAC signing bridge.
 
-Authenticated remote commands support sender lockout: rejected-command volume
-and abuse incidents classify sender risk, and with
-`security.remote_commands.lockout.enforcement_enabled: true` critical-risk
-senders are blocked before a command can mutate runtime state. Production
-posture requires lockout enforcement when remote commands are enabled.
+**Remote command lockout:** with
+`security.remote_commands.lockout.enforcement_enabled: true`, critical-risk
+senders are blocked before a command can mutate state. Production requires it
+when remote commands are enabled.
 
 ---
 
-## The Action Tier Framework (Layer 4) — The Agent's Authority
-
-This is the architectural concept that makes Ori genuinely agentic rather than
-a glorified dashboard. Every action the runtime can take is classified into one
-of four tiers. The tier determines whether the action fires autonomously, whether
-it requires operator approval, and whether it can be overridden.
+## The Action Tier Framework (Layer 4)
 
 ```text
-Tier A  INFORMATIONAL        Always autonomous. No approval. No override.
-        WhatsApp alerts, SMS, dashboard logs, reasoning logs.
-        These ARE agent actions. When Ori sends a reasoned WhatsApp message,
-        no human approved it first. The agent reasoned and acted.
-
-Tier B  SOFT PHYSICAL        Explicit approval or post-action policy.
-        Switching power sources, adjusting thermostat setpoints,
-        opening irrigation valves, dimming lights.
-        Reversible, low-consequence. Use requires_approval: true or
-        reasoning_policy: post_action on physical Tier B triggers.
-
-Tier C  HARD PHYSICAL        Approval workflow. Always. No exception.
-        Opening relay/contactor-controlled safety circuits,
-        high-pressure valve control.
-        Ori reasons → proposes action via WhatsApp → operator replies YES/NO
-        → action executes or is cancelled.
-        The agent does the diagnosis. The human approves the surgery.
-
-Tier D  SAFETY-CRITICAL      Always autonomous. Attempted before lower work.
-        Cannot be disabled. Cannot be overridden. Fires before any LLM.
-        Dangerous overcurrent, temperature above safe limit, hazardous gas.
-        bypass_llm: true is set automatically for all Tier D triggers.
+Tier A  INFORMATIONAL    Always autonomous. Alerts, SMS, logs. These are agent acts.
+Tier B  SOFT PHYSICAL    Reversible, low consequence. requires_approval: true, or
+                         reasoning_policy: post_action (never both).
+Tier C  HARD PHYSICAL    Approval workflow, always: propose, operator replies
+                         YES/NO, then execute or cancel.
+Tier D  SAFETY-CRITICAL  Always autonomous, attempted before lower work, before any
+                         LLM; cannot be disabled or overridden. bypass_llm is set
+                         automatically.
 ```
 
-**The letter is two decisions, not a single scale.** Reading A→D as increasing
-severity gets three things wrong, and every one of them has produced a defect.
+**The letter is two axes, not a severity scale.** Treating A→D as rising
+severity has produced defects three times.
 
-- **Consequence class** — `informational`, `soft`, `hard` — is what the action
-  does to the world. Whether opening a circuit is reversible is a fact about
-  site wiring, established per channel at commissioning, so a skill author
-  cannot hold it and the runtime registry owns it. That is a stronger reason
-  than untrusted input: it holds for a scrupulous author.
-- **Authority basis** — `autonomous`, `operator_approval`, `safety_condition` —
-  is what licenses one dispatch.
+- **Consequence class** (`informational`, `soft`, `hard`): what the act does to
+  the world. Whether opening a circuit is reversible is a fact about site
+  wiring, established per channel at commissioning, so the runtime registry
+  owns it.
+- **Authority basis** (`autonomous`, `operator_approval`, `safety_condition`):
+  what licenses one dispatch.
 
-The letters are the pairs that exist: A is informational and autonomous; B is
-soft, autonomous or approved per deployment; C is hard and approved; D is hard
-under a release-owned safety condition, pre-authorised because no human is
-available in the time the condition allows.
+So A is informational/autonomous; B is soft, autonomous or approved per
+deployment; C is hard/approved; D is hard under a release-owned safety
+condition. Consequences:
 
-Three consequences follow, and they are rules rather than curiosities:
+- A and D are both autonomous. A notice accompanying a trip never inherits the
+  trip's authority; any rule taking a maximum over tiers exempts informational
+  actions.
+- `requires_approval` moves a Tier B action along the authority axis without
+  changing its letter.
+- A Tier D floor is a category error: `trip_relay` is registered at a hard floor
+  and reaches D only through a safety condition.
 
-- **A and D are both autonomous.** A notification accompanying a trip must
-  never inherit the trip's authority, so any rule taking a maximum over tiers
-  must exempt informational actions. On the two axes there is nothing to
-  exempt — consequence class does not travel between actions.
-- **`requires_approval` moves a Tier B action along the authority axis** without
-  changing its letter, which is why the letter alone never decided whether a
-  soft action waits for a human.
-- **A Tier D floor is a category error.** D is not more consequence than C; it
-  is the same consequence under a different licence, and no registry entry is in
-  a position to assert a licence. `trip_relay` is registered at a hard floor
-  and reaches D only through a safety condition — the model, not a
-  workaround.
-
-`skills-package/v3.md` in `ori-specs` carries this and its reasoning, and
-`evidence/v2.md` already records the authority basis on every attested action.
+`skills-package/v3.md` (ori-specs) carries the reasoning; `evidence/v2.md`
+records the authority basis on every attested action.
 
 **The runtime owns the floor, and owns Tier D outright.** `skill.yaml` is
-untrusted input — it is the thing this framework constrains. Be precise about
-which half of the tier decision the runtime holds:
+untrusted input.
 
-- **Minimum tier — runtime-owned.** `ori/reasoning/action_registry.py` records,
-  for every action the runtime can execute, its minimum tier, whether it
-  actuates physically, and whether it may serve as a Tier C safe default. A
-  skill declaration may raise an action's tier and never lower it.
-- **Maximum tier — runtime-owned only at Tier D, and only by provenance.** A
-  skill still chooses any tier at or above the floor. Tier D is the exception,
-  because it is the one tier that removes the operator: it fires immediately,
-  before any LLM, and cannot be overridden. A signature proves who wrote a
-  skill, not that the runtime granted it that authority, so **Tier D triggers
-  are accepted only from skills that ship with the runtime** (`Skill.first_party`,
-  set by the loader and never read from YAML). Escalation into Tier D from a
-  skill's `actions.available` list is capped at Tier C for the same reason.
+- **Minimum tier, runtime-owned.** `ori/reasoning/action_registry.py` records,
+  per executable action, its minimum tier, whether it actuates, and whether it
+  may be a Tier C safe default. A skill may raise a tier, never lower it.
+- **Tier D, by provenance only.** Tier D triggers are accepted only from skills
+  that ship with the runtime (`Skill.first_party`, set by the loader, never read
+  from YAML). Escalation into D from `actions.available` is capped at C.
+- **A capability grant governs Tier A to C only and never confers D.**
+  `device_policy.py` returns for Tier D before it consults expiry
+  (`device-policy/v2.md`). Safety authority must not go stale.
+- **The end state is `safety-profile/v1.md`:** release-owned typed conditions
+  bound to a commissioned zone, with the safety registry (`ori/safety/`) as the
+  sole Tier D path once #324 lands. Every packaged `action_tier: D` is legacy
+  against it. Nothing deployment-supplied reaches a profile: no config value,
+  remote command, DevicePolicy or entitlement alters a condition, multiplier,
+  threshold or outcome. A capacity arrives only through the commissioned
+  binding.
 
-A general capability grant — binding skill identity, trigger, action and
-permitted maximum tier — governs **Tier A to C only, and must never be able to
-confer Tier D**. Provenance is not a stopgap awaiting that contract; for Tier D
-it is the answer. An issuer that could grant Tier D would give autonomous safety
-authority an expiry, a revocation path and a holder the runtime never reviewed —
-which is why `device_policy.py` returns for Tier D before it consults expiry at
-all, as `device-policy/v2.md` in `ori-specs` requires. Safety authority that can go stale contradicts the 2 a.m. outage this
-runtime exists for.
-
-**Provenance is containment, not the final model.** It is the answer against a
-capability grant, and it is not the end state. First-party provenance says only
-that the runtime trusts code it shipped — which restricts the *author* without
-the runtime *owning the decision*, and leaves the safety envelope a property of
-which skills happen to be installed, expressed as untyped numbers in manifest
-YAML. The end state is `safety-profile/v1.md`: release-owned typed conditions
-bound to a commissioned zone, activated by ratification, with the safety
-registry as the sole Tier D path once the cutover in #324 lands. Every packaged
-`action_tier: D` declaration is legacy against that contract.
-
-Nothing deployment-supplied ever reaches a profile. `safety-profile/v1.md` is
-explicit that a profile has no deployment-supplied parameters: a value in a
-runtime configuration document is not an input to any profile, commissioning
-supplies the zone but may not author a condition kind, multiplier, threshold or
-outcome, and no remote command, DevicePolicy or entitlement may alter one. A
-capacity is a safety parameter, so it arrives only through the commissioned
-binding.
-
-The floor is enforced
-at skill load, at dispatch, and again in `_execute_immediately`; the trigger
-tier clamp is reapplied after every extension boundary; the sensor reading names
-(`value`, `sensor_id`, `sensor_type`, `unit`, `quality`) are reserved at load,
-stripped where hook output merges, and assigned unconditionally in the rule
-engine. Each layer must fail closed on its own — a check that holds only
-because an earlier check held is not a boundary. `register_executor()` refuses
-an action that has no registry entry, so adding an executor without a capability
-raises rather than leaving a physical action ungoverned; add the entry in the
-same change.
+**Every layer fails closed on its own.** The floor is enforced at skill load,
+at dispatch and again in `_execute_immediately`. The trigger tier clamp is
+reapplied after every extension boundary. The reading names (`value`,
+`sensor_id`, `sensor_type`, `unit`, `quality`) are reserved at load, stripped
+where hook output merges, and assigned unconditionally in the rule engine. A
+check that holds only because an earlier check held is not a boundary.
+`register_executor()` refuses an action with no registry entry; add the entry in
+the same change.
 
 **Skill provenance is positive.** A skill is first-party because it ships inside
 the package (`_is_core_bundled_skill`), never because its path failed to match
-some other directory. Everything else is community content and must carry a
-verified signature. Community hook execution is currently blocked: the
-in-process sandbox was removed rather than repaired, there is no fallback, and a
-non-first-party skill carrying `hooks.py` is refused entirely. Isolated
-execution is being specified in `ori-specs` before implementation.
+another directory. Everything else must carry a verified signature. Community
+hooks do not execute: a non-first-party skill carrying `hooks.py` is refused,
+and isolated execution is being specified in ori-specs first.
 
-**The complete decision tree:**
+**Dispatch order** (`docs/DISPATCH_PLAN.md` holds the full tree and reasoning):
 
-```text
-Sensor reading arrives
-    │
-    ▼
-DISCOVERY BARRIER — one event, every eligible skill, evaluated exhaustively
-    Eligible means the skill declares this reading's sensor type; the bus was
-    that boundary before, and dropping it let a current or gas condition match
-    an unrelated channel. Every trigger whose condition holds is collected,
-    across those skills, before any reasoning is scheduled. Tier D conditions
-    read the reading and the skill's configuration only, so they are decided
-    and their acts attempted before any hook runs or any history is read; the
-    loader refuses a Tier D condition naming anything else.
-    Declaration order decides nothing. A trigger in cooldown does not match,
-    and neither does one with a cooldown whose own plan is still in flight.
-    No cooldown or in-flight hold reads or charges against a Tier D attempt:
-    a plan granting Tier D dispatches it on every matching reading, and only
-    its other actions wait. Cooldown is charged later, against the outcome
-    those other actions reached.
-    │
-    ▼
-THE PLAN — each matched trigger's actions, each at its own authority
-    informational(action)              → A
-    the licensed protective outcome,
-      with every clause of the grant   → D
-    otherwise            min(C, max(registry floor, declared tier))
-    Nothing inherits authority from the incident. An action the registry does
-    not govern, and one needing a commissioned zone that has none, are refused
-    here rather than dispatched and left to fail at a missing executor.
-    │
-    ▼
-TIER D FIRST — attempted across the whole discovery set
-    Before any reasoning task is scheduled anywhere in it. Tier A notices still
-    run, and an opposing act already running is not interrupted. What it does
-    foreclose lasts for the event, not just while its executor runs: the event
-    keeps it after the act completes, so the same event's lower-authority
-    opposite is refused rather than admitted against an empty gate. A later
-    event's trip is never absorbed by it, and a failed act is never joined.
-    │
-    ▼
-LOCAL SLM — for what remains. Returns reasoning text. Confidence is
-            telemetry-only and currently 0.0 for base completion backends.
-    │
-    ▼
-ACTION DISPATCHER — admits against the resource, then routes on the tier
-    Contention is decided on the resource an action drives, never its name.
-    The same outcome coalesces into one act; the opposite conflicts.
-    Tier A → Execute informational action immediately
-    Tier B → Execute soft physical action before explanation when
-             reasoning_policy: post_action, or use approval workflow
-    Tier C → Run approval workflow. Send WhatsApp/SMS. Wait for scoped
-             YES-<proposal_id> or NO-<proposal_id>.
-    Tier D → Execute immediately. No approval, and no model was consulted.
-```
-
-`docs/DISPATCH_PLAN.md` carries this and its reasoning.
+1. **Discovery barrier.** One event, every skill that declares the reading's
+   sensor type, every matching trigger collected before any reasoning is
+   scheduled. Declaration order decides nothing. Tier D conditions read only the
+   reading and the skill's configuration (the loader refuses anything else), so
+   they are decided before any hook runs or history is read. No cooldown or
+   in-flight hold reads or charges against a Tier D attempt: a plan granting
+   Tier D dispatches it on every matching reading, only the plan's other
+   actions wait, and cooldown is charged against their outcome.
+2. **The plan.** Each action at its own authority: informational → A; the
+   licensed protective outcome with every clause of the grant → D; otherwise
+   `min(C, max(registry floor, declared tier))`. An ungoverned action, or one
+   needing a commissioned zone that has none, is refused here.
+3. **Tier D first,** across the whole discovery set, before any reasoning task.
+   Tier A notices still run, and an opposing act already running is not
+   interrupted. Foreclosure belongs to the event: its lower-authority opposite is refused for
+   that event even after the act completes; a later event's trip is never
+   absorbed and a failed act is never joined.
+4. **Local SLM** for what remains.
+5. **Dispatcher** admits against the resource an action drives, never its name:
+   the same outcome coalesces, the opposite conflicts. Then A executes; B
+   executes (post_action) or asks; C asks for a scoped `YES-<proposal_id>` /
+   `NO-<proposal_id>`; D executes.
 
 ---
 
-## Canonical Data Types
+## The Action Dispatcher
 
-Every function that touches sensor data uses one of these. Never bypass them.
+`ori/reasoning/action_dispatcher.py`. Tier B approval is decided by the matched
+trigger's `requires_approval` (`skill.config` only when no trigger matches
+`context.trigger_name`). The approval message template is built there and in
+`ori/actions/whatsapp.py`; its
+`Measured:` line is the reading's own time as the device reported it, and
+`Detected:` the runtime's clock, both in `device.timezone`.
 
-```python
-# ori/network/events.py
+**Host-state approval workflow** (Tier C host actions, Tier B with approval):
+send through `AlertFailoverSender`, wait for the scoped reply within
+`approval_timeout_seconds` (default 300). YES executes; NO, an invalid reply or
+timeout executes `safe_default_action`. A timeout also notifies
+`actions.secondary_contact` once; that notice carries no approval authority and
+nothing re-asks.
 
-from dataclasses import dataclass, field
-from typing import Optional
-import uuid
+**Governed approval** (a physical Tier C action on a commissioned zone,
+`tier-c-approval/v1`):
 
-@dataclass
-class SensorReading:
-    sensor_id:   str
-    sensor_type: str        # 'temperature' | 'current' | 'voltage' | 'humidity' etc.
-    value:       float
-    unit:        str        # 'celsius' | 'ampere' | 'volt' | 'percent' etc.
-    timestamp:   int        # unix milliseconds, always UTC
-    quality:     float      # 0.0 to 1.0
-    metadata:    dict = field(default_factory=dict)
-    raw:         Optional[bytes] = None
+- The proposal row (zone, binding digest, authority snapshot, monotonic
+  deadline) commits before anyone is asked.
+- A reply is an approval only inside one store transaction that matches binding
+  and authority bytes, finds no unresolved dispatch of the same outcome on the
+  zone, reserves a terminal record, and claims any v2 token.
+- Dispatch follows at once with nothing written ahead of the executor; the
+  marker lands beside it and the outcome after it.
+- Expired, rejected, blocked or changed: one non-actuating safe-default intent,
+  the operator told why. A decision that precedes no act is written before it
+  is reported, in one transaction with that intent; the intent is an
+  obligation retried while pending, never a receipt.
+- A physical Tier C action with no commissioned zone, and `coap_command` at
+  Tier C, are refused as proposals.
 
-@dataclass
-class OriEvent:
-    event_id:    str
-    event_type:  str        # 'sensor.reading' | 'device.heartbeat' | 'skill.trigger'
-    device_id:   str
-    sensor_id:   str
-    timestamp:   int        # unix milliseconds, always UTC
-    reading:     Optional[SensorReading]
-    context:     dict = field(default_factory=dict)
-    source:      str = ''   # 'gpio' | 'i2c' | 'serial' | 'mqtt' | 'sysfs' | 'psutil'
-    fingerprint: str = ''
+**Restart and reconciliation.** A restart replays nothing. An open proposal
+closes `proposal_aborted_restart` with its safe default; marker without outcome
+is `dispatch_outcome_unknown`; neither is `dispatch_not_proven`, because an
+absent marker proves nothing. Both raise a CRITICAL operator and audit event. A
+graceful stop closes open proposals the same way. Nothing is written between
+the approval commit and the executor, so `approval_aborted_undispatched` is
+unreachable here. A store unreadable at recovery fails Tier C closed and nothing
+else: start completes, Tier D runs, health degrades. An uncertain dispatch
+blocks only its outcome on its zone until an authenticated operator observation
+(`evidence reconcile-tier-c`) or commissioned feedback reconciles it. Tier D
+consults none of this. Health carries `evidence.action_records`. A v1 offline token approves no physical action and no
+Tier C action; a v2 token binds one proposal.
 
-    @classmethod
-    def from_reading(cls, reading: SensorReading, device_id: str) -> 'OriEvent':
-        return cls(
-            event_id=str(uuid.uuid4()),
-            event_type='sensor.reading',
-            device_id=device_id,
-            sensor_id=reading.sensor_id,
-            timestamp=reading.timestamp,
-            reading=reading,
-            source=reading.metadata.get('source', ''),
-        )
-
-@dataclass
-class ActionResult:
-    """Returned by ActionDispatcher after every action attempt."""
-    action_name:   str
-    tier:          str          # 'A' | 'B' | 'C' | 'D'
-    executed:      bool
-    approved:      bool | None  # None for Tiers A/B/D (no approval step)
-    action_taken:  str          # actual action executed (may be safe_default)
-    timestamp:     int
-    operator_response: str | None = None
-
-@dataclass
-class ReasoningResult:
-    """Returned by the Intelligence Elevator after every reasoning call."""
-    text:          str
-    tier:          str          # 'rule' | 'local_slm' | 'gateway'
-    model:         str
-    tokens_used:   int
-    latency_ms:    int
-    confidence:    float = 0.0
-    action_tier:   str = 'A'   # Default: informational only
-    proposed_action: str | None = None
-```
+**Fire-and-track.** The dispatcher never blocks the loop while waiting, uses
+`asyncio.wait_for` for replies, always returns an `ActionResult`, and never lets
+a failed action crash the runtime. Every attempt is logged to `action_log`
+after the act, never ahead of it, through one ordered, bounded writer; a record
+past the ceiling, refused, or unwritten at shutdown is counted lost and
+reported (`docs/DISPATCH_PLAN.md`).
 
 ---
 
-## Directory Structure
+## Skills
 
-```bash
-ori/
-├── AGENTS.md
-├── CLAUDE.md
-├── PRINCIPLES.md
-├── README.md
-├── CONTRIBUTING.md
-├── SECURITY.md
-├── LICENSE
-├── pyproject.toml
-├── requirements/
-│   ├── runtime.in
-│   ├── runtime.txt
-│   ├── dev.in
-│   ├── dev.txt
-│   └── README.md
-├── ori.yaml.example
-├── ori.linux.yaml.example
-├── ori.yaml.phone.example
-│
-├── docs/
-│   ├── CAPABILITY_MATRIX.md
-│   ├── linux-setup.md
-│   └── releases/
-│
-├── scripts/
-│   └── guard-capability-matrix.sh
-│
-├── ori/
-│   ├── __init__.py
-│   ├── runtime/               ← main event loop, OriRuntime composed one module per domain
-│   ├── config/                ← ori.yaml loader and validator, one module per section
-│   │
-│   ├── utils/
-│   │   ├── bool_utils.py
-│   │   └── time_utils.py
-│   │
-│   ├── gateway/
-│   │   ├── export.py          ← MQTT export responder for gateway data requests
-│   │   └── reasoning.py       ← MQTT request/response client for Tier 3 reasoning
-│   │
-│   ├── hal/                   ← Hardware Abstraction Layer (Layer 1)
-│   │   ├── __init__.py
-│   │   ├── base.py
-│   │   ├── i2c_adapter.py
-│   │   ├── serial_adapter.py
-│   │   ├── mqtt_adapter.py    ← Generic MQTT telemetry adapter
-│   │   ├── psutil_adapter.py  ← PC-Ori, no hardware needed
-│   │   ├── smart_adapter.py
-│   │   ├── http_adapter.py
-│   │   ├── opcua_adapter.py
-│   │   ├── victron_adapter.py
-│   │   ├── growatt_adapter.py
-│   │   └── ... (LoRaWAN, Zigbee, USB-Serial, MQTT perception adapters)
-│   │
-│   ├── network/               ← Network Layer (Layer 2)
-│   │   ├── __init__.py
-│   │   ├── events.py          ← OriEvent + SensorReading + ActionResult — BUILD FIRST
-│   │   ├── event_bus.py
-│   │   ├── deduplicator.py
-│   │   └── sms_webhook.py
-│   │
-│   ├── reasoning/             ← Intelligence Elevator + Action Tiers (Layer 4)
-│   │   ├── __init__.py
-│   │   ├── elevator.py        ← tier selector
-│   │   ├── rule_engine.py     ← deterministic rules — BUILD BEFORE LLM
-│   │   ├── local_llm.py       ← llama-cpp-python wrapper
-│   │   ├── causal_memory.py   ← SQLite pattern cache
-│   │   ├── capability_posture.py
-│   │   └── action_dispatcher.py ← ACTION TIER ROUTER — the agent's executor
-│   │
-│   ├── hardware/
-│   │   ├── __init__.py
-│   │   └── led_indicator.py
-│   │
-│   ├── policy/
-│   │   ├── device_policy.py
-│   │   └── remote_fetch.py
-│   │
-│   ├── safety/                ← release-owned safety registry (inert while every shipped profile is a candidate; sole Tier D path after #324)
-│   │
-│   ├── security/
-│   │   ├── __init__.py
-│   │   ├── offline_tokens.py
-│   │   ├── evidence-authority-keys.json ← the evidence authority's key registry the release ships
-│   │   ├── commissioning/     ← signed binding, anchors, profiles, proof operation
-│   │   ├── evidence/          ← chain, ledger, exchange artifacts, custody keys
-│   │   ├── firmware/          ← telemetry, commands, liveness, provisioning
-│   │   └── remote_commands/   ← verification, policy, throttle, lockout
-│   │
-│   ├── telemetry/             ← HTTP telemetry export to the product API
-│   │
-│   ├── skills/                ← Skills loader (Layer 5)
-│   │   ├── __init__.py
-│   │   ├── loader.py          ← the loader's interface; re-exports only
-│   │   ├── _loader.py         ← SkillLoader: discovery, selection, loading
-│   │   ├── _core.py, _manifest.py, _provenance.py, _validation.py, _registration.py
-│   │   ├── hooks_api.py
-│   │   ├── sandbox.py
-│   │   └── signing.py
-│   │
-│   ├── actions/               ← Action executors (called by action_dispatcher)
-│   │   ├── __init__.py
-│   │   ├── whatsapp.py        ← Twilio / WhatsApp Cloud API
-│   │   ├── sms.py             ← Africa's Talking (PRIMARY for Nigeria)
-│   │   ├── relay.py           ← Physical relay control (GPIO output)
-│   │   ├── alert_failover.py  ← Failover alert transport wrapper
-│   │   ├── coap.py            ← CoAP action executor for constrained devices
-│   │   ├── process_manager.py
-│   │   ├── system_control.py
-│   │   └── logger.py
-│   │
-│   └── state/
-│       ├── __init__.py
-│       ├── store.py           ← StateStore, composed from one class per domain
-│       ├── _migrations.py     ← the DDL and the migrations that apply it
-│       └── _*.py              ← one module per domain: history, tier_c, firmware, ...
-│
-├── skills/
-│   ├── template/
-│   │   ├── skill.yaml
-│   │   └── hooks.py
-│   ├── energy-anomaly-detector/
-│   │   ├── skill.yaml
-│   │   └── hooks.py
-│   ├── retail-occupancy-optimizer/
-│   │   ├── skill.yaml
-│   │   └── hooks.py
-│   ├── hvac-refrigerant-monitor/
-│   │   ├── skill.yaml
-│   │   └── hooks.py
-│   ├── pc-network-threat-monitor/
-│   │   ├── skill.yaml
-│   │   └── hooks.py
-│   ├── site-safety-ppe/
-│   │   ├── skill.yaml
-│   │   └── hooks.py
-│   └── pc-system-health/
-│       ├── skill.yaml
-│       └── hooks.py           ← uses HookContext dynamic API
-│
-└── tests/
-    ├── __init__.py
-    ├── test_action_dispatcher.py
-    ├── test_config.py
-    ├── test_elevator.py
-    ├── test_led_indicator.py
-    ├── test_remote_policy_fetch.py
-    ├── test_offline_tokens.py
-    └── ... (full suite in tests/)
-```
+The format is `skills-package/v3` (ori-specs); `skills/template/skill.yaml` and
+`skills/energy-anomaly-detector/skill.yaml` are worked examples. Rules:
+
+- Every action declares its tier. An action with no tier, or an unknown tier, is
+  refused, never treated as A.
+- **An action declared above Tier A must exist in the action registry,**
+  checked at skill load. Tier A is exempt: a skill may name its own
+  informational action.
+- **Physical capability is an outcome on a zone, never a name.** No new physical
+  action name is added to the registry; a new capability arrives as an outcome
+  defined in ori-specs and bound to a resource by the commissioned binding. The
+  three legacy actuator names (`trip_relay`, `close_gas_valve`,
+  `release_relay`) resolve to `open_protected_circuit` /
+  `close_protected_circuit` through the zone's mapping. Every physical registry
+  entry has an executor the runtime registers, and the registry is owned by the
+  release; nothing at deployment adds to it.
+- **A package holds no Tier D action.** A Tier D trigger's protective outcome
+  comes from a safety profile once migrated; until then it observes and
+  notifies.
+- **A skill whose physical action is not yet bound ships its notifications
+  only.** It alerts what should happen and never declares that it happened.
+- **There is no deployment override of a skill's actions.** A `skills:` entry in
+  `ori.yaml` carries `name` and `version` only. Binding a protective action is a
+  runtime change plus a commissioned binding; any text suggesting a config route
+  to actuation is wrong.
+
+`same_weekday_hour_baseline(sensor_id, lookback_weeks=8, min_weeks=3)` gives a
+bounded site-local baseline for anomaly suppression, never for Tier D cutoffs or
+as a confidence proxy.
 
 ---
 
-## Build Order
+## Configuration
 
-Follow this sequence exactly. Each module depends on the previous.
-
-```text
-Step 1   ori/network/events.py          ← SensorReading, OriEvent, ActionResult, ReasoningResult
-Step 2   ori/config/                    ← ori.yaml loader with action_tier support
-Step 3   ori/state/store.py             ← SQLite wrapper + action_log table
-Step 4   ori/hal/base.py                ← BaseAdapter interface
-Step 5   ori/hal/psutil_adapter.py      ← testable on any laptop, no hardware
-Step 6   ori/network/deduplicator.py
-Step 7   ori/network/event_bus.py
-Step 8   ori/reasoning/rule_engine.py   ← includes bypass_llm + action_tier on rules
-Step 9   ori/hal/i2c_adapter.py         ← requires Pi
-Step 10  ori/hal/serial_adapter.py      ← requires energy meter
-Step 11  ori/reasoning/local_llm.py
-Step 12  ori/reasoning/elevator.py
-Step 13  ori/reasoning/causal_memory.py
-Step 14  ori/skills/loader.py
-Step 15  ori/reasoning/action_dispatcher.py  ← THE ACTION ENGINE
-Step 16  ori/actions/whatsapp.py        ← includes approval_workflow response listener
-Step 17  ori/actions/sms.py             ← Africa's Talking primary channel
-Step 18  ori/actions/relay.py           ← GPIO output for physical control
-Step 19  ori/actions/logger.py
-Step 20  ori/runtime/                   ← ties everything together
-```
-
-**Current build state:** All 20 steps complete. Runtime is operational.
-
----
-
-## The Action Dispatcher — Key Implementation Details
-
-```python
-# ori/reasoning/action_dispatcher.py
-
-class ActionTier:
-    INFORMATIONAL   = 'A'
-    SOFT_PHYSICAL   = 'B'
-    HARD_PHYSICAL   = 'C'
-    SAFETY_CRITICAL = 'D'
-
-class ActionDispatcher:
-    async def dispatch(self, action: str, tier: str,
-                       context: SkillContext,
-                       result: ReasoningResult) -> ActionResult:
-
-        if tier == ActionTier.SAFETY_CRITICAL:
-            return await self._execute_immediately(action, context)
-
-        if tier == ActionTier.INFORMATIONAL:
-            return await self._execute_immediately(action, context)
-
-        if tier == ActionTier.SOFT_PHYSICAL:
-            # A post_action trigger reaches here only without requires_approval:
-            # the loader refuses both, and the elevator refuses to dispatch one.
-            if self._tier_b_requires_approval(context):
-                return await self._approval_workflow(action, context, result)
-            return await self._execute_immediately(action, context)
-
-        if tier == ActionTier.HARD_PHYSICAL:
-            # Always approval workflow. No exception.
-            return await self._approval_workflow(action, context, result)
-
-    @staticmethod
-    def _tier_b_requires_approval(context) -> bool:
-        # The matched trigger's requires_approval decides. skill.config is read
-        # only when no trigger carries context.trigger_name.
-        for trigger in context.skill.triggers:
-            if trigger.name == context.trigger_name:
-                return bool(trigger.requires_approval)
-        return bool(context.skill.config.get('requires_approval', False))
-
-    async def _approval_workflow(self, action, context, result) -> ActionResult:
-        # The existing workflow: host-state Tier C actions and Tier B actions
-        # that require approval.
-        # 1. Send WhatsApp/SMS with reasoning + proposed action via AlertFailoverSender
-        #    (tries primary channel first, falls back to secondary on failure)
-        # 2. Wait for YES-<proposal_id>/NO-<proposal_id>
-        #    within approval_timeout_seconds (default: 300)
-        # 3. Scoped YES → execute action
-        # 4. Scoped NO, invalid reply, or timeout → execute safe_default_action
-        # 5. On timeout, after the safe default, notify actions.secondary_contact
-        #    once. The notice carries no approval authority, and nothing re-asks:
-        #    a new proposal needs the trigger to fire again.
-        ...
-
-    async def _governed_approval_workflow(self, action, context, result, ...) -> ActionResult:
-        # A physical Tier C action on a commissioned zone, under tier-c-approval/v1.
-        # 1. Commit the proposal row before anyone is asked: zone, binding digest,
-        #    closed authority snapshot, created/expires for audit, a monotonic deadline.
-        # 2. Ask, then listen. An affirmative reply is an approval only inside one
-        #    store transaction: binding and authority bytes must match, no unresolved
-        #    dispatch may command the same outcome on the same zone, a terminal record
-        #    is reserved under the pending ceiling, and any v2 token is claimed there.
-        # 3. Dispatch at once, in this live attempt, with nothing written ahead of the
-        #    executor; the dispatch marker lands beside it; the outcome is appended
-        #    after it and retried while the process lives.
-        # 4. Expired, rejected, blocked, or changed: one non-actuating safe-default
-        #    intent per proposal, the operator told why. Expiry also notifies
-        #    actions.secondary_contact once, as in step 5 above.
-        ...
-```
-
-**Restart and reconciliation for governed approvals.** A restart replays
-nothing: an open proposal closes `proposal_aborted_restart` with its safe
-default; an approval with a durable marker and no outcome is
-`dispatch_outcome_unknown`; one with neither is `dispatch_not_proven`, because
-the absence of a marker proves nothing. This runtime writes nothing between the
-approval commit and the executor, so `approval_aborted_undispatched` is
-unreachable in it. Both uncertain states raise a CRITICAL operator and audit
-event at recovery. A graceful stop closes open proposals the same way. A store
-that cannot be read at recovery fails Tier C closed and nothing else: the start
-completes, Tier D runs, health degrades, and physical Tier C proposals are
-refused until a start settles the previous process's. A decision that precedes
-no act is written before it is reported, in one transaction with the proposal's
-safe-default intent, and the intent is an obligation attempted whenever it is
-still pending, never a receipt. An
-uncertain dispatch blocks only its outcome on its zone until an authenticated
-operator's observation (`evidence reconcile-tier-c`, submitted by the bridge
-over the operator socket) or commissioned feedback appends a reconciliation; Tier D
-consults none of this. Health carries `evidence.action_records`. A physical
-Tier C action with no commissioned zone, and `coap_command` at Tier C, are
-refused as proposals. A v1 offline token approves no physical action at any
-tier and no Tier C action; a v2 token binds one proposal.
-
-The approval message template that appears on the operator's WhatsApp:
-
-```text
-ORI ALERT — Action Required
-Device: {device_id}
-Measured: {day_name} {HH:MM}   ← the reading's own time, as the device reported it;
-                               for a firmware reading "not reported by device",
-                               then "polled no more than A ago, as of T" when bounded
-Detected: {day_name} {HH:MM}   ← the runtime's clock when it saw the reading
-                               both local to device.timezone (default: Africa/Lagos)
-
-OBSERVATION:
-{result.text}
-
-REASONING:
-{result.reasoning if set, else result.text}
-
-PROPOSED ACTION:
-{action_description}
-
-CONFIDENCE: {result.confidence:.0%}
-
-Reply YES-{proposal_id} to approve  |  Reply NO-{proposal_id} to cancel
-Auto-cancel in {timeout} seconds if no response.
-```
-
----
-
-## The Skill YAML Format — Full with Action Tiers
-
-```yaml
-name: energy-anomaly-detector
-version: 0.1.0
-author: wasiubakare
-license: MIT
-signature: ed25519:...
-
-sensors_required:
-  - type: current_clamp
-  - type: voltage
-
-# Each trigger declares its action_tier explicitly
-triggers:
-  # Tier A: Informational — always autonomous
-  - name: anomalous_draw
-    condition: "load_current > (history.avg_24h('load_current') * 1.4)"
-    cooldown_seconds: 300
-    escalate_to: local_slm
-    action_tier: A
-
-  # Tier B: Soft — a reversible host-state action, explain after action
-  - name: runaway_process
-    condition: "cpu_percent > 95 and process_target_resolvable == 1"
-    cooldown_seconds: 60
-    escalate_to: rule
-    action_tier: B
-    reasoning_policy: post_action # or requires_approval: true to approve each termination; never both
-
-  # Tier C: Hard physical — propose isolating the commissioned circuit, await approval
-  - name: critical_fault
-    condition: "load_current > rated_capacity * 3.0"
-    cooldown_seconds: 0
-    escalate_to: rule
-    action_tier: C
-    approval_timeout_seconds: 300
-    safe_default_action: log_to_dashboard
-
-  # Tier D: Safety-critical — the condition is observed here; the protective
-  # outcome is not a skill action. Until this condition migrates into a
-  # release-owned safety profile, its defaults are notifications only.
-  - name: dangerous_overcurrent
-    condition: "load_current > rated_capacity * 5.0"
-    bypass_llm: true
-    action_tier: D
-    cooldown_seconds: 0
-
-prompts:
-  anomalous_draw: |
-    Current load: {load_current}A
-    24-hour average: {history.avg_24h('load_current')}A
-    Recent history: {history.last_n('load_current', 6)}
-    Time: {time} on {day_of_week}
-    Grid: {grid_voltage}V
-
-    Is this anomalous? Most likely cause? What should the owner do?
-    Answer in plain English, 2-3 sentences, no jargon.
-
-actions:
-  available:
-    - name: alert_whatsapp
-      tier: A
-
-    - name: alert_sms
-      tier: A
-
-    - name: log_to_dashboard
-      tier: A
-
-    - name: terminate_process
-      tier: B
-
-    - name: trip_relay
-      tier: C
-
-  defaults:
-    anomalous_draw: [alert_whatsapp, log_to_dashboard]
-    runaway_process: [terminate_process, alert_sms]
-    critical_fault: [trip_relay]
-    dangerous_overcurrent: [alert_whatsapp, log_to_dashboard]
-    daily_report: [alert_whatsapp]
-```
-
-Every action above Tier A in that example is one the runtime can execute:
-`terminate_process` resolves a host process, and `trip_relay` resolves to
-`open_protected_circuit` on the commissioned zone. There is no Tier D action in
-the list because a package holds none — a Tier D trigger's protective outcome
-comes from a safety profile once the condition migrates, and until then the
-trigger observes and notifies.
-
-**An action declared above Tier A must exist in the runtime's action registry.**
-Registry membership is a closed, decidable fact, so it is answered at skill load
-rather than when the trigger fires — which for a Tier D trigger is the worst
-moment to learn that the only protective action in the list was never something
-the runtime could perform. A declaration the registry does not hold is refused.
-
-Tier A is exempt, and deliberately: a skill may name its own informational
-action, which actuates nothing and whose intent dispatch records. The boundary
-is the claim to change the world, not the absence of an entry.
-
-**Physical capability is an outcome on a zone, never a name.** Two guarantees
-hold in both directions. `register_executor()` refuses an action with no
-registry entry, so nothing becomes *executable* without becoming *governed* in
-the same change; and every physical registry entry has an executor the runtime
-registers — the commissioned-outcome actions when a zone is accepted,
-`coap_command` on its own — so nothing is *governed* that the runtime cannot
-perform. An entry with nothing behind it is a capability the
-runtime advertises and does not have — a skill declares it, passes load-time
-validation, reaches dispatch, and nothing happens — and the registry held three
-such names until they were retired.
-
-So no new physical action name is added to the registry. A new physical
-capability arrives as an *outcome* — defined in `ori-specs` first, bound to a
-resource by the commissioned binding — and the three actuator-specific names
-that remain are the legacy set `safety-profile/v1` carries as normative
-vocabulary, surviving the profile migration only as internal executor names
-behind the outcome resolver. That is what keeps commissioning a new site from
-requiring a runtime release: a release defines outcomes and their floors, and
-commissioning binds one to a resource.
-
-The registry is owned by the reviewed release; no deployment, entitlement or
-remote command adds to it.
-
-**A skill whose physical action is not yet bound ships its notifications only.**
-Several bundled skills do exactly this. They retain informational default
-actions, so where a trigger reaches dispatch and a configured notification
-executor succeeds, the operator can be alerted to what should happen; what the
-skill does not do is declare that it happened. That is the supported way to ship
-a trigger whose physical action awaits commissioning.
-
-**There is no deployment override of a skill's action lists.** A `skills:` entry
-in `ori.yaml` carries `name` and `version`, and nothing else; no
-setting replaces `actions.defaults`. Binding a protective action to a trigger is
-a change to the runtime and to the site's commissioned binding. Any comment or
-document suggesting a configuration route to actuation is describing a mechanism
-that does not exist.
-
----
-
-## The ori.yaml Format — Device Configuration
-
-```yaml
-device:
-  id: energy-monitor-ikeja-01
-  name: Ikeja Office Energy Monitor
-  location: Lagos, Nigeria
-  deployment_profile: development # development | staging | production; staging/production enforce hardened posture
-  rated_capacity_amps: 10.0 # Used in Tier D threshold calculations
-
-sensors:
-  - id: load-current
-    type: ads1115_current
-    protocol: i2c
-    address: 0x48
-    channel: 0
-    poll_interval_ms: 1000
-    calibration:
-      sensitivity_v_per_amp: 0.0333 # the clamp's own figure; no default exists
-      mains_frequency_hz: 50.0
-
-  - id: grid-voltage
-    type: ads1115_voltage
-    protocol: i2c
-    address: 0x49 # one ADS1115 serves one sensor; a second channel is a second chip
-    channel: 1
-    poll_interval_ms: 2000
-
-skills:
-  - name: energy-anomaly-detector
-    version: "0.1.0"
-
-security:
-  enforce_production_posture: false # staging/production profiles cannot opt out
-  skills:
-    require_signed: false # non-packaged skills always require ed25519; this also binds packaged ones
-
-database:
-  path: ori_state.db # production should place this under an encrypted mount
-
-state:
-  encryption:
-    mode: disabled # disabled | filesystem_required
-    encrypted_path_prefixes: [] # e.g. ["/var/lib/ori-encrypted"]
-    marker_file: "" # optional existing marker; startup fails if missing
-
-reasoning:
-  default_tier: local
-  local_model: qwen2.5-0.5b-instruct-q4_k_m
-  model_path: /home/pi/models/
-
-gateway:
-  enabled: false
-  broker_url: mqtt://192.168.1.10:1883
-  broker_posture:
-    deployment_check: warning
-    anonymous_access: unknown
-    require_credentials: false
-    acl_policy: unknown
-  tls:
-    enabled: false
-    ca_certfile: ""
-    certfile: ""
-    keyfile: ""
-    keyfile_password_env: ""
-  auth:
-    enabled: false
-    shared_secret_env: GATEWAY_SHARED_SECRET
-    previous_shared_secret_env: ""
-    max_clock_skew_ms: 300000
-    replay_ttl_ms: 300000 # Minimum from receipt; also retained until the envelope is stale.
-  encryption:
-    enabled: false
-  node_heartbeat:
-    enabled: true
-    interval_seconds: 30
-  reasoning:
-    enabled: true
-    timeout_ms: 10000
-
-actions:
-  primary_alert_channel: sms # 'sms' | 'whatsapp' — use sms for Nigeria
-  alert_outbox:
-    retry_interval_minutes: 0.5
-    max_non_tier_d_attempts: 10
-    tier_d_critical_warning_threshold: 3
-    batch_size: 50
-  whatsapp:
-    enabled: true
-    to_number: "${OWNER_WHATSAPP_NUMBER}"
-  sms:
-    enabled: true # Africa's Talking — primary for Nigeria
-    to_number: "${OWNER_PHONE_NUMBER}"
-  relay:
-    enabled: false # true when physical relay is wired
-    gpio_pin: 26
-  coap:
-    enabled: false
-    timeout_s: 2.0
-    retries: 1
-    allowed_hosts: ["192.168.1.70"]
-    commands:
-      open_bypass_valve:
-        uri: "coap://192.168.1.70/actuators/bypass"
-        method: POST
-        payload: '{"state":"open"}'
-
-logging:
-  level: INFO
-  file: ori.log
-```
-
-Hook history helpers include `same_weekday_hour_baseline(sensor_id,
-lookback_weeks=8, min_weeks=3)`, which returns a bounded, site-local baseline
-from hourly retained history. Use it for deterministic context-aware anomaly
-suppression, not for Tier D safety cutoffs and not as a model-confidence proxy.
+`ori.yaml.example` (Pi), `ori.linux.yaml.example` and `ori.yaml.phone.example`
+are the annotated references; `.env.example` lists the environment variables.
+`device.deployment_profile` is `development | staging | production`; staging and
+production enforce hardened posture and cannot opt out. Non-packaged skills
+always require an ed25519 signature; `security.skills.require_signed: true` also
+binds packaged ones. `ori.yaml` is never committed (it is gitignored). Use SMS as the primary alert channel in
+Nigeria.
 
 ---
 
 ## Coding Conventions
 
-**Language:** Python 3.11+ with asyncio throughout. Type hints on every function.
+- Python 3.11+, asyncio throughout, type hints on every function. No
+  `time.sleep`, no blocking I/O, no `requests`: use `asyncio.sleep`,
+  `aiofiles`, `httpx`/`aiohttp`.
+- Files and functions `snake_case`, classes `PascalCase`, constants
+  `UPPER_SNAKE_CASE`. Tiers are single uppercase letters; sensor types are
+  lowercase strings; event types are dotted (`sensor.reading`).
+- Canonical types are in `ori/network/events.py` (`SensorReading`, `OriEvent`,
+  `ActionResult`, `ReasoningResult`): timestamps are unix milliseconds UTC,
+  quality is 0.0–1.0. Never bypass them.
+- Every new Python file starts with:
 
-**Naming:**
+  ```text
+  # Copyright 2026 Ori Nexus Systems LTD
+  # SPDX-License-Identifier: Apache-2.0
+  ```
 
-- Files: `snake_case`
-- Classes: `PascalCase`
-- Functions/variables: `snake_case`
-- Constants: `UPPER_SNAKE_CASE`
-- Action tiers: always single uppercase letter `'A'`, `'B'`, `'C'`, `'D'`
-- Sensor types: lowercase strings `'temperature'`, `'current'`
-- Event types: dot-separated strings `'sensor.reading'`, `'skill.trigger'`
-
-**Every new Python file must start with these two lines before any imports:**
-
-```text
-# Copyright 2026 Ori Nexus Systems LTD
-# SPDX-License-Identifier: Apache-2.0
-```
-
-Run `ruff check --fix` on every file you create before finishing.
-
-**Docstrings and comments:** say what the code does and the one fact a reader
-cannot see from it, and stop.
-
-- A docstring states the contract: what it returns or refuses, and the
-  invariant a caller relies on. A few lines; `Args:` only where a name does not
-  explain itself.
-- A comment explains a non-obvious *why* in one to three lines, beside the line
-  it explains. If it needs more, the reasoning belongs in the commit or PR body,
-  or in `docs/`, and the comment points there.
-- Never record history in code: no "previously", "was changed because", review
-  rounds or issue narratives. `git blame` holds that.
-- Modules are held under 1,500 lines and functions under 150
-  (`tests/test_module_size.py`, `tests/test_function_size.py`), docstrings and
-  comments included. Long prose spends that budget.
-
-**Error handling:**
-
-- HAL adapters raise `AdapterConnectionError` or `AdapterTimeoutError`
-- Action dispatcher catches all action errors — a failed action MUST NOT crash
-  the runtime. Log the failure, continue.
-- Approval workflow timeouts are handled gracefully — always execute
-  `safe_default_action` on timeout, never leave a Tier C action unresolved.
-
-**Async patterns:**
-
-```python
-# CORRECT
-await asyncio.sleep(1)           # never time.sleep()
-async with aiofiles.open(...)    # never open() for file I/O in async context
-asyncio.create_task(fn())        # for background tasks
-
-# WRONG — never block the event loop
-time.sleep(1)
-requests.get(url)                # use httpx or aiohttp
-```
-
-**Action dispatcher is fire-and-track:**
-The dispatcher is called after every reasoning result. It MUST:
-
-1. Never block the event loop while waiting for operator approval
-2. Use asyncio.wait_for() with timeout for approval responses
-3. Always produce an ActionResult, even on failure
-4. Log every action attempt to the action_log table in SQLite — after the act,
-   never ahead of it. Records of every act and of operator decisions go
-   through one ordered, bounded writer that retries a locked store;
-   a record past the ceiling, refused outright, or still unwritten at shutdown
-   is counted lost and reported, never waited for. A process that dies before
-   a row lands leaves that act out of the action log — see `docs/DISPATCH_PLAN.md`.
-
-**SQLite tables (add to `ori/state/_migrations.py`):**
-
-```sql
--- In addition to existing tables from V1.0:
-CREATE TABLE IF NOT EXISTS action_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    action_name TEXT NOT NULL,
-    tier TEXT NOT NULL,
-    executed INTEGER NOT NULL,  -- 0 or 1
-    approved INTEGER,           -- NULL for A/B/D, 0/1 for C
-    action_taken TEXT NOT NULL,
-    operator_response TEXT,
-    trigger_name TEXT,
-    timestamp INTEGER NOT NULL
-);
-```
+- Run `ruff check --fix` on every file you create. `mypy ori/` and pyright are
+  gated at zero.
+- **Comments and docstrings:** a docstring states the contract (what it returns
+  or refuses, the invariant a caller relies on) in a few lines. A comment
+  explains a non-obvious why in one to three lines. Longer reasoning goes in the
+  commit, the PR body or `docs/`. Never record history in code.
+- Modules stay under 1,500 lines and functions under 150, comments included
+  (`tests/test_module_size.py`, `tests/test_function_size.py`).
+- HAL adapters raise `AdapterConnectionError` or `AdapterTimeoutError`, and
+  every adapter wraps physical I/O in `async with self._breaker:`
+  (`HardwareCircuitBreaker`).
+- SQLite schema lives in `ori/state/_migrations.py`. Direct `sqlite3` with
+  parameterised queries; no ORM.
+- Modular monolith; no microservices on the device; no global state.
 
 ---
 
-## Platform and Hardware Notes
+## Platform and Hardware
 
-**Configured GPIO, CoAP, and local inference degrade only in development posture.**
+**Simulation is for development only.** Off a Pi, HAL adapters guard hardware
+imports and enter simulation (connect succeeds with a WARNING, reads return
+simulated values). Staging, production, and development with
+`security.enforce_production_posture: true` fail before opening the store when a
+configured GPIO relay or status signal lacks `gpiozero`, a CoAP action or sensor
+lacks `aiocoap`, or local reasoning lacks `llama-cpp-python` or a readable GGUF
+model. I2C and serial simulation remain adapter behaviour. A protocol not in
+`ori/hal/protocol_registry.py` is refused at startup.
 
-On non-Pi platforms (developer laptops, CI, cloud servers), hardware
-libraries like `gpiozero`, `smbus2`, and `RPi.bme280` are unavailable.
-Every HAL adapter guards its imports with `try/except ImportError` and
-enters simulation mode when the library is missing:
+`actions.relay.enabled` gates Tier B/C use only; a present `gpio_pin` declares
+the Tier D path and requires real GPIO even when disabled, so omit the pin when
+no relay is wired. Local inference is requested by
+`reasoning.default_tier: local` only.
 
-- `connect()` succeeds and logs a WARNING
-- `read()` returns simulated or cached values
-- No hardware is touched
+**Relay wiring.** Never derive a coil state or circuit outcome from contact type
+(NC/NO); the downstream wiring decides. Controller loss is not one condition:
+losing coil power de-energises the coil, but a killed process may leave the
+output at its last commanded state (measured on a Pi 4, `docs/evidence/`). Only
+the per-mode observation at commissioning licenses calling a state safe.
 
-This is intentional for `device.deployment_profile: development`. It allows
-the full reasoning pipeline, EventBus,
-StateStore, and action dispatcher to be exercised in tests and on
-developer machines without a Pi. The 5 skipped tests in the suite
-require a real Pi with `gpiozero` installed.
-
-Staging, production, and development deployments with
-`security.enforce_production_posture: true` fail before opening the state store
-when a configured GPIO relay/status signal lacks `gpiozero`, a configured CoAP
-action/sensor lacks `aiocoap`, or configured local reasoning lacks
-`llama-cpp-python` or a readable GGUF model. A hardened runtime must not report
-healthy while a requested physical, protocol, or reasoning capability is
-simulated or unavailable.
-
-For relay configuration, `actions.relay.enabled` gates Tier B/C use only. A
-present `gpio_pin` declares the Tier D physical path and therefore requires real
-GPIO even when `enabled: false`; omit the pin entirely when no relay is wired.
-Local inference is requested by `reasoning.default_tier: local`; dormant model
-path values under `default_tier: rule` do not activate that capability.
-
-**I2C and serial simulation remain separate adapter behavior.**
-If `protocol: i2c` or `protocol: serial` appears in ori.yaml on a
-machine without the Pi hardware libraries, `_make_adapter()` returns
-the adapter successfully, `connect()` logs a WARNING and sets
-`_simulated = True`, and all subsequent `read()` calls return
-simulated values. This is not a bug — it is the same path used in
-all HAL tests.
-
-**The supported protocols on a production Pi are:**
-
-- `psutil` — system metrics, no additional hardware required
-- `i2c` — requires `smbus2`, `gpiozero`, and sensor-specific libraries
-- `serial` — requires `pyserial` and a connected RS485/Modbus device
-
-Any other protocol in ori.yaml raises `ConfigValidationError` at
-startup before the event loop begins.
-
-**Relay wiring safety:**
-Never select NC or NO by convention. Contact type establishes nothing
-about the protected circuit — the downstream wiring decides whether a
-de-energised coil isolates or reconnects the load. Do not write code,
-config, or documentation that derives a coil state, or a circuit
-outcome, from a contact type.
-
-Controller loss is not one condition, and only one of its modes de-energises
-the coil by physics. Losing coil power does; what that does to the protected
-circuit is established per channel by commissioning — de-energise the coil,
-observe what the load actually does, record it. A process killed outright runs
-no cleanup, and the platform may leave the output driving its last commanded
-state: measured to do exactly that on a Pi 4 (docs/evidence/), where power
-loss and reset de-energised. That observation, per mode, is the only thing
-that licenses calling any state safe.
-
-**The relay is driven only through the commissioned binding.**
-`actions.relay.active_high` is refused from `ori.yaml`: polarity is a
-commissioned fact that arrives in the signed binding at
-`commissioning/binding.json` (`docs/COMMISSIONING.md`), which the runtime
-verifies, retains and reports. The relay is connected under the zone's
-polarity, startup commands the coil `de_energised` through it rather than
-assuming the platform default, and `trip_relay`, `close_gas_valve` and
-`release_relay` resolve to `open_protected_circuit` / `close_protected_circuit`
-through the zone's mapping, never through a convention about contact type. A
-declared pin with no accepted zone is not driven and its relay actions are not
-registered. What the coil does on controller loss is still whatever the
-wiring does — observe it at commissioning and record it.
+**The relay is driven only through the commissioned binding**
+(`commissioning/binding.json`, `docs/COMMISSIONING.md`). Polarity is refused
+from `ori.yaml`. Startup commands the coil `de_energised` through the zone's
+polarity. A declared pin with no accepted zone is not driven and its relay
+actions are not registered.
 
 ---
 
-## What NOT To Do
+## What Not To Do
 
-- **No monitoring-only mindset.** Never describe Ori as "monitoring and alerting."
-  Ori is an agent that acts. Monitoring is a side effect of its sensor layer.
-- **No flat action lists.** Every action in a skill YAML must declare its tier.
-  An action with no tier is a configuration error.
-- **No approval bypass for Tier C.** The approval workflow for hard physical
-  actions cannot be skipped, disabled, or made optional in config. If a skill
-  defines a Tier C action, the approval workflow runs. No exceptions.
-  Remote replies are scoped by default; bare `YES`/`NO` must not approve Tier C
-  unless a legacy/test deployment explicitly disables scoped reply enforcement.
-  For a physical Tier C action a reply is an approval only once the store has
-  committed it; nothing actuates on a reply the store did not take, and a
-  restart never replays an approval.
-- **No LLM for Tier D.** Safety-critical actions fire from the rule engine.
-  `bypass_llm: true` is set automatically for any trigger with `action_tier: D`.
-- **No trusting a skill's own tier declaration.** Every action with an executor
-  must have an `action_registry.py` entry. A skill may raise a tier, never lower
-  one, and a safe default must be non-actuating.
-- **No in-process execution of community hooks.** There is no fallback loader
-  and no config flag that re-enables one. Do not reintroduce a filtered-builtins
-  or import-hook "sandbox" — that approach was removed because it fails open.
-- **No unknown tiers treated as Tier A.** An unrecognised tier is refused.
-- **No microservices at device layer.** Modular monolith only.
-- **No ORM.** Direct sqlite3 with parameterised queries.
-- **No global state.** All state passes explicitly.
-- **No synchronous blocking calls.** Everything is async.
-- **No circuit breaker bypass**. Every adapter subclass must initialize `self._breaker = HardwareCircuitBreaker(adapter_name, config)` and securely wrap its physical I/O tasks within the asynchronous `async with self._breaker:` context manager to effortlessly provide hardware recovery.
-
----
-
-## Testing the Action Dispatcher
-
-```python
-# tests/test_action_dispatcher.py
-
-# Test Tier A: informational action fires immediately
-async def test_tier_a_fires_immediately():
-    ...
-
-# Test Tier B post-action: soft physical executes before reasoning
-async def test_tier_b_post_action_dispatches_before_reasoning():
-    ...
-
-# Test Tier B configured: soft physical requests approval when requires_approval: true
-async def test_tier_b_approval_when_configured():
-    ...
-
-# Test Tier C: hard physical always waits for approval
-async def test_tier_c_sends_approval_request():
-    ...
-
-# Test Tier C approval YES: action executes after YES response
-async def test_tier_c_executes_on_yes():
-    ...
-
-# Test Tier C approval NO: safe_default executes after NO response
-async def test_tier_c_safe_default_on_no():
-    ...
-
-# Test Tier C timeout: safe_default executes after timeout
-async def test_tier_c_safe_default_on_timeout():
-    ...
-
-# Test Tier D: fires immediately, bypasses dispatcher routing
-async def test_tier_d_bypasses_dispatcher():
-    ...
-```
-
----
-
-## Environment Variables
-
-```bash
-# Alert delivery
-OWNER_WHATSAPP_NUMBER=whatsapp:+234XXXXXXXXXX
-OWNER_PHONE_NUMBER=+234XXXXXXXXXX
-ORI_SMS_WEBHOOK_TOKEN=                # Shared token for inbound SMS webhook
-ORI_SMS_WEBHOOK_HMAC_SECRET=          # Required when webhook signature mode != token_only
-
-# WhatsApp (Twilio or WhatsApp Cloud API)
-TWILIO_ACCOUNT_SID=
-TWILIO_AUTH_TOKEN=
-TWILIO_WHATSAPP_FROM=whatsapp:+14155238886
-
-# Africa's Talking (PRIMARY for Nigeria)
-AT_API_KEY=
-AT_USERNAME=
-AT_SENDER_ID=ORI
-
-# Cloud provider keys belong in the gateway/product environment, not runtime.
-GATEWAY_SHARED_SECRET=  # Site-local MQTT envelope HMAC/encryption root secret.
-ORI_CUSTODY_SECRET=  # Separate secret authenticating gateway custody acknowledgements.
-ORI_CUSTODY_SECRET_PREVIOUS=  # Optional verify-only custody generation during rotation.
-ORI_EVIDENCE_DEVICE_SECRET=  # Random install secret sealing the evidence-chain device key.
-GATEWAY_PREVIOUS_SHARED_SECRET=  # Optional verify-only rotation secret.
-
-# Relay control (if physical relay wired)
-RELAY_GPIO_PIN=26
-```
-
----
+- No monitoring-only framing: Ori is an agent that acts.
+- No approval bypass for Tier C, by config or otherwise. Bare `YES`/`NO` never
+  approves Tier C unless a legacy or test deployment disables scoped replies.
+  Nothing actuates on a reply the store did not commit, and a restart never
+  replays an approval.
+- No LLM before Tier D.
+- No trusting a skill's tier: a registry entry for every executable action; a
+  safe default is non-actuating.
+- No in-process execution of community hooks, and no filtered-builtins or
+  import-hook "sandbox": that approach fails open and was removed.
+- No circuit-breaker bypass in any adapter.

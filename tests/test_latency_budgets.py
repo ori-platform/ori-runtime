@@ -16,7 +16,8 @@ clock, which no load can break either.
 
 A budget is either of:
 
-- a name ending ``_BOUND_S``, wherever it is read;
+- a name or attribute ending ``_BOUND_S`` (``proof.X_BOUND_S`` too), wherever
+  it is read;
 - an upper bound, in an assertion, on a duration: a difference whose two sides
   both read a clock (``time.monotonic``, ``perf_counter``, ``time.time``,
   ``loop.time``), directly or through local variables.
@@ -139,6 +140,10 @@ def _ungated_budgets(tree: ast.AST) -> list[int]:
                 isinstance(node, ast.Name)
                 and isinstance(node.ctx, ast.Load)
                 and _BUDGET.search(node.id)
+            ) or (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.ctx, ast.Load)
+                and _BUDGET.search(node.attr)
             ):
                 found.append(node.lineno)
             if isinstance(node, ast.Assert) and _bounds_a_duration_above(

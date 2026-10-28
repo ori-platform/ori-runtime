@@ -70,14 +70,14 @@ from ori.state.store import StateStore
 
 DEVICE = "latency-proof"
 #: A Tier D trigger's first act, from the reading.
-BOUND_S = 0.25
+FIRST_ACT_BOUND_S = 0.25
 #: An approved Tier C act from the reply: the target, reported.
-TIER_C_TARGET_S = 0.5
+TIER_C_TARGET_BOUND_S = 0.5
 #: An approved Tier C act from the reply: the ceiling, past which an approval
 #: is lost or wedged.
-TIER_C_CEILING_S = 1.0
+TIER_C_CEILING_BOUND_S = 1.0
 #: An approved Tier C act from its committed approval: dispatch begins at once.
-COMMIT_TO_ACT_S = 0.25
+COMMIT_TO_ACT_BOUND_S = 0.25
 #: How long the whole notice set of a dangerous reading is waited for.
 NOTICE_WINDOW_S = 8.0
 #: How long one approval round may take, the proposal's own lifetime.
@@ -478,10 +478,10 @@ async def _prove(data: Path, readings: int, notice_readings: int = 3) -> dict[st
     )
     states = [str(d.get("decision_state", "")) for d in decisions]
     report: dict[str, Any] = {
-        "bound_ms": BOUND_S * 1000,
-        "tier_c_target_ms": TIER_C_TARGET_S * 1000,
-        "tier_c_ceiling_ms": TIER_C_CEILING_S * 1000,
-        "tier_c_commit_to_act_bound_ms": COMMIT_TO_ACT_S * 1000,
+        "bound_ms": FIRST_ACT_BOUND_S * 1000,
+        "tier_c_target_ms": TIER_C_TARGET_BOUND_S * 1000,
+        "tier_c_ceiling_ms": TIER_C_CEILING_BOUND_S * 1000,
+        "tier_c_commit_to_act_bound_ms": COMMIT_TO_ACT_BOUND_S * 1000,
         "inbound_messages_left_with_broker": subscriber.shed_count,
         "tier_d": {
             name: {
@@ -498,11 +498,11 @@ async def _prove(data: Path, readings: int, notice_readings: int = 3) -> dict[st
         "tier_c_rounds_one_approved_act": clean_rounds,
         "tier_c_decisions": _count(states),
     }
-    report["tier_c_target_met"] = all(v < TIER_C_TARGET_S for v in approvals)
+    report["tier_c_target_met"] = all(v < TIER_C_TARGET_BOUND_S for v in approvals)
     report["pass"] = (
-        all(v < BOUND_S for values in first.values() for v in values)
-        and all(v < TIER_C_CEILING_S for v in approvals)
-        and all(v < COMMIT_TO_ACT_S for v in commit_to_act)
+        all(v < FIRST_ACT_BOUND_S for values in first.values() for v in values)
+        and all(v < TIER_C_CEILING_BOUND_S for v in approvals)
+        and all(v < COMMIT_TO_ACT_BOUND_S for v in commit_to_act)
         and clean_rounds == len(rounds) > 0
         and states == ["executed"] * len(rounds)
     )

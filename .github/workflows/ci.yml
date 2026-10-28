@@ -472,6 +472,7 @@ jobs:
           tests/test_gateway_payload_members.py
           tests/test_history_frontier.py
           tests/test_i2c_adapter.py
+          tests/test_pi_dispatch_latency_proof.py
           tests/test_poll_interval.py
           tests/test_registration_never_gates_actions.py
           tests/test_sms.py
