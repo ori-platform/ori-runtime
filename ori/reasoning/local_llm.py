@@ -14,6 +14,9 @@ from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
+MAX_QUEUED_INFERENCES = 4
+INFERENCE_TIMEOUT_SECONDS = 60.0
+
 try:
     from llama_cpp import Llama  # pyright: ignore[reportMissingImports]
 
@@ -33,6 +36,14 @@ def local_llm_backend_available() -> bool:
 
 class ModelNotAvailableError(Exception):
     """Raised when the model file is missing or llama-cpp-python is not installed."""
+
+
+class LocalInferenceQueueFullError(RuntimeError):
+    """Raised when the bounded local inference queue has no available slot."""
+
+
+class LocalInferenceTimeoutError(TimeoutError):
+    """Raised when a caller cannot finish local inference within its time limit."""
 
 
 _OUTPUT_CONTRACT = (
@@ -85,9 +96,13 @@ class LocalLLM:
         # in the event loop, never in pool threads. A cancelled caller's decode
         # cannot be stopped, so it keeps the model until its thread returns and
         # the next caller waits for it here; the thread lock is the last line.
+        # Admission allows one active request and four queued callers, and each
+        # caller has a deadline for both queue wait and decode.
         self._infer_lock = asyncio.Lock()
         self._decode_task: asyncio.Future[dict] | None = None
         self._decode_lock = threading.Lock()
+        self._request_guard = threading.Lock()
+        self._admitted_requests = 0
 
     # ── Public interface ──────────────────────────────────────────────────────
 
@@ -118,6 +133,8 @@ class LocalLLM:
         Raises:
             :exc:`ModelNotAvailableError`: llama-cpp-python is not installed or
                 the model file does not exist.
+            :exc:`LocalInferenceQueueFullError`: the bounded queue is full.
+            :exc:`LocalInferenceTimeoutError`: the caller's wait or decode timed out.
         """
         if not local_llm_backend_available():
             raise ModelNotAvailableError(
@@ -129,42 +146,74 @@ class LocalLLM:
                 f"LocalLLM: model file not found: '{self._model_path}'"
             )
 
-        await self._ensure_loaded()
-
-        start_ms = now_ms()
-
-        async with self._infer_lock:
-            abandoned = self._decode_task
-            if abandoned is not None and not abandoned.done():
-                await asyncio.wait({abandoned})
-            decode = asyncio.ensure_future(
-                asyncio.to_thread(
-                    self._infer,
-                    prompt=self._build_inference_prompt(prompt),
-                    max_tokens=max_tokens,
-                )
+        if not self._try_admit_request():
+            raise LocalInferenceQueueFullError(
+                "LocalLLM: inference queue is full; reasoning was skipped"
             )
-            decode.add_done_callback(_retrieve)
-            self._decode_task = decode
-            output = await asyncio.shield(decode)
 
-        latency_ms = now_ms() - start_ms
-        raw_text = output["choices"][0]["text"].strip()
-        text = self._normalize_output(raw_text)
-        tokens_used = output["usage"]["completion_tokens"]
+        try:
+            await self._ensure_loaded()
 
-        # Confidence is not reliably extractable from a base LLM completion.
-        # Default to 0.0; the elevator may override via post-processing.
-        return ReasoningResult(
-            text=text,
-            tier="local_slm",
-            model=os.path.basename(self._model_path),
-            tokens_used=tokens_used,
-            latency_ms=latency_ms,
-            confidence=0.0,
-            action_tier="A",  # always — see class docstring
-            proposed_action=None,
-        )
+            start_ms = now_ms()
+            decode_started = False
+            timeout = asyncio.timeout(INFERENCE_TIMEOUT_SECONDS)
+            try:
+                async with timeout:
+                    async with self._infer_lock:
+                        abandoned = self._decode_task
+                        if abandoned is not None and not abandoned.done():
+                            await asyncio.wait({abandoned})
+                        decode = asyncio.ensure_future(
+                            asyncio.to_thread(
+                                self._infer,
+                                prompt=self._build_inference_prompt(prompt),
+                                max_tokens=max_tokens,
+                            )
+                        )
+                        decode.add_done_callback(_retrieve)
+                        self._decode_task = decode
+                        decode_started = True
+                        output = await asyncio.shield(decode)
+            except TimeoutError as exc:
+                if not timeout.expired():
+                    raise
+                phase = "decoding" if decode_started else "waiting for the model"
+                raise LocalInferenceTimeoutError(
+                    f"LocalLLM: inference timed out after "
+                    f"{INFERENCE_TIMEOUT_SECONDS:g}s while {phase}"
+                ) from exc
+
+            latency_ms = now_ms() - start_ms
+            raw_text = output["choices"][0]["text"].strip()
+            text = self._normalize_output(raw_text)
+            tokens_used = output["usage"]["completion_tokens"]
+
+            # Confidence is not reliably extractable from a base LLM completion.
+            # Default to 0.0; the elevator may override via post-processing.
+            return ReasoningResult(
+                text=text,
+                tier="local_slm",
+                model=os.path.basename(self._model_path),
+                tokens_used=tokens_used,
+                latency_ms=latency_ms,
+                confidence=0.0,
+                action_tier="A",  # always — see class docstring
+                proposed_action=None,
+            )
+        finally:
+            self._release_request()
+
+    def _try_admit_request(self) -> bool:
+        """Admit one active request and at most the configured queued callers."""
+        with self._request_guard:
+            if self._admitted_requests >= MAX_QUEUED_INFERENCES + 1:
+                return False
+            self._admitted_requests += 1
+            return True
+
+    def _release_request(self) -> None:
+        with self._request_guard:
+            self._admitted_requests -= 1
 
     # ── Internal ──────────────────────────────────────────────────────────────
 

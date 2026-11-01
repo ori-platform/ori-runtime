@@ -22,6 +22,10 @@ from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.reasoning.capability_posture import CapabilityPosture
 from ori.reasoning.elevator import IntelligenceElevator, SkillContext, _complexity_score
 from ori.reasoning.escalation_policy import GATEWAY_ESCALATION_CONTEXT_KEY
+from ori.reasoning.local_llm import (
+    LocalInferenceQueueFullError,
+    LocalInferenceTimeoutError,
+)
 from ori.reasoning.rule_engine import RuleResult
 from ori.skills.loader import Skill, SkillLoader, Trigger
 from ori.state.store import StateStore
@@ -999,6 +1003,47 @@ class TestReason:
         # Must not raise — returns a stub result
         assert result.model == "stub"
         assert result.action_tier == "A"
+
+    @pytest.mark.parametrize(
+        ("inference_error", "message"),
+        [
+            (LocalInferenceQueueFullError, "local reasoning queue is full"),
+            (LocalInferenceTimeoutError, "local reasoning timed out"),
+        ],
+    )
+    async def test_local_inference_failure_is_reported_as_an_incomplete_stub(
+        self, caplog, inference_error, message
+    ):
+        local_llm = AsyncMock()
+        local_llm.reason.side_effect = inference_error(message)
+        elevator = IntelligenceElevator(
+            local_llm=local_llm, config=type("obj", (object,), {})()
+        )
+        skill = FakeSkill(
+            triggers=[
+                {
+                    "name": "anomalous_draw",
+                    "condition": "value > 3.0",
+                    "action_tier": "C",
+                    "action": "terminate_process",
+                    "bypass_llm": False,
+                    "cooldown_seconds": 0,
+                }
+            ],
+            actions={
+                "available": [{"name": "terminate_process", "tier": "C"}],
+                "defaults": {"anomalous_draw": ["terminate_process"]},
+            },
+        )
+
+        with caplog.at_level(logging.WARNING):
+            result = await elevator.reason(_event(value=5.0), skill, None)
+
+        assert result.model == "stub"
+        assert result.reasoning_status == "incomplete"
+        assert result.action_tier == "C"
+        assert result.proposed_action == "terminate_process"
+        assert message in caplog.text
 
     async def test_no_llm_returns_stub(self):
         conf = type("obj", (object,), {})()

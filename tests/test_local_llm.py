@@ -9,7 +9,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from ori.network.events import ReasoningResult
-from ori.reasoning.local_llm import LocalLLM, ModelNotAvailableError
+from ori.reasoning.local_llm import (
+    LocalInferenceQueueFullError,
+    LocalInferenceTimeoutError,
+    LocalLLM,
+    ModelNotAvailableError,
+)
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -469,6 +474,71 @@ class TestOneInferenceAtATime:
         assert result.tier == "local_slm"
         assert most_in_flight == 1
         assert model.most_inside == 1
+
+
+class TestBoundedInferenceQueue:
+    async def test_queue_full_rejects_new_calls_without_waiting(self):
+        release = threading.Event()
+        llm = LocalLLM(model_path=_FAKE_MODEL)
+        model = _OverlapDetectingLlama(release)
+        llm._llm = model
+        with (
+            patch("ori.reasoning.local_llm._LLAMA_AVAILABLE", True),
+            patch("os.path.isfile", return_value=True),
+            patch("ori.reasoning.local_llm.MAX_QUEUED_INFERENCES", 1),
+        ):
+            first = asyncio.create_task(llm.reason("first"))
+            second: asyncio.Task[ReasoningResult] | None = None
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(model.entered.wait, 5), timeout=6
+                )
+                second = asyncio.create_task(llm.reason("second"))
+                await asyncio.sleep(0)
+
+                with pytest.raises(LocalInferenceQueueFullError, match="queue is full"):
+                    await llm.reason("overflow")
+
+                assert llm._admitted_requests == 2
+            finally:
+                release.set()
+                tasks = [first]
+                if second is not None:
+                    tasks.append(second)
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+        assert model.most_inside == 1
+        assert llm._admitted_requests == 0
+
+    async def test_timed_out_decode_and_its_waiters_remain_serialized(self):
+        release = threading.Event()
+        llm = LocalLLM(model_path=_FAKE_MODEL)
+        model = _OverlapDetectingLlama(release)
+        llm._llm = model
+        with (
+            patch("ori.reasoning.local_llm._LLAMA_AVAILABLE", True),
+            patch("os.path.isfile", return_value=True),
+            patch("ori.reasoning.local_llm.INFERENCE_TIMEOUT_SECONDS", 0.02),
+        ):
+            first = asyncio.create_task(llm.reason("first"))
+            await asyncio.wait_for(asyncio.to_thread(model.entered.wait, 5), timeout=6)
+
+            with pytest.raises(LocalInferenceTimeoutError, match="timed out"):
+                await first
+            assert model.inside == 1
+
+            with pytest.raises(
+                LocalInferenceTimeoutError, match="waiting for the model"
+            ):
+                await llm.reason("waiting")
+            assert model.most_inside == 1
+
+            release.set()
+            result = await asyncio.wait_for(llm.reason("after timeout"), timeout=1)
+
+        assert result.tier == "local_slm"
+        assert model.most_inside == 1
+        assert llm._admitted_requests == 0
 
 
 class TestOneLoad:
