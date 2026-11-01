@@ -18,7 +18,7 @@ OVERSIZE_CEILINGS: dict[str, int] = {
     "ori/reasoning/action_dispatcher.py": 4990,
     "ori/installer/linux.py": 3377,
     "ori/security/evidence/ledger.py": 2960,
-    "ori/reasoning/elevator.py": 2269,
+    "ori/reasoning/elevator.py": 2268,
     "ori/state/_migrations.py": 2087,
     "ori/state/_firmware.py": 2097,
     "ori/cli_bridge.py": 1854,

@@ -8,7 +8,7 @@ import re
 import threading
 from typing import Any
 
-from ori.network.events import ReasoningResult
+from ori.network.events import OriEvent, ReasoningResult
 from ori.utils.path_utils import shown
 from ori.utils.time_utils import now_ms
 
@@ -44,6 +44,34 @@ class LocalInferenceQueueFullError(RuntimeError):
 
 class LocalInferenceTimeoutError(TimeoutError):
     """Raised when a caller cannot finish local inference within its time limit."""
+
+
+def report_inference_failure(
+    logger: logging.Logger, event: OriEvent | None, error: Exception
+) -> bool:
+    """Log a local reasoning failure and indicate that its fallback is incomplete."""
+    sensor_id = event.sensor_id if event else "unknown"
+    if isinstance(error, (LocalInferenceQueueFullError, LocalInferenceTimeoutError)):
+        logger.warning(
+            "IntelligenceElevator: local_slm inference unavailable for "
+            "sensor_id=%s: %s",
+            sensor_id,
+            error,
+        )
+    else:
+        logger.exception(
+            "IntelligenceElevator: local_slm inference failed for "
+            "sensor_id=%s — returning stub result",
+            sensor_id,
+        )
+    return True
+
+
+def mark_stub_incomplete(result: ReasoningResult, incomplete: bool) -> ReasoningResult:
+    """Label a fallback result when local reasoning did not finish."""
+    if incomplete:
+        result.reasoning_status = "incomplete"
+    return result
 
 
 _OUTPUT_CONTRACT = (

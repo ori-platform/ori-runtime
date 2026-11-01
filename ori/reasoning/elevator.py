@@ -30,6 +30,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ori.network.events import OriEvent, ReasoningResult, history_as_of
 from ori.network.producer_time import read_producer_time
+from ori.reasoning import local_llm as llm_helpers
 from ori.reasoning.capability_posture import (
     CapabilityPosture,
 )
@@ -39,10 +40,6 @@ from ori.reasoning.escalation_policy import (
     GATEWAY_ESCALATION_CONTEXT_KEY,
     attach_gateway_escalation_context,
     evaluate_gateway_escalation,
-)
-from ori.reasoning.local_llm import (
-    LocalInferenceQueueFullError,
-    LocalInferenceTimeoutError,
 )
 from ori.reasoning.prompt_time import (
     history_row,
@@ -423,7 +420,7 @@ class IntelligenceElevator:
                     return stub, rule_result
                 tier = "local_slm"
 
-        local_reasoning_incomplete = False
+        local_failed = False
         if tier in ("local_slm",) and self._local_llm is not None:
             causal_pattern_key: str | None = None
             if self._causal_memory_enabled() and rule_result.matched:
@@ -461,26 +458,12 @@ class IntelligenceElevator:
                     confidence=float(getattr(result, "confidence", 0.0) or 0.0),
                 )
                 return result, rule_result
-            except (LocalInferenceQueueFullError, LocalInferenceTimeoutError) as exc:
-                local_reasoning_incomplete = True
-                logger.warning(
-                    "IntelligenceElevator: local_slm inference unavailable for "
-                    "sensor_id=%s: %s",
-                    event.sensor_id if event else "unknown",
-                    exc,
-                )
-            except Exception:
-                local_reasoning_incomplete = True
-                logger.exception(
-                    "IntelligenceElevator: local_slm inference failed for "
-                    "sensor_id=%s — returning stub result",
-                    event.sensor_id if event else "unknown",
-                )
+            except Exception as exc:
+                local_failed = llm_helpers.report_inference_failure(logger, event, exc)
 
         # Fallback stub for unavailable reasoning tiers.
         stub = self._stub_result(tier, event)
-        if local_reasoning_incomplete:
-            stub.reasoning_status = "incomplete"
+        stub = llm_helpers.mark_stub_incomplete(stub, local_failed)
         if rule_result.matched and stub.action_tier != "D" and rejection_record is None:
             stub.action_tier = rule_result.action_tier
             stub.proposed_action = rule_result.action

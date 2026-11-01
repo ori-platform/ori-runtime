@@ -2040,11 +2040,10 @@ class TestBoundedLocalReasoningDoesNotHoldEventScopes:
                 )
                 second = asyncio.create_task(coordinator.dispatch_event(events[1]))
                 tasks.append(second)
-                for _ in range(100):
-                    if local_llm._admitted_requests == 2:
-                        break
-                    await asyncio.sleep(0.01)
-                assert local_llm._admitted_requests == 2
+                await wait_until(
+                    lambda: local_llm._admitted_requests == 2,
+                    what="the second local inference admission",
+                )
 
                 third = asyncio.create_task(coordinator.dispatch_event(events[2]))
                 tasks.append(third)
