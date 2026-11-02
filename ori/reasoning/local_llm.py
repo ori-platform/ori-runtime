@@ -124,8 +124,9 @@ class LocalLLM:
         # in the event loop, never in pool threads. A cancelled caller's decode
         # cannot be stopped, so it keeps the model until its thread returns and
         # the next caller waits for it here; the thread lock is the last line.
-        # Admission allows one active request and four queued callers, and each
-        # caller has a deadline for both queue wait and decode.
+        # Admission allows five outstanding callers. A timed-out or cancelled
+        # caller releases its slot even if its shielded decode is still running;
+        # the next caller waits for that decode under this lock.
         self._infer_lock = asyncio.Lock()
         self._decode_task: asyncio.Future[dict] | None = None
         self._decode_lock = threading.Lock()
@@ -180,13 +181,12 @@ class LocalLLM:
             )
 
         try:
-            await self._ensure_loaded()
-
             start_ms = now_ms()
             decode_started = False
             timeout = asyncio.timeout(INFERENCE_TIMEOUT_SECONDS)
             try:
                 async with timeout:
+                    await self._ensure_loaded()
                     async with self._infer_lock:
                         abandoned = self._decode_task
                         if abandoned is not None and not abandoned.done():
@@ -232,7 +232,7 @@ class LocalLLM:
             self._release_request()
 
     def _try_admit_request(self) -> bool:
-        """Admit one active request and at most the configured queued callers."""
+        """Admit up to one more caller than the configured queue depth."""
         with self._request_guard:
             if self._admitted_requests >= MAX_QUEUED_INFERENCES + 1:
                 return False
