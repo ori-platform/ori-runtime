@@ -3,11 +3,12 @@
 
 import asyncio
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import yaml
@@ -25,6 +26,7 @@ from ori.reasoning.escalation_policy import GATEWAY_ESCALATION_CONTEXT_KEY
 from ori.reasoning.local_llm import (
     LocalInferenceQueueFullError,
     LocalInferenceTimeoutError,
+    LocalLLM,
 )
 from ori.reasoning.rule_engine import RuleResult
 from ori.skills.loader import Skill, SkillLoader, Trigger
@@ -1044,6 +1046,62 @@ class TestReason:
         assert result.action_tier == "C"
         assert result.proposed_action == "terminate_process"
         assert message in caplog.text
+
+    async def test_cold_load_timeout_returns_incomplete_stub_and_recovers(self):
+        load_started = threading.Event()
+        release = threading.Event()
+        loads = []
+        local_llm = LocalLLM(model_path="/models/test.gguf")
+        model = MagicMock(
+            return_value={
+                "choices": [{"text": "local explanation"}],
+                "usage": {"completion_tokens": 1},
+            }
+        )
+
+        def slow_load():
+            loads.append(threading.get_ident())
+            load_started.set()
+            release.wait(5)
+            return model
+
+        elevator = IntelligenceElevator(
+            local_llm=local_llm, config=type("obj", (object,), {})()
+        )
+        try:
+            with (
+                patch("ori.reasoning.local_llm._LLAMA_AVAILABLE", True),
+                patch("os.path.isfile", return_value=True),
+                patch("ori.reasoning.local_llm.INFERENCE_TIMEOUT_SECONDS", 0.02),
+                patch.object(local_llm, "_load_model", side_effect=slow_load),
+            ):
+                request = asyncio.create_task(
+                    elevator.reason(_event(), FakeSkill(), None)
+                )
+                await asyncio.wait_for(
+                    asyncio.to_thread(load_started.wait, 5), timeout=6
+                )
+                result = await request
+
+                assert result.model == "stub"
+                assert result.reasoning_status == "incomplete"
+                assert local_llm._admitted_requests == 0
+                assert len(loads) == 1
+                assert local_llm._load_task is not None
+                assert not local_llm._load_task.cancelled()
+                assert not local_llm._load_task.done()
+
+                release.set()
+                await local_llm._load_task
+                recovered = await elevator.reason(_event(), FakeSkill(), None)
+
+                assert recovered.tier == "local_slm"
+                assert len(loads) == 1
+                assert local_llm._admitted_requests == 0
+        finally:
+            release.set()
+            if local_llm._load_task is not None:
+                await local_llm._load_task
 
     async def test_no_llm_returns_stub(self):
         conf = type("obj", (object,), {})()

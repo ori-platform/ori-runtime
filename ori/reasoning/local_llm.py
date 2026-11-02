@@ -14,6 +14,8 @@ from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
 
+# Slots are caller-scoped, so shielded native work may outlive the caller that
+# released its slot after a timeout or cancellation.
 MAX_QUEUED_INFERENCES = 4
 INFERENCE_TIMEOUT_SECONDS = 60.0
 
@@ -232,7 +234,7 @@ class LocalLLM:
             self._release_request()
 
     def _try_admit_request(self) -> bool:
-        """Admit up to one more caller than the configured queue depth."""
+        """Admit one active caller plus the configured waiting-caller slots."""
         with self._request_guard:
             if self._admitted_requests >= MAX_QUEUED_INFERENCES + 1:
                 return False
