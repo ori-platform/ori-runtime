@@ -786,20 +786,28 @@ def built_wheel(tmp_path_factory) -> pathlib.Path:
     out = tmp_path_factory.mktemp("wheel")
     # Each xdist worker needs its own setuptools build/ and egg-info state.
     source = out / "source"
+    ignored_roots = {
+        ".git",
+        ".venv",
+        "build",
+        "dist",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+    }
     shutil.copytree(
         REPO_ROOT,
         source,
-        ignore=shutil.ignore_patterns(
-            ".git",
-            ".venv",
-            "build",
-            "dist",
-            "*.egg-info",
-            "__pycache__",
-            ".pytest_cache",
-            ".mypy_cache",
-            ".ruff_cache",
-            "target",
+        # Exclude checkout build state only, never a nested package/input that
+        # happens to be named build, dist or target.
+        ignore=lambda directory, names: (
+            {
+                name
+                for name in names
+                if name in ignored_roots or name.endswith(".egg-info")
+            }
+            if pathlib.Path(directory) == REPO_ROOT
+            else set()
         ),
     )
     result = subprocess.run(
