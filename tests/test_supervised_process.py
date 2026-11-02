@@ -17,6 +17,7 @@ import sys
 import tempfile
 import textwrap
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -595,6 +596,7 @@ async def test_a_test_that_leaks_fails_and_its_children_go(tmp_path: Path) -> No
     """Through pytest itself: the autouse fixture runs, fails the test at
     teardown, and kills the leaked child with its own children."""
     pids = tmp_path / "pids"
+    report = tmp_path / "junit.xml"
     inner = tmp_path / "test_inner.py"
     inner.write_text(_LEAKING_TEST.format(pids=str(pids)))
     (tmp_path / "pytest.ini").write_text("[pytest]\n")
@@ -613,6 +615,7 @@ async def test_a_test_that_leaks_fails_and_its_children_go(tmp_path: Path) -> No
             "--rootdir",
             str(tmp_path),
             "-q",
+            f"--junitxml={report}",
             str(inner),
         ],
         cwd=ROOT,
@@ -622,7 +625,12 @@ async def test_a_test_that_leaks_fails_and_its_children_go(tmp_path: Path) -> No
     )
     child, grandchild = (int(pid) for pid in pids.read_text().split())
     try:
-        assert "1 passed, 1 error" in run.stdout, run.stdout + run.stderr
+        assert run.returncode == pytest.ExitCode.TESTS_FAILED, run.stdout + run.stderr
+        cases = ET.parse(report).getroot().findall(".//testcase")
+        assert len(cases) == 1
+        assert cases[0].get("name") == "test_leaks"
+        assert cases[0].find("error") is not None
+        assert cases[0].find("failure") is None
         assert "no Supervised holds" in run.stdout
         await wait_until(
             lambda: _gone(child) or _zombie(child), what="the child killed"
