@@ -48,7 +48,7 @@ OVERSIZE_CEILINGS: dict[str, int] = {
     "ori/reasoning/action_dispatcher.py::ActionDispatcher._governed_approval_workflow": 193,
     "ori/config/_posture.py::validate_production_security_posture": 187,
     "ori/runtime/_startup_foundation.py::StartupFoundation._stage_safety_envelope": 187,
-    "ori/reasoning/elevator.py::IntelligenceElevator._reason_with_rule_result": 186,
+    "ori/reasoning/elevator.py::IntelligenceElevator._reason_with_rule_result": 184,
     "ori/runtime/_health.py::HealthSnapshot._build_health_snapshot": 154,
     "ori/state/_history.py::HistoryStore._compact_sync": 184,
     "ori/reasoning/action_dispatcher.py::ActionDispatcher._log_action": 178,

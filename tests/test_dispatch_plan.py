@@ -11,8 +11,10 @@ declaration order deciding the outcome is the defect.
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import threading
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -32,6 +34,7 @@ from ori.reasoning.dispatch_plan import (
     strongest_outcome,
 )
 from ori.reasoning.elevator import IntelligenceElevator
+from ori.reasoning.local_llm import LocalLLM
 from ori.reasoning.resource_gate import (
     OPPOSING_ACT_RUNNING,
     OPPOSING_COMMAND_UNCERTAIN,
@@ -1945,6 +1948,126 @@ class TestScopesBelongToTheirEvent:
         await event_a.drain()
         assert ran == ["close_gas_valve", "trip_relay"], ran
         assert gate.foreclosures(ZONE) == []
+
+
+class TestBoundedLocalReasoningDoesNotHoldEventScopes:
+    async def test_overflow_stub_closes_scope_after_tier_d_was_attempted(self):
+        class _BlockingModel:
+            def __init__(self) -> None:
+                self.entered = threading.Event()
+                self.release = threading.Event()
+                self._guard = threading.Lock()
+                self.inside = 0
+                self.most_inside = 0
+
+            def __call__(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+                with self._guard:
+                    self.inside += 1
+                    self.most_inside = max(self.most_inside, self.inside)
+                self.entered.set()
+                self.release.wait(5)
+                with self._guard:
+                    self.inside -= 1
+                return {
+                    "choices": [{"text": "Reasoning is unavailable."}],
+                    "usage": {"completion_tokens": 4},
+                }
+
+        class _RecordingGate(ResourceGate):
+            def __init__(self) -> None:
+                super().__init__()
+                self.closed_scopes: list[str] = []
+
+            async def close_scope(
+                self, scope: str, token: contextvars.Token[str] | None = None
+            ) -> None:
+                await super().close_scope(scope, token)
+                self.closed_scopes.append(scope)
+
+        model = _BlockingModel()
+        local_llm = LocalLLM(model_path="/models/fake.gguf")
+        local_llm._llm = model
+        elevator = IntelligenceElevator(local_llm=local_llm)
+        gate = _RecordingGate()
+        dispatcher = _dispatcher_double(("alert_whatsapp", "close_gas_valve"))
+        dispatches: list[tuple[str, str]] = []
+
+        async def record_dispatch(**kwargs: Any) -> None:
+            dispatches.append((kwargs["context"].event.event_id, kwargs["action"]))
+
+        dispatcher.dispatch.side_effect = record_dispatch
+        coordinator = DispatchCoordinator(
+            elevator=elevator, dispatcher=dispatcher, state_store=None, gate=gate
+        )
+        coordinator.set_binding(BOUND)
+        coordinator.add_skill(
+            FakeSkill(
+                triggers=[_trigger("notice", "A")],
+                actions={
+                    "available": [{"name": "alert_whatsapp", "tier": "A"}],
+                    "defaults": {"notice": ["alert_whatsapp"]},
+                },
+                name="notifier",
+            )
+        )
+        coordinator.add_skill(
+            FakeSkill(
+                triggers=[_trigger("trip", "D", bypass=True)],
+                actions={
+                    "available": [{"name": "close_gas_valve", "tier": "D"}],
+                    "defaults": {"trip": ["close_gas_valve"]},
+                },
+                name="protector",
+            )
+        )
+
+        events = [_event(5.0), _event(5.1), _event(5.2)]
+
+        def scope_of(event: OriEvent) -> str:
+            return str(event.event_id or id(event))
+
+        tasks: list[asyncio.Task[None]] = []
+        with (
+            patch("ori.reasoning.local_llm._LLAMA_AVAILABLE", True),
+            patch("ori.reasoning.local_llm.MAX_QUEUED_INFERENCES", 1),
+            patch("os.path.isfile", return_value=True),
+        ):
+            try:
+                first = asyncio.create_task(coordinator.dispatch_event(events[0]))
+                tasks.append(first)
+                await asyncio.wait_for(
+                    asyncio.to_thread(model.entered.wait, 5), timeout=6
+                )
+                second = asyncio.create_task(coordinator.dispatch_event(events[1]))
+                tasks.append(second)
+                await wait_until(
+                    lambda: local_llm._admitted_requests == 2,
+                    what="the second local inference admission",
+                )
+
+                third = asyncio.create_task(coordinator.dispatch_event(events[2]))
+                tasks.append(third)
+                await asyncio.wait_for(third, timeout=2)
+
+                assert scope_of(events[2]) in gate.closed_scopes
+                assert scope_of(events[0]) not in gate.closed_scopes
+                assert scope_of(events[1]) not in gate.closed_scopes
+                third_actions = [
+                    action
+                    for event_id, action in dispatches
+                    if event_id == scope_of(events[2])
+                ]
+                assert third_actions.index("close_gas_valve") < third_actions.index(
+                    "alert_whatsapp"
+                )
+            finally:
+                model.release.set()
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+        assert model.most_inside == 1
+        assert gate.closed_scopes.count(scope_of(events[0])) == 1
+        assert gate.closed_scopes.count(scope_of(events[1])) == 1
+        assert gate.closed_scopes.count(scope_of(events[2])) == 1
 
 
 class TestATriggerInFlightDoesNotMatchAgain:

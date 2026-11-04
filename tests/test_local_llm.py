@@ -9,7 +9,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from ori.network.events import ReasoningResult
-from ori.reasoning.local_llm import LocalLLM, ModelNotAvailableError
+from ori.reasoning.local_llm import (
+    LocalInferenceQueueFullError,
+    LocalInferenceTimeoutError,
+    LocalLLM,
+    ModelNotAvailableError,
+)
+from tests.waiting import wait_until
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -394,14 +400,21 @@ class TestOneInferenceAtATime:
             await asyncio.to_thread(model.entered.wait, 5)
             first.cancel()
             assert await _was_cancelled(first)
-            second = asyncio.create_task(llm.reason("second"))
-            await asyncio.sleep(0.2)
+            assert llm._admitted_requests == 0
+            queued = [asyncio.create_task(llm.reason(f"queued{i}")) for i in range(5)]
+            await wait_until(
+                lambda: llm._admitted_requests == 5,
+                what="five callers admitted behind the detached decode",
+            )
+            with pytest.raises(LocalInferenceQueueFullError, match="queue is full"):
+                await llm.reason("overflow")
             assert model.inside == 1, "the second decode started beside the first"
             release.set()
-            result = await second
+            results = await asyncio.gather(*queued)
 
-        assert result.tier == "local_slm"
+        assert all(result.tier == "local_slm" for result in results)
         assert model.most_inside == 1
+        assert llm._admitted_requests == 0
 
     async def test_queued_callers_wait_in_the_loop_not_in_pool_threads(self):
         """Each waiting caller parked in a worker thread would starve other to_thread work."""
@@ -471,6 +484,79 @@ class TestOneInferenceAtATime:
         assert model.most_inside == 1
 
 
+class TestBoundedInferenceQueue:
+    async def test_queue_full_rejects_new_calls_without_waiting(self):
+        release = threading.Event()
+        llm = LocalLLM(model_path=_FAKE_MODEL)
+        model = _OverlapDetectingLlama(release)
+        llm._llm = model
+        with (
+            patch("ori.reasoning.local_llm._LLAMA_AVAILABLE", True),
+            patch("os.path.isfile", return_value=True),
+            patch("ori.reasoning.local_llm.MAX_QUEUED_INFERENCES", 1),
+        ):
+            first = asyncio.create_task(llm.reason("first"))
+            second: asyncio.Task[ReasoningResult] | None = None
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(model.entered.wait, 5), timeout=6
+                )
+                second = asyncio.create_task(llm.reason("second"))
+                await asyncio.sleep(0)
+
+                with pytest.raises(LocalInferenceQueueFullError, match="queue is full"):
+                    await llm.reason("overflow")
+
+                assert llm._admitted_requests == 2
+            finally:
+                release.set()
+                tasks = [first]
+                if second is not None:
+                    tasks.append(second)
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+        assert model.most_inside == 1
+        assert llm._admitted_requests == 0
+
+    async def test_timed_out_decode_and_its_waiters_remain_serialized(self):
+        release = threading.Event()
+        llm = LocalLLM(model_path=_FAKE_MODEL)
+        model = _OverlapDetectingLlama(release)
+        llm._llm = model
+        with (
+            patch("ori.reasoning.local_llm._LLAMA_AVAILABLE", True),
+            patch("os.path.isfile", return_value=True),
+            patch("ori.reasoning.local_llm.INFERENCE_TIMEOUT_SECONDS", 0.02),
+        ):
+            first = asyncio.create_task(llm.reason("first"))
+            await asyncio.wait_for(asyncio.to_thread(model.entered.wait, 5), timeout=6)
+
+            with pytest.raises(LocalInferenceTimeoutError, match="timed out"):
+                await first
+            assert model.inside == 1
+            assert llm._admitted_requests == 0
+
+        with (
+            patch("ori.reasoning.local_llm._LLAMA_AVAILABLE", True),
+            patch("os.path.isfile", return_value=True),
+        ):
+            queued = [asyncio.create_task(llm.reason(f"queued{i}")) for i in range(5)]
+            await wait_until(
+                lambda: llm._admitted_requests == 5,
+                what="five callers admitted behind the timed-out decode",
+            )
+            with pytest.raises(LocalInferenceQueueFullError, match="queue is full"):
+                await llm.reason("overflow")
+            assert model.most_inside == 1
+            assert llm._admitted_requests == 5
+            release.set()
+            results = await asyncio.gather(*queued)
+
+        assert all(result.tier == "local_slm" for result in results)
+        assert model.most_inside == 1
+        assert llm._admitted_requests == 0
+
+
 class TestOneLoad:
     """llama.cpp silences stdout and stderr process-wide while it loads; two
     overlapping loads restore them out of order and leave them silenced."""
@@ -486,6 +572,53 @@ class TestOneLoad:
                 return _LLAMA_OUTPUT
 
         return _Llama
+
+    async def test_cold_load_is_inside_the_deadline_and_survives_caller_timeouts(self):
+        load_entered = threading.Event()
+        release = threading.Event()
+        loads = []
+        model = _OverlapDetectingLlama()
+        llm = LocalLLM(model_path=_FAKE_MODEL)
+
+        def _slow_load():
+            loads.append(threading.get_ident())
+            load_entered.set()
+            release.wait(5)
+            return model
+
+        with (
+            patch("ori.reasoning.local_llm._LLAMA_AVAILABLE", True),
+            patch("os.path.isfile", return_value=True),
+            patch("ori.reasoning.local_llm.INFERENCE_TIMEOUT_SECONDS", 0.02),
+            patch.object(llm, "_load_model", side_effect=_slow_load),
+        ):
+            callers = [asyncio.create_task(llm.reason(f"cold{i}")) for i in range(5)]
+            await asyncio.wait_for(asyncio.to_thread(load_entered.wait, 5), timeout=6)
+            await wait_until(
+                lambda: llm._admitted_requests == 5,
+                what="all cold-load callers admitted",
+            )
+            outcomes = await asyncio.gather(*callers, return_exceptions=True)
+
+        assert all(
+            isinstance(outcome, LocalInferenceTimeoutError) for outcome in outcomes
+        )
+        assert llm._admitted_requests == 0
+        assert len(loads) == 1
+        assert llm._load_task is not None
+        assert not llm._load_task.cancelled()
+
+        release.set()
+        await llm._load_task
+        with (
+            patch("ori.reasoning.local_llm._LLAMA_AVAILABLE", True),
+            patch("os.path.isfile", return_value=True),
+        ):
+            result = await llm.reason("recovered")
+
+        assert result.tier == "local_slm"
+        assert len(loads) == 1
+        assert llm._admitted_requests == 0
 
     async def test_a_caller_cancelled_mid_load_does_not_start_a_second_load(self):
         loads: list = []

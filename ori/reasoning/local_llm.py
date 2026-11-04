@@ -8,11 +8,16 @@ import re
 import threading
 from typing import Any
 
-from ori.network.events import ReasoningResult
+from ori.network.events import OriEvent, ReasoningResult
 from ori.utils.path_utils import shown
 from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
+
+# Slots are caller-scoped, so shielded native work may outlive the caller that
+# released its slot after a timeout or cancellation.
+MAX_QUEUED_INFERENCES = 4
+INFERENCE_TIMEOUT_SECONDS = 60.0
 
 try:
     from llama_cpp import Llama  # pyright: ignore[reportMissingImports]
@@ -33,6 +38,42 @@ def local_llm_backend_available() -> bool:
 
 class ModelNotAvailableError(Exception):
     """Raised when the model file is missing or llama-cpp-python is not installed."""
+
+
+class LocalInferenceQueueFullError(RuntimeError):
+    """Raised when the bounded local inference queue has no available slot."""
+
+
+class LocalInferenceTimeoutError(TimeoutError):
+    """Raised when a caller cannot finish local inference within its time limit."""
+
+
+def report_inference_failure(
+    logger: logging.Logger, event: OriEvent | None, error: Exception
+) -> bool:
+    """Log a local reasoning failure and indicate that its fallback is incomplete."""
+    sensor_id = event.sensor_id if event else "unknown"
+    if isinstance(error, (LocalInferenceQueueFullError, LocalInferenceTimeoutError)):
+        logger.warning(
+            "IntelligenceElevator: local_slm inference unavailable for "
+            "sensor_id=%s: %s",
+            sensor_id,
+            error,
+        )
+    else:
+        logger.exception(
+            "IntelligenceElevator: local_slm inference failed for "
+            "sensor_id=%s — returning stub result",
+            sensor_id,
+        )
+    return True
+
+
+def mark_stub_incomplete(result: ReasoningResult, incomplete: bool) -> ReasoningResult:
+    """Label a fallback result when local reasoning did not finish."""
+    if incomplete:
+        result.reasoning_status = "incomplete"
+    return result
 
 
 _OUTPUT_CONTRACT = (
@@ -85,9 +126,14 @@ class LocalLLM:
         # in the event loop, never in pool threads. A cancelled caller's decode
         # cannot be stopped, so it keeps the model until its thread returns and
         # the next caller waits for it here; the thread lock is the last line.
+        # Admission allows five outstanding callers. A timed-out or cancelled
+        # caller releases its slot even if its shielded decode is still running;
+        # the next caller waits for that decode under this lock.
         self._infer_lock = asyncio.Lock()
         self._decode_task: asyncio.Future[dict] | None = None
         self._decode_lock = threading.Lock()
+        self._request_guard = threading.Lock()
+        self._admitted_requests = 0
 
     # ── Public interface ──────────────────────────────────────────────────────
 
@@ -118,6 +164,8 @@ class LocalLLM:
         Raises:
             :exc:`ModelNotAvailableError`: llama-cpp-python is not installed or
                 the model file does not exist.
+            :exc:`LocalInferenceQueueFullError`: the bounded queue is full.
+            :exc:`LocalInferenceTimeoutError`: the caller's wait or decode timed out.
         """
         if not local_llm_backend_available():
             raise ModelNotAvailableError(
@@ -129,42 +177,73 @@ class LocalLLM:
                 f"LocalLLM: model file not found: '{self._model_path}'"
             )
 
-        await self._ensure_loaded()
-
-        start_ms = now_ms()
-
-        async with self._infer_lock:
-            abandoned = self._decode_task
-            if abandoned is not None and not abandoned.done():
-                await asyncio.wait({abandoned})
-            decode = asyncio.ensure_future(
-                asyncio.to_thread(
-                    self._infer,
-                    prompt=self._build_inference_prompt(prompt),
-                    max_tokens=max_tokens,
-                )
+        if not self._try_admit_request():
+            raise LocalInferenceQueueFullError(
+                "LocalLLM: inference queue is full; reasoning was skipped"
             )
-            decode.add_done_callback(_retrieve)
-            self._decode_task = decode
-            output = await asyncio.shield(decode)
 
-        latency_ms = now_ms() - start_ms
-        raw_text = output["choices"][0]["text"].strip()
-        text = self._normalize_output(raw_text)
-        tokens_used = output["usage"]["completion_tokens"]
+        try:
+            start_ms = now_ms()
+            decode_started = False
+            timeout = asyncio.timeout(INFERENCE_TIMEOUT_SECONDS)
+            try:
+                async with timeout:
+                    await self._ensure_loaded()
+                    async with self._infer_lock:
+                        abandoned = self._decode_task
+                        if abandoned is not None and not abandoned.done():
+                            await asyncio.wait({abandoned})
+                        decode = asyncio.ensure_future(
+                            asyncio.to_thread(
+                                self._infer,
+                                prompt=self._build_inference_prompt(prompt),
+                                max_tokens=max_tokens,
+                            )
+                        )
+                        decode.add_done_callback(_retrieve)
+                        self._decode_task = decode
+                        decode_started = True
+                        output = await asyncio.shield(decode)
+            except TimeoutError as exc:
+                if not timeout.expired():
+                    raise
+                phase = "decoding" if decode_started else "waiting for the model"
+                raise LocalInferenceTimeoutError(
+                    f"LocalLLM: inference timed out after "
+                    f"{INFERENCE_TIMEOUT_SECONDS:g}s while {phase}"
+                ) from exc
 
-        # Confidence is not reliably extractable from a base LLM completion.
-        # Default to 0.0; the elevator may override via post-processing.
-        return ReasoningResult(
-            text=text,
-            tier="local_slm",
-            model=os.path.basename(self._model_path),
-            tokens_used=tokens_used,
-            latency_ms=latency_ms,
-            confidence=0.0,
-            action_tier="A",  # always — see class docstring
-            proposed_action=None,
-        )
+            latency_ms = now_ms() - start_ms
+            raw_text = output["choices"][0]["text"].strip()
+            text = self._normalize_output(raw_text)
+            tokens_used = output["usage"]["completion_tokens"]
+
+            # Confidence is not reliably extractable from a base LLM completion.
+            # Default to 0.0; the elevator may override via post-processing.
+            return ReasoningResult(
+                text=text,
+                tier="local_slm",
+                model=os.path.basename(self._model_path),
+                tokens_used=tokens_used,
+                latency_ms=latency_ms,
+                confidence=0.0,
+                action_tier="A",  # always — see class docstring
+                proposed_action=None,
+            )
+        finally:
+            self._release_request()
+
+    def _try_admit_request(self) -> bool:
+        """Admit one active caller plus the configured waiting-caller slots."""
+        with self._request_guard:
+            if self._admitted_requests >= MAX_QUEUED_INFERENCES + 1:
+                return False
+            self._admitted_requests += 1
+            return True
+
+    def _release_request(self) -> None:
+        with self._request_guard:
+            self._admitted_requests -= 1
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
