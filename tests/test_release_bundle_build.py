@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import errno
 import gzip
 import hashlib
 import json
@@ -503,13 +504,17 @@ def test_private_key_loader_closes_descriptor_when_fstat_fails(
         closed.append(fd)
         real_close(fd)
 
-    monkeypatch.setattr(os, "fstat", fail_fstat)
-    monkeypatch.setattr(os, "close", record_close)
-
     with pytest.raises(ReleaseBundleError, match="cannot inspect private key"):
-        load_private_key(key_path)
+        # pytest's fd capture also calls fstat between test phases.
+        with monkeypatch.context() as scoped:
+            scoped.setattr(os, "fstat", fail_fstat)
+            scoped.setattr(os, "close", record_close)
+            load_private_key(key_path)
 
     assert len(closed) == 1
+    with pytest.raises(OSError) as error:
+        os.fstat(closed[0])
+    assert error.value.errno == errno.EBADF
 
 
 def test_local_private_key_signing_cli_refuses_github_actions(tmp_path: Path) -> None:

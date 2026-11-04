@@ -39,6 +39,7 @@ import logging
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import tomllib
 import zipfile
@@ -783,6 +784,32 @@ def built_wheel(tmp_path_factory) -> pathlib.Path:
     import sys
 
     out = tmp_path_factory.mktemp("wheel")
+    # Each xdist worker needs its own setuptools build/ and egg-info state.
+    source = out / "source"
+    ignored_roots = {
+        ".git",
+        ".venv",
+        "build",
+        "dist",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+    }
+    shutil.copytree(
+        REPO_ROOT,
+        source,
+        # Exclude checkout build state only, never a nested package/input that
+        # happens to be named build, dist or target.
+        ignore=lambda directory, names: (
+            {
+                name
+                for name in names
+                if name in ignored_roots or name.endswith(".egg-info")
+            }
+            if pathlib.Path(directory) == REPO_ROOT
+            else set()
+        ),
+    )
     result = subprocess.run(
         [
             sys.executable,
@@ -791,7 +818,7 @@ def built_wheel(tmp_path_factory) -> pathlib.Path:
             "--wheel",
             "--outdir",
             str(out),
-            str(REPO_ROOT),
+            str(source),
         ],
         capture_output=True,
         text=True,
