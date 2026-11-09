@@ -10,6 +10,6 @@ pyright>=1.1.414
 types-PyYAML>=6.0.12.20261103
 pip-tools>=7.6.2
 pip-audit>=2.10.1
-cyclonedx-bom>=7.6.0
+cyclonedx-bom>=8.0.1
 
 wait-for2==0.4.1
