@@ -829,9 +829,9 @@ multidict==6.9.1 \
     # via
     #   aiohttp
     #   yarl
-paho-mqtt==2.1.0 \
-    --hash=sha256:12d6e7511d4137555a3f6ea167ae846af2c7357b10bc6fa4f7c3968fc1723834 \
-    --hash=sha256:6db9ba9b34ed5bc6b6e3812718c7e06e2fd7444540df2455d2c51bd58808feee
+paho-mqtt==2.2.0 \
+    --hash=sha256:3243630f7c2b05f71d1de8c6f59865eb04d3a59ae8c866e92377faed6753db4d \
+    --hash=sha256:bcf706f03f1f49e0fc3ae166dc7b67ee35463496f8bdfd7c9c36181f6ba635c9
     # via
     #   -r runtime.in
     #   aiomqtt
@@ -1118,9 +1118,9 @@ sortedcontainers==2.4.0 \
     --hash=sha256:25caa5a06cc30b6b83d11423433f65d1f9d76c4c6a0c90e3379eaa43b9bfdb88 \
     --hash=sha256:a163dcaede0f1c021485e957a39245190e74249897e2ae4b2aa38595db237ee0
     # via asyncua
-twilio==9.12.0 \
-    --hash=sha256:bbca81e0317fe92649458a9c3295154ac9c82f9c8fc36c4d4efc716b3b2f8fb4 \
-    --hash=sha256:ff4ae81d784a32e1e09387e65b9567ade525047cbecb47b02cad552b4aac20f4
+twilio==9.13.0 \
+    --hash=sha256:3d110011db53354b7fe8480b469db0d4fcf082fafb73b50820c7d7d6e1c9dac1 \
+    --hash=sha256:a73eb7139f47ed0ad934e9cf0a26cd0add6b86e6ca4aec5964624a9ea588c11c
     # via -r runtime.in
 typing-extensions==4.15.0 \
     --hash=sha256:0cea48d173cc12fa28ecabc3b837ea3cf6f38c6d1136f85cbaaf598984861466 \
