@@ -99,7 +99,9 @@ async def test_a_failed_publication_is_not_delivered_on_reconnect(
             callback_api_version=getattr(mqtt, "CallbackAPIVersion").VERSION2,
             client_id="device",
         )
-        device.on_message = lambda _c, _u, message: received.append(message.payload)
+        device.on_message = lambda _c, _u, message: received.append(
+            bytes(message.payload)
+        )
         device.connect("127.0.0.1", port)
         device.subscribe(f"ori/fw/{DEVICE}/#", qos=1)
         device.loop_start()
@@ -131,7 +133,9 @@ async def _only_fresh_arrives(
             callback_api_version=getattr(mqtt, "CallbackAPIVersion").VERSION2,
             client_id="device",
         )
-        device.on_message = lambda _c, _u, message: received.append(message.payload)
+        device.on_message = lambda _c, _u, message: received.append(
+            bytes(message.payload)
+        )
         device.connect("127.0.0.1", port)
         device.subscribe(f"ori/fw/{DEVICE}/#", qos=1)
         device.loop_start()
@@ -409,7 +413,7 @@ async def _listen(original: Any, port: int, received: list[bytes]) -> Any:
         callback_api_version=getattr(mqtt, "CallbackAPIVersion").VERSION2,
         client_id="device",
     )
-    device.on_message = lambda _c, _u, message: received.append(message.payload)
+    device.on_message = lambda _c, _u, message: received.append(bytes(message.payload))
     device.connect("127.0.0.1", port)
     device.subscribe(f"ori/fw/{DEVICE}/#", qos=1)
     device.loop_start()
