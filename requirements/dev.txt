@@ -715,9 +715,9 @@ cryptography==50.0.2 \
     #   -r runtime.txt
     #   asyncua
     #   pyopenssl
-cyclonedx-bom==7.6.0 \
-    --hash=sha256:4db70eb524e859317c645bbe927347e18bdd3cfa31906b1e482b4b936f8c36ef \
-    --hash=sha256:ab8a8c4cf0d8704f75029f75826993047783b8fd416e7dc3431af54c03e8adab
+cyclonedx-bom==8.0.1 \
+    --hash=sha256:a32c8bb2c4b436e0d6b7ee3b9f0899efdfc91e8f5d9652975467d31e4c20b900 \
+    --hash=sha256:b91ac00e0d031aaee0bc69fd3851384b2c36e569859df13b2a564b5d2d67aab3
     # via -r dev.in
 cyclonedx-python-lib[validation]==11.7.0 \
     --hash=sha256:02fa4f15ddbba21ac9093039f8137c0d1813af7fe88b760c5dcd3311a8da2178 \
