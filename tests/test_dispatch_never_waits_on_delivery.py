@@ -28,7 +28,6 @@ import re
 import shutil
 import socket
 import sqlite3
-import subprocess
 import sys
 import threading
 import time
@@ -1200,18 +1199,24 @@ def _broker(root: Path) -> Iterator[int]:
     config.write_text(
         f"listener {port} 127.0.0.1\nallow_anonymous true\npersistence false\n"
     )
-    process = Supervised(
-        [binary, "-c", str(config)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    log = root / f"mosquitto-{port}.log"
+    with log.open("w") as output:
+        process = Supervised(
+            [binary, "-c", str(config)],
+            stdout=output,
+            stderr=output,
+        )
     try:
         deadline = time.monotonic() + _PROMPT_S
         while time.monotonic() < deadline:
             with socket.socket() as probe:
                 if probe.connect_ex(("127.0.0.1", port)) == 0:
                     break
+            if process.poll() is not None:
+                pytest.fail(f"Mosquitto exited before listening: {log.read_text()}")
             time.sleep(0.05)
+        else:
+            pytest.fail(f"Mosquitto did not listen on {port}: {log.read_text()}")
         yield port
     finally:
         process.stop()
