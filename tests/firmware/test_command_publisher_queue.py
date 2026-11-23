@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import subprocess
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -49,11 +48,13 @@ def _broker_on(root: Path, port: int) -> Iterator[Supervised]:
     config.write_text(
         f"listener {port} 127.0.0.1\nallow_anonymous true\npersistence false\n"
     )
-    process = Supervised(
-        [binary, "-c", str(config)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    log = root / f"mosquitto-{port}.log"
+    with log.open("w") as output:
+        process = Supervised(
+            [binary, "-c", str(config)],
+            stdout=output,
+            stderr=output,
+        )
     try:
         import socket
 
@@ -62,7 +63,11 @@ def _broker_on(root: Path, port: int) -> Iterator[Supervised]:
             with socket.socket() as probe:
                 if probe.connect_ex(("127.0.0.1", port)) == 0:
                     break
+            if process.poll() is not None:
+                pytest.fail(f"Mosquitto exited before listening: {log.read_text()}")
             time.sleep(0.05)
+        else:
+            pytest.fail(f"Mosquitto did not listen on {port}: {log.read_text()}")
         yield process
     finally:
         process.stop()
