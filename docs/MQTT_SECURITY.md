@@ -180,6 +180,13 @@ For a runtime with `device_id=dev-01`, the gateway integration uses:
 | Evidence outbound acknowledgement | gateway | runtime | `ori/dev-01/evidence/outbound/ack` |
 | Evidence inbound delivery | gateway | runtime | `ori/dev-01/evidence/inbound` |
 | Evidence inbound acknowledgement | runtime | gateway | `ori/dev-01/evidence/inbound/ack` |
+| LAN proposal projection | runtime | gateway | `ori/dev-01/lan/proposal` |
+| LAN customer reply | gateway | runtime | `ori/dev-01/lan/reply` |
+| LAN disclosure check | gateway | runtime | `ori/dev-01/lan/disclosure/request` |
+| LAN disclosure decision | runtime | gateway | `ori/dev-01/lan/disclosure/response/+` |
+| Runtime posture record | runtime | gateway | `ori/dev-01/runtime/posture` |
+| Runtime alert delivery record | runtime | gateway | `ori/dev-01/runtime/alert-delivery` |
+| Runtime alert delivery acknowledgement | gateway | runtime | `ori/dev-01/runtime/alert-delivery/ack` |
 
 `ori/gateway/health` is a site-wide broadcast topic (not device-scoped).  All
 runtimes at the site subscribe to it.  The gateway publishes to it every 30 s
@@ -237,6 +244,15 @@ Publishers must set `retain=false` for:
 - `ori/{device_id}/evidence/outbound/ack`
 - `ori/{device_id}/evidence/inbound`
 - `ori/{device_id}/evidence/inbound/ack`
+- `ori/{device_id}/lan/proposal`
+- `ori/{device_id}/lan/reply`
+- `ori/{device_id}/lan/disclosure/request`
+- `ori/{device_id}/lan/disclosure/response/{request_id}`
+- `ori/{device_id}/runtime/alert-delivery`
+- `ori/{device_id}/runtime/alert-delivery/ack`
+
+`ori/{device_id}/runtime/posture` is the exception: gateway-api/v2 publishes it
+retained.
 
 A retained enrichment response would present stale advisory text against a
 later Tier C proposal, and a retained evidence artifact is a statement about a
@@ -252,7 +268,10 @@ The runtime already publishes gateway reasoning requests with `retain=false`,
 and export responses use the MQTT library default (`retain=false`). Gateway
 implementations must do the same. If the broker supports policy plugins that
 deny retained publishes on `ori/+/reasoning/#`, `ori/+/export/#`,
-`ori/+/tier_c/#` and `ori/+/evidence/#`, enable that policy in production.
+`ori/+/tier_c/#`, `ori/+/evidence/#`, `ori/+/lan/#`, `ori/+/runtime/heartbeat`,
+`ori/+/runtime/alert-delivery` and `ori/+/runtime/alert-delivery/ack`, enable
+that policy in production. Never deny them on `ori/+/runtime/posture`, which is
+retained.
 
 ## Mosquitto Example
 
@@ -294,6 +313,13 @@ topic write ori/dev-01/evidence/outbound
 topic read  ori/dev-01/evidence/outbound/ack
 topic read  ori/dev-01/evidence/inbound
 topic write ori/dev-01/evidence/inbound/ack
+topic write ori/dev-01/lan/proposal
+topic read  ori/dev-01/lan/reply
+topic read  ori/dev-01/lan/disclosure/request
+topic write ori/dev-01/lan/disclosure/response/+
+topic write ori/dev-01/runtime/posture
+topic write ori/dev-01/runtime/alert-delivery
+topic read  ori/dev-01/runtime/alert-delivery/ack
 
 # Gateway for the same site/device.
 user ori-gateway-site-a
@@ -309,6 +335,13 @@ topic read  ori/dev-01/evidence/outbound
 topic write ori/dev-01/evidence/outbound/ack
 topic write ori/dev-01/evidence/inbound
 topic read  ori/dev-01/evidence/inbound/ack
+topic read  ori/dev-01/lan/proposal
+topic write ori/dev-01/lan/reply
+topic write ori/dev-01/lan/disclosure/request
+topic read  ori/dev-01/lan/disclosure/response/+
+topic read  ori/dev-01/runtime/posture
+topic read  ori/dev-01/runtime/alert-delivery
+topic write ori/dev-01/runtime/alert-delivery/ack
 ```
 
 For a multi-device site, repeat the runtime block for each device and grant the
@@ -351,6 +384,10 @@ gateway reasoning/export transport also supports `mqtts://` broker URLs and the
 - [ ] Where Tier C enrichment or evidence is enabled, each side's ACL covers
       exactly its direction on `ori/{device_id}/tier_c/enrichment/*` and
       `ori/{device_id}/evidence/*` as listed above, and nothing wider.
+- [ ] Where the LAN reply relay, the posture record or the alert delivery
+      record is enabled, each side's ACL covers exactly its direction on
+      `ori/{device_id}/lan/*`, `ori/{device_id}/runtime/posture`,
+      `ori/{device_id}/runtime/alert-delivery` and its `/ack`, as listed above.
 - [ ] Retained publishes are forbidden by client policy or broker policy on
       `ori/{device_id}/reasoning/*`, `ori/{device_id}/export/*`, and
       heartbeat topics.
