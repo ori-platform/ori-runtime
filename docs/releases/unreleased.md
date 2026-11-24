@@ -1020,10 +1020,8 @@ release is cut.
   unrecorded: a route cancelled once its key is written, as every route is at
   shutdown, leaves it recorded, and the courier's newly signed redelivery is
   admitted.
-- `gateway.reasoning.timeout_ms` is kept to a day at most, and a
-  `gateway.node_heartbeat.interval_seconds` that is not finite means the
-  default, also capped at a day, so every value the configuration admits
-  schedules a wait the runtime can run.
+- `gateway.reasoning.timeout_ms` is kept to a day at most, so every value the
+  configuration admits schedules a wait the runtime can run.
 
 - No validating pattern in the runtime accepts a trailing newline. A pattern
   ending in `$` also matches before a final newline, so thirteen validators
