@@ -5,6 +5,14 @@ release is cut.
 
 ## Upgrade notes
 
+- `gateway.node_heartbeat.interval_seconds` must now be between 1 and 30,
+  as runtime-config/v2 requires, so a gateway's fixed 90-second Site Health
+  TTL always spans at least three heartbeats. A value above 30, a
+  non-finite number, or anything that is not a number (a quoted string such
+  as `"30"`, or a boolean) is refused at config load and never clamped. Before
+  upgrading, set any interval above 30 to 30 or less, and update the gateway
+  to a `main` that includes ori-gateway#170.
+
 - A sensor setting an adapter's `connect()` refuses from the configuration
   alone is now refused at config load, naming the sensor, before any adapter
   is built. Each adapter module exposes one check, `refuse_unusable_config`,

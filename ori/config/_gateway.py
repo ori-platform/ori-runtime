@@ -32,9 +32,8 @@ class GatewayConfig:
     broker_posture: dict = field(default_factory=dict)
 
 
-def parse_gateway(data: Any) -> GatewayConfig:
-    if not isinstance(data, dict):
-        raise ConfigValidationError("'gateway' section must be a mapping.")
+def _parse_node_heartbeat(data: dict[str, Any]) -> dict[str, Any]:
+    """`gateway.node_heartbeat`, its interval refused outside 1-30 s, never clamped."""
     node_heartbeat_raw = data.get("node_heartbeat") or {}
     if not isinstance(node_heartbeat_raw, dict):
         raise ConfigValidationError(
@@ -45,17 +44,32 @@ def parse_gateway(data: Any) -> GatewayConfig:
         str(node_heartbeat.get("enabled", "true")).strip().lower() == "true"
         or node_heartbeat.get("enabled") is True
     )
-    try:
-        interval_seconds = float(node_heartbeat.get("interval_seconds", 30))
-    except (TypeError, ValueError) as exc:
+    raw_interval = node_heartbeat.get("interval_seconds", 30)
+    # runtime-config/v2 types it `number`: a YAML string or boolean is not one.
+    if isinstance(raw_interval, bool) or not isinstance(raw_interval, (int, float)):
         raise ConfigValidationError(
             "gateway.node_heartbeat.interval_seconds must be a number"
-        ) from exc
-    if interval_seconds < 1:
+        )
+    try:
+        interval_seconds = float(raw_interval)
+    except OverflowError as exc:
         raise ConfigValidationError(
-            "gateway.node_heartbeat.interval_seconds must be >= 1"
+            "gateway.node_heartbeat.interval_seconds must be between 1 and 30"
+        ) from exc
+    # runtime-config/v2 bounds it to 1-30 s; the gateway's 90 s Site Health TTL
+    # assumes it. Refused, never clamped. The chained test also refuses NaN.
+    if not 1 <= interval_seconds <= 30:
+        raise ConfigValidationError(
+            "gateway.node_heartbeat.interval_seconds must be between 1 and 30"
         )
     node_heartbeat["interval_seconds"] = interval_seconds
+    return node_heartbeat
+
+
+def parse_gateway(data: Any) -> GatewayConfig:
+    if not isinstance(data, dict):
+        raise ConfigValidationError("'gateway' section must be a mapping.")
+    node_heartbeat = _parse_node_heartbeat(data)
 
     reasoning_raw = data.get("reasoning") or {}
     if not isinstance(reasoning_raw, dict):

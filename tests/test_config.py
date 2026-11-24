@@ -332,23 +332,24 @@ class TestLoadExample:
         ):
             Config.load(yaml_path)
 
-    def test_gateway_node_heartbeat_interval_must_be_at_least_one(self, tmp_path):
-        yaml_path = _write_yaml(
+    @staticmethod
+    def _heartbeat_yaml(tmp_path, interval: str):
+        return _write_yaml(
             tmp_path,
-            """
+            f"""
             device:
               id: dev-01
               name: Test
               location: Lagos
             sensors: []
             skills: []
-            reasoning: {}
+            reasoning: {{}}
             gateway:
               enabled: true
               broker_url: mqtt://broker.local
               node_heartbeat:
                 enabled: true
-                interval_seconds: 0
+                interval_seconds: {interval}
             actions:
               primary_alert_channel: sms
               sms:
@@ -356,8 +357,44 @@ class TestLoadExample:
             """,
         )
 
-        with pytest.raises(ConfigValidationError, match="must be >= 1"):
+    @pytest.mark.parametrize(
+        "interval",
+        [
+            "0",
+            "0.999",
+            "30.001",
+            "31",
+            "3600",
+            ".nan",
+            ".inf",
+            "-.inf",
+            "1" + "0" * 400,
+        ],
+    )
+    def test_gateway_node_heartbeat_interval_outside_one_to_thirty_is_refused(
+        self, tmp_path, interval
+    ):
+        """runtime-config/v2 bounds the interval to 1-30 s; never clamped."""
+        yaml_path = self._heartbeat_yaml(tmp_path, interval)
+        with pytest.raises(ConfigValidationError, match="must be between 1 and 30"):
             Config.load(yaml_path)
+
+    @pytest.mark.parametrize("interval", ["true", "false", '"30"', '"1e1"', "null"])
+    def test_gateway_node_heartbeat_interval_boolean_is_refused(
+        self, tmp_path, interval
+    ):
+        yaml_path = self._heartbeat_yaml(tmp_path, interval)
+        with pytest.raises(ConfigValidationError, match="must be a number"):
+            Config.load(yaml_path)
+
+    @pytest.mark.parametrize(
+        ("interval", "expected"), [("1", 1.0), ("15.5", 15.5), ("30", 30.0)]
+    )
+    def test_gateway_node_heartbeat_interval_bounds_are_inclusive(
+        self, tmp_path, interval, expected
+    ):
+        cfg = Config.load(self._heartbeat_yaml(tmp_path, interval))
+        assert cfg.gateway.node_heartbeat["interval_seconds"] == expected
 
     def test_gateway_tls_keyfile_requires_certfile(self, tmp_path):
         yaml_path = _write_yaml(
