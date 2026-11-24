@@ -31,7 +31,7 @@ OVERSIZE_CEILINGS: dict[str, int] = {
     "ori/reasoning/action_dispatcher.py::ActionDispatcher._run_approval_workflow": 519,
     "ori/reasoning/action_dispatcher.py::ActionDispatcher._run_governed_workflow": 465,
     "ori/config/_config.py::Config._interpret": 366,
-    "ori/config/_gateway.py::parse_gateway": 343,
+    "ori/config/_gateway.py::parse_gateway": 323,
     "ori/reasoning/elevator.py::IntelligenceElevator.reason_and_dispatch": 336,
     "ori/reasoning/action_dispatcher.py::ActionDispatcher._admit_and_run": 265,
     "ori/runtime/_startup_foundation.py::StartupFoundation._stage_dispatcher": 268,

@@ -75,7 +75,7 @@ gateway:
   broker_url: ""
   node_heartbeat:
     enabled: false
-    interval_seconds: 30
+    interval_seconds: 30  # 1-30; refused outside, never clamped
 
 actions:
   primary_alert_channel: sms           # 'sms' | 'whatsapp'

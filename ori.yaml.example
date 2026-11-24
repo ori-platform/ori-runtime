@@ -360,7 +360,7 @@ gateway:
     enabled: false                   # required in staging/production for every broker; requires gateway.auth.enabled
   node_heartbeat:
     enabled: true                    # publish runtime liveness to ori/{device_id}/runtime/heartbeat
-    interval_seconds: 30
+    interval_seconds: 30             # 1-30; refused outside, never clamped
   firmware_telemetry:
     enabled: false                   # subscribe to signed evidence Layer 1 firmware telemetry
     topic: ori/fw/+/telemetry        # signed telemetry and signed fault events
