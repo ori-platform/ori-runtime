@@ -72,7 +72,14 @@ rules are in `CLAUDE.md` (Skills). In addition:
 - Prompts are plain language for a Lagos SME owner, not an engineer.
 - `hooks.py` runs only for first-party skills. Its API is
   `ori/skills/hooks_api.py` (`HookContext`); hooks never touch the StateStore
-  directly, and history baselines never suppress Tier D.
+  directly, and history baselines never suppress Tier D. Isolated execution
+  for community hooks is being specified in ori-specs first.
+- The reading names (`value`, `sensor_id`, `sensor_type`, `unit`, `quality`)
+  are reserved at load, stripped where hook output merges, and assigned
+  unconditionally in the rule engine.
+- `same_weekday_hour_baseline(sensor_id, lookback_weeks=8, min_weeks=3)` gives a
+  bounded site-local baseline for anomaly suppression, never for Tier D cutoffs or
+  as a confidence proxy.
 
 ### An action executor
 
@@ -80,7 +87,11 @@ Add the registry entry in `ori/reasoning/action_registry.py` first, then
 register an async `execute(action, context)` with
 `dispatcher.register_executor()` (see `ori/runtime/_startup_foundation.py`).
 Registration without a registry entry raises. A physical action arrives as a
-commissioned outcome, never a new name (`CLAUDE.md`, Skills).
+commissioned outcome, never a new name (`CLAUDE.md`, Skills). The three legacy
+actuator names (`trip_relay`, `close_gas_valve`, `release_relay`) resolve to
+`open_protected_circuit` / `close_protected_circuit` through the zone's
+mapping. Every physical registry entry has an executor the runtime registers,
+and the registry is owned by the release; nothing at deployment adds to it.
 
 - An executor never raises: it catches its own errors, logs the failure, and
   the runtime continues.

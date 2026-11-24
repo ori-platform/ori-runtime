@@ -366,3 +366,31 @@ driven at all. On an
 
 Step 4 is what converts every preceding assumption into something the runtime
 will refuse to fake.
+
+## Simulation, the relay pin and relay wiring
+
+**Simulation is for development only.** Off a Pi, HAL adapters guard hardware
+imports and enter simulation (connect succeeds with a WARNING, reads return
+simulated values). Staging, production, and development with
+`security.enforce_production_posture: true` fail before opening the store when a
+configured GPIO relay or status signal lacks `gpiozero`, a CoAP action or sensor
+lacks `aiocoap`, or local reasoning lacks `llama-cpp-python` or a readable GGUF
+model. I2C and serial simulation remain adapter behaviour. A protocol not in
+`ori/hal/protocol_registry.py` is refused at startup.
+
+`actions.relay.enabled` gates Tier B/C use only; a present `gpio_pin` declares
+the Tier D path and requires real GPIO even when disabled, so omit the pin when
+no relay is wired. Local inference is requested by
+`reasoning.default_tier: local` only.
+
+**Relay wiring.** Never derive a coil state or circuit outcome from contact type
+(NC/NO); the downstream wiring decides. Controller loss is not one condition:
+losing coil power de-energises the coil, but a killed process may leave the
+output at its last commanded state (measured on a Pi 4; the table is in `COMMISSIONING.md`). Only
+the per-mode observation at commissioning licenses calling a state safe.
+
+**The relay is driven only through the commissioned binding**
+(`commissioning/binding.json`, `docs/COMMISSIONING.md`). Polarity is refused
+from `ori.yaml`. Startup commands the coil `de_energised` through the zone's
+polarity. A declared pin with no accepted zone is not driven and its relay
+actions are not registered.
