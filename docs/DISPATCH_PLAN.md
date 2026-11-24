@@ -728,6 +728,88 @@ commissioning, never as a registry name.
 Tracked separately. The contract depends on it, because sealing on the action
 tier buys nothing if the field being sealed is not true.
 
+## Dispatch order and the approval workflow in brief
+
+The summary `CLAUDE.md` points to. The sections above hold the reasoning.
+
+### Dispatch order
+
+1. **Discovery barrier.** One event, every skill that declares the reading's
+   sensor type, every matching trigger collected before any reasoning is
+   scheduled. Declaration order decides nothing. Tier D conditions read only the
+   reading and the skill's configuration (the loader refuses anything else), so
+   they are decided before any hook runs or history is read. No cooldown or
+   in-flight hold reads or charges against a Tier D attempt: a plan granting
+   Tier D dispatches it on every matching reading, only the plan's other
+   actions wait, and cooldown is charged against their outcome.
+2. **The plan.** Each action at its own authority: informational → A; the
+   licensed protective outcome with every clause of the grant → D; otherwise
+   `min(C, max(registry floor, declared tier))`. An ungoverned action, or one
+   needing a commissioned zone that has none, is refused here.
+3. **Tier D first,** across the whole discovery set, before any reasoning task.
+   Tier A notices still run, and an opposing act already running is not
+   interrupted. Foreclosure belongs to the event: its lower-authority opposite is refused for
+   that event even after the act completes; a later event's trip is never
+   absorbed and a failed act is never joined.
+4. **Local SLM** for what remains.
+5. **Dispatcher** admits against the resource an action drives, never its name:
+   the same outcome coalesces, the opposite conflicts. Then A executes; B
+   executes (post_action) or asks; C asks for a scoped `YES-<proposal_id>` /
+   `NO-<proposal_id>`; D executes.
+
+### The action dispatcher
+
+`ori/reasoning/action_dispatcher.py`. Tier B approval is decided by the matched
+trigger's `requires_approval` (`skill.config` only when no trigger matches
+`context.trigger_name`). The approval message template is built there and in
+`ori/actions/whatsapp.py`; its
+`Measured:` line is the reading's own time as the device reported it, and
+`Detected:` the runtime's clock, both in `device.timezone`.
+
+**Host-state approval workflow** (Tier C host actions, Tier B with approval):
+send through `AlertFailoverSender`, wait for the scoped reply within
+`approval_timeout_seconds` (default 300). YES executes; NO, an invalid reply or
+timeout executes `safe_default_action`. A timeout also notifies
+`actions.secondary_contact` once; that notice carries no approval authority and
+nothing re-asks.
+
+**Governed approval** (a physical Tier C action on a commissioned zone,
+`tier-c-approval/v1`):
+
+- The proposal row (zone, binding digest, authority snapshot, monotonic
+  deadline) commits before anyone is asked.
+- A reply is an approval only inside one store transaction that matches binding
+  and authority bytes, finds no unresolved dispatch of the same outcome on the
+  zone, reserves a terminal record, and claims any v2 token.
+- Dispatch follows at once with nothing written ahead of the executor; the
+  marker lands beside it and the outcome after it.
+- Expired, rejected, blocked or changed: one non-actuating safe-default intent,
+  the operator told why. A decision that precedes no act is written before it
+  is reported, in one transaction with that intent; the intent is an
+  obligation retried while pending, never a receipt.
+- A physical Tier C action with no commissioned zone, and `coap_command` at
+  Tier C, are refused as proposals.
+
+**Restart and reconciliation.** A restart replays nothing. An open proposal
+closes `proposal_aborted_restart` with its safe default; marker without outcome
+is `dispatch_outcome_unknown`; neither is `dispatch_not_proven`, because an
+absent marker proves nothing. Both raise a CRITICAL operator and audit event. A
+graceful stop closes open proposals the same way. Nothing is written between
+the approval commit and the executor, so `approval_aborted_undispatched` is
+unreachable here. A store unreadable at recovery fails Tier C closed and nothing
+else: start completes, Tier D runs, health degrades. An uncertain dispatch
+blocks only its outcome on its zone until an authenticated operator observation
+(`evidence reconcile-tier-c`) or commissioned feedback reconciles it. Tier D
+consults none of this. Health carries `evidence.action_records`. A v1 offline token approves no physical action and no
+Tier C action; a v2 token binds one proposal.
+
+**Fire-and-track.** The dispatcher never blocks the loop while waiting, uses
+`asyncio.wait_for` for replies, always returns an `ActionResult`, and never lets
+a failed action crash the runtime. Every attempt is logged to `action_log`
+after the act, never ahead of it, through one ordered, bounded writer; a record
+past the ceiling, refused, or unwritten at shutdown is counted lost and
+reported.
+
 ## Out of scope
 
 - Refusing overlapping trigger conditions at load. It enforces syntax rather
