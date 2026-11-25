@@ -190,10 +190,15 @@ class SensorPolling(MeasurementSupervision):
             now = now_ms()
             for sensor_id, poll_ms in self._sensor_poll_interval_ms.items():
                 last_seen = self._sensor_last_seen_ms.get(sensor_id)
-                if last_seen is None:
+                silent_since = (
+                    last_seen
+                    if last_seen is not None
+                    else self._sensor_connected_at_ms.get(sensor_id)
+                )
+                if silent_since is None:
                     continue
                 stale_after_ms = silence_bound_ms(int(poll_ms))
-                stale_duration_ms = now - int(last_seen)
+                stale_duration_ms = now - int(silent_since)
                 is_stale = stale_duration_ms > stale_after_ms
                 if is_stale and sensor_id not in self._stale_sensor_active:
                     self._stale_sensor_active.add(sensor_id)
@@ -208,6 +213,7 @@ class SensorPolling(MeasurementSupervision):
                         sensor_id=sensor_id,
                         stale_duration_ms=stale_duration_ms,
                         stale_after_ms=stale_after_ms,
+                        never_reported=last_seen is None,
                     )
 
             await self._escalate_persistent_measurement_loss()
@@ -233,8 +239,13 @@ class SensorPolling(MeasurementSupervision):
         sensor_id: str,
         stale_duration_ms: int,
         stale_after_ms: int,
+        never_reported: bool = False,
     ) -> None:
-        """Send or queue a stale-sensor Tier A notification."""
+        """Send or queue a stale-sensor Tier A notification.
+
+        A sensor with no reading since it connected is named as such, so it is
+        not read as a source that went quiet.
+        """
         if not self._operator_contact:
             logger.warning(
                 "[runtime] stale sensor warning not sent: operator_contact is not configured"
@@ -242,10 +253,17 @@ class SensorPolling(MeasurementSupervision):
             return
         minutes = max(stale_duration_ms // 60_000, 1)
         threshold_seconds = max(stale_after_ms // 1000, 1)
-        message = (
-            f"Sensor {sensor_id} has not reported for about {minutes} minute(s). "
-            f"This exceeded the stale threshold of {threshold_seconds}s."
-        )
+        if never_reported:
+            message = (
+                f"Sensor {sensor_id} has had no reading accepted since it "
+                f"connected about {minutes} minute(s) ago. This exceeded the stale threshold "
+                f"of {threshold_seconds}s."
+            )
+        else:
+            message = (
+                f"Sensor {sensor_id} has not reported for about {minutes} minute(s). "
+                f"This exceeded the stale threshold of {threshold_seconds}s."
+            )
         alert_ts = now_ms()
         await self._send_or_queue_alert(
             channel=self._primary_alert_channel,

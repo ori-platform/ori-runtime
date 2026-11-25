@@ -349,6 +349,13 @@ gateway only the device namespaces it is responsible for. Do not give the
 gateway global `ori/#` access unless it is an explicitly trusted integration
 environment.
 
+Mosquitto's `acl_file` does not refuse a subscription it denies: it grants it
+and then delivers nothing on the topic. An MQTT sensor whose user the ACL does
+not let read its topic therefore connects and stays silent. The runtime health
+surface shows it connected with `last_seen_ms` null and, past its silence
+bound, `stale`, and the stale-sensor alert says it has had no reading
+accepted since it connected. Check the sensor user's `topic read` lines first.
+
 ## TLS Option
 
 TLS protects MQTT transport confidentiality and prevents passive LAN sniffing.

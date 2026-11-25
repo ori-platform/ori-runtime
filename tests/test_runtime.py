@@ -800,6 +800,43 @@ async def test_a_failed_sensor_connect_does_not_take_the_runtime_down(
 
 
 @pytest.mark.asyncio
+async def test_a_connected_sensor_with_no_reading_has_no_last_seen(
+    minimal_config, monkeypatch
+) -> None:
+    """Connecting records when silence starts, never a reading (runtime-health/v4)."""
+    from ori.hal.base import AdapterReadError
+    from ori.hal.psutil_adapter import PsutilAdapter
+
+    reads: list[str] = []
+
+    async def _connect(self, config):
+        return None
+
+    async def _starved(self, sensor_id):
+        reads.append(sensor_id)
+        raise AdapterReadError("simulated: no data delivered yet")
+
+    monkeypatch.setattr(PsutilAdapter, "connect", _connect)
+    monkeypatch.setattr(PsutilAdapter, "read", _starved)
+
+    runtime = OriRuntime(config_path=str(minimal_config))
+    start_task = asyncio.create_task(runtime.start())
+    try:
+        await wait_until(
+            lambda: reads or start_task.done(), what="a read, or startup to end"
+        )
+        assert not start_task.done()
+        assert "cpu-sensor" in runtime._connected_sensor_ids
+        assert "cpu-sensor" in runtime._sensor_connected_at_ms
+        assert "cpu-sensor" not in runtime._sensor_last_seen_ms
+        snapshot = await runtime._build_health_snapshot()
+        (sensor,) = [s for s in snapshot["sensors"] if s["id"] == "cpu-sensor"]
+        assert sensor["last_seen_ms"] is None
+    finally:
+        await _stop_and_join(runtime, start_task)
+
+
+@pytest.mark.asyncio
 async def test_a_sensor_that_never_connects_reaches_the_operator(
     minimal_config, monkeypatch
 ):

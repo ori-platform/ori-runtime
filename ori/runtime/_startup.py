@@ -258,6 +258,7 @@ class StartupStages(
         self._connected_sensor_ids = set()
         self._sensor_poll_interval_ms = {}
         self._sensor_last_seen_ms = {}
+        self._sensor_connected_at_ms = {}
         self._stale_sensor_active = set()
         self._read_failure_logged_at = {}
         self._measurement_refusals = {}
@@ -349,7 +350,7 @@ class StartupStages(
                 continue
             if not retrying:
                 self._connected_sensor_ids.add(sensor_cfg.id)
-                self._sensor_last_seen_ms[sensor_cfg.id] = now_ms()
+                self._sensor_connected_at_ms[sensor_cfg.id] = now_ms()
                 logger.info(
                     "[runtime] adapter=%s sensor_id=%s connected",
                     adapter.adapter_name,

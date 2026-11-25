@@ -191,24 +191,22 @@ class HealthSnapshot(Commissioning):
         snapshot["enabled"] = True
         return snapshot
 
-    async def _build_health_snapshot(self) -> dict[str, Any]:
-        now = now_ms()
-        uptime_s = (
-            max(0.0, (now - self._runtime_started_at_ms) / 1000.0)
-            if self._runtime_started_at_ms > 0
-            else 0.0
-        )
-
-        capability_posture = self._capability_posture_health()
-
+    def _sensors_health(self, now: int) -> list[dict[str, Any]]:
+        """Each configured sensor's health entry at *now* (runtime-health/v4)."""
         sensors: list[dict[str, Any]] = []
         for sensor_cfg in self._configured_sensors:
             sensor_id = str(sensor_cfg.id)
             poll_ms = int(sensor_cfg.poll_interval_ms)
             last_seen_ms = self._sensor_last_seen_ms.get(sensor_id)
+            # With no reading yet, silence runs from the connection.
+            silent_since = (
+                last_seen_ms
+                if last_seen_ms is not None
+                else self._sensor_connected_at_ms.get(sensor_id)
+            )
             stale = False
-            if last_seen_ms is not None:
-                stale = (now - int(last_seen_ms)) > silence_bound_ms(poll_ms)
+            if silent_since is not None:
+                stale = (now - int(silent_since)) > silence_bound_ms(poll_ms)
             sensors.append(
                 {
                     "id": sensor_id,
@@ -229,6 +227,19 @@ class HealthSnapshot(Commissioning):
                     "stale": bool(stale),
                 }
             )
+        return sensors
+
+    async def _build_health_snapshot(self) -> dict[str, Any]:
+        now = now_ms()
+        uptime_s = (
+            max(0.0, (now - self._runtime_started_at_ms) / 1000.0)
+            if self._runtime_started_at_ms > 0
+            else 0.0
+        )
+
+        capability_posture = self._capability_posture_health()
+
+        sensors = self._sensors_health(now)
 
         community_skills_health = self._community_skills_health()
         config_authority_health = self._config_authority_health()
