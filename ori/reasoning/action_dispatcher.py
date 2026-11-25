@@ -3569,193 +3569,193 @@ class ActionDispatcher:
         has_comms = self._tier_c_comms_available()
         if self._status_indicator is not None:
             self._status_indicator.set_tier_c_pending(has_comms=has_comms)
-
-        device_id = context.event.device_id if context.event else "unknown"
-        detected_at_ms = event_received_at_ms(context.event)
-        message = self._format_approval_message(
-            device_id=device_id,
-            timestamp_ms=context.event.timestamp if context.event else detected_at_ms,
-            result=result,
-            action=action,
-            timeout_seconds=approval_timeout_seconds,
-            device_timezone=self._config.get("device_timezone", "Africa/Lagos"),
-            proposal_id=proposal_id,
-            received_at_ms=detected_at_ms,
-            reading=context.event.reading if context.event else None,
-        )
-        # The provider template reads "Ori proposes {action} at {time}": the
-        # time Ori proposed it, which is the runtime's own clock, never the
-        # device's account of when the reading was measured.
-        formatted_time = self._format_local_time(
-            detected_at_ms,
-            self._config.get("device_timezone", "Africa/Lagos"),
-        )
-        approval_alert = build_outbound_alert(
-            intent=AlertIntent.TIER_C_APPROVAL,
-            sms_body=message,
-            template_variables=(
-                action,
-                self._config.get("device_location") or device_id,
-                formatted_time,
-                proposal_id,
-                approval_timeout_seconds,
-            ),
-        )
-
-        # Send approval request (best-effort only when comms are available).
-        operator_contact = self._config.get("operator_contact", "")
-        approval_receipt, local_console_mode = await self._ask_operator(
-            approval_alert, operator_contact, has_comms, action, gate_token, proposal_id
-        )
-        progress.approval_receipt = approval_receipt
-
-        # Wait for response
-        operator_response: str | None = None
-        parsed_operator_response: str | None = None
-        inbound_response: InboundApprovalResponse | None = None
-        timed_out = False
-        # Why an unanswered approval ended, for every record and message that
-        # reports it: only a window that ran out is a timeout.
-        approval_end = ""
-        store = self._resolve_state_store(context)
-        if local_console_mode:
-            local_from_number = operator_contact or "local-operator"
-            listen_started = time.monotonic()
-            try:
-                operator_response = await self._listen_for_local_console_response(
-                    store=store,
-                    from_number=local_from_number,
-                    timeout_seconds=approval_timeout_seconds,
-                    proposal_id=proposal_id,
-                )
-            except (Exception, asyncio.CancelledError) as exc:
-                if _cancelled_here(exc):
-                    raise
-                # A listener that fails has heard nothing; the proposal still
-                # resolves to its safe default below.
-                logger.exception(
-                    "ActionDispatcher: local console approval listener raised "
-                    "for action=%r proposal_id=%s",
-                    action,
-                    proposal_id,
-                )
-                operator_response = None
-            parsed_operator_response = operator_response
-            if operator_response is not None:
-                operator_response = f"LOCAL:{operator_response}"
-            else:
-                timed_out = True
-                approval_end = self._unanswered_approval_end(
-                    listen_started, approval_timeout_seconds
-                )
-                logger.warning(
-                    "ActionDispatcher: local console approval for action=%r "
-                    "proposal_id=%s ended without a reply (%s) — executing "
-                    "safe_default=%r",
-                    action,
-                    proposal_id,
-                    approval_end,
-                    safe_default_action,
-                )
-        else:
-            try:
-                listen_coro = self._listen_for_response(
-                    from_number=operator_contact,
-                    timeout_seconds=approval_timeout_seconds,
-                )
-            except TypeError:
-                # Backward compatibility for older test doubles/overrides that
-                # patched _listen_for_response with a no-arg coroutine.
-                listen_coro = self._listen_for_response()  # type: ignore[call-arg]
-            listen_started = time.monotonic()
-            listen_task = asyncio.create_task(
-                listen_coro,
-                name=f"approval:{action}",
-            )
-            try:
-                raw_operator_response = await asyncio.wait_for(
-                    listen_task,
-                    # Keep a small guard margin around provider-side timeout logic.
-                    timeout=float(approval_timeout_seconds) + 1.0,
-                )
-                if isinstance(raw_operator_response, InboundApprovalResponse):
-                    inbound_response = raw_operator_response
-                    operator_response = raw_operator_response.body
-                else:
-                    operator_response = raw_operator_response
-                parsed_operator_response = operator_response
-            except asyncio.TimeoutError:
-                timed_out = True
-                approval_end = APPROVAL_WINDOW_ELAPSED
-                if not listen_task.done():
-                    listen_task.cancel()
-                logger.warning(
-                    "ActionDispatcher: approval timeout for action=%r after %ds — "
-                    "executing safe_default=%r",
-                    action,
-                    approval_timeout_seconds,
-                    safe_default_action,
-                )
-            except (Exception, asyncio.CancelledError) as exc:
-                if _cancelled_here(exc):
-                    raise
-                # A listener that fails has heard nothing; the proposal still
-                # resolves to its safe default below.
-                timed_out = True
-                approval_end = APPROVAL_LISTENER_ENDED
-                operator_response = None
-                parsed_operator_response = None
-                logger.exception(
-                    "ActionDispatcher: approval reply listener raised for "
-                    "action=%r proposal_id=%s — executing safe_default=%r",
-                    action,
-                    proposal_id,
-                    safe_default_action,
-                )
-            else:
-                if operator_response is None:
-                    timed_out = True
-                    if not approval_receipt.accepted:
-                        approval_end = APPROVAL_UNDELIVERED
-                        logger.warning(
-                            "ActionDispatcher: approval request for action=%r "
-                            "proposal_id=%s was not delivered (%s) — executing "
-                            "safe_default=%r",
-                            action,
-                            proposal_id,
-                            approval_receipt.error or "not accepted by any channel",
-                            safe_default_action,
-                        )
-                    else:
-                        approval_end = self._unanswered_approval_end(
-                            listen_started, approval_timeout_seconds
-                        )
-                    if approval_end == APPROVAL_LISTENER_ENDED:
-                        logger.warning(
-                            "ActionDispatcher: the approval reply listener for "
-                            "action=%r proposal_id=%s ended without a reply "
-                            "before its %ds window — executing safe_default=%r",
-                            action,
-                            proposal_id,
-                            approval_timeout_seconds,
-                            safe_default_action,
-                        )
-                    elif approval_end == APPROVAL_WINDOW_ELAPSED:
-                        logger.warning(
-                            "ActionDispatcher: no approval response for action=%r within %ds — "
-                            "executing safe_default=%r",
-                            action,
-                            approval_timeout_seconds,
-                            safe_default_action,
-                        )
-
-        # A reply that is not text is no reply. One UTF-8 cannot carry is not a
-        # decision, and is classified as such; only its stored and reported
-        # form is escaped, so escaping can never turn it into a valid reply.
-        operator_response = _storable_reply(operator_response)
-        parsed_operator_response = _classifiable_reply(parsed_operator_response)
-
         try:
+            device_id = context.event.device_id if context.event else "unknown"
+            detected_at_ms = event_received_at_ms(context.event)
+            event_ts = context.event.timestamp if context.event else detected_at_ms
+            message = self._format_approval_message(
+                device_id=device_id,
+                timestamp_ms=event_ts,
+                result=result,
+                action=action,
+                timeout_seconds=approval_timeout_seconds,
+                device_timezone=self._config.get("device_timezone", "Africa/Lagos"),
+                proposal_id=proposal_id,
+                received_at_ms=detected_at_ms,
+                reading=context.event.reading if context.event else None,
+            )
+            # The provider template reads "Ori proposes {action} at {time}": the
+            # time Ori proposed it, which is the runtime's own clock, never the
+            # device's account of when the reading was measured.
+            formatted_time = self._format_local_time(
+                detected_at_ms,
+                self._config.get("device_timezone", "Africa/Lagos"),
+            )
+            approval_alert = build_outbound_alert(
+                intent=AlertIntent.TIER_C_APPROVAL,
+                sms_body=message,
+                template_variables=(
+                    action,
+                    self._config.get("device_location") or device_id,
+                    formatted_time,
+                    proposal_id,
+                    approval_timeout_seconds,
+                ),
+            )
+
+            # Send approval request (best-effort only when comms are available).
+            contact = self._config.get("operator_contact", "")
+            approval_receipt, local_console_mode = await self._ask_operator(
+                approval_alert, contact, has_comms, action, gate_token, proposal_id
+            )
+            progress.approval_receipt = approval_receipt
+
+            # Wait for response
+            operator_response: str | None = None
+            parsed_operator_response: str | None = None
+            inbound_response: InboundApprovalResponse | None = None
+            timed_out = False
+            # Why an unanswered approval ended, for every record and message that
+            # reports it: only a window that ran out is a timeout.
+            approval_end = ""
+            store = self._resolve_state_store(context)
+            if local_console_mode:
+                local_from_number = contact or "local-operator"
+                listen_started = time.monotonic()
+                try:
+                    operator_response = await self._listen_for_local_console_response(
+                        store=store,
+                        from_number=local_from_number,
+                        timeout_seconds=approval_timeout_seconds,
+                        proposal_id=proposal_id,
+                    )
+                except (Exception, asyncio.CancelledError) as exc:
+                    if _cancelled_here(exc):
+                        raise
+                    # A listener that fails has heard nothing; the proposal still
+                    # resolves to its safe default below.
+                    logger.exception(
+                        "ActionDispatcher: local console approval listener raised "
+                        "for action=%r proposal_id=%s",
+                        action,
+                        proposal_id,
+                    )
+                    operator_response = None
+                parsed_operator_response = operator_response
+                if operator_response is not None:
+                    operator_response = f"LOCAL:{operator_response}"
+                else:
+                    timed_out = True
+                    approval_end = self._unanswered_approval_end(
+                        listen_started, approval_timeout_seconds
+                    )
+                    logger.warning(
+                        "ActionDispatcher: local console approval for action=%r "
+                        "proposal_id=%s ended without a reply (%s) — executing "
+                        "safe_default=%r",
+                        action,
+                        proposal_id,
+                        approval_end,
+                        safe_default_action,
+                    )
+            else:
+                try:
+                    listen_coro = self._listen_for_response(
+                        from_number=contact,
+                        timeout_seconds=approval_timeout_seconds,
+                    )
+                except TypeError:
+                    # Backward compatibility for older test doubles/overrides that
+                    # patched _listen_for_response with a no-arg coroutine.
+                    listen_coro = self._listen_for_response()  # type: ignore[call-arg]
+                listen_started = time.monotonic()
+                listen_task = asyncio.create_task(
+                    listen_coro,
+                    name=f"approval:{action}",
+                )
+                try:
+                    raw_operator_response = await asyncio.wait_for(
+                        listen_task,
+                        # Keep a small guard margin around provider-side timeout logic.
+                        timeout=float(approval_timeout_seconds) + 1.0,
+                    )
+                    if isinstance(raw_operator_response, InboundApprovalResponse):
+                        inbound_response = raw_operator_response
+                        operator_response = raw_operator_response.body
+                    else:
+                        operator_response = raw_operator_response
+                    parsed_operator_response = operator_response
+                except asyncio.TimeoutError:
+                    timed_out = True
+                    approval_end = APPROVAL_WINDOW_ELAPSED
+                    if not listen_task.done():
+                        listen_task.cancel()
+                    logger.warning(
+                        "ActionDispatcher: approval timeout for action=%r after %ds — "
+                        "executing safe_default=%r",
+                        action,
+                        approval_timeout_seconds,
+                        safe_default_action,
+                    )
+                except (Exception, asyncio.CancelledError) as exc:
+                    if _cancelled_here(exc):
+                        raise
+                    # A listener that fails has heard nothing; the proposal still
+                    # resolves to its safe default below.
+                    timed_out = True
+                    approval_end = APPROVAL_LISTENER_ENDED
+                    operator_response = None
+                    parsed_operator_response = None
+                    logger.exception(
+                        "ActionDispatcher: approval reply listener raised for "
+                        "action=%r proposal_id=%s — executing safe_default=%r",
+                        action,
+                        proposal_id,
+                        safe_default_action,
+                    )
+                else:
+                    if operator_response is None:
+                        timed_out = True
+                        if not approval_receipt.accepted:
+                            approval_end = APPROVAL_UNDELIVERED
+                            logger.warning(
+                                "ActionDispatcher: approval request for action=%r "
+                                "proposal_id=%s was not delivered (%s) — executing "
+                                "safe_default=%r",
+                                action,
+                                proposal_id,
+                                approval_receipt.error or "not accepted by any channel",
+                                safe_default_action,
+                            )
+                        else:
+                            approval_end = self._unanswered_approval_end(
+                                listen_started, approval_timeout_seconds
+                            )
+                        if approval_end == APPROVAL_LISTENER_ENDED:
+                            logger.warning(
+                                "ActionDispatcher: the approval reply listener for "
+                                "action=%r proposal_id=%s ended without a reply "
+                                "before its %ds window — executing safe_default=%r",
+                                action,
+                                proposal_id,
+                                approval_timeout_seconds,
+                                safe_default_action,
+                            )
+                        elif approval_end == APPROVAL_WINDOW_ELAPSED:
+                            logger.warning(
+                                "ActionDispatcher: no approval response for action=%r within %ds — "
+                                "executing safe_default=%r",
+                                action,
+                                approval_timeout_seconds,
+                                safe_default_action,
+                            )
+
+            # A reply that is not text is no reply. One UTF-8 cannot carry is not a
+            # decision, and is classified as such; only its stored and reported
+            # form is escaped, so escaping can never turn it into a valid reply.
+            operator_response = _storable_reply(operator_response)
+            parsed_operator_response = _classifiable_reply(parsed_operator_response)
+
             # Parse response
             try:
                 response_kind = _classify_approval_response(

@@ -1883,6 +1883,27 @@ class TestStatusSignalingHooks:
         assert ("tier_c_pending", False) in status.calls
         assert ("tier_c_clear", None) in status.calls
 
+    async def test_tier_c_pending_cleared_when_asking_fails(self):
+        status = _StatusSpy()
+        d = ActionDispatcher(status_indicator=status)
+
+        with patch.object(
+            d, "_format_approval_message", side_effect=RuntimeError("format failed")
+        ):
+            await d.dispatch(
+                "terminate_process",
+                ActionTier.HARD_PHYSICAL,
+                _context(),
+                _result(),
+                approval_timeout_seconds=10,
+            )
+
+        pending = [
+            c for c in status.calls if c[0] in ("tier_c_pending", "tier_c_clear")
+        ]
+        assert pending and pending[0][0] == "tier_c_pending"
+        assert pending[-1] == ("tier_c_clear", None), status.calls
+
     async def test_tier_d_set_and_clear(self):
         status = _StatusSpy()
         d = ActionDispatcher(status_indicator=status)
