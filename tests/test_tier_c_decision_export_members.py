@@ -1,6 +1,6 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
-"""gateway-api/v2 `tier_c_decision_log`: an item carries its table's members only.
+"""gateway-api/v2 export items carry their table's members only.
 
 The store keeps the reply's sender number, its provider message id and the
 row id; the export carries none of them, nor any provider message id nested in
@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from ori.actions.alert_delivery import AlertSendReceipt, InboundApprovalResponse
 from ori.gateway.export import GatewayExportResponder
@@ -33,42 +35,13 @@ FROM_NUMBER = "whatsapp:+2348011112222"
 REPLY_PROVIDER_ID = "SM" + "c" * 32
 APPROVAL_PROVIDER_ID = "SM" + "a" * 32
 
-#: gateway-api/v2 `tier_c_decision_log`, the members a response item carries.
-CONTRACT_MEMBERS = frozenset(
-    {
-        "device_id",
-        "site_type",
-        "location",
-        "timezone",
-        "sensor_id",
-        "sensor_type",
-        "reading_value",
-        "reading_unit",
-        "reading_timestamp",
-        "history_window",
-        "skill_name",
-        "trigger_name",
-        "proposed_action",
-        "confidence",
-        "reasoning_tier",
-        "reasoning_model",
-        "prompt_context_summary",
-        "operator_decision",
-        "operator_response",
-        "operator_response_channel",
-        "operator_response_received_at_ms",
-        "decision_latency_ms",
-        "approval_timeout_seconds",
-        "safe_default_action",
-        "safe_default_used",
-        "action_taken",
-        "action_executed",
-        "final_action_result",
-        "later_outcome",
-        "proposal_id",
-        "created_at",
-    }
-)
+#: gateway-api/v2's export item member tables, as the vendored corpus carries them.
+EXPORT_ITEM_MEMBERS: dict[str, list[str]] = json.loads(
+    (
+        Path(__file__).parent / "vectors" / "gateway_api" / "payload-members-v2.json"
+    ).read_text()
+)["export_item_members"]
+CONTRACT_MEMBERS = frozenset(EXPORT_ITEM_MEMBERS["tier_c_decision_log"])
 
 
 class _Skill:
@@ -338,3 +311,45 @@ def test_the_result_keeps_only_its_exported_members() -> None:
     assert _exported_final_action_result({"tier": "E"}) == {}
     assert _exported_final_action_result(None) == {}
     assert _exported_final_action_result(["SM1"]) == {}
+
+
+@pytest.mark.parametrize("export_type", ["action_log", "reasoning_log"])
+async def test_the_other_paged_exports_carry_their_tables(
+    tmp_path: Path, export_type: str
+) -> None:
+    store = StateStore(str(tmp_path / "state.db"))
+    await store.open()
+    try:
+        assert store._conn is not None
+        store._conn.execute(
+            "INSERT INTO action_log (action_name, tier, executed, action_taken, "
+            "trigger_name, timestamp, device_id, correlation_id, record_kind, "
+            "record_key) VALUES ('alert_sms', 'A', 1, 'alert_sms', 't', 1000, ?, "
+            "'c', 'dispatch', 'k')",
+            (DEVICE,),
+        )
+        store._conn.execute(
+            "INSERT INTO reasoning_log (trigger_name, tier_used, response, "
+            "confidence, action_tier, timestamp, device_id, correlation_id) "
+            "VALUES ('t', 'rule', 'r', 1.0, 'A', 1000, ?, 'c')",
+            (DEVICE,),
+        )
+        store._conn.commit()
+        responder = GatewayExportResponder(
+            device_id=DEVICE, state_store=store, health_snapshot_provider=dict
+        )
+        response = await responder.handle_request(
+            {
+                "request_id": "req-001",
+                "export_type": export_type,
+                "device_id": DEVICE,
+                "limit": 10,
+                "page_token": "",
+                "params": {},
+            }
+        )
+    finally:
+        await store.close()
+    assert response is not None and response.error is None
+    (item,) = response.items
+    assert set(item) == set(EXPORT_ITEM_MEMBERS[export_type])
