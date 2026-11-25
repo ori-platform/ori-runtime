@@ -16,7 +16,7 @@ from ori.state._action_records import (
     _check_action_record_shape,
     _normalise_input_evidence,
 )
-from ori.state._core import StoreCore
+from ori.state._core import EXPORT_FETCH_MAX, StoreCore
 
 _EXPORTED_TIERS = ("A", "B", "C", "D")
 _TIERS_SQL = "('A', 'B', 'C', 'D')"
@@ -389,8 +389,15 @@ class ActionLogStore(StoreCore):
         until_ms: int | None = None,
         tier: str | None = None,
         limit: int = 100,
+        after: tuple[int, int] | None = None,
+        positioned: bool = False,
     ) -> list[dict]:
-        """Return a bounded action-log export for gateway/reporting sync."""
+        """Return a bounded action-log export for gateway/reporting sync.
+
+        Rows are in gateway-api/v2 Page Order, `(timestamp, id)` descending,
+        and start after *after* when given. *positioned* adds each row's
+        position under `_position`.
+        """
         return await self._run_read(
             self._export_action_log_sync,
             device_id,
@@ -398,6 +405,8 @@ class ActionLogStore(StoreCore):
             until_ms,
             tier,
             limit,
+            after,
+            positioned,
         )
 
     def _export_action_log_sync(
@@ -408,6 +417,8 @@ class ActionLogStore(StoreCore):
         until_ms: int | None,
         tier: str | None,
         limit: int,
+        after: tuple[int, int] | None = None,
+        positioned: bool = False,
     ) -> list[dict]:
         # gateway-api/v2 `action_log`: an exported tier is A to D. A refusal of
         # an unknown tier records no act and is omitted, in the query so it
@@ -435,11 +446,14 @@ class ActionLogStore(StoreCore):
                 params.append(wanted)
             else:
                 where.append("0")
+        if after is not None:
+            where.append("(timestamp, id) < (?, ?)")
+            params.extend((int(after[0]), int(after[1])))
         where_sql = f"WHERE {' AND '.join(where)}"
-        params.append(max(1, min(int(limit), 1000)))
+        params.append(max(1, min(int(limit), EXPORT_FETCH_MAX if positioned else 1000)))
         query = (
             """
-            SELECT action_name, tier, executed, approved, action_taken,
+            SELECT id, action_name, tier, executed, approved, action_taken,
                    operator_response, proposal_id, safe_default_used, device_id,
                    sensor_id, sensor_type, input_attestation_grade, input_posture,
                    input_firmware_device_id, input_firmware_boot_id, input_firmware_seq,
@@ -450,7 +464,7 @@ class ActionLogStore(StoreCore):
             """
             + where_sql
             + """
-            ORDER BY timestamp DESC
+            ORDER BY timestamp DESC, id DESC
             LIMIT ?
             """
         )
@@ -458,6 +472,9 @@ class ActionLogStore(StoreCore):
         result = []
         for row in rows:
             item = dict(row)
+            row_id = item.pop("id")
+            if positioned:
+                item["_position"] = (int(item["timestamp"]), int(row_id))
             if item["tier"] not in _EXPORTED_TIERS:
                 item["tier"] = "A"
             item["executed"] = bool(item["executed"])

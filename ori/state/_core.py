@@ -101,6 +101,10 @@ def _audit_bindable(value: Any) -> Any:
 
 #: History rows that may wait for a busy store before one is counted lost.
 HISTORY_ADMISSION_CEILING = 1024
+#: Rows a positioned export query returns at most: one page of the gateway's
+#: largest (1,000) and one more, which says whether another page follows.
+#: Direct callers keep the 1,000-row cap.
+EXPORT_FETCH_MAX = 1001
 
 
 #: How long a closing store waits for admitted history rows before it closes
