@@ -136,6 +136,36 @@ def test_a_reasoned_bypass_line_passes_and_is_echoed(repo: Path, body: str) -> N
     assert f"  {REASONED}\n" in result.stdout
 
 
+def _branch_behind_a_moved_base(repo: Path, *paths: str) -> tuple[str, str]:
+    """A branch changing `paths`, cut before the base changed capability code."""
+    _git(repo, "checkout", "-q", "-b", "topic")
+    _, head = _change(repo, *paths)
+    _git(repo, "checkout", "-q", "main")
+    _, base = _change(repo, "ori/config/_gateway.py")
+    return base, head
+
+
+def test_a_base_that_moved_on_is_not_read_as_the_change(repo: Path) -> None:
+    result = _guard(repo, *_branch_behind_a_moved_base(repo, "docs/other.md"))
+    assert result.returncode == 0, result.stdout
+
+
+def test_a_branch_behind_its_base_is_judged_on_its_own_change(repo: Path) -> None:
+    result = _guard(repo, *_branch_behind_a_moved_base(repo, "ori/safety/x.py"))
+    assert result.returncode == 1, result.stdout
+    assert "ori/safety/x.py" in result.stdout
+    assert "ori/config/_gateway.py" not in result.stdout
+
+
+def test_refs_with_no_common_history_fail(repo: Path) -> None:
+    base = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "-q", "--orphan", "unrelated")
+    _git(repo, "commit", "-q", "-m", "unrelated root")
+    result = _guard(repo, base, _git(repo, "rev-parse", "HEAD"))
+    assert result.returncode == 2
+    assert "share no history" in result.stderr
+
+
 def test_missing_refs_fail(repo: Path) -> None:
     assert _guard(repo).returncode == 2
     assert _guard(repo, "HEAD").returncode == 2
