@@ -30,7 +30,13 @@ for ref in "${FROM_REF}" "${TO_REF}"; do
   fi
 done
 
-changed_files="$(git diff --name-only "${FROM_REF}" "${TO_REF}")"
+# Judged from where the branch left the base, so a base that moved on since is
+# not read as this change.
+if ! merge_base="$(git merge-base "${FROM_REF}" "${TO_REF}")"; then
+  echo "ERROR: Capability matrix guard: ${FROM_REF} and ${TO_REF} share no history." >&2
+  exit 2
+fi
+changed_files="$(git diff --name-only "${merge_base}" "${TO_REF}")"
 
 if [[ -z "${changed_files}" ]]; then
   echo "Capability matrix guard: no file changes detected."
