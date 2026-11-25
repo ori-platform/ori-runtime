@@ -1187,39 +1187,56 @@ def _free_port() -> int:
         return int(probe.getsockname()[1])
 
 
+#: How long a test broker has to listen or exit.
+_BROKER_LISTEN_S = 5.0
+
+
+def _listening(port: int) -> bool:
+    with socket.socket() as probe:
+        return probe.connect_ex(("127.0.0.1", port)) == 0
+
+
 @contextmanager
-def _broker(root: Path) -> Iterator[int]:
+def _broker_on(root: Path, port: int) -> Iterator[Supervised]:
+    """A Mosquitto listening on *port*, never yielded once it has exited.
+
+    A port something already listens on is refused before the broker starts,
+    so a listener that is not this broker's is never taken for it.
+    """
     binary = _mosquitto()
     if binary is None:
         if os.environ.get("ORI_REQUIRE_MQTT_BROKER") == "1":
             pytest.fail("ORI_REQUIRE_MQTT_BROKER=1 and mosquitto is not installed")
         pytest.skip("mosquitto is not installed")
-    port = _free_port()
-    config = root / "mosquitto.conf"
+    if _listening(port):
+        pytest.fail(f"port {port} is already listening before Mosquitto started")
+    config = root / f"mosquitto-{port}.conf"
     config.write_text(
         f"listener {port} 127.0.0.1\nallow_anonymous true\npersistence false\n"
     )
     log = root / f"mosquitto-{port}.log"
     with log.open("w") as output:
-        process = Supervised(
-            [binary, "-c", str(config)],
-            stdout=output,
-            stderr=output,
-        )
+        process = Supervised([binary, "-c", str(config)], stdout=output, stderr=output)
     try:
-        deadline = time.monotonic() + _PROMPT_S
-        while time.monotonic() < deadline:
-            with socket.socket() as probe:
-                if probe.connect_ex(("127.0.0.1", port)) == 0:
-                    break
+        deadline = time.monotonic() + _BROKER_LISTEN_S
+        while not _listening(port):
             if process.poll() is not None:
-                pytest.fail(f"Mosquitto exited before listening: {log.read_text()}")
+                break
+            if time.monotonic() >= deadline:
+                pytest.fail(f"Mosquitto did not listen on {port}: {log.read_text()}")
             time.sleep(0.05)
-        else:
-            pytest.fail(f"Mosquitto did not listen on {port}: {log.read_text()}")
-        yield port
+        if process.poll() is not None:
+            pytest.fail(f"Mosquitto exited before listening: {log.read_text()}")
+        yield process
     finally:
         process.stop()
+
+
+@contextmanager
+def _broker(root: Path) -> Iterator[int]:
+    port = _free_port()
+    with _broker_on(root, port):
+        yield port
 
 
 async def test_the_broker_redelivers_what_the_route_had_no_room_for(

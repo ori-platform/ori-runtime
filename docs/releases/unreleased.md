@@ -827,6 +827,21 @@ release is cut.
 
 ## Security
 
+- The gateway `tier_c_decision_log` export carries only the members
+  gateway-api/v2's item table names. It no longer carries the row `id`, the
+  operator reply's sender number (`operator_response_from_number`) or its
+  provider message id (`operator_response_provider_message_id`). The item's
+  `final_action_result` now carries only values that cannot hold an
+  identifier: `tier` (`A` to `D`), `executed`, `approved`,
+  `operator_response_received_at_ms` and `timestamp`, and of each delivery
+  receipt `accepted`, `channel` (`sms` or `whatsapp`), `accepted_at_ms` and
+  `delivered_at_ms`. It no longer carries the action's name, the action
+  taken, the reply's channel or text, the proposal id, a provider message id,
+  a provider status or a receipt error, which can quote a provider. The item's
+  own members still carry the action, the reply and the proposal. A member of
+  another type or outside its set is dropped. The store still keeps all of
+  them.
+
 - Authenticated inbound input now binds exactly what was received. Before, a
   remote command's HMAC was computed over normalised fields: `command_id` and
   `device_id` were stripped of Unicode whitespace and `command` was stripped

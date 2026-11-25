@@ -13,11 +13,9 @@ a publication, queue and all.
 from __future__ import annotations
 
 import asyncio
-import os
 import time
-from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import pytest
 
@@ -25,8 +23,7 @@ from ori.gateway.firmware_commands import (
     FirmwareCommandPublishError,
     MqttFirmwareCommandPublisher,
 )
-from tests.supervised_process import Supervised
-from tests.test_dispatch_never_waits_on_delivery import _free_port, _mosquitto
+from tests.test_dispatch_never_waits_on_delivery import _broker_on, _free_port
 from tests.waiting import wait_until
 
 DEVICE = "ori-fw-7c9f2b3a"
@@ -35,42 +32,6 @@ FAMILIES = {
     "approval": ("publish_provisioning_approval", "provision"),
     "liveness": ("publish_runtime_liveness", "runtime"),
 }
-
-
-@contextmanager
-def _broker_on(root: Path, port: int) -> Iterator[Supervised]:
-    binary = _mosquitto()
-    if binary is None:
-        if os.environ.get("ORI_REQUIRE_MQTT_BROKER") == "1":
-            pytest.fail("ORI_REQUIRE_MQTT_BROKER=1 and mosquitto is not installed")
-        pytest.skip("mosquitto is not installed")
-    config = root / f"mosquitto-{port}.conf"
-    config.write_text(
-        f"listener {port} 127.0.0.1\nallow_anonymous true\npersistence false\n"
-    )
-    log = root / f"mosquitto-{port}.log"
-    with log.open("w") as output:
-        process = Supervised(
-            [binary, "-c", str(config)],
-            stdout=output,
-            stderr=output,
-        )
-    try:
-        import socket
-
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline:
-            with socket.socket() as probe:
-                if probe.connect_ex(("127.0.0.1", port)) == 0:
-                    break
-            if process.poll() is not None:
-                pytest.fail(f"Mosquitto exited before listening: {log.read_text()}")
-            time.sleep(0.05)
-        else:
-            pytest.fail(f"Mosquitto did not listen on {port}: {log.read_text()}")
-        yield process
-    finally:
-        process.stop()
 
 
 async def _publish(publisher: MqttFirmwareCommandPublisher, family: str, body: bytes):

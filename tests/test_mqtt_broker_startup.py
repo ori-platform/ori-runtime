@@ -1,22 +1,19 @@
 # Copyright 2026 Ori Nexus Systems LTD
 # SPDX-License-Identifier: Apache-2.0
-"""A failed test broker reports its own error before a client can connect."""
+"""A test broker is never yielded once it has exited, nor mistaken for another."""
 
 from __future__ import annotations
 
+import socket
 import sys
 from pathlib import Path
 
 import pytest
 
 from tests import test_dispatch_never_waits_on_delivery as delivery
-from tests.firmware import test_command_publisher_queue as firmware
 
 
-@pytest.mark.parametrize("family", ["delivery", "firmware"])
-def test_broker_startup_refuses_an_exited_process(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, family: str
-) -> None:
+def _refusing_broker(tmp_path: Path) -> str:
     binary = tmp_path / "refusing-broker"
     binary.write_text(
         f"#!{sys.executable}\n"
@@ -25,13 +22,29 @@ def test_broker_startup_refuses_an_exited_process(
         "raise SystemExit(3)\n"
     )
     binary.chmod(0o700)
-    module = delivery if family == "delivery" else firmware
-    monkeypatch.setattr(module, "_mosquitto", lambda: str(binary))
-    manager = (
-        delivery._broker(tmp_path)
-        if family == "delivery"
-        else firmware._broker_on(tmp_path, delivery._free_port())
-    )
+    return str(binary)
+
+
+def test_broker_startup_refuses_an_exited_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(delivery, "_mosquitto", lambda: _refusing_broker(tmp_path))
+    # The stub exits at once, but under load its interpreter can take longer
+    # to start than a broker is given to listen; this test is of the exit.
+    monkeypatch.setattr(delivery, "_BROKER_LISTEN_S", 120.0)
     with pytest.raises(pytest.fail.Exception, match="broker config refused"):
-        with manager:
+        with delivery._broker_on(tmp_path, delivery._free_port()):
             pytest.fail("a dead broker was yielded to its client")
+
+
+def test_a_listener_that_is_not_the_broker_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(delivery, "_mosquitto", lambda: _refusing_broker(tmp_path))
+    with socket.socket() as other:
+        other.bind(("127.0.0.1", 0))
+        other.listen()
+        port = int(other.getsockname()[1])
+        with pytest.raises(pytest.fail.Exception, match="already listening"):
+            with delivery._broker_on(tmp_path, port):
+                pytest.fail("another listener was taken for the broker")

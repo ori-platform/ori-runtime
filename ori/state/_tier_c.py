@@ -42,6 +42,75 @@ _TIER_C_DECISION_STATES: frozenset[str] = frozenset(
     }
 )
 
+#: The columns a `tier_c_decision_log` export selects besides `id`, which only
+#: positions the row: gateway-api/v2's item table, before decoding. The store
+#: also keeps the reply's sender number and provider message id; neither leaves.
+_EXPORTED_DECISION_COLUMNS = (
+    "device_id, site_type, location, timezone, sensor_id, sensor_type, "
+    "reading_value, reading_unit, reading_timestamp, history_window_json, "
+    "skill_name, trigger_name, proposed_action, confidence, reasoning_tier, "
+    "reasoning_model, prompt_context_summary, operator_decision, "
+    "operator_response, operator_response_channel, "
+    "operator_response_received_at_ms, decision_latency_ms, "
+    "approval_timeout_seconds, safe_default_action, safe_default_used, "
+    "action_taken, action_executed, final_action_result_json, "
+    "later_outcome_json, proposal_id, created_at"
+)
+
+#: The `final_action_result` members an export carries: only values that cannot
+#: hold an identifier. A flag, a count or time, or a string from a closed set; a
+#: string the runtime does not choose from one (a name, a provider's status, an
+#: error that quotes it) is never carried. The item's own members carry the
+#: action, the proposal and the reply.
+_NULL = type(None)
+_EXPORTED_RESULT_MEMBERS: dict[str, tuple[type, ...] | frozenset[str]] = {
+    "tier": frozenset({"A", "B", "C", "D"}),
+    "executed": (bool,),
+    "approved": (bool, _NULL),
+    "operator_response_received_at_ms": (int, _NULL),
+    "timestamp": (int,),
+}
+_EXPORTED_RECEIPT_MEMBERS: dict[str, tuple[type, ...] | frozenset[str]] = {
+    "accepted": (bool,),
+    "channel": frozenset({"sms", "whatsapp"}),
+    "accepted_at_ms": (int, _NULL),
+    "delivered_at_ms": (int, _NULL),
+}
+_RECEIPT_MEMBERS = ("approval_delivery", "escalation_delivery")
+
+
+def _admitted(value: Any, allowed: tuple[type, ...] | frozenset[str]) -> bool:
+    if isinstance(allowed, frozenset):
+        return type(value) is str and value in allowed
+    return type(value) in allowed
+
+
+def _typed_members(
+    value: dict[str, Any], members: dict[str, tuple[type, ...] | frozenset[str]]
+) -> dict[str, Any]:
+    """The *members* of *value* whose value is one *members* admits."""
+    return {
+        name: value[name]
+        for name, allowed in members.items()
+        if name in value and _admitted(value[name], allowed)
+    }
+
+
+def _exported_final_action_result(value: Any) -> dict[str, Any]:
+    """*value* reduced to the members an export may carry.
+
+    A member whose value is of another type or outside its closed set, an
+    object or array included, is dropped; a non-object is empty.
+    """
+    if not isinstance(value, dict):
+        return {}
+    result = _typed_members(value, _EXPORTED_RESULT_MEMBERS)
+    for name in _RECEIPT_MEMBERS:
+        receipt = value.get(name)
+        if isinstance(receipt, dict):
+            result[name] = _typed_members(receipt, _EXPORTED_RECEIPT_MEMBERS)
+    return result
+
 
 class TierCStore(StoreCore):
     """Tier C proposals, their records, safe-default intents and decisions."""
@@ -883,22 +952,20 @@ class TierCStore(StoreCore):
         where_sql = f"WHERE {' AND '.join(where)}" if where else ""
         params.append(max(1, min(int(limit), EXPORT_FETCH_MAX if positioned else 1000)))
         query = (
-            """
-            SELECT *
-            FROM tier_c_decision_log
-            """
+            f"SELECT id, {_EXPORTED_DECISION_COLUMNS} FROM tier_c_decision_log "
             + where_sql
-            + """
-            ORDER BY created_at DESC, id DESC
-            LIMIT ?
-            """
+            + " ORDER BY created_at DESC, id DESC LIMIT ?"
         )
         rows = conn.execute(query, tuple(params)).fetchall()
         result = []
         for row in rows:
             item = self._decode_tier_c_decision_row(row)
+            row_id = item.pop("id")
+            item["final_action_result"] = _exported_final_action_result(
+                item["final_action_result"]
+            )
             if positioned:
-                item["_position"] = (int(row["created_at"]), int(row["id"]))
+                item["_position"] = (int(row["created_at"]), int(row_id))
             result.append(item)
         return result
 
