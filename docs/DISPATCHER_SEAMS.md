@@ -40,7 +40,7 @@ methods' own lines; module-level helpers are listed where they go.
 | 3 | Resource admission | Resolve the resource, ask the gate, route by tier to execution or an approval workflow, retire or mark the resource uncertain, hand the row over | `bind_resource_gate` 612–615, `register_resource_resolver` 617–627, `_resource_for` 629–653, `_admit_and_run` 1228–1492, `_record_when_executor_reports` 1494–1518, `_retire_when_settled` 1587–1600, `_tier_b_requires_approval` 1603–1624; `_proposed_act_executed` 288–298, `_interrupted_result` 334–358 | 366 | `_admission.py` |
 | 4 | Execution | The one place executors run; Tier D task tracking and the emergency notice | `register_executor` 655–686, `get_inflight_tier_d_tasks` 772–774, `_track_tier_d_task` 776–778, `_report_missing_executor` 1520–1543, `_log_to_dashboard_executor` 1628–1642, `_execute_immediately` 1646–1819, `_emergency_sms` 4560–4594; `_action_taken` 169–191, `UngovernedActionError` 470–471 | 286 | `_execution.py` |
 | 5 | Safe defaults | Disqualify an actuating safe default; run a governed proposal's one safe-default intent | `_vet_safe_default` 957–975, `_safe_default_intent` 2248–2315 | 87 | `_safe_defaults.py` |
-| 6 | Operator conversation | Compose and send the ask, mark it at the gate, listen, classify a reply, escalate an unanswered one; shared by both approval workflows | `_ask_operator` 1545–1585, `_listen_for_local_console_response` 4170–4238, `_audit_ignored_local_console_command` 4240–4262, `_listen_for_response` 4342–4379, `_format_approval_message` 4383–4456, `_measured_line` 4458–4478, `_format_local_time` 4481–4486, `_unanswered_approval_end` 4489–4493, `_escalate_to_secondary` 4495–4558; constants 118–133, 145–146; `_coerce_alert_send_receipt` 199–210, `_normalize_proposal_id` 311–313, `_safe_int_or_none` 316–317, `_storable_reply` 384–392, `_classifiable_reply` 395–404, `_classify_approval_response` 407–446, `_extract_structured_remote_command_text` 449–463 | 341 | `_conversation.py` |
+| 6 | Operator conversation | Compose and send the ask, mark it at the gate, listen, classify a reply, escalate an unanswered one; shared by both approval workflows | `_ask_operator` 1545–1585, `_listen_for_local_console_response` 4170–4238, `_audit_ignored_local_console_command` 4240–4262, `_listen_for_response` 4342–4379, `_format_approval_message` 4383–4456, `_measured_line` 4458–4478, `_format_local_time` 4481–4486, `_unanswered_approval_end` 4489–4493, `_escalate_to_secondary` 4495–4558; constants 118–133, 145–146; `_coerce_alert_send_receipt` 199–210, `_safe_int_or_none` 316–317, `_extract_structured_remote_command_text` 449–463; reply text and classification already in `approval_replies.py` | 341 | `_conversation.py` |
 | 7 | Host-state approval workflow | Tier C host actions and Tier B with approval: ask, decide, act or run the safe default, resolve on any failure | `_approval_workflow` 1821–1901, `_record_decision_after_failure` 1903–1936, `_resolve_failed_approval` 1990–2023, `_run_approval_workflow` 3517–4035; `_ApprovalProgress` 370–381 | 668 | `_host_approval.py` |
 | 8 | Governed Tier C workflow | A physical Tier C action on a commissioned zone under `tier-c-approval/v1`: proposal row, admission transaction, live dispatch, outcome append | `tier_c_outcome_held_live` 2075–2082, `_governed_facts` 2084–2096, `_authority_now` 2098–2129, `_policy_inputs` 2131–2140, `_governed_notify` 2142–2169, `_close_now` 2171–2246, `_governed_approval_workflow` 2317–2509, `_run_governed_workflow` 2511–2975, `_governed_listen` 2977–3037, `_dispatch_admitted` 3039–3192, `_record_outcome` 3194–3263; `_PENDING_OUTCOME_CEILING` 137, `_MAX_REPLIES_PER_PROPOSAL` 141 | 1,110 | `_governed.py` |
 | 9 | Tier C recovery and reconciliation | Settle a previous process's proposals at start, close open ones at stop, reconcile uncertain dispatches, report `action_records` | `action_records` 2027–2053, `action_records_degrade_health` 2055–2063, `mark_tier_c_recovery_failed` 2065–2073, `recover_tier_c_at_start` 3265–3363, `_recovery_context` 3365–3381, `_abort_open_proposal` 3383–3418, `close_open_proposals` 3420–3427, `reconcile_tier_c` 3429–3479, `reconcile_from_commissioned_feedback` 3481–3515 | 291 | `_recovery.py` |
@@ -168,7 +168,7 @@ it pins as not representable are listed in `EXPECTED_NOT_REPRESENTED` there.
 | G2 | The safe default is admitted under the contract's rule before the row binds it | Safe Defaults: informational and eligible, or refused | 2451–2458 | **None** at the dispatcher; `test_tier_c_approval_vectors.py` tests `safe_default_admitted` alone |
 | G3 | The monotonic deadline is fixed before the row commits | Admission and dispatch expiry are decided on it alone (The Proposal) | 2460–2465 | corpus (the wall-clock jump sequences) |
 | G4 | An outcome this process holds unappended blocks creation before the store is asked | Reconciliation: one the live runtime could not append blocks creation | 2554–2555 | `test_safe_default_used_records_execution.py::test_a_proposal_refused_for_an_unresolved_outcome` (`live`); corpus |
-| G5 | An identifier already in use is replaced by a fresh one, never the old row | A new proposal must not inherit another proposal's row | 2567–2573 | **None** |
+| G5 | An identifier already in use is replaced by a fresh one, never the old row | A new proposal must not inherit another proposal's row | `_commit_governed_proposal` | `test_tier_c_governed_approval.py::TestAFailureAfterTheCommitClosesTheProposal::test_an_identifier_in_use_is_replaced_never_reused`, `::test_a_failure_never_closes_the_proposal_it_collided_with` |
 | G6 | The row commits before the operator is asked; a row not committed means no ask, the safe default attempted, nothing claimed durable | The Proposal | 2574–2612, then 2614–2644 | `test_tier_c_governed_approval.py::TestTheProposalIsCommittedBeforeTheAsk` (three tests); `test_safe_default_used_records_execution.py::test_a_proposal_row_the_store_could_not_commit` |
 | G7 | A token is verified and its attempt audited before admission; its claim happens inside the admission transaction | Admission; `offline-tokens/v2` | 2701–2751, 2801 | `test_tier_c_governed_approval.py::TestOfflineTokensV2`; `test_tier_c_approval_sequences.py::test_token_binding_sequence` |
 | G8 | Expiry is checked on the monotonic clock before the reply is admitted | A reply after expiry is not an approval (The Proposal) | 2762–2767 | `test_tier_c_governed_approval.py::TestExpiry::test_a_reply_after_the_deadline_is_not_an_approval`; corpus |
@@ -206,7 +206,7 @@ it pins as not representable are listed in `EXPECTED_NOT_REPRESENTED` there.
 
 ### Orderings no test pins
 
-R5, X4, H9, G2, G5, G13, G16, C4 (re-admission of a stored safe default), W2
+R5, X4, H9, G2, G13, G16, C4 (re-admission of a stored safe default), W2
 and W5 (the confirmation gate). Each is owed a test that fails when the
 ordering is reversed, before the seam that holds it moves.
 
@@ -246,7 +246,7 @@ left.
    `ActionDispatcher.__module__` in
    `tests/firmware/test_reading_age_presentation.py:167`. First because every
    later step depends on it and it moves no logic.
-2. **The missing pins.** The ten tests above, against the code as it stands,
+2. **The missing pins.** The nine tests above, against the code as it stands,
    so each later move is checked by a test that already passed before it.
 3. **Leaves with no ordering of their own:** policy and capability (1), then
    action recording (11). Each is called by others and calls back into none.
@@ -288,7 +288,8 @@ left.
   `recover_tier_c_at_start`, `close_open_proposals`, `reconcile_tier_c`,
   `reconcile_from_commissioned_feedback`. The module's names: `ActionDispatcher`,
   `ActionTier` and `SkillContext` (re-exported and imported through it by
-  tests), `UngovernedActionError`, `_classify_approval_response` (imported by
+  tests), `UngovernedActionError`, and `classify_approval_response` (from
+  `ori/reasoning/approval_replies.py`, patched through this module by
   `tests/test_action_dispatcher.py`). The patch targets tests reach through
   the module: `_generate_proposal_id` (both workflows must see a patch of it),
   `now_ms`, `logger`, `asyncio.wait_for` and `_ATTESTATION_BOUND_S`; each must
@@ -314,15 +315,6 @@ Each is its own issue if it should change.
   Tier C dispatch with `_format_approval_message` raising: the indicator
   received `set` and no `clear`. The governed workflow clears in a `finally`
   (2501–2509).
-- **A governed proposal can stay open while the process lives.** After the
-  row commits (2559), nothing in `_governed_approval_workflow` (2489–2509) or
-  `_run_governed_workflow` catches a failure; it reaches `_admit_and_run`
-  (1441–1461), which records an interrupted result. The row stays `proposed`
-  and no safe default runs until a graceful stop (C5) or the next start (C3)
-  closes it. Confirmed with `_format_approval_message` raising: result
-  `action_taken=""`, row `proposed`, no executor ran. Nothing actuates, but
-  the docstring's "whatever fails, the proposal resolves" (2334–2335) holds
-  only across a restart.
 - **`_admit_and_run`'s last branch runs an unknown tier as Tier A**
   (1431–1439). Unreachable while `dispatch` refuses one first (R2), which is
   the shape the boundary rule forbids.
