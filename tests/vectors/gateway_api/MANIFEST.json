@@ -1,16 +1,16 @@
 {
   "source_repository": "ori-platform/ori-specs",
   "source_path": "gateway-api/vectors",
-  "source_commit": "f660f7a0b9df99cfa4713a69ad3e7d309292c889",
+  "source_commit": "f256b5908c787ebe6bbc014b890732222e9418f7",
   "contract_version": "v2",
   "note": "Vendored copies of the normative vectors. The runtime must produce and accept the bytes they describe, so they are its conformance fixtures. Digests detect a local edit; the source commit is the provenance trail.",
   "files": {
-    "export-rows-v2.json": "b230f465eab254050e951eaa0fc699d3a8416e41b0a73f81862da9b3ed8ab8de",
+    "export-rows-v2.json": "c5dc1a120a6081197eacdfcdfa0bbdb9dc8b54ad4254bb041a11354c6de52e1a",
     "health-transition-baselines-v2.json": "180d83c7074616d11b4dea4fa5908829b8c9e99b07b9acda26787f5d7d1685f9",
     "health-transition-v2.json": "9dd7da008ace72e434bbd43093980957a7d476d6686e8d5280b12b0b8de2882f",
     "inbound-evidence.json": "cb18d5f6fad051f6ca1924b20ef1040d2d67185c41a9a9eccee6159db0eb0473",
     "outbound-evidence.json": "91475546a540ed81637af193b2e78f22c9092e287ebfcf3e6e68b156152a42b8",
-    "payload-members-v2.json": "212f704712d19eb4cb8bdd195363bb26f9b3c2af201c416fe11697cd8e6dc93d",
+    "payload-members-v2.json": "a6287d5e324016449a96ad6ea6cda9d698546e42a6233c7cfa4c0c263bf81e8b",
     "payload-size-v2.json": "2577d89c44778300633f21e3fb65f3983181689321d7e96b63003d3a4261e3fa",
     "replay-v2.json": "8038ba42c8569e6ce26c29ea2473a5478f2b8032df143a6c9241d999a8144daf"
   }

@@ -5,7 +5,8 @@
     "Producer Time",
     "sensor_history",
     "action_log",
-    "Page Order"
+    "Page Order",
+    "Runtime Export Response Payload"
   ],
   "conventions": {
     "readings.where": "sensor_history row, history_point of a Tier 3 request, or reasoning_reading: the Tier 3 request's own reading",
@@ -16,7 +17,8 @@
     "paging.order": "descending: action_log, reasoning_log, and tier_c_decision_log, whose timestamp here is its created_at; ascending: unbucketed sensor_history, where tier is the row's compaction tier and stored stands for the runtime's own fixed order; bucketed: bucketed sensor_history, whose rows are named by start_ms and producer_time",
     "paging.stored.tier": "a stored row's tier, action_taken and executed where a case gives them; a row without a tier is one the export carries",
     "tokens.gateway.answers": "the runtime's answers to one traversal's requests in order: rows with whether a next page follows and, where given, the next_page_token issued, or an error envelope's error",
-    "buckets.expected": "every member of a bucketed row except sensor_id, sensor_type and unit, which the input rows here do not carry"
+    "buckets.expected": "every member of a bucketed row except sensor_id, sensor_type and unit, which the input rows here do not carry",
+    "envelopes.expected.members": "the members of the response's typed envelope that are absent or of another JSON type, in the order the contract's table lists them"
   },
   "readings": [
     {
@@ -3025,5 +3027,410 @@
         }
       }
     ]
-  }
+  },
+  "envelopes": [
+    {
+      "name": "a well-typed page",
+      "response": {
+        "request_id": "r-1",
+        "export_type": "action_log",
+        "device_id": "site-a-edge-01",
+        "items": [
+          {
+            "action_name": "trip_relay",
+            "tier": "D"
+          }
+        ],
+        "next_page_token": "p1",
+        "complete": false,
+        "error": null
+      },
+      "expected": {
+        "refused": false,
+        "members": []
+      }
+    },
+    {
+      "name": "a well-typed last page",
+      "response": {
+        "request_id": "r-1",
+        "export_type": "action_log",
+        "device_id": "site-a-edge-01",
+        "items": [
+          {
+            "action_name": "trip_relay",
+            "tier": "D"
+          }
+        ],
+        "next_page_token": "",
+        "complete": true,
+        "error": null
+      },
+      "expected": {
+        "refused": false,
+        "members": []
+      }
+    },
+    {
+      "name": "a well-typed error response",
+      "response": {
+        "request_id": "r-1",
+        "export_type": "action_log",
+        "device_id": "site-a-edge-01",
+        "items": [],
+        "next_page_token": "",
+        "complete": true,
+        "error": "until_ms must be >= since_ms"
+      },
+      "expected": {
+        "refused": false,
+        "members": []
+      }
+    },
+    {
+      "name": "items absent",
+      "response": {
+        "request_id": "r-1",
+        "export_type": "action_log",
+        "device_id": "site-a-edge-01",
+        "next_page_token": "p1",
+        "complete": false,
+        "error": null
+      },
+      "expected": {
+        "refused": true,
+        "members": [
+          "items"
+        ]
+      }
+    },
+    {
+      "name": "next_page_token absent",
+      "response": {
+        "request_id": "r-1",
+        "export_type": "action_log",
+        "device_id": "site-a-edge-01",
+        "items": [
+          {
+            "action_name": "trip_relay",
+            "tier": "D"
+          }
+        ],
+        "complete": false,
+        "error": null
+      },
+      "expected": {
+        "refused": true,
+        "members": [
+          "next_page_token"
+        ]
+      }
+    },
+    {
+      "name": "complete absent",
+      "response": {
+        "request_id": "r-1",
+        "export_type": "action_log",
+        "device_id": "site-a-edge-01",
+        "items": [
+          {
+            "action_name": "trip_relay",
+            "tier": "D"
+          }
+        ],
+        "next_page_token": "p1",
+        "error": null
+      },
+      "expected": {
+        "refused": true,
+        "members": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "error absent",
+      "response": {
+        "request_id": "r-1",
+        "export_type": "action_log",
+        "device_id": "site-a-edge-01",
+        "items": [
+          {
+            "action_name": "trip_relay",
+            "tier": "D"
+          }
+        ],
+        "next_page_token": "p1",
+        "complete": false
+      },
+      "expected": {
+        "refused": true,
+        "members": [
+          "error"
+        ]
+      }
+    },
+    {
+      "name": "items null",
+      "response": {
+        "request_id": "r-1",
+        "export_type": "action_log",
+        "device_id": "site-a-edge-01",
+        "items": null,
+        "next_page_token": "p1",
+        "complete": false,
+        "error": null
+      },
+      "expected": {
+        "refused": true,
+        "members": [
+          "items"
+        ]
+      }
+    },
+    {
+      "name": "items an object",
+      "response": {
+        "request_id": "r-1",
+        "export_type": "action_log",
+        "device_id": "site-a-edge-01",
+        "items": {
+          "0": {
+            "action_name": "trip_relay"
+          }
+        },
+        "next_page_token": "p1",
+        "complete": false,
+        "error": null
+      },
+      "expected": {
+        "refused": true,
+        "members": [
+          "items"
+        ]
+      }
+    },
+    {
+      "name": "items with a non-object element",
+      "response": {
+        "request_id": "r-1",
+        "export_type": "action_log",
+        "device_id": "site-a-edge-01",
+        "items": [
+          1,
+          "x",
+          null
+        ],
+        "next_page_token": "p1",
+        "complete": false,
+        "error": null
+      },
+      "expected": {
+        "refused": true,
+        "members": [
+          "items"
+        ]
+      }
+    },
+    {
+      "name": "next_page_token a number",
+      "response": {
+        "request_id": "r-1",
+        "export_type": "action_log",
+        "device_id": "site-a-edge-01",
+        "items": [
+          {
+            "action_name": "trip_relay",
+            "tier": "D"
+          }
+        ],
+        "next_page_token": 1,
+        "complete": false,
+        "error": null
+      },
+      "expected": {
+        "refused": true,
+        "members": [
+          "next_page_token"
+        ]
+      }
+    },
+    {
+      "name": "next_page_token null",
+      "response": {
+        "request_id": "r-1",
+        "export_type": "action_log",
+        "device_id": "site-a-edge-01",
+        "items": [
+          {
+            "action_name": "trip_relay",
+            "tier": "D"
+          }
+        ],
+        "next_page_token": null,
+        "complete": false,
+        "error": null
+      },
+      "expected": {
+        "refused": true,
+        "members": [
+          "next_page_token"
+        ]
+      }
+    },
+    {
+      "name": "complete the string true",
+      "response": {
+        "request_id": "r-1",
+        "export_type": "action_log",
+        "device_id": "site-a-edge-01",
+        "items": [
+          {
+            "action_name": "trip_relay",
+            "tier": "D"
+          }
+        ],
+        "next_page_token": "p1",
+        "complete": "true",
+        "error": null
+      },
+      "expected": {
+        "refused": true,
+        "members": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "complete the number 1",
+      "response": {
+        "request_id": "r-1",
+        "export_type": "action_log",
+        "device_id": "site-a-edge-01",
+        "items": [
+          {
+            "action_name": "trip_relay",
+            "tier": "D"
+          }
+        ],
+        "next_page_token": "p1",
+        "complete": 1,
+        "error": null
+      },
+      "expected": {
+        "refused": true,
+        "members": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "complete null",
+      "response": {
+        "request_id": "r-1",
+        "export_type": "action_log",
+        "device_id": "site-a-edge-01",
+        "items": [
+          {
+            "action_name": "trip_relay",
+            "tier": "D"
+          }
+        ],
+        "next_page_token": "p1",
+        "complete": null,
+        "error": null
+      },
+      "expected": {
+        "refused": true,
+        "members": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "error the empty string",
+      "response": {
+        "request_id": "r-1",
+        "export_type": "action_log",
+        "device_id": "site-a-edge-01",
+        "items": [
+          {
+            "action_name": "trip_relay",
+            "tier": "D"
+          }
+        ],
+        "next_page_token": "p1",
+        "complete": false,
+        "error": ""
+      },
+      "expected": {
+        "refused": true,
+        "members": [
+          "error"
+        ]
+      }
+    },
+    {
+      "name": "error a boolean",
+      "response": {
+        "request_id": "r-1",
+        "export_type": "action_log",
+        "device_id": "site-a-edge-01",
+        "items": [
+          {
+            "action_name": "trip_relay",
+            "tier": "D"
+          }
+        ],
+        "next_page_token": "p1",
+        "complete": false,
+        "error": false
+      },
+      "expected": {
+        "refused": true,
+        "members": [
+          "error"
+        ]
+      }
+    },
+    {
+      "name": "error an object",
+      "response": {
+        "request_id": "r-1",
+        "export_type": "action_log",
+        "device_id": "site-a-edge-01",
+        "items": [],
+        "next_page_token": "",
+        "complete": true,
+        "error": {
+          "reason": "until_ms must be >= since_ms"
+        }
+      },
+      "expected": {
+        "refused": true,
+        "members": [
+          "error"
+        ]
+      }
+    },
+    {
+      "name": "items null and complete a string",
+      "response": {
+        "request_id": "r-1",
+        "export_type": "action_log",
+        "device_id": "site-a-edge-01",
+        "items": null,
+        "next_page_token": "p1",
+        "complete": "true",
+        "error": null
+      },
+      "expected": {
+        "refused": true,
+        "members": [
+          "items",
+          "complete"
+        ]
+      }
+    }
+  ]
 }
