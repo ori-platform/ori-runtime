@@ -11,7 +11,7 @@ import asyncio
 import socket
 from dataclasses import dataclass
 
-from ori.utils.time_utils import now_ms
+from ori.utils.time_utils import monotonic_ms, now_ms
 
 
 def probe_internet_available(host: str, port: int, timeout_ms: int) -> bool:
@@ -40,8 +40,10 @@ class CapabilityPosture:
     gateway_last_heartbeat_ms: int | None = None
 
     def is_stale(self, now_ms_value: int | None = None) -> bool:
+        """Past its expiry, or checked after now: a wall clock stepped back
+        would otherwise keep an old snapshot fresh until it caught up."""
         now = now_ms() if now_ms_value is None else now_ms_value
-        return now > self.expires_at_ms
+        return now > self.expires_at_ms or now < self.checked_at_ms
 
 
 class CapabilityPostureTracker:
@@ -61,7 +63,10 @@ class CapabilityPostureTracker:
         self._internet_probe_host = internet_probe_host
         self._internet_probe_port = internet_probe_port
         self._internet_probe_timeout_ms = internet_probe_timeout_ms
+        # Wall-clock receipt, for display only; age is judged on the monotonic
+        # receipt, so a wall clock stepped back cannot hold a gateway reachable.
         self._last_gateway_heartbeat_ms: int | None = None
+        self._last_gateway_receipt_mono_ms: int | None = None
         self._last_posture = CapabilityPosture(
             sms_available=False,
             whatsapp_available=False,
@@ -79,13 +84,15 @@ class CapabilityPostureTracker:
         return self._last_posture
 
     def record_gateway_heartbeat(self, timestamp_ms: int | None = None) -> None:
-        """Mark a gateway health heartbeat as seen at *timestamp_ms*."""
-        ts = now_ms() if timestamp_ms is None else int(timestamp_ms)
-        if (
-            self._last_gateway_heartbeat_ms is None
-            or ts >= self._last_gateway_heartbeat_ms
-        ):
-            self._last_gateway_heartbeat_ms = ts
+        """Mark a gateway health heartbeat as received now.
+
+        *timestamp_ms* is the wall-clock receipt, kept for display; every
+        heartbeat renews reachability, whatever the wall clock reads.
+        """
+        self._last_gateway_heartbeat_ms = (
+            now_ms() if timestamp_ms is None else int(timestamp_ms)
+        )
+        self._last_gateway_receipt_mono_ms = monotonic_ms()
 
     async def refresh(
         self,
@@ -104,7 +111,7 @@ class CapabilityPostureTracker:
         )
 
         checked_at_ms = now_ms()
-        gateway_reachable = self._is_gateway_reachable(checked_at_ms)
+        gateway_reachable = self._is_gateway_reachable()
 
         posture = CapabilityPosture(
             sms_available=bool(sms_available),
@@ -120,8 +127,8 @@ class CapabilityPostureTracker:
         self._last_posture = posture
         return posture
 
-    def _is_gateway_reachable(self, now_ms: int) -> bool:
-        last = self._last_gateway_heartbeat_ms
+    def _is_gateway_reachable(self) -> bool:
+        last = self._last_gateway_receipt_mono_ms
         if last is None:
             return False
-        return (now_ms - last) <= self._gateway_ttl_ms
+        return (monotonic_ms() - last) <= self._gateway_ttl_ms

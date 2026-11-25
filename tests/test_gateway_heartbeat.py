@@ -580,6 +580,7 @@ async def test_a_heartbeat_from_the_far_future_does_not_hold_the_gateway_reachab
     clock = [1_000_000]
     monkeypatch.setattr(heartbeat_module, "now_ms", lambda: clock[0])
     monkeypatch.setattr(capability_posture, "now_ms", lambda: clock[0])
+    monkeypatch.setattr(capability_posture, "monotonic_ms", lambda: clock[0])
     tracker = capability_posture.CapabilityPostureTracker()
     sub = _subscriber(tracker)
     sub._loop = asyncio.get_running_loop()
@@ -589,7 +590,7 @@ async def test_a_heartbeat_from_the_far_future_does_not_hold_the_gateway_reachab
 
     assert tracker._last_gateway_heartbeat_ms == 1_000_000
     clock[0] += 60 * 60 * 1000
-    assert tracker._is_gateway_reachable(clock[0]) is False
+    assert tracker._is_gateway_reachable() is False
 
 
 async def test_a_status_nested_past_the_recursion_limit_is_not_read(monkeypatch):
