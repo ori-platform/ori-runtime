@@ -4070,7 +4070,7 @@ class TestReasoningConfig:
         cp = cfg.reasoning.capability_posture
         assert cp["enabled"] is True
         assert cp["probe_interval_seconds"] == 30
-        assert cp["gateway_heartbeat_ttl_seconds"] == 30
+        assert cp["gateway_heartbeat_ttl_seconds"] == 90
 
     def test_capability_posture_custom_values(self, tmp_path):
         yaml_path = _write_yaml(
@@ -4089,7 +4089,7 @@ class TestReasoningConfig:
               capability_posture:
                 enabled: true
                 probe_interval_seconds: 20
-                gateway_heartbeat_ttl_seconds: 25
+                gateway_heartbeat_ttl_seconds: 120
                 internet_probe_timeout_ms: 1500
                 internet_probe_port: 443
                 internet_probe_host: one.one.one.one
@@ -4103,10 +4103,73 @@ class TestReasoningConfig:
         cfg = Config.load(yaml_path)
         cp = cfg.reasoning.capability_posture
         assert cp["probe_interval_seconds"] == 20
-        assert cp["gateway_heartbeat_ttl_seconds"] == 25
+        assert cp["gateway_heartbeat_ttl_seconds"] == 120
         assert cp["internet_probe_timeout_ms"] == 1500
         assert cp["internet_probe_port"] == 443
         assert cp["internet_probe_host"] == "one.one.one.one"
+
+    def test_capability_posture_accepts_a_heartbeat_ttl_of_90(self, tmp_path):
+        yaml_path = _write_yaml(
+            tmp_path,
+            """
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+              capability_posture:
+                gateway_heartbeat_ttl_seconds: 90
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: sms
+            """,
+        )
+        cp = Config.load(yaml_path).reasoning.capability_posture
+        assert cp["gateway_heartbeat_ttl_seconds"] == 90
+
+    @pytest.mark.parametrize(
+        "value",
+        ["89", "30", "1", "0", "-90", '"90"', "90.0", "90.5", "true", "null", "[90]"]
+        + ["{a: 90}"],
+    )
+    def test_capability_posture_refuses_a_heartbeat_ttl_off_the_floor(
+        self, tmp_path, value
+    ):
+        """runtime-config/v2: an integer of at least 90, refused, never clamped."""
+        yaml_path = _write_yaml(
+            tmp_path,
+            f"""
+            device:
+              id: dev-01
+              name: Test
+              location: Lagos
+            sensors: []
+            skills: []
+            reasoning:
+              default_tier: local
+              local_model: x
+              model_path: /tmp
+              capability_posture:
+                gateway_heartbeat_ttl_seconds: {value}
+            gateway:
+              enabled: false
+              broker_url: mqtt://localhost
+            actions:
+              primary_alert_channel: sms
+            """,
+        )
+        with pytest.raises(
+            ConfigValidationError,
+            match="gateway_heartbeat_ttl_seconds must be an integer of at least 90",
+        ):
+            Config.load(yaml_path)
 
     def test_capability_posture_rejects_probe_interval_over_30(self, tmp_path):
         yaml_path = _write_yaml(

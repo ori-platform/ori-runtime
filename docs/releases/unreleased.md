@@ -24,6 +24,16 @@ release is cut.
   upgrading, set any interval above 30 to 30 or less, and update the gateway
   to a `main` that includes ori-gateway#170.
 
+- `reasoning.capability_posture.gateway_heartbeat_ttl_seconds` is now an
+  integer of at least 90, as runtime-config/v2 requires, and defaults to 90
+  where it defaulted to 30: three gateway heartbeat intervals at the longest
+  interval a gateway may use, so two lost heartbeats no longer mark the
+  gateway unreachable. A value below 90, a quoted string, a boolean or a
+  fraction is refused at config load and never clamped. Before upgrading,
+  raise an explicit TTL below 90 to at least 90. A gateway that stops
+  publishing now reads as unreachable up to 60 seconds later than under the
+  old default.
+
 - A sensor setting an adapter's `connect()` refuses from the configuration
   alone is now refused at config load, naming the sensor, before any adapter
   is built. Each adapter module exposes one check, `refuse_unusable_config`,
