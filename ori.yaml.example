@@ -294,7 +294,7 @@ reasoning:
   capability_posture:
     enabled: true
     probe_interval_seconds: 30      # must be <=30; posture refresh cadence
-    gateway_heartbeat_ttl_seconds: 30
+    gateway_heartbeat_ttl_seconds: 90 # integer, at least 90; the gateway reads unreachable no sooner than this after its last heartbeat
     internet_probe_host: one.one.one.one
     internet_probe_port: 53
     internet_probe_timeout_ms: 1000
