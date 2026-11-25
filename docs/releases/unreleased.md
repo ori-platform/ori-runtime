@@ -469,6 +469,17 @@ release is cut.
 
 ## Fixed
 
+- Gateway reachability is judged on the monotonic clock. A wall clock stepped
+  back (an NTP correction, a device that booted with a wrong clock) held a
+  gateway that had stopped publishing reachable until the clock caught up,
+  and ignored every heartbeat in that time. Each heartbeat now renews
+  reachability, and the TTL bounds how long a silent gateway reads reachable;
+  the wall-clock receipt is kept for display only. A posture snapshot checked
+  after the current wall time is stale, so a stepped-back clock cannot keep an
+  old one fresh. Limit: the monotonic clock stops while the host is suspended,
+  so after a resume a gateway that went silent during the suspend reads
+  reachable for up to one TTL of awake time.
+
 - A paged gateway export past its source cap no longer returns empty pages
   without end. Each export read at most 1,000 rows (10,000 for
   `sensor_history`) and paged by count inside them, so rows older than the cap
