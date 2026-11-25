@@ -15,8 +15,9 @@ import inspect
 import json
 import logging
 from dataclasses import dataclass, field, replace
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, cast
 
+from ori.gateway import export_paging
 from ori.gateway.mqtt_retry import (
     MqttSession,
     serve_with_reconnect,
@@ -34,7 +35,6 @@ from ori.gateway.payload_bounds import (
     routing_id,
 )
 from ori.gateway.route_io import Slots
-from ori.network.producer_time import PRODUCER_TIMES, read_producer_time
 from ori.security.gateway_messages import (
     GatewayMessageAuthenticator,
     GatewayMessageAuthError,
@@ -73,7 +73,6 @@ SENSITIVE_EXPORT_TYPES = {
     "tier_c_decision_log",
 }
 MAX_EXPORT_LIMIT = 1000
-MAX_SENSOR_HISTORY_SOURCE_ROWS = 10_000
 DEFAULT_SENSOR_BUCKET_MS = 0
 ITEM_EXCEEDS_PAYLOAD_MAXIMUM = "item_exceeds_payload_maximum"
 #: Export requests being answered at once. A stalled store would otherwise
@@ -90,9 +89,9 @@ class ExportResponse:
     next_page_token: str = ""
     complete: bool = True
     error: str | None = None
-    #: The index of `items[0]` in the export, so a page cut to fit continues
-    #: from the first item it no longer holds. Not on the wire.
-    page_offset: int = 0
+    #: The token that continues after each item, so a page cut to fit
+    #: continues from the last item it holds. Not on the wire.
+    item_tokens: tuple[str, ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -142,6 +141,9 @@ class GatewayExportResponder:
         if message_encryptor is not None and message_auth is None:
             raise ValueError("gateway export encryption requires message_auth")
         self._device_id = str(device_id)
+        # Page tokens verify only under this responder's key, so a token built
+        # from the public inputs, or one from before a restart, is refused.
+        self._page_key = export_paging.new_key()
         self._state_store = state_store
         self._health_snapshot_provider = health_snapshot_provider
         self._message_auth = message_auth
@@ -231,7 +233,6 @@ class GatewayExportResponder:
             raise _ExportRequestError("device_id does not match this runtime")
 
         limit = _bounded_limit(request.get("limit", 100))
-        offset = _page_offset(request.get("page_token", ""))
         since_ms = _optional_int(request.get("since_ms"), "since_ms")
         until_ms = _optional_int(request.get("until_ms"), "until_ms")
         if since_ms is not None and until_ms is not None and until_ms < since_ms:
@@ -252,16 +253,13 @@ class GatewayExportResponder:
                 items=items,
             )
 
+        digest = export_paging.filter_digest(export_type, since_ms, until_ms, params)
+        page = _Page(request_id, export_type, limit, digest)
         if export_type == "sensor_history":
             return await self._sensor_history_response(
-                request_id=request_id,
-                export_type=export_type,
-                params=params,
-                since_ms=since_ms,
-                until_ms=until_ms,
-                limit=limit,
-                offset=offset,
+                page, request.get("page_token", ""), params, since_ms, until_ms
             )
+        after = self._position(request.get("page_token", ""), digest, 2)
 
         if export_type == "action_log":
             rows = await self._state_store.export_action_log(
@@ -269,9 +267,11 @@ class GatewayExportResponder:
                 since_ms=since_ms,
                 until_ms=until_ms,
                 tier=str(params.get("tier", "") or "") or None,
-                limit=min(MAX_EXPORT_LIMIT, limit + offset + 1),
+                limit=limit + 1,
+                after=_pair(after),
+                positioned=True,
             )
-            return self._paged_response(request_id, export_type, rows, limit, offset)
+            return self._paged_response(page, rows)
 
         if export_type == "reasoning_log":
             rows = await self._state_store.export_reasoning_log(
@@ -282,28 +282,41 @@ class GatewayExportResponder:
                 action_tier=str(params.get("action_tier", "") or "") or None,
                 reasoning_status=str(params.get("reasoning_status", "") or "") or None,
                 correlation_id=str(params.get("correlation_id", "") or "") or None,
-                limit=min(MAX_EXPORT_LIMIT, limit + offset + 1),
+                limit=limit + 1,
+                after=_pair(after),
+                positioned=True,
             )
-            return self._paged_response(request_id, export_type, rows, limit, offset)
+            return self._paged_response(page, rows)
 
         rows = await self._state_store.export_tier_c_decision_log(
             device_id=self._device_id,
             since_ms=since_ms,
             until_ms=until_ms,
-            limit=min(MAX_EXPORT_LIMIT, limit + offset + 1),
+            limit=limit + 1,
+            after=_pair(after),
+            positioned=True,
         )
-        return self._paged_response(request_id, export_type, rows, limit, offset)
+        return self._paged_response(page, rows)
+
+    def _position(self, token: Any, digest: str, arity: int) -> tuple[int, ...] | None:
+        try:
+            return export_paging.read(
+                token,
+                key=self._page_key,
+                device_id=self._device_id,
+                digest=digest,
+                arity=arity,
+            )
+        except export_paging.PageTokenInvalidError:
+            raise _ExportRequestError(export_paging.PAGE_TOKEN_INVALID) from None
 
     async def _sensor_history_response(
         self,
-        *,
-        request_id: str,
-        export_type: str,
+        page: _Page,
+        token: Any,
         params: dict[str, Any],
         since_ms: int | None,
         until_ms: int | None,
-        limit: int,
-        offset: int,
     ) -> ExportResponse:
         sensor_id = str(params.get("sensor_id", "") or "").strip()
         if not sensor_id:
@@ -321,43 +334,53 @@ class GatewayExportResponder:
         if bucket_ms < 0:
             raise _ExportRequestError("params.bucket_ms must be >= 0")
 
-        source_limit = MAX_SENSOR_HISTORY_SOURCE_ROWS
+        if bucket_ms:
+            bucket_after = self._position(token, page.digest, 2)
+            rows = await self._state_store.export_sensor_buckets(
+                sensor_id=sensor_id,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                bucket_ms=bucket_ms,
+                limit=page.limit + 1,
+                after=_pair(bucket_after),
+            )
+            return self._paged_response(page, rows)
+        row_after = self._position(token, page.digest, 5)
         rows = await self._state_store.export_sensor_history(
             sensor_id=sensor_id,
             start_ms=start_ms,
             end_ms=end_ms,
-            limit=source_limit,
+            limit=page.limit + 1,
+            after=cast("tuple[int, int, int, int, int] | None", row_after),
+            positioned=True,
         )
-        items = _bucket_sensor_rows(rows, bucket_ms) if bucket_ms else list(rows)
-        return self._paged_response(request_id, export_type, items, limit, offset)
+        return self._paged_response(page, rows)
 
     def _paged_response(
-        self,
-        request_id: str,
-        export_type: str,
-        rows: list[dict[str, Any]],
-        limit: int,
-        offset: int,
+        self, page: _Page, rows: list[dict[str, Any]]
     ) -> ExportResponse:
-        page = rows[offset : offset + limit]
-        next_offset = offset + len(page)
-        more_rows_known = next_offset < len(rows)
-        maybe_truncated_at_source_limit = len(
-            rows
-        ) >= MAX_EXPORT_LIMIT and next_offset == len(rows)
-        next_page_token = (
-            str(next_offset)
-            if more_rows_known or maybe_truncated_at_source_limit
-            else ""
+        """One page of *rows*, which holds at most one row past the page.
+
+        Each item's continuation token names its position; the page continues
+        after its last item exactly when a further row was found.
+        """
+        positions = [row.pop("_position") for row in rows]
+        kept = rows[: page.limit]
+        tokens = tuple(
+            export_paging.issue(
+                self._page_key, self._device_id, page.digest, tuple(position)
+            )
+            for position in positions[: page.limit]
         )
+        more = len(rows) > page.limit
         return ExportResponse(
-            request_id=request_id,
-            export_type=export_type,
+            request_id=page.request_id,
+            export_type=page.export_type,
             device_id=self._device_id,
-            items=page,
-            next_page_token=next_page_token,
-            complete=not bool(next_page_token),
-            page_offset=offset,
+            items=kept,
+            next_page_token=tokens[-1] if more and tokens else "",
+            complete=not more,
+            item_tokens=tokens,
         )
 
     def encode(self, response: ExportResponse) -> bytes:
@@ -527,6 +550,21 @@ class MqttGatewayExportServer:
         await asyncio.to_thread(client.publish, topic, body, qos=1)
 
 
+@dataclass(frozen=True)
+class _Page:
+    """What a page is built for: its request, size and token binding."""
+
+    request_id: str
+    export_type: str
+    limit: int
+    digest: str
+
+
+def _pair(position: tuple[int, ...] | None) -> tuple[int, int] | None:
+    """A two-part position, as the log exports and buckets order by."""
+    return None if position is None else (position[0], position[1])
+
+
 class _ExportRequestError(ValueError):
     """A request answered with an error; *message* is fixed text, never input."""
 
@@ -551,8 +589,14 @@ def _first_items(response: ExportResponse, count: int) -> ExportResponse:
     return replace(
         response,
         items=response.items[:count],
-        next_page_token=str(response.page_offset + count),
+        # A health export is not paged, so it carries no tokens.
+        next_page_token=(
+            response.item_tokens[count - 1]
+            if 0 < count <= len(response.item_tokens)
+            else ""
+        ),
         complete=False,
+        item_tokens=response.item_tokens[:count],
     )
 
 
@@ -609,75 +653,6 @@ def _bounded_limit(value: Any) -> int:
     if parsed < 1:
         raise _ExportRequestError("limit must be >= 1")
     return min(parsed, MAX_EXPORT_LIMIT)
-
-
-def _page_offset(value: Any) -> int:
-    if value in (None, ""):
-        return 0
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise _ExportRequestError("page_token must be an integer offset") from exc
-    if parsed < 0:
-        raise _ExportRequestError("page_token must be >= 0")
-    if parsed > _INT64_MAX:
-        raise _ExportRequestError("page_token is out of range")
-    return parsed
-
-
-def _bucket_sensor_rows(
-    rows: list[dict[str, Any]], bucket_ms: int
-) -> list[dict[str, Any]]:
-    if bucket_ms <= 0:
-        return list(rows)
-
-    # A row aggregates one basis: a bucket of mixed bases is one row each.
-    buckets: dict[tuple[int, str], dict[str, Any]] = {}
-    for row in rows:
-        timestamp = int(row.get("timestamp") or 0)
-        value = float(row.get("value") or 0.0)
-        sample_count = max(1, int(row.get("sample_count") or 1))
-        bucket_start = (timestamp // bucket_ms) * bucket_ms
-        basis = read_producer_time(row.get("producer_time"))
-        bucket = buckets.setdefault(
-            (bucket_start, basis),
-            {
-                "sensor_id": row.get("sensor_id", ""),
-                "sensor_type": row.get("sensor_type", ""),
-                "timestamp": bucket_start,
-                "start_ms": bucket_start,
-                "end_ms": bucket_start + bucket_ms,
-                "value": 0.0,
-                "avg_value": 0.0,
-                "min_value": value,
-                "max_value": value,
-                "unit": row.get("unit", ""),
-                "quality": None,
-                "sample_count": 0,
-                "bucket_ms": bucket_ms,
-                "tier": "bucketed",
-                "received_at_ms": None,
-                "producer_time": basis,
-                "_weighted_total": 0.0,
-            },
-        )
-        bucket["sample_count"] += sample_count
-        bucket["_weighted_total"] += value * sample_count
-        bucket["min_value"] = min(float(bucket["min_value"]), value)
-        bucket["max_value"] = max(float(bucket["max_value"]), value)
-        bucket["received_at_ms"] = max(
-            int(bucket["received_at_ms"] or 0), int(row["received_at_ms"])
-        )
-
-    result = []
-    for key in sorted(buckets, key=lambda k: (k[0], PRODUCER_TIMES.index(k[1]))):
-        bucket = buckets[key]
-        count = max(1, int(bucket["sample_count"]))
-        avg = float(bucket.pop("_weighted_total")) / count
-        bucket["value"] = avg
-        bucket["avg_value"] = avg
-        result.append(bucket)
-    return result
 
 
 def _log_future_failure(future: Any) -> None:

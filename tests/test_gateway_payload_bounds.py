@@ -248,7 +248,7 @@ async def test_an_export_page_holds_only_what_fits_and_continues_from_the_rest(
             export_type="action_log",
             device_id="dev-01",
             items=items,
-            page_offset=40,
+            item_tokens=tuple(f"after-{40 + index + 1}" for index in range(len(items))),
         )
         body = responder.encode(response)
         assert fits(EXPORT_RESPONSE, body)
@@ -264,7 +264,8 @@ async def test_an_export_page_holds_only_what_fits_and_continues_from_the_rest(
         held = len(page["items"])
         assert 1 <= held < len(items)
         assert page["items"] == items[:held]
-        assert page["next_page_token"] == str(40 + held)
+        # The page continues after the last item it holds.
+        assert page["next_page_token"] == f"after-{40 + held}"
         assert page["complete"] is False
         # One more item would not have fitted.
         wider = ExportResponse(**{**response.__dict__, "items": items[: held + 1]})
@@ -756,7 +757,9 @@ async def test_the_responder_pages_the_corpus_cases(tmp_path, case, monkeypatch)
                 export_type="action_log",
                 device_id="dev-01",
                 items=[{"bytes": b} for b in sizes[offset:]],
-                page_offset=offset,
+                item_tokens=tuple(
+                    str(offset + index + 1) for index in range(len(sizes) - offset)
+                ),
             )
             published = json.loads(responder.encode(page))
             if published["error"]:
@@ -1797,14 +1800,76 @@ async def test_an_artifact_is_never_answered_on_a_closed_session():
     assert client.published == []
 
 
+async def test_a_fabricated_token_through_authenticated_ingress_is_refused(tmp_path):
+    """A signed request may carry any token; one the responder did not issue,
+    built from the public inputs, is answered `page_token_invalid`."""
+    from ori.gateway.export_paging import (
+        PAGE_TOKEN_INVALID,
+        filter_digest,
+        issue,
+        new_key,
+    )
+
+    class _Store:
+        async def export_action_log(self, **kwargs: Any) -> list[dict[str, Any]]:
+            raise AssertionError("a refused token reaches no query")
+
+    responder = GatewayExportResponder(
+        device_id="dev-01",
+        state_store=_Store(),
+        health_snapshot_provider=dict,
+        message_auth=_auth(),
+    )
+    published: list[bytes] = []
+
+    class _Client:
+        def publish(self, topic: str, payload: bytes, qos: int = 0) -> None:
+            published.append(payload)
+
+    server = MqttGatewayExportServer(
+        broker_url="mqtt://localhost",
+        responder=responder,
+        client_factory=lambda **_: None,
+    )
+    forged = issue(
+        new_key(), "dev-01", filter_digest("action_log", None, None, {}), (0, 0)
+    )
+    request = _auth().sign(
+        {
+            "request_id": "req-1",
+            "export_type": "action_log",
+            "device_id": "dev-01",
+            "limit": 20,
+            "page_token": forged,
+        },
+        message_type="export_request",
+    )
+    await server._publish_response(_Client(), json.dumps(request).encode())
+    (body,) = published
+    page = _auth().verify(
+        json.loads(body),
+        message_type="export_response",
+        expected_device_id="dev-01",
+        expected_request_id="req-1",
+    )
+    assert page["error"] == PAGE_TOKEN_INVALID
+    assert page["items"] == [] and page["complete"] is True
+
+
 async def test_a_cut_export_page_continues_from_where_it_was_cut(tmp_path, monkeypatch):
-    """Through `_publish_response`: a page asked for at a non-zero token and cut
-    to fit continues from its own first item plus what it held."""
+    """Through `_publish_response`: a page asked for mid-traversal and cut to
+    fit continues from the row after the last one it held."""
     rows = [{"id": index, "pad": "x" * 400} for index in range(40)]
 
     class _Store:
         async def export_action_log(self, **kwargs: Any) -> list[dict[str, Any]]:
-            return rows[: kwargs["limit"]]
+            # Positions descend as Page Order does: row i is at (40 - i, 0).
+            after = kwargs["after"]
+            start = 0 if after is None else 40 - after[0] + 1
+            return [
+                {**row, "_position": (40 - row["id"], 0)}
+                for row in rows[start : start + kwargs["limit"]]
+            ]
 
     responder = GatewayExportResponder(
         device_id="dev-01",
@@ -1824,26 +1889,40 @@ async def test_a_cut_export_page_continues_from_where_it_was_cut(tmp_path, monke
         responder=responder,
         client_factory=lambda **_: None,
     )
-    request = _auth().sign(
-        {
-            "request_id": "req-1",
-            "export_type": "action_log",
-            "device_id": "dev-01",
-            "limit": 20,
-            "page_token": "5",
-        },
-        message_type="export_request",
-    )
-    await server._publish_response(_Client(), json.dumps(request).encode())
 
-    (body,) = published
+    def request(page_token: str, limit: int, request_id: str) -> bytes:
+        signed = _auth().sign(
+            {
+                "request_id": request_id,
+                "export_type": "action_log",
+                "device_id": "dev-01",
+                "limit": limit,
+                "page_token": page_token,
+            },
+            message_type="export_request",
+        )
+        return json.dumps(signed).encode()
+
+    await server._publish_response(_Client(), request("", 5, "req-0"))
+    first = json.loads(published.pop())
+    assert [item["id"] for item in first["items"]] == list(range(5))
+
+    await server._publish_response(
+        _Client(), request(first["next_page_token"], 20, "req-1")
+    )
+    body = published.pop()
     assert len(body) <= 4096
     page = json.loads(body)
     held = len(page["items"])
     assert 1 <= held < 20
     assert [item["id"] for item in page["items"]] == list(range(5, 5 + held))
-    assert page["next_page_token"] == str(5 + held)
     assert page["complete"] is False
+
+    await server._publish_response(
+        _Client(), request(page["next_page_token"], 1, "req-2")
+    )
+    after_cut = json.loads(published.pop())
+    assert [item["id"] for item in after_cut["items"]] == [5 + held]
 
 
 @pytest.mark.usefixtures("_paho")

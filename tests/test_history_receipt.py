@@ -940,18 +940,19 @@ CLASSIFIED_CLAUSES: dict[tuple[str, str], str] = {
         "grouping hourly buckets by their measured day; the receipt predicate "
         "decides which rows take part"
     ),
-    ("_export_sensor_history_sync", "timestamp BETWEEN ? AND ?"): (
+    ("_ranked_history_sql", "timestamp BETWEEN ? AND ?"): (
         "a filter against the bounds the caller supplied: what was measured between "
         "two instants is a question about the world, and received_at_ms travels on "
         "every row"
     ),
-    ("_export_sensor_history_sync", "bucket_ms BETWEEN ? AND ?"): (
+    ("_ranked_history_sql", "bucket_ms BETWEEN ? AND ?"): (
         "the same caller-bounded filter on a rollup tier, with the bucket's greatest "
         "receipt exported beside it"
     ),
-    ("_export_sensor_history_sync", "ORDER BY timestamp ASC"): (
-        "presentation order of a caller-bounded window under the producer column's own "
-        "name; nothing is chosen or dropped by it and every row carries received_at_ms"
+    ("_export_sensor_history_sync", "ORDER BY timestamp"): (
+        "gateway-api/v2 Page Order of a caller-bounded window under the producer "
+        "column's own name; nothing is chosen or dropped by it and every row carries "
+        "received_at_ms"
     ),
     ("_get_alert_outbox_summary_sync", "MIN(original_ts)"): (
         "the producer's account reported under its own name beside oldest_queued_at_ms; "
