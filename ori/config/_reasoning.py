@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ori.config._fields import ConfigValidationError
+from ori.reasoning.capability_posture import GATEWAY_HEARTBEAT_TTL_MIN_SECONDS
 
 
 @dataclass
@@ -45,9 +46,6 @@ def parse_reasoning(data: Any) -> ReasoningConfig:
         probe_interval_seconds = int(
             capability_posture.get("probe_interval_seconds", 30)
         )
-        gateway_heartbeat_ttl_seconds = int(
-            capability_posture.get("gateway_heartbeat_ttl_seconds", 30)
-        )
         internet_probe_timeout_ms = int(
             capability_posture.get("internet_probe_timeout_ms", 1000)
         )
@@ -61,9 +59,18 @@ def parse_reasoning(data: Any) -> ReasoningConfig:
         raise ConfigValidationError(
             "reasoning.capability_posture.probe_interval_seconds must be between 1 and 30."
         )
-    if gateway_heartbeat_ttl_seconds < 1:
+    gateway_heartbeat_ttl_seconds = capability_posture.get(
+        "gateway_heartbeat_ttl_seconds", GATEWAY_HEARTBEAT_TTL_MIN_SECONDS
+    )
+    # runtime-config/v2: an integer of at least 90, refused below and never
+    # clamped. A YAML string or fraction is not an integer; a boolean is 0 or 1.
+    if (
+        not isinstance(gateway_heartbeat_ttl_seconds, int)
+        or gateway_heartbeat_ttl_seconds < GATEWAY_HEARTBEAT_TTL_MIN_SECONDS
+    ):
         raise ConfigValidationError(
-            "reasoning.capability_posture.gateway_heartbeat_ttl_seconds must be >= 1."
+            "reasoning.capability_posture.gateway_heartbeat_ttl_seconds must be "
+            f"an integer of at least {GATEWAY_HEARTBEAT_TTL_MIN_SECONDS}."
         )
     if internet_probe_timeout_ms < 100:
         raise ConfigValidationError(

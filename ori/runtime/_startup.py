@@ -19,7 +19,10 @@ from ori.hal.protocol_registry import UnknownProtocolError, make_adapter
 from ori.hardware.led_indicator import RuntimeHealthState
 from ori.network.deduplicator import EventDeduplicator
 from ori.network.event_bus import EventBus
-from ori.reasoning.capability_posture import CapabilityPostureTracker
+from ori.reasoning.capability_posture import (
+    GATEWAY_HEARTBEAT_TTL_MIN_SECONDS,
+    CapabilityPostureTracker,
+)
 from ori.reasoning.dispatch_coordinator import DispatchCoordinator
 from ori.reasoning.elevator import IntelligenceElevator
 from ori.reasoning.resource_gate import ResourceGate
@@ -109,7 +112,10 @@ class StartupStages(
                     context.posture_cfg.get("probe_interval_seconds", 30)
                 ),
                 gateway_heartbeat_ttl_seconds=int(
-                    context.posture_cfg.get("gateway_heartbeat_ttl_seconds", 30)
+                    context.posture_cfg.get(
+                        "gateway_heartbeat_ttl_seconds",
+                        GATEWAY_HEARTBEAT_TTL_MIN_SECONDS,
+                    )
                 ),
                 internet_probe_host=str(
                     context.posture_cfg.get("internet_probe_host", "one.one.one.one")

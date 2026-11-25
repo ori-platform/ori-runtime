@@ -13,6 +13,10 @@ from dataclasses import dataclass
 
 from ori.utils.time_utils import monotonic_ms, now_ms
 
+#: runtime-config/v2: the gateway heartbeat TTL's floor and default, three times
+#: the longest heartbeat interval gateway-config/v2 admits (30 s).
+GATEWAY_HEARTBEAT_TTL_MIN_SECONDS = 90
+
 
 def probe_internet_available(host: str, port: int, timeout_ms: int) -> bool:
     """Best-effort TCP reachability probe for internet availability."""
@@ -53,7 +57,7 @@ class CapabilityPostureTracker:
         self,
         *,
         probe_interval_seconds: int = 30,
-        gateway_heartbeat_ttl_seconds: int = 30,
+        gateway_heartbeat_ttl_seconds: int = GATEWAY_HEARTBEAT_TTL_MIN_SECONDS,
         internet_probe_host: str = "one.one.one.one",
         internet_probe_port: int = 53,
         internet_probe_timeout_ms: int = 1000,
