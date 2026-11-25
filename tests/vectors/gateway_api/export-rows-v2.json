@@ -4,7 +4,8 @@
   "sections": [
     "Producer Time",
     "sensor_history",
-    "action_log"
+    "action_log",
+    "Page Order"
   ],
   "conventions": {
     "readings.where": "sensor_history row, history_point of a Tier 3 request, or reasoning_reading: the Tier 3 request's own reading",
@@ -12,6 +13,7 @@
     "expected.tier_read_as": "the tier a consumer reads the row as, under the tier domain; null for a row that fails a check or that it disregards",
     "expected.disregarded": "whether a consumer disregards the row, as a refusal the tier domain omits",
     "paging.between_pages": "entry i changes the store after page i+1 is returned and before the next is requested; stored is the order the runtime stored the rows",
+    "paging.order": "descending: action_log, reasoning_log, and tier_c_decision_log, whose timestamp here is its created_at; ascending: unbucketed sensor_history, where tier is the row's compaction tier and stored stands for the runtime's own fixed order; bucketed: bucketed sensor_history, whose rows are named by start_ms and producer_time",
     "paging.stored.tier": "a stored row's tier, action_taken and executed where a case gives them; a row without a tier is one the export carries",
     "tokens.gateway.answers": "the runtime's answers to one traversal's requests in order: rows with whether a next page follows and, where given, the next_page_token issued, or an error envelope's error",
     "buckets.expected": "every member of a bucketed row except sensor_id, sensor_type and unit, which the input rows here do not carry"
@@ -1687,6 +1689,7 @@
   "paging": [
     {
       "name": "ties broken by stored order, latest first",
+      "order": "descending",
       "stored": [
         {
           "id": "a",
@@ -1746,6 +1749,7 @@
     },
     {
       "name": "a row stored after the first page does not shift the traversal",
+      "order": "descending",
       "stored": [
         {
           "id": "a",
@@ -1815,6 +1819,7 @@
     },
     {
       "name": "a row already returned is removed and nothing is skipped",
+      "order": "descending",
       "stored": [
         {
           "id": "a",
@@ -1880,6 +1885,7 @@
     },
     {
       "name": "a removed row not yet returned is not returned",
+      "order": "descending",
       "stored": [
         {
           "id": "a",
@@ -1940,6 +1946,7 @@
     },
     {
       "name": "a row stored behind the cursor during the traversal is returned",
+      "order": "descending",
       "stored": [
         {
           "id": "a",
@@ -2008,6 +2015,7 @@
     },
     {
       "name": "the last row returned is removed before the next page",
+      "order": "descending",
       "stored": [
         {
           "id": "a",
@@ -2073,6 +2081,7 @@
     },
     {
       "name": "one row per page",
+      "order": "descending",
       "stored": [
         {
           "id": "a",
@@ -2106,6 +2115,7 @@
     },
     {
       "name": "a stored refusal of an unknown tier holds no position; an earlier release's row does",
+      "order": "descending",
       "stored": [
         {
           "id": "j",
@@ -2174,6 +2184,419 @@
         [
           "o",
           "q"
+        ]
+      ]
+    },
+    {
+      "name": "ties broken by tier, then basis, then stored order, earliest first",
+      "order": "ascending",
+      "stored": [
+        {
+          "id": "s1",
+          "timestamp": 1716998400000,
+          "tier": "hourly",
+          "producer_time": "reported",
+          "stored": 5
+        },
+        {
+          "id": "s2",
+          "timestamp": 1716998400000,
+          "tier": "raw",
+          "producer_time": "not_reported",
+          "stored": 6
+        },
+        {
+          "id": "s3",
+          "timestamp": 1716998400000,
+          "tier": "5min",
+          "producer_time": "unknown",
+          "stored": 2
+        },
+        {
+          "id": "s4",
+          "timestamp": 1716998400000,
+          "tier": "raw",
+          "producer_time": "reported",
+          "stored": 7
+        },
+        {
+          "id": "s5",
+          "timestamp": 1716998400000,
+          "tier": "raw",
+          "producer_time": "reported",
+          "stored": 3
+        },
+        {
+          "id": "s6",
+          "timestamp": 1716998400000,
+          "tier": "5min",
+          "producer_time": "reported",
+          "stored": 4
+        },
+        {
+          "id": "s7",
+          "timestamp": 1716998399999,
+          "tier": "daily",
+          "producer_time": "unknown",
+          "stored": 8
+        },
+        {
+          "id": "s8",
+          "timestamp": 1716998400001,
+          "tier": "raw",
+          "producer_time": "unknown",
+          "stored": 1
+        }
+      ],
+      "page_size": 3,
+      "between_pages": [],
+      "expected_pages": [
+        [
+          "s7",
+          "s5",
+          "s4"
+        ],
+        [
+          "s2",
+          "s6",
+          "s3"
+        ],
+        [
+          "s1",
+          "s8"
+        ]
+      ]
+    },
+    {
+      "name": "a row stored ahead of the cursor during the traversal is returned",
+      "order": "ascending",
+      "stored": [
+        {
+          "id": "r1",
+          "timestamp": 1716998400000,
+          "tier": "raw",
+          "producer_time": "reported",
+          "stored": 1
+        },
+        {
+          "id": "r2",
+          "timestamp": 1716998400007,
+          "tier": "raw",
+          "producer_time": "reported",
+          "stored": 2
+        },
+        {
+          "id": "r3",
+          "timestamp": 1717002000001,
+          "tier": "raw",
+          "producer_time": "not_reported",
+          "stored": 3
+        }
+      ],
+      "page_size": 1,
+      "between_pages": [
+        {
+          "store": [
+            {
+              "id": "r4",
+              "timestamp": 1717002000000,
+              "tier": "raw",
+              "producer_time": "reported",
+              "stored": 4
+            }
+          ]
+        }
+      ],
+      "expected_pages": [
+        [
+          "r1"
+        ],
+        [
+          "r2"
+        ],
+        [
+          "r4"
+        ],
+        [
+          "r3"
+        ]
+      ]
+    },
+    {
+      "name": "a raw row returned, then compacted: the reading is returned again in its compacted row",
+      "order": "ascending",
+      "stored": [
+        {
+          "id": "r1",
+          "timestamp": 1716998400000,
+          "tier": "raw",
+          "producer_time": "reported",
+          "stored": 1
+        },
+        {
+          "id": "r2",
+          "timestamp": 1716998400007,
+          "tier": "raw",
+          "producer_time": "reported",
+          "stored": 2
+        },
+        {
+          "id": "r3",
+          "timestamp": 1717002000001,
+          "tier": "raw",
+          "producer_time": "not_reported",
+          "stored": 3
+        }
+      ],
+      "page_size": 1,
+      "between_pages": [
+        {
+          "remove": [
+            "r1",
+            "r2"
+          ],
+          "store": [
+            {
+              "id": "c1",
+              "timestamp": 1716998400000,
+              "tier": "5min",
+              "producer_time": "reported",
+              "stored": 4
+            }
+          ]
+        }
+      ],
+      "expected_pages": [
+        [
+          "r1"
+        ],
+        [
+          "c1"
+        ],
+        [
+          "r3"
+        ]
+      ]
+    },
+    {
+      "name": "a raw row compacted before its page, its compacted row behind the cursor: the reading is returned in neither",
+      "order": "ascending",
+      "stored": [
+        {
+          "id": "r1",
+          "timestamp": 1716998400000,
+          "tier": "raw",
+          "producer_time": "reported",
+          "stored": 1
+        },
+        {
+          "id": "r0",
+          "timestamp": 1716998400003,
+          "tier": "raw",
+          "producer_time": "reported",
+          "stored": 2
+        },
+        {
+          "id": "r2",
+          "timestamp": 1716998400007,
+          "tier": "raw",
+          "producer_time": "reported",
+          "stored": 3
+        }
+      ],
+      "page_size": 2,
+      "between_pages": [
+        {
+          "remove": [
+            "r1",
+            "r0",
+            "r2"
+          ],
+          "store": [
+            {
+              "id": "c2",
+              "timestamp": 1716998400000,
+              "tier": "5min",
+              "producer_time": "reported",
+              "stored": 4
+            }
+          ]
+        }
+      ],
+      "expected_pages": [
+        [
+          "r1",
+          "r0"
+        ]
+      ]
+    },
+    {
+      "name": "a bucket's bases split across pages",
+      "order": "bucketed",
+      "stored": [
+        {
+          "id": "k1",
+          "start_ms": 1716998400000,
+          "producer_time": "unknown"
+        },
+        {
+          "id": "k2",
+          "start_ms": 1716998400000,
+          "producer_time": "reported"
+        },
+        {
+          "id": "k3",
+          "start_ms": 1717002000000,
+          "producer_time": "reported"
+        },
+        {
+          "id": "k4",
+          "start_ms": 1716998400000,
+          "producer_time": "not_reported"
+        }
+      ],
+      "page_size": 2,
+      "between_pages": [],
+      "expected_pages": [
+        [
+          "k2",
+          "k4"
+        ],
+        [
+          "k1",
+          "k3"
+        ]
+      ]
+    },
+    {
+      "name": "a basis that appears behind the cursor during the traversal is not returned",
+      "order": "bucketed",
+      "stored": [
+        {
+          "id": "k1",
+          "start_ms": 1716998400000,
+          "producer_time": "reported"
+        },
+        {
+          "id": "k2",
+          "start_ms": 1717002000000,
+          "producer_time": "not_reported"
+        },
+        {
+          "id": "k3",
+          "start_ms": 1717005600000,
+          "producer_time": "reported"
+        }
+      ],
+      "page_size": 2,
+      "between_pages": [
+        {
+          "store": [
+            {
+              "id": "k4",
+              "start_ms": 1716998400000,
+              "producer_time": "unknown"
+            }
+          ]
+        }
+      ],
+      "expected_pages": [
+        [
+          "k1",
+          "k2"
+        ],
+        [
+          "k3"
+        ]
+      ]
+    },
+    {
+      "name": "a bucket removed and stored again between pages holds the same position",
+      "order": "bucketed",
+      "stored": [
+        {
+          "id": "k1",
+          "start_ms": 1716998400000,
+          "producer_time": "reported"
+        },
+        {
+          "id": "k2",
+          "start_ms": 1716998400000,
+          "producer_time": "unknown"
+        },
+        {
+          "id": "k3",
+          "start_ms": 1717002000000,
+          "producer_time": "reported"
+        }
+      ],
+      "page_size": 1,
+      "between_pages": [
+        {
+          "remove": [
+            "k3"
+          ],
+          "store": [
+            {
+              "id": "k3b",
+              "start_ms": 1717002000000,
+              "producer_time": "reported"
+            }
+          ]
+        }
+      ],
+      "expected_pages": [
+        [
+          "k1"
+        ],
+        [
+          "k2"
+        ],
+        [
+          "k3b"
+        ]
+      ]
+    },
+    {
+      "name": "a basis that appears ahead of the cursor during the traversal is returned",
+      "order": "bucketed",
+      "stored": [
+        {
+          "id": "k1",
+          "start_ms": 1716998400000,
+          "producer_time": "reported"
+        },
+        {
+          "id": "k2",
+          "start_ms": 1716998400000,
+          "producer_time": "unknown"
+        },
+        {
+          "id": "k3",
+          "start_ms": 1717002000000,
+          "producer_time": "reported"
+        }
+      ],
+      "page_size": 2,
+      "between_pages": [
+        {
+          "store": [
+            {
+              "id": "k4",
+              "start_ms": 1717002000000,
+              "producer_time": "not_reported"
+            }
+          ]
+        }
+      ],
+      "expected_pages": [
+        [
+          "k1",
+          "k2"
+        ],
+        [
+          "k3",
+          "k4"
         ]
       ]
     }

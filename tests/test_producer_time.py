@@ -736,7 +736,12 @@ def _store_rows_as_written(conn: sqlite3.Connection, rows: list[dict]) -> None:
 
 @pytest.mark.parametrize(
     "case",
-    [case for case in CORPUS["paging"] if any("tier" in row for row in case["stored"])],
+    [
+        case
+        for case in CORPUS["paging"]
+        if case["order"] == "descending"
+        and any("tier" in row for row in case["stored"])
+    ],
     ids=lambda c: c["name"],
 )
 async def test_the_export_pages_the_corpus_tier_domain(
