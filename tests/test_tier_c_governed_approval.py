@@ -15,6 +15,7 @@ import asyncio
 import logging
 import sqlite3
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -683,6 +684,218 @@ class TestGracefulStop:
         finally:
             await store.close()
         assert late == f"closed:{adm.PROPOSAL_ABORTED_RESTART}"
+
+
+class TestAFailureAfterTheCommitClosesTheProposal:
+    """A workflow that fails once its row commits closes that row, and only it."""
+
+    async def test_the_proposal_closes_with_its_safe_default(
+        self, tmp_path: Any
+    ) -> None:
+        journal: list[str] = []
+        store = StateStore(str(tmp_path / "s.db"))
+        await store.open()
+        operator = _Operator()
+        try:
+            dispatcher = _dispatcher(store, operator, journal)
+            with patch.object(
+                dispatcher, "_format_approval_message", side_effect=RuntimeError("x")
+            ):
+                await _propose(dispatcher, store)
+            await _settle(dispatcher)
+            states = await _states(store)
+            (proposal_id, _state) = states[0]
+            row = await store.get_tier_c_proposal(proposal_id)
+            intents = await store.get_tier_c_safe_default_intents()
+        finally:
+            await store.close()
+        assert operator.proposals == []
+        assert states == [(proposal_id, adm.PROPOSAL_ABORTED_RESTART)]
+        assert row is not None and row["state_reason"] == "workflow_failed"
+        assert [i["proposal_id"] for i in intents] == [proposal_id]
+        assert journal == ["act:log_to_dashboard"]
+
+    async def test_a_failure_while_listening_closes_the_proposal(
+        self, tmp_path: Any
+    ) -> None:
+        journal: list[str] = []
+        store = StateStore(str(tmp_path / "s.db"))
+        await store.open()
+        operator = _Operator()
+        try:
+            dispatcher = _dispatcher(store, operator, journal)
+            with patch.object(
+                dispatcher, "_governed_listen", side_effect=RuntimeError("x")
+            ):
+                await _propose(dispatcher, store)
+            await _settle(dispatcher)
+            states = await _states(store)
+        finally:
+            await store.close()
+        assert states == [(operator.proposals[0], adm.PROPOSAL_ABORTED_RESTART)]
+        assert journal == ["act:log_to_dashboard"]
+
+    async def test_a_row_already_closed_is_left_and_nothing_is_lost(
+        self, tmp_path: Any
+    ) -> None:
+        journal: list[str] = []
+        store = StateStore(str(tmp_path / "s.db"))
+        await store.open()
+        operator = _Operator(reply=None)
+        try:
+            dispatcher = _dispatcher(store, operator, journal)
+            with patch.object(
+                dispatcher, "_escalate_to_secondary", side_effect=RuntimeError("x")
+            ):
+                await _propose(dispatcher, store, timeout=1)
+            await _settle(dispatcher)
+            states = await _states(store)
+        finally:
+            await store.close()
+        assert states == [(operator.proposals[0], adm.PROPOSAL_EXPIRED)]
+        assert journal == ["act:log_to_dashboard"]
+        assert dispatcher.decision_records_lost() == 0
+
+    @pytest.mark.parametrize(
+        ("reply", "timeout", "failing", "state"),
+        [
+            ("YES", 30, "_dispatch_admitted", adm.APPROVED_PENDING_DISPATCH),
+            (None, 1, "_escalate_to_secondary", adm.PROPOSAL_EXPIRED),
+            ("NO", 30, "_safe_default_intent", adm.REJECTED),
+        ],
+    )
+    async def test_a_row_that_moved_on_is_left_and_nothing_is_lost(
+        self, tmp_path: Any, reply: str | None, timeout: int, failing: str, state: str
+    ) -> None:
+        """Even when a read on the close's refusal path fails once."""
+        journal: list[str] = []
+        store = StateStore(str(tmp_path / "s.db"))
+        await store.open()
+        operator = _Operator(reply=reply)
+        read = store.get_tier_c_proposal
+        faults = [sqlite3.OperationalError("database is locked")]
+
+        async def read_once_failing(proposal_id: str) -> Any:
+            if faults:
+                raise faults.pop()
+            return await read(proposal_id)
+
+        try:
+            dispatcher = _dispatcher(store, operator, journal)
+            store.get_tier_c_proposal = read_once_failing  # type: ignore[method-assign]
+            with patch.object(dispatcher, failing, side_effect=RuntimeError("x")):
+                await _propose(dispatcher, store, timeout=timeout)
+            await _settle(dispatcher)
+            store.get_tier_c_proposal = read  # type: ignore[method-assign]
+            states = await _states(store)
+        finally:
+            await store.close()
+        assert faults == []
+        assert states == [(operator.proposals[0], state)]
+        assert dispatcher.decision_records_lost() == 0
+        assert "act:trip_relay" not in journal
+
+    @pytest.mark.parametrize("second", ["raises", "blocked", "duplicate", "cancelled"])
+    async def test_no_deadline_outlives_a_proposal_that_never_committed(
+        self, tmp_path: Any, second: str
+    ) -> None:
+        store = StateStore(str(tmp_path / "s.db"))
+        await store.open()
+
+        # The first identifier is in use; the replacement never commits.
+        calls = 0
+
+        async def collide_then_fail(**_row: Any) -> str:
+            nonlocal calls
+            calls += 1
+            if calls == 1 or second == "duplicate":
+                return "duplicate"
+            if second == "raises":
+                raise sqlite3.OperationalError("disk I/O error")
+            if second == "cancelled":
+                raise asyncio.CancelledError
+            return second
+
+        store.create_tier_c_proposal = collide_then_fail  # type: ignore[method-assign]
+        try:
+            dispatcher = _dispatcher(store, _Operator(), [])
+            with patch(
+                "ori.reasoning.action_dispatcher._generate_proposal_id",
+                side_effect=["AAAA0001", "BBBB0002", "CCCC0003", "DDDD0004"],
+            ):
+                (outcome,) = await asyncio.gather(
+                    _propose(dispatcher, store), return_exceptions=True
+                )
+            await _settle(dispatcher)
+        finally:
+            await store.close()
+        assert calls == (3 if second == "duplicate" else 2)
+        # A cancellation raised by the store ends this dispatch as interrupted.
+        assert not isinstance(outcome, BaseException)
+        assert outcome.approved is None
+        assert dispatcher._proposal_deadlines == {}
+
+    async def test_an_identifier_in_use_is_replaced_never_reused(
+        self, tmp_path: Any
+    ) -> None:
+        journal: list[str] = []
+        store = StateStore(str(tmp_path / "s.db"))
+        await store.open()
+        operator = _Operator()
+        create = store.create_tier_c_proposal
+        answers = ["duplicate"]
+
+        async def first_in_use(**row: Any) -> str:
+            return answers.pop() if answers else await create(**row)
+
+        store.create_tier_c_proposal = first_in_use  # type: ignore[method-assign]
+        try:
+            dispatcher = _dispatcher(store, operator, journal)
+            with patch(
+                "ori.reasoning.action_dispatcher._generate_proposal_id",
+                side_effect=["AAAA0001", "BBBB0002"],
+            ):
+                outcome = await _propose(dispatcher, store)
+            await _settle(dispatcher)
+            states = await _states(store)
+        finally:
+            await store.close()
+        assert operator.proposals == ["BBBB0002"]
+        assert outcome.proposal_id == "BBBB0002"
+        assert dispatcher._proposal_deadlines == {}
+        assert states == [("BBBB0002", adm.EXECUTED)]
+
+    async def test_a_failure_never_closes_the_proposal_it_collided_with(
+        self, tmp_path: Any
+    ) -> None:
+        journal: list[str] = []
+        store = StateStore(str(tmp_path / "s.db"))
+        await store.open()
+        operator = _Operator(reply=None)
+        try:
+            dispatcher = _dispatcher(store, operator, journal)
+            with patch(
+                "ori.reasoning.action_dispatcher._generate_proposal_id",
+                side_effect=["AAAA0001", "AAAA0001", "BBBB0002"],
+            ):
+                held = asyncio.create_task(_propose(dispatcher, store, timeout=300))
+                await wait_until(lambda: operator.proposals, what="the first ask")
+                with patch.object(
+                    dispatcher,
+                    "_format_approval_message",
+                    side_effect=RuntimeError("x"),
+                ):
+                    await _propose(dispatcher, store)
+            await _settle(dispatcher)
+            states = dict(await _states(store))
+            held.cancel()
+            await asyncio.gather(held, return_exceptions=True)
+        finally:
+            await store.close()
+        assert states == {
+            "AAAA0001": adm.PROPOSED,
+            "BBBB0002": adm.PROPOSAL_ABORTED_RESTART,
+        }
 
 
 class TestBindingAndBlocking:

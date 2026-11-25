@@ -25,9 +25,9 @@ from ori.network.events import (
 from ori.policy.device_policy import DevicePolicy
 from ori.reasoning.action_dispatcher import (
     ActionDispatcher,
-    _classify_approval_response,
 )
 from ori.reasoning.action_taken import NO_EXECUTOR
+from ori.reasoning.approval_replies import classify_approval_response
 from ori.reasoning.capability_posture import CapabilityPosture
 from ori.reasoning.elevator import SkillContext
 from ori.security.offline_tokens import TokenVerificationResult
@@ -126,16 +126,16 @@ def _structured_remote_command_text(command_id: str = "local-command") -> str:
     )
 
 
-# ─── _classify_approval_response (module-level) ───────────────────────────────
+# ─── classify_approval_response ───────────────────────────────────────────────
 
 
 class TestParseApprovalResponse:
     def test_yes_returns_true(self):
-        assert _classify_approval_response("YES") == "approve"
+        assert classify_approval_response("YES") == "approve"
 
     def test_bare_yes_invalid_when_scoped_required(self):
         assert (
-            _classify_approval_response(
+            classify_approval_response(
                 "YES", proposal_id="AB12CD34", require_scoped=True
             )
             == "invalid"
@@ -160,44 +160,44 @@ class TestParseApprovalResponse:
 
     def test_scoped_yes_matching_proposal_returns_true(self):
         assert (
-            _classify_approval_response("YES-AB12CD34", proposal_id="AB12CD34")
+            classify_approval_response("YES-AB12CD34", proposal_id="AB12CD34")
             == "approve"
         )
 
     def test_scoped_yes_wrong_proposal_returns_false(self):
         assert (
-            _classify_approval_response("YES-WRONG999", proposal_id="AB12CD34")
+            classify_approval_response("YES-WRONG999", proposal_id="AB12CD34")
             == "invalid"
         )
 
     def test_y_returns_true(self):
-        assert _classify_approval_response("Y") == "approve"
+        assert classify_approval_response("Y") == "approve"
 
     def test_approve_returns_true(self):
-        assert _classify_approval_response("approve") == "approve"
+        assert classify_approval_response("approve") == "approve"
 
     def test_go_returns_true(self):
-        assert _classify_approval_response("go") == "approve"
+        assert classify_approval_response("go") == "approve"
 
     def test_no_returns_false(self):
-        assert _classify_approval_response("NO") == "reject"
+        assert classify_approval_response("NO") == "reject"
 
     def test_cancel_returns_false(self):
-        assert _classify_approval_response("cancel") == "reject"
+        assert classify_approval_response("cancel") == "reject"
 
     def test_none_returns_false(self):
-        assert _classify_approval_response(None) == "invalid"
+        assert classify_approval_response(None) == "invalid"
 
     def test_gibberish_returns_false(self):
-        assert _classify_approval_response("maybe") == "invalid"
+        assert classify_approval_response("maybe") == "invalid"
 
     def test_case_insensitive(self):
-        assert _classify_approval_response("Yes") == "approve"
-        assert _classify_approval_response("YES") == "approve"
-        assert _classify_approval_response("yes") == "approve"
+        assert classify_approval_response("Yes") == "approve"
+        assert classify_approval_response("YES") == "approve"
+        assert classify_approval_response("yes") == "approve"
 
     def test_strips_whitespace(self):
-        assert _classify_approval_response("  yes  ") == "approve"
+        assert classify_approval_response("  yes  ") == "approve"
 
 
 # ─── Tier A — executes immediately ────────────────────────────────────────────
@@ -2283,7 +2283,7 @@ class TestOfflineTokenApproval:
                 )
                 if fault == "override write fails"
                 else patch(
-                    "ori.reasoning.action_dispatcher._classify_approval_response",
+                    "ori.reasoning.action_dispatcher.classify_approval_response",
                     side_effect=TypeError("unclassifiable"),
                 )
             )

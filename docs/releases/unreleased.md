@@ -484,6 +484,19 @@ release is cut.
 
 ## Fixed
 
+- A governed Tier C proposal whose workflow failed after its row committed
+  (in composing or sending the approval request, or while listening) stayed
+  `proposed` for the life of the process, and its safe default did not run
+  until a graceful stop or the next start. Such a failure now closes the
+  proposal at once, as a stop or restart does: `proposal_aborted_restart` with
+  reason `workflow_failed`, its safe default and an operator notice. Only a
+  row still `proposed` is closed: one the workflow had already approved or
+  closed is left where it is, for the next start to settle, as before. A
+  cancellation, as at a stop, still leaves the row to the stop or the next
+  start. Closing an open proposal, at a stop, a start or such a failure, no
+  longer counts a lost decision record when the row had already moved on:
+  only a close the store could not record is counted.
+
 - Gateway reachability is judged on the monotonic clock. A wall clock stepped
   back (an NTP correction, a device that booted with a wrong clock) held a
   gateway that had stopped publishing reachable until the clock caught up,

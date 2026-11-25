@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from ori.network.sms_webhook import SMSWebhookServer
-from ori.reasoning.action_dispatcher import _classify_approval_response
+from ori.reasoning.approval_replies import classify_approval_response
 from ori.security.remote_commands.commands import (
     RemoteCommand,
     normalize_remote_command_sender,
@@ -308,7 +308,7 @@ async def test_the_signature_binds_the_timestamp_and_nonce_as_sent() -> None:
 )
 def test_an_approval_reply_folds_ascii_only(reply: str, kind: str) -> None:
     assert (
-        _classify_approval_response(reply, proposal_id="AB12", require_scoped=True)
+        classify_approval_response(reply, proposal_id="AB12", require_scoped=True)
         == kind
     )
 
@@ -494,7 +494,7 @@ async def test_the_signature_headers_are_bounded_in_length() -> None:
 )
 def test_text_after_an_ascii_reply_is_ignored(reply: str, kind: str) -> None:
     assert (
-        _classify_approval_response(reply, proposal_id="AB12", require_scoped=True)
+        classify_approval_response(reply, proposal_id="AB12", require_scoped=True)
         == kind
     )
 
@@ -502,11 +502,11 @@ def test_text_after_an_ascii_reply_is_ignored(reply: str, kind: str) -> None:
 def test_a_ligature_never_folds_into_the_proposal_id() -> None:
     # `ﬀ` upper-cases to FF, so folding before selecting would match FF12.
     assert (
-        _classify_approval_response("YES-ﬀ12", proposal_id="FF12", require_scoped=True)
+        classify_approval_response("YES-ﬀ12", proposal_id="FF12", require_scoped=True)
         == "invalid"
     )
     assert (
-        _classify_approval_response("YES-FF12", proposal_id="FF12", require_scoped=True)
+        classify_approval_response("YES-FF12", proposal_id="FF12", require_scoped=True)
         == "approve"
     )
 
@@ -555,8 +555,8 @@ def test_a_configured_gsm_recipient_reads_the_configured_rule(
 
 @pytest.mark.parametrize("reply", ["OK", "oK", "Yİ"])
 def test_an_unscoped_look_alike_reply_is_invalid(reply: str) -> None:
-    assert _classify_approval_response(reply) == "invalid"
-    assert _classify_approval_response("ok") == "approve"
+    assert classify_approval_response(reply) == "invalid"
+    assert classify_approval_response("ok") == "approve"
 
 
 async def test_a_reply_binds_a_configured_contact_written_with_spaces() -> None:
@@ -593,7 +593,7 @@ def test_every_ascii_space_main_trimmed_is_still_trimmed(
     reply: str, scoped: bool, kind: str
 ) -> None:
     assert (
-        _classify_approval_response(reply, proposal_id="AB12", require_scoped=scoped)
+        classify_approval_response(reply, proposal_id="AB12", require_scoped=scoped)
         == kind
     )
 
@@ -628,7 +628,7 @@ async def test_an_sms_reply_reaches_the_decision_as_it_was_received(
     )
     assert reply is not None
     assert (
-        _classify_approval_response(reply, proposal_id="AB12", require_scoped=True)
+        classify_approval_response(reply, proposal_id="AB12", require_scoped=True)
         == kind
     )
 

@@ -29,7 +29,7 @@ LIMIT = (
 
 OVERSIZE_CEILINGS: dict[str, int] = {
     "ori/reasoning/action_dispatcher.py::ActionDispatcher._run_approval_workflow": 519,
-    "ori/reasoning/action_dispatcher.py::ActionDispatcher._run_governed_workflow": 465,
+    "ori/reasoning/action_dispatcher.py::ActionDispatcher._run_governed_workflow": 457,
     "ori/config/_config.py::Config._interpret": 366,
     "ori/config/_gateway.py::parse_gateway": 323,
     "ori/reasoning/elevator.py::IntelligenceElevator.reason_and_dispatch": 336,
