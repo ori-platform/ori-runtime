@@ -744,7 +744,7 @@ class TestTierCDecisionLog:
         assert [row["created_at"] for row in rows] == [7000, 5000]
         assert {row["device_id"] for row in rows} == {"dev-01"}
         assert rows[0]["history_window"] == [{"timestamp": 902, "value": 12.0}]
-        assert rows[0]["final_action_result"] == {"approved": False, "idx": 2}
+        assert rows[0]["final_action_result"] == {"approved": False}
 
 
 # ─── alert_outbox ─────────────────────────────────────────────────────────────
