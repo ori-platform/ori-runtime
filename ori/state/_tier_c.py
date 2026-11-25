@@ -9,6 +9,7 @@ import sqlite3
 from typing import Any
 
 from ori.state._core import (
+    EXPORT_FETCH_MAX,
     StoreCore,
     _audit_bindable,
 )
@@ -836,14 +837,23 @@ class TierCStore(StoreCore):
         since_ms: int | None = None,
         until_ms: int | None = None,
         limit: int = 100,
+        after: tuple[int, int] | None = None,
+        positioned: bool = False,
     ) -> list[dict]:
-        """Return a bounded Tier C decision-log export for cloud sync."""
+        """Return a bounded Tier C decision-log export for cloud sync.
+
+        Rows are in gateway-api/v2 Page Order, `(created_at, id)` descending,
+        and start after *after* when given. *positioned* adds each row's
+        position under `_position`.
+        """
         return await self._run_read(
             self._export_tier_c_decision_log_sync,
             device_id,
             since_ms,
             until_ms,
             limit,
+            after,
+            positioned,
         )
 
     def _export_tier_c_decision_log_sync(
@@ -853,6 +863,8 @@ class TierCStore(StoreCore):
         since_ms: int | None,
         until_ms: int | None,
         limit: int,
+        after: tuple[int, int] | None = None,
+        positioned: bool = False,
     ) -> list[dict]:
         where = []
         params: list[Any] = []
@@ -865,8 +877,11 @@ class TierCStore(StoreCore):
         if until_ms is not None:
             where.append("created_at <= ?")
             params.append(int(until_ms))
+        if after is not None:
+            where.append("(created_at, id) < (?, ?)")
+            params.extend((int(after[0]), int(after[1])))
         where_sql = f"WHERE {' AND '.join(where)}" if where else ""
-        params.append(max(1, min(int(limit), 1000)))
+        params.append(max(1, min(int(limit), EXPORT_FETCH_MAX if positioned else 1000)))
         query = (
             """
             SELECT *
@@ -874,12 +889,18 @@ class TierCStore(StoreCore):
             """
             + where_sql
             + """
-            ORDER BY created_at DESC
+            ORDER BY created_at DESC, id DESC
             LIMIT ?
             """
         )
         rows = conn.execute(query, tuple(params)).fetchall()
-        return [self._decode_tier_c_decision_row(row) for row in rows]
+        result = []
+        for row in rows:
+            item = self._decode_tier_c_decision_row(row)
+            if positioned:
+                item["_position"] = (int(row["created_at"]), int(row["id"]))
+            result.append(item)
+        return result
 
     @staticmethod
     def _decode_tier_c_decision_row(row: sqlite3.Row) -> dict:

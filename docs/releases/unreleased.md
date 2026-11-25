@@ -5,6 +5,17 @@ release is cut.
 
 ## Upgrade notes
 
+- Every paged gateway export (`action_log`, `reasoning_log`,
+  `tier_c_decision_log`, `sensor_history`) now pages by position under
+  gateway-api/v2 *Page Order*. `next_page_token` is an opaque token bound to
+  the device, export type, window and `params`, and verifies only under a
+  key the runtime draws at start. A token the runtime did not issue that way,
+  including an integer offset from an earlier release and a token issued
+  before a restart, is answered with the error `page_token_invalid`. A gateway that implements
+  Page Order restarts that traversal once with an empty token; an older one
+  fails the export it was running when the runtime upgraded, and the next
+  export succeeds.
+
 - `gateway.node_heartbeat.interval_seconds` must now be between 1 and 30,
   as runtime-config/v2 requires, so a gateway's fixed 90-second Site Health
   TTL always spans at least three heartbeats. A value above 30, a
@@ -468,6 +479,16 @@ release is cut.
   old one fresh. Limit: the monotonic clock stops while the host is suspended,
   so after a resume a gateway that went silent during the suspend reads
   reachable for up to one TTL of awake time.
+
+- A paged gateway export past its source cap no longer returns empty pages
+  without end. Each export read at most 1,000 rows (10,000 for
+  `sensor_history`) and paged by count inside them, so rows older than the cap
+  were unreachable, a bucketed `sensor_history` bucket could be cut short at
+  the cap, and rows with equal timestamps could move between pages as rows
+  were stored. Each export now pages by position in its gateway-api/v2 order,
+  returns every row stored throughout a traversal exactly once, and reports
+  `complete` exactly when no row remains; bucketed `sensor_history` aggregates
+  every row of a bucket in the query.
 
 - A sensor that connected and has delivered no reading is now told apart
   from one that reported and went quiet. Its health entry keeps

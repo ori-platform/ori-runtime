@@ -12,6 +12,7 @@ from ori.network.events import (
     ReasoningResult,
 )
 from ori.state._core import (
+    EXPORT_FETCH_MAX,
     StoreCore,
     _audit_bindable,
 )
@@ -77,8 +78,15 @@ class ReasoningStore(StoreCore):
         reasoning_status: str | None = None,
         correlation_id: str | None = None,
         limit: int = 100,
+        after: tuple[int, int] | None = None,
+        positioned: bool = False,
     ) -> list[dict]:
-        """Return a bounded reasoning-log export for gateway/cloud sync."""
+        """Return a bounded reasoning-log export for gateway/cloud sync.
+
+        Rows are in gateway-api/v2 Page Order, `(timestamp, id)` descending,
+        and start after *after* when given. *positioned* adds each row's
+        position under `_position`.
+        """
         return await self._run_read(
             self._export_reasoning_log_sync,
             device_id,
@@ -89,6 +97,8 @@ class ReasoningStore(StoreCore):
             reasoning_status,
             correlation_id,
             limit,
+            after,
+            positioned,
         )
 
     def _export_reasoning_log_sync(
@@ -102,6 +112,8 @@ class ReasoningStore(StoreCore):
         reasoning_status: str | None,
         correlation_id: str | None,
         limit: int,
+        after: tuple[int, int] | None = None,
+        positioned: bool = False,
     ) -> list[dict]:
         where = []
         params: list[Any] = []
@@ -126,23 +138,33 @@ class ReasoningStore(StoreCore):
         if correlation_id:
             where.append("correlation_id = ?")
             params.append(str(correlation_id))
+        if after is not None:
+            where.append("(timestamp, id) < (?, ?)")
+            params.extend((int(after[0]), int(after[1])))
         where_sql = f"WHERE {' AND '.join(where)}" if where else ""
-        params.append(max(1, min(int(limit), 1000)))
+        params.append(max(1, min(int(limit), EXPORT_FETCH_MAX if positioned else 1000)))
         query = (
             """
-            SELECT trigger_name, tier_used, prompt, response, confidence,
+            SELECT id, trigger_name, tier_used, prompt, response, confidence,
                    action_tier, device_id, model, tokens_used, latency_ms,
                    proposed_action, reasoning_status, correlation_id, timestamp
             FROM reasoning_log
             """
             + where_sql
             + """
-            ORDER BY timestamp DESC
+            ORDER BY timestamp DESC, id DESC
             LIMIT ?
             """
         )
         rows = conn.execute(query, tuple(params)).fetchall()
-        return [dict(row) for row in rows]
+        result = []
+        for row in rows:
+            item = dict(row)
+            row_id = item.pop("id")
+            if positioned:
+                item["_position"] = (int(item["timestamp"]), int(row_id))
+            result.append(item)
+        return result
 
     # ─── override_log ─────────────────────────────────────────────────────────
 

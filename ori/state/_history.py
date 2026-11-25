@@ -15,8 +15,8 @@ from ori.network.events import (
     SensorReading,
     StoredReading,
 )
-from ori.network.producer_time import read_producer_time
-from ori.state._core import StoreCore
+from ori.network.producer_time import PRODUCER_TIMES, read_producer_time
+from ori.state._core import EXPORT_FETCH_MAX, StoreCore
 from ori.state._migrations import _HISTORY_RECEIPT_COLUMNS
 from ori.state.deferred_writer import DeferredWriter
 from ori.utils.time_utils import now_ms
@@ -64,6 +64,71 @@ def _stored_reading(row: sqlite3.Row) -> StoredReading:
 
 # The greatest receipt gateway-api/v2 admits: an integer a JSON double holds exactly.
 _MAX_EXPORTED_RECEIPT = 2**53 - 1
+_COMPACTION_RANK = {"raw": 0, "5min": 1, "hourly": 2, "daily": 3}
+#: The exported basis's place in Page Order, as _exported_producer_time reads it.
+_EXPORTED_BASIS_RANK_SQL = f"""CASE
+    WHEN typeof(producer_time) = 'text' AND producer_time = 'reported' THEN 0
+    WHEN typeof(producer_time) = 'text' AND producer_time = 'not_reported'
+        AND (tier <> 'raw' OR (typeof(received_at_ms) = 'integer'
+            AND received_at_ms BETWEEN 1 AND {_MAX_EXPORTED_RECEIPT})) THEN 1
+    ELSE 2
+END"""
+
+
+def _ranked_history_sql(
+    sensor_id: str, start_ms: int, end_ms: int
+) -> tuple[str, tuple[Any, ...]]:
+    """Raw and compacted history rows in a window, each with its Page Order ranks.
+
+    The tier and table ranks are the runtime's own fixed order: a legacy
+    table's row before a basis table's row of the same tier and basis.
+    """
+    compacted = "".join(
+        f"""
+            UNION ALL
+            SELECT
+                sensor_id,
+                sensor_type,
+                bucket_ms AS timestamp,
+                avg_value AS value,
+                unit,
+                NULL AS quality,
+                sample_count,
+                '{tier}' AS tier,
+                max_received_at_ms AS received_at_ms,
+                {basis} AS producer_time,
+                {_COMPACTION_RANK[tier]} AS tier_rank,
+                {0 if basis == "'unknown'" else 1} AS table_rank,
+                id AS row_id
+            FROM {table}
+            WHERE sensor_id = ? AND bucket_ms BETWEEN ? AND ?
+        """
+        for tier, table, basis in _COMPACTED_TIERS
+    )
+    sql = f"""
+        SELECT *, {_EXPORTED_BASIS_RANK_SQL} AS basis_rank
+        FROM (
+            SELECT
+                sensor_id,
+                sensor_type,
+                timestamp AS timestamp,
+                value AS value,
+                unit,
+                quality,
+                1 AS sample_count,
+                'raw' AS tier,
+                received_at_ms,
+                producer_time,
+                0 AS tier_rank,
+                0 AS table_rank,
+                id AS row_id
+            FROM sensor_history
+            WHERE sensor_id = ? AND timestamp BETWEEN ? AND ?
+            {compacted}
+        )
+    """
+    window = (str(sensor_id), int(start_ms), int(end_ms))
+    return sql, window * (1 + len(_COMPACTED_TIERS))
 
 
 def _exported_producer_time(row: sqlite3.Row) -> str:
@@ -759,12 +824,17 @@ class HistoryStore(StoreCore):
         start_ms: int,
         end_ms: int,
         limit: int = 10_000,
+        after: tuple[int, int, int, int, int] | None = None,
+        positioned: bool = False,
     ) -> list[dict]:
         """Return bounded sensor history across raw and compacted tiers.
 
         The gateway/reporting layer should use this method instead of reaching
-        into SQLite table names. Rows are ordered oldest-first and include the
-        compaction tier so report generators can decide how to aggregate.
+        into SQLite table names. Rows are in gateway-api/v2 Page Order for
+        unbucketed history: `timestamp`, then compaction tier, then exported
+        basis, then the runtime's own fixed order (table, then id), all
+        ascending; they start after *after* when given, and *positioned* adds
+        each row's position under `_position`.
         """
         return await self._run_read(
             self._export_sensor_history_sync,
@@ -772,7 +842,103 @@ class HistoryStore(StoreCore):
             start_ms,
             end_ms,
             limit,
+            after,
+            positioned,
         )
+
+    async def export_sensor_buckets(
+        self,
+        *,
+        sensor_id: str,
+        start_ms: int,
+        end_ms: int,
+        bucket_ms: int,
+        limit: int,
+        after: tuple[int, int] | None = None,
+    ) -> list[dict]:
+        """Bucketed sensor history in gateway-api/v2 Page Order.
+
+        One row per bucket and exported basis, `(start_ms, basis)` ascending,
+        starting after *after* when given; each carries `_position`. A bucket
+        aggregates every row stored in it when the page is built, so no source
+        cap truncates it.
+        """
+        return await self._run_read(
+            self._export_sensor_buckets_sync,
+            sensor_id,
+            start_ms,
+            end_ms,
+            bucket_ms,
+            limit,
+            after,
+        )
+
+    def _export_sensor_buckets_sync(
+        self,
+        conn: sqlite3.Connection,
+        sensor_id: str,
+        start_ms: int,
+        end_ms: int,
+        bucket_ms: int,
+        limit: int,
+        after: tuple[int, int] | None,
+    ) -> list[dict]:
+        if int(end_ms) < int(start_ms) or int(bucket_ms) <= 0:
+            return []
+        rows_sql, params = _ranked_history_sql(sensor_id, start_ms, end_ms)
+        width = int(bucket_ms)
+        having_sql = ""
+        tail: tuple[Any, ...] = ()
+        if after is not None:
+            having_sql = "HAVING (start_ms, basis_rank) > (?, ?)"
+            tail = (int(after[0]), int(after[1]))
+        rows = conn.execute(
+            f"""
+            SELECT start_ms, basis_rank,
+                   MAX(sensor_type) AS sensor_type, MAX(unit) AS unit,
+                   SUM(v * n) AS weighted, SUM(n) AS samples,
+                   MIN(v) AS min_value, MAX(v) AS max_value,
+                   MAX(received_at_ms) AS received_at_ms
+            FROM (
+                SELECT (timestamp / {width}) * {width} AS start_ms, basis_rank,
+                       sensor_type, unit, COALESCE(value, 0.0) AS v,
+                       MAX(1, COALESCE(sample_count, 1)) AS n, received_at_ms
+                FROM ({rows_sql})
+            )
+            GROUP BY start_ms, basis_rank
+            {having_sql}
+            ORDER BY start_ms, basis_rank
+            LIMIT ?
+            """,
+            params + tail + (max(1, min(int(limit), EXPORT_FETCH_MAX)),),
+        ).fetchall()
+        out = []
+        for row in rows:
+            samples = max(1, int(row["samples"]))
+            mean = float(row["weighted"]) / samples
+            start = int(row["start_ms"])
+            out.append(
+                {
+                    "sensor_id": str(sensor_id),
+                    "sensor_type": row["sensor_type"] or "",
+                    "timestamp": start,
+                    "start_ms": start,
+                    "end_ms": start + width,
+                    "value": mean,
+                    "avg_value": mean,
+                    "min_value": float(row["min_value"]),
+                    "max_value": float(row["max_value"]),
+                    "unit": row["unit"] or "",
+                    "quality": None,
+                    "sample_count": samples,
+                    "bucket_ms": width,
+                    "tier": "bucketed",
+                    "received_at_ms": row["received_at_ms"],
+                    "producer_time": PRODUCER_TIMES[int(row["basis_rank"])],
+                    "_position": (start, int(row["basis_rank"])),
+                }
+            )
+        return out
 
     def _export_sensor_history_sync(
         self,
@@ -781,55 +947,29 @@ class HistoryStore(StoreCore):
         start_ms: int,
         end_ms: int,
         limit: int,
+        after: tuple[int, int, int, int, int] | None = None,
+        positioned: bool = False,
     ) -> list[dict]:
         if int(end_ms) < int(start_ms):
             return []
 
         capped_limit = max(1, min(int(limit), 10_000))
-        window = (str(sensor_id), int(start_ms), int(end_ms))
-        params: tuple[Any, ...] = window * (1 + len(_COMPACTED_TIERS)) + (capped_limit,)
-        compacted = "".join(
-            f"""
-                UNION ALL
-                SELECT
-                    sensor_id,
-                    sensor_type,
-                    bucket_ms AS timestamp,
-                    avg_value AS value,
-                    unit,
-                    NULL AS quality,
-                    sample_count,
-                    '{tier}' AS tier,
-                    max_received_at_ms AS received_at_ms,
-                    {basis} AS producer_time
-                FROM {table}
-                WHERE sensor_id = ? AND bucket_ms BETWEEN ? AND ?
-            """
-            for tier, table, basis in _COMPACTED_TIERS
-        )
+        rows_sql, params = _ranked_history_sql(sensor_id, start_ms, end_ms)
+        after_sql = ""
+        if after is not None:
+            after_sql = (
+                "WHERE (timestamp, tier_rank, basis_rank, table_rank, row_id) "
+                "> (?, ?, ?, ?, ?)"
+            )
+            params += tuple(int(part) for part in after)
         rows = conn.execute(
             f"""
-            SELECT *
-            FROM (
-                SELECT
-                    sensor_id,
-                    sensor_type,
-                    timestamp AS timestamp,
-                    value AS value,
-                    unit,
-                    quality,
-                    1 AS sample_count,
-                    'raw' AS tier,
-                    received_at_ms,
-                    producer_time
-                FROM sensor_history
-                WHERE sensor_id = ? AND timestamp BETWEEN ? AND ?
-                {compacted}
-            )
-            ORDER BY timestamp ASC
+            SELECT * FROM ({rows_sql})
+            {after_sql}
+            ORDER BY timestamp, tier_rank, basis_rank, table_rank, row_id
             LIMIT ?
             """,
-            params,
+            params + (capped_limit,),
         ).fetchall()
         return [
             {
@@ -843,6 +983,19 @@ class HistoryStore(StoreCore):
                 "tier": row["tier"],
                 "received_at_ms": row["received_at_ms"],
                 "producer_time": _exported_producer_time(row),
+                **(
+                    {
+                        "_position": (
+                            int(row["timestamp"]),
+                            int(row["tier_rank"]),
+                            int(row["basis_rank"]),
+                            int(row["table_rank"]),
+                            int(row["row_id"]),
+                        )
+                    }
+                    if positioned
+                    else {}
+                ),
             }
             for row in rows
         ]

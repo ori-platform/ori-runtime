@@ -100,8 +100,10 @@ async def test_sensor_history_export_buckets_rows_and_paginates(store):
         await store.append_history(
             OriEvent.from_reading(_reading(value=value, timestamp=ts), "dev-01")
         )
+    # One responder, as the runtime keeps one: its tokens verify only under it.
+    responder = _responder(store)
 
-    response = await _responder(store).handle_request(
+    response = await responder.handle_request(
         _request(
             "sensor_history",
             since_ms=0,
@@ -114,13 +116,13 @@ async def test_sensor_history_export_buckets_rows_and_paginates(store):
 
     assert response.error is None
     assert response.complete is False
-    assert response.next_page_token == "1"
+    assert response.next_page_token, "a page with a row after it names its position"
     assert len(response.items) == 1
     assert response.items[0]["sensor_id"] == "main-current"
     assert response.items[0]["sample_count"] == 2
     assert response.items[0]["avg_value"] == pytest.approx(3.0)
 
-    next_response = await _responder(store).handle_request(
+    next_response = await responder.handle_request(
         _request(
             "sensor_history",
             since_ms=0,
@@ -388,23 +390,6 @@ async def test_a_replayed_export_request_is_not_answered(store):
     first = await responder.handle_payload(signed)
     assert first is not None and first.error is None
     assert await responder.handle_payload(signed) is None
-
-
-async def test_pagination_keeps_next_token_at_source_limit_boundary(store):
-    responder = _responder(store)
-    rows = [{"idx": idx} for idx in range(1000)]
-
-    response = responder._paged_response(
-        "req-001",
-        "action_log",
-        rows,
-        limit=100,
-        offset=900,
-    )
-
-    assert len(response.items) == 100
-    assert response.complete is False
-    assert response.next_page_token == "1000"
 
 
 def test_mqtt_server_fails_lazily_when_paho_missing(store, monkeypatch):
