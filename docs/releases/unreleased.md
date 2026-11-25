@@ -330,6 +330,11 @@ release is cut.
 
 ## Changed
 
+- The gateway export topics' defined members include gateway-api/v2's
+  export item member tables (`action_log`, `reasoning_log`,
+  `tier_c_decision_log`), so the Payload Member Rule refuses an export
+  request or response that carries a case variant of one of those names.
+
 - The gateway `health` export no longer carries device identifiers from
   `firmware_liveness`: `expiring_device_ids` is exported as
   `expiring_device_count`, and `undeclared_device_ids` as
