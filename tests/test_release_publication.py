@@ -851,7 +851,6 @@ def test_pull_requests_build_payloads_with_the_release_steps_and_pins(
         "scripts/check_workflows.py",
         "scripts/check_rust_supply_chain.sh",
         "scripts/smoke-release-wheel.sh",
-        "pip_audit",
         "TestCapabilityTierGuard",
         "test_missing_defaults_mapping_for_trigger_raises",
     ],
@@ -916,10 +915,25 @@ def test_a_release_is_only_public_after_its_full_asset_set_lands(
 
 def test_release_protections_gate_every_later_stage(workflow: dict[str, Any]) -> None:
     # `environment:` alone gates nothing: GitHub creates a missing environment
-    # unprotected on first use, so preflight must precede all other work.
+    # unprotected on first use, so preflight must precede all other work. Only
+    # the lock audit runs before it, and it holds no credential or asset.
     assert workflow["jobs"]["test"]["needs"] == "preflight"
-    assert workflow["jobs"]["preflight"].get("needs") is None
+    assert workflow["jobs"]["preflight"]["needs"] == "audit"
     assert "environment" not in workflow["jobs"]["preflight"]
+    audit = workflow["jobs"]["audit"]
+    assert audit.get("needs") is None
+    assert "environment" not in audit
+    assert audit["permissions"] == {"contents": "read", "id-token": "none"}
+    assert [step.get("run") for step in audit["steps"] if "run" in step] == [
+        "python3 scripts/audit_locks.py"
+    ]
+    assert all(
+        str(step["uses"]).startswith(
+            ("step-security/harden-runner@", "actions/checkout@")
+        )
+        for step in audit["steps"]
+        if "uses" in step
+    )
 
 
 def test_bundle_checksums_are_carried_through_every_stage(
@@ -1605,7 +1619,8 @@ def test_incident_covers_a_mutable_release_as_well_as_reverification(
     condition = " ".join(str(incident["if"]).split())
     body = str(_incident_step(workflow)["run"])
 
-    assert incident["needs"] == ["publish", "reverify"]
+    assert incident["needs"] == ["audit", "publish", "reverify"]
+    assert "needs.audit.result == 'success'" in condition
     assert "needs.publish.outputs.immutability_outcome == 'failure'" in condition
     assert "needs.reverify.outputs.verification_outcome == 'failure'" in condition
     # A failed cleanup means a mutable release may still be public, so it must

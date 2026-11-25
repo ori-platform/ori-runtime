@@ -34,11 +34,36 @@ env:
   ORI_ANDROID_API_LEVEL: "21"
 
 jobs:
+  audit:
+    # Every shipped lock passes OSV before any job here installs or builds a
+    # dependency: an install or a build script runs a package's code.
+    name: Audit lock files
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: none
+
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Audit every shipped lock against OSV
+        run: python3 scripts/audit_locks.py
+
   # GitHub silently creates a referenced environment without protection rules
   # on first use, so `environment:` alone gates nothing. These preconditions
   # must be verified before any credential is issued or asset produced.
   preflight:
     name: Verify release protections
+    needs: audit
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -174,11 +199,6 @@ jobs:
           sudo -H env ORI_REQUIRE_ROOT_TESTS=1 \
             "$(which python)" -m pytest \
             tests/test_installer_system_scope.py -q
-
-      - name: Audit pinned Python dependencies
-        run: |
-          python -m pip_audit -r requirements/runtime.txt
-          python -m pip_audit -r requirements/dev.txt
 
       - name: Smoke-test the release wheel
         if: matrix.python-version == '3.12'
@@ -968,13 +988,16 @@ jobs:
   # failed, so the release is never promoted, and an incident blocks use.
   incident:
     name: Raise release incident
-    needs: [publish, reverify]
+    needs: [audit, publish, reverify]
     # Covers both ways a published release can be unsafe: it was not immutable,
     # or it failed public reverification. Each arm requires the specific step
     # outcome, because a job result alone is also set by a checkout, setup, or
     # dependency failure that must never be reported as a bad release.
+    # always() lets it run after a failed job; the audit's own success is
+    # still required, so it never runs where the locks were not audited.
     if: >-
       always()
+      && needs.audit.result == 'success'
       && (
         needs.publish.outputs.immutability_outcome == 'failure'
         || (

@@ -1,4 +1,8 @@
 version: 2
+# Every ecosystem waits 3 days after a release before proposing it: most
+# poisoned releases of 2026 were pulled within hours. Security updates are not
+# delayed. A version younger than that which must land for an urgent fix is
+# bumped by hand, by name, with the reason in its pull request.
 updates:
   - package-ecosystem: pip
     directory: "/requirements"
@@ -7,6 +11,8 @@ updates:
       day: monday
       time: "06:00"
       timezone: Africa/Lagos
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 5
     # One pull request per week for the routine bumps rather than one per
     # package: every dependency change runs the whole matrix, because a
@@ -37,6 +43,8 @@ updates:
       day: monday
       time: "06:00"
       timezone: Africa/Lagos
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 5
     groups:
       # These share the digest and signature trait crates, so a major bump of
@@ -59,6 +67,8 @@ updates:
       day: monday
       time: "06:00"
       timezone: Africa/Lagos
+    cooldown:
+      default-days: 3
     groups:
       github-actions:
         patterns: ["*"]

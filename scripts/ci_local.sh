@@ -216,6 +216,8 @@ print(next(s["with"]["pattern"] for s in steps if s.get("id") == sys.argv[1]))
 PY
 }
 
+# The locks pass OSV before anything is installed: an install runs package code.
+python3 scripts/audit_locks.py || { echo "the lock audit failed; nothing was installed" >&2; exit 1; }
 python -m pip --version
 # The install is not a step: nothing below is meaningful without it.
 python -m pip install --require-hashes -r requirements/dev.txt -q || { echo "installing requirements/dev.txt failed" >&2; exit 1; }
@@ -282,7 +284,6 @@ step "Run the latency budgets alone" "$SCOPE" -- pytest -q -p no:xdist -m "not h
 step "Run the tests that read documents" "$DOCS_ONLY" -- pytest -q -m "not hardware" tests/evidence/test_disclosure.py tests/evidence/test_harness.py tests/test_ci_scopes.py tests/test_linux_bootstrap.py tests/test_release_publication.py
 step "Installer checks under private-group umask" "$SCOPE" -- bash -c "umask 0002 && pytest -q tests/test_linux_installer.py tests/test_installer_activation.py"
 step "System-scope installer checks (root, real venv)" "$SCOPE" -- sudo -H env ORI_REQUIRE_ROOT_TESTS=1 "$(which python)" -m pytest tests/test_installer_system_scope.py -q
-step "Audit pinned Python dependencies" "$SCOPE" -- bash -c "python -m pip_audit -r requirements/runtime.txt && python -m pip_audit -r requirements/dev.txt"
 step "Generate runtime SBOM" "$SCOPE" -- python -m cyclonedx_py requirements requirements/runtime.txt --pyproject pyproject.toml --output-reproducible --of JSON -o sbom-runtime.json
 step "Validate bundled skills load cleanly" "$SCOPE" -- python -c "
 import pathlib, sys
