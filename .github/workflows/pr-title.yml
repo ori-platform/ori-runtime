@@ -21,8 +21,33 @@ permissions:
   pull-requests: read
 
 jobs:
+  audit:
+    # Every shipped lock passes OSV before any job here installs or builds a
+    # dependency: an install or a build script runs a package's code.
+    name: Audit lock files
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: none
+
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Audit every shipped lock against OSV
+        run: python3 scripts/audit_locks.py
+
   conventional:
     name: Conventional commit format
+    needs: audit
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
