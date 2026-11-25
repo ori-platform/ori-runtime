@@ -109,6 +109,7 @@ class RuntimeCore:
         self._secondary_contact: str = ""
         self._sensor_poll_interval_ms: dict[str, int] = {}
         self._sensor_last_seen_ms: dict[str, int] = {}
+        self._sensor_connected_at_ms: dict[str, int] = {}
         self._stale_sensor_active: set[str] = set()
         self._read_failure_logged_at: dict[str, float] = {}
         # A refused measurement window is not a failed read. The sensor is

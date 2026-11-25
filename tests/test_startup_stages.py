@@ -159,6 +159,7 @@ SURFACE: dict[str, tuple[set[str], set[str], set[str]]] = {
             "_measurement_valid_streak",
             "_read_failure_logged_at",
             "_retrying_sensors_announced",
+            "_sensor_connected_at_ms",
             "_sensor_last_seen_ms",
             "_sensor_poll_interval_ms",
             "_stale_sensor_active",
@@ -180,7 +181,7 @@ SURFACE: dict[str, tuple[set[str], set[str], set[str]]] = {
             "_safety_registry",
             "_unconnected_sensors",
         },
-        {"_sensor_last_seen_ms", "_sensor_poll_interval_ms"},
+        {"_sensor_connected_at_ms", "_sensor_poll_interval_ms"},
         {"_connect_when_available", "_safety_notice_sender", "_start_polling"},
     ),
     "loops": (

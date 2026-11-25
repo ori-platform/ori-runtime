@@ -458,6 +458,15 @@ release is cut.
 
 ## Fixed
 
+- A sensor that connected and has delivered no reading is now told apart
+  from one that reported and went quiet. Its health entry keeps
+  `last_seen_ms` null until a reading is accepted, as runtime-health/v4
+  requires, where before it showed the connection time; `stale` still runs
+  from the connection, and the stale-sensor alert says the sensor "has had
+  no reading accepted since it connected". An MQTT sensor whose topic a
+  mosquitto `acl_file` denies shows this way: the broker grants the
+  subscription and withholds every message.
+
 - A Tier D trigger's `cooldown_seconds` no longer delays its next Tier D
   attempt. After an attempt that ran or failed, the rule engine reported no
   match for the length of the cooldown, however often the condition held. A
