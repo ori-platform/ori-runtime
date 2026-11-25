@@ -1622,20 +1622,45 @@ def _withhold_hardware(monkeypatch: pytest.MonkeyPatch) -> None:
     assert not coap_backend_available(), "the CoAP backend is still available"
 
 
+def _live_relays() -> list[RelayAction]:
+    """Every relay alive in the process, once unreachable objects are collected.
+
+    Without the collection, a relay another test in this worker left in a
+    reference cycle is counted until the collector next runs."""
+    gc.collect()
+    return [value for value in gc.get_objects() if isinstance(value, RelayAction)]
+
+
 def _assert_simulated_relays(runtime: OriRuntime) -> None:
     """Before any action path runs: every relay in the process is simulated."""
     actuator = runtime._commissioned_actuator
-    relays = [value for value in gc.get_objects() if isinstance(value, RelayAction)]
+    relays = _live_relays()
     real = [
         relay for relay in relays if not relay.is_simulated or relay._device is not None
     ]
     assert actuator is not None and relays and not real, (
-        f"a relay holds a hardware device ({len(real)} of {len(relays)}), or the "
-        "commissioned relay was not built; no action path may run"
+        f"a relay holds a hardware device or is not simulated ({len(real)} of "
+        f"{len(relays)}: {real!r}), or the commissioned relay was not built; no action "
+        "path may run. A relay that is not this probe's was left alive by an earlier "
+        "test in this worker, which is that test's leak."
     )
     assert any(actuator._driver is relay for relay in relays), (
         "the commissioned actuator does not drive a relay this probe verified"
     )
+
+
+def test_a_relay_only_a_garbage_cycle_holds_is_not_counted() -> None:
+    relay = RelayAction()
+    cycle: list[object] = [relay]
+    cycle.append(cycle)
+    held = id(relay)
+    del relay, cycle
+    assert all(id(r) != held for r in _live_relays())
+
+
+def test_a_relay_still_referenced_is_counted() -> None:
+    relay = RelayAction()
+    assert any(r is relay for r in _live_relays())
 
 
 class _EnvWitness(dict):  # type: ignore[type-arg]
