@@ -238,6 +238,65 @@ async def test_a_full_last_page_is_complete(store: StateStore) -> None:
     assert last.complete is True and last.next_page_token == ""
 
 
+# --- the action_log page index --------------------------------------------------
+
+_PAGE_QUERY = (
+    "EXPLAIN QUERY PLAN SELECT id FROM action_log WHERE device_id = ? "
+    "AND (timestamp, id) < (?, ?) ORDER BY timestamp DESC, id DESC LIMIT 401"
+)
+
+
+def _plan(store: StateStore) -> str:
+    return " ".join(
+        str(row[3]) for row in _conn(store).execute(_PAGE_QUERY, (DEVICE, 5, 5))
+    )
+
+
+async def test_a_page_query_uses_the_action_log_page_index(store: StateStore) -> None:
+    plan = _plan(store)
+    assert "idx_action_log_device_timestamp" in plan, plan
+    assert "TEMP B-TREE" not in plan, plan
+
+
+async def test_a_store_from_before_device_id_gains_the_page_index(
+    tmp_path: Path,
+) -> None:
+    """The index needs device_id, which an older store gains by migration."""
+    import sqlite3
+
+    db = tmp_path / "old.db"
+    conn = sqlite3.connect(str(db))
+    conn.executescript(
+        """
+        CREATE TABLE action_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            action_name TEXT NOT NULL, tier TEXT NOT NULL, executed INTEGER NOT NULL,
+            approved INTEGER, action_taken TEXT NOT NULL, operator_response TEXT,
+            trigger_name TEXT NOT NULL, timestamp INTEGER NOT NULL
+        );
+        INSERT INTO action_log (action_name, tier, executed, action_taken,
+                                trigger_name, timestamp)
+        VALUES ('alert_sms', 'A', 1, 'alert_sms', 't', 1);
+        """
+    )
+    conn.commit()
+    conn.close()
+    upgraded = StateStore(str(db))
+    await upgraded.open()
+    try:
+        names = {
+            row[0]
+            for row in _conn(upgraded).execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index' "
+                "AND tbl_name = 'action_log'"
+            )
+        }
+        assert "idx_action_log_device_timestamp" in names
+        assert "idx_action_log_device_timestamp" in _plan(upgraded)
+    finally:
+        await upgraded.close()
+
+
 # --- position, not count -------------------------------------------------------
 
 
