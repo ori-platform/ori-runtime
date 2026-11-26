@@ -97,6 +97,9 @@ SETS=(
   # tier-c-approvers/v1: the registry's state model, driven through the real
   # store and operations.
   "tier-c-approvers/vectors:tests/vectors/tier_c_approvers:v1"
+  # runtime-posture/v1: the runtime authors and signs the record, so the
+  # producer cases hold its bytes to the corpus.
+  "runtime-posture/vectors:tests/vectors/runtime_posture:v1"
 )
 
 if [ -n "${ORI_SPECS_DIR:-}" ]; then

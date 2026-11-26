@@ -231,7 +231,10 @@ STARTUP_STAGES: tuple[Stage, ...] = (
             "gateway_envelope_state",
         ),
     ),
-    Stage("operator_services", reads=_fields("config", "gateway_envelope_state")),
+    Stage(
+        "operator_services",
+        reads=_fields("config", "evidence_attestor", "gateway_envelope_state"),
+    ),
     Stage("health_and_reconciliation", reads=_fields("config", "status_indicator")),
     Stage("announce", reads=_fields("config", "alert_sender")),
 )

@@ -13,6 +13,7 @@ whose members are closed; the answer is the runtime's.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import errno
 import json
@@ -50,6 +51,7 @@ from ori.security.approvers.requests import (
 )
 from ori.security.approvers.service import REGISTRY_ERRORS, RegistryService
 from ori.security.evidence.registration import RegistrationStatus, is_digest
+from ori.security.posture import key_identity
 from ori.utils.path_utils import shown
 from ori.utils.platform import os_name, runtime_platform
 from ori.utils.strict_json import unique_members
@@ -61,6 +63,8 @@ SYSTEM_RUNTIME_DIRECTORY: Final = Path("/run/ori")
 OPERATOR_UID_FILE: Final = "operator-uid"
 RECONCILE_OPERATION: Final = "reconcile_tier_c"
 COMMISSION_OPERATION: Final = "evidence_commission"
+#: runtime-posture/v1: the posture key's readback, so an installer can pin it.
+DEVICE_KEY_OPERATION: Final = "runtime_device_key"
 RECONCILE_MEMBERS: Final = frozenset(
     {"operation", "proposal_id", "device_id", "zone_id", "outcome", "reason", "note"}
 )
@@ -106,6 +110,10 @@ COMMISSION_ERRORS: Final = frozenset(
         "state_store_locked",
         "cancelled",
     }
+)
+#: The same, for `runtime_device_key`.
+DEVICE_KEY_ERRORS: Final = frozenset(
+    {"payload_too_large", "invalid_arguments", "unauthenticated", "key_unavailable"}
 )
 #: The members of an `evidence_commission` success result; the list is closed.
 COMMISSION_RESULT_FIELDS = frozenset(
@@ -815,8 +823,10 @@ class OperatorSocketServer:
         grant: Callable[[Path, Path, int | None], None] = grant_access,
         account: Callable[[int], str | None] = account_name,
         registry: RegistryService | None = None,
+        device_key: Callable[[], tuple[str, bytes] | None] = lambda: None,
     ) -> None:
         self._directory = directory
+        self._device_key = device_key
         self._registry = registry
         self._path = directory / SOCKET_NAME
         self._reconcile = reconcile
@@ -962,6 +972,9 @@ class OperatorSocketServer:
             parsed = parse(frame(received))
             if parsed["operation"] in REGISTRY_OPERATIONS:
                 request: Any = validate_registry_request(parsed)
+            elif parsed["operation"] == DEVICE_KEY_OPERATION:
+                _require_members(parsed, frozenset({"operation"}))
+                request = DEVICE_KEY_OPERATION
             else:
                 request = validate_request(parsed)
         except (SocketRequestError, OperatorRequestError) as exc:
@@ -978,6 +991,8 @@ class OperatorSocketServer:
 
         if isinstance(request, dict):
             return await self._registry_answer(request, peer, answered)
+        if request == DEVICE_KEY_OPERATION:
+            return self._device_key_answer()
 
         account = await asyncio.to_thread(self._account, peer.uid)
         # Nothing awaits between this check and the append beginning, so an
@@ -1005,6 +1020,22 @@ class OperatorSocketServer:
         if isinstance(request, CommissionRequest):
             return self._commissioned(request, peer, answer)
         return self._reconciled(request, peer, answer)
+
+    def _device_key_answer(self) -> dict[str, Any]:
+        """The posture key, as runtime-posture/v1's readback answers it."""
+        held = self._device_key()
+        if held is None:
+            return _error("key_unavailable", "the posture key is not loaded")
+        device_id, public_key = held
+        return {
+            "schema_version": 1,
+            "ok": True,
+            "result": {
+                "device_id": device_id,
+                "public_key": "ed25519:" + base64.b64encode(public_key).decode("ascii"),
+                "key_identity": key_identity(public_key),
+            },
+        }
 
     async def _registry_answer(
         self,

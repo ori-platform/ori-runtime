@@ -37,6 +37,7 @@ REGISTRY_OPERATIONS: Final = frozenset(
 SOCKET_OPERATIONS: Final = REGISTRY_OPERATIONS | {
     "reconcile_tier_c",
     "evidence_commission",
+    "runtime_device_key",
 }
 
 
@@ -145,7 +146,7 @@ def _require_utf8(text: str) -> None:
 
 
 def parse(head: bytes) -> dict[str, Any]:
-    """One JSON object whose `operation` is one of the socket's eight.
+    """One JSON object whose `operation` is one of the socket's nine.
 
     The parse rules of Approver Registry Operations apply to the registry
     operations; `reconcile_tier_c` and `evidence_commission` keep v2's, under

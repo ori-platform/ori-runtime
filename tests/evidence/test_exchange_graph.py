@@ -533,6 +533,13 @@ VECTOR_CONSUMERS = {
     ("tier_c_approvers", "transitions"): (
         "test_approver_registry_transitions.py::test_every_scenario",
     ),
+    # The runtime authors the record and serves the readback; the record,
+    # sequence and config cases are the gateway's receiving side.
+    ("runtime_posture", "posture-v1"): (
+        "test_posture_record.py"
+        "::test_the_runtime_reproduces_every_accepted_record_byte_for_byte",
+        "test_posture_record.py::test_the_readback_answers_every_corpus_case",
+    ),
     ("operator_socket", "tier-c-reconcile-v2"): (
         "test_operator_socket_reconcile_vectors.py::test_operator_socket_sequence",
         "test_operator_socket_reconcile_vectors.py::test_operator_uid_cases",

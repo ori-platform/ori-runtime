@@ -25,6 +25,8 @@ from ori.utils.strict_json import unique_members
 
 SIGNATURE_SCHEMA = "ori.runtime_release_bundle_signature.v1"
 MANIFEST_SCHEMA = "ori.runtime_release_bundle_manifest.v1"
+#: The verified bundle manifest, at a bundle's root and an installed release's.
+RELEASE_MANIFEST = "BUNDLE-MANIFEST.json"
 SIGNATURE_DOMAIN = b"ori.runtime_release_bundle_signature.v1\0"
 RELEASE_KEY_PURPOSE = "runtime_release_bundle"
 KEY_REGISTRY_SCHEMA = "ori.runtime_release_keys.v1"
@@ -96,6 +98,36 @@ class ExtractedReleaseBundle:
     target: str
     python: str
     file_count: int
+
+    def leave_manifest(self, release: Path) -> None:
+        """Copy the verified manifest into the release this bundle installs.
+
+        runtime-posture/v1 reads `release` from the verified bundle an
+        installation came from, never from the running code's own report.
+        """
+        shutil.copyfile(self.root / RELEASE_MANIFEST, release / RELEASE_MANIFEST)
+
+
+def installed_release_version(release: Path) -> str | None:
+    """The `runtime_version` of the verified manifest the installer left in
+    *release*, or None when there is none or it does not name *release*.
+
+    Never the running code's own report: a dev, editable or pip install has no
+    such manifest and has no version here.
+    """
+    try:
+        manifest = json.loads(
+            (release / RELEASE_MANIFEST).read_bytes(),
+            object_pairs_hook=unique_members(),
+        )
+    except (OSError, ValueError):
+        return None
+    if not isinstance(manifest, dict) or manifest.get("schema") != MANIFEST_SCHEMA:
+        return None
+    version = manifest.get("runtime_version")
+    if not isinstance(version, str) or not _VERSION_RE.fullmatch(version):
+        return None
+    return version if release.name == version else None
 
 
 def distribution_version(runtime_version: str) -> str:
@@ -612,7 +644,7 @@ def _verify_extracted_manifest(
     root: Path,
     verified: VerifiedReleaseBundle,
 ) -> ExtractedReleaseBundle:
-    manifest_path = root / "BUNDLE-MANIFEST.json"
+    manifest_path = root / RELEASE_MANIFEST
     manifest = _load_strict_json(
         manifest_path,
         label="bundle manifest",

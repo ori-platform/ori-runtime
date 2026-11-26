@@ -37,6 +37,7 @@ from ori.runtime._gateway_wiring import (
     read_public_pem_file,
 )
 from ori.runtime._health import HealthSnapshot
+from ori.runtime._posture import posture_key_readback
 from ori.runtime_health_socket import RuntimeHealthSocketServer
 from ori.security.approvers.wiring import prepare_registry_service
 from ori.security.evidence.first_party import RegistrationUnreadableError
@@ -172,6 +173,7 @@ class OperatorServices(HealthSnapshot):
             commission=self._commission_from_operator,
             operator_uid=installed_operator_uid(sys.prefix),
             registry=await prepare_registry_service(self._state_store, self._config),
+            device_key=lambda: posture_key_readback(self),
         )
         try:
             bound = await server.start()

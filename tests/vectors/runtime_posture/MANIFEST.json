@@ -1,0 +1,10 @@
+{
+  "source_repository": "ori-platform/ori-specs",
+  "source_path": "runtime-posture/vectors",
+  "source_commit": "d46e280278f4401fc4ebf6a57bb98da91791d6fb",
+  "contract_version": "v1",
+  "note": "Vendored copies of the normative vectors. The runtime must produce and accept the bytes they describe, so they are its conformance fixtures. Digests detect a local edit; the source commit is the provenance trail.",
+  "files": {
+    "posture-v1.json": "792c437ba6f5ec8ba372234224fa24841ec955c21208275dab7d62f98fba1042"
+  }
+}
