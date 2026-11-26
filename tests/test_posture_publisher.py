@@ -461,10 +461,10 @@ async def _poll(
     from ori.gateway.posture_publisher import POLL_S
 
     while clock[0] < until:
-        try:
+        # As the publisher's own loop does: a refused publish is logged there
+        # and the next poll goes on.
+        with contextlib.suppress(RuntimeError):
             await publisher.publish_if_due(client)
-        except RuntimeError:
-            pass
         clock[0] += POLL_S
 
 
