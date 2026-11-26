@@ -19,7 +19,11 @@ from typing import Any
 
 import pytest
 
-from tests.test_health_status_fold import CONDITIONS, _runtime
+from tests.test_health_status_fold import (  # noqa: F401 (the fixture builds the gateway config)
+    CONDITIONS,
+    _gateway_config,
+    _runtime,
+)
 
 BASELINES = json.loads(
     (
