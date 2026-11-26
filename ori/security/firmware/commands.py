@@ -14,7 +14,8 @@ contract is the exact byte sequence, not "equivalent JSON".
 Contract rules enforced here (fail closed, before signing):
 
 * ``action``, ``channel``, ``device_id`` are fleet identifiers
-  (``[A-Za-z0-9._-]``, non-empty, length-bounded);
+  (``[A-Za-z0-9._-]``, non-empty, length-bounded), and ``device_id`` is
+  neither ``.`` nor ``..`` (firmware-commands/v2);
 * ``capability_hash`` is ``sha256:`` + 64 lowercase hex — the manifest
   epoch the command is bound to (a command signed against a superseded
   manifest is dead by construction on the device);
@@ -46,6 +47,7 @@ from ori.security.firmware.signing_domains import (
     command_preimage,
     declares_signing_domains,
 )
+from ori.security.firmware.telemetry import is_firmware_device_id
 
 __all__ = [
     "FirmwareCommandSigner",
@@ -76,6 +78,12 @@ def _require_fleet_id(value: str, field: str, max_len: int = 48) -> str:
     return value
 
 
+def _require_device_id(value: str) -> str:
+    if not is_firmware_device_id(value):
+        raise FirmwareCommandError(f"device_id is not a firmware device id: {value!r}")
+    return value
+
+
 def _validate_command_fields(action: str, channel: str, device_id: str) -> None:
     """The request's own v1 vocabulary and fleet shape — checked before
     anything else, so a locally refusable request never touches the
@@ -84,7 +92,7 @@ def _validate_command_fields(action: str, channel: str, device_id: str) -> None:
     if action not in _ACTIONS:
         raise FirmwareCommandError(f"action outside the v1 vocabulary: {action!r}")
     _require_fleet_id(channel, "channel", _CHANNEL_MAX)
-    _require_fleet_id(device_id, "device_id")
+    _require_device_id(device_id)
 
 
 def build_command_bytes(
@@ -140,7 +148,7 @@ def _build_approval_object_bytes(
     public_key_b64: str,
     runtime_public_key_b64: str,
 ) -> bytes:
-    _require_fleet_id(device_id, "device_id")
+    _require_device_id(device_id)
     if not isinstance(capability_hash, str) or not _CAPABILITY_HASH.match(
         capability_hash
     ):

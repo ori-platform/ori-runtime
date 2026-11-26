@@ -484,6 +484,16 @@ release is cut.
 
 ## Fixed
 
+- A firmware `device_id` of exactly `.` or `..` is refused, as
+  firmware-telemetry/v2 and firmware-commands/v2 now require. Both are URL
+  dot-segments. One rule in `ori/security/firmware/telemetry.py` applies
+  wherever the runtime admits, verifies, signs for or publishes to a firmware
+  device: manifest, envelope and fault intake (refused as an unknown device),
+  the MQTT certificate identity, transport-identity provisioning requests and
+  the device's signed responses, liveness
+  and command signing, and the command topic. Every other fleet identifier is
+  unchanged. No sealed device uses either id.
+
 - A Tier C approval reply decides only with the words the runtime asks for.
   `YES-<proposal_id>` approves and `NO-<proposal_id>` rejects, and with
   scoped replies turned off a bare `YES` or `NO` also decides. Synonyms such

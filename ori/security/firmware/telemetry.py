@@ -386,6 +386,23 @@ def is_fleet_identifier(value: Any) -> bool:
     )
 
 
+def is_firmware_device_id(value: Any) -> bool:
+    """firmware-telemetry/v2's `device_id`: a fleet identifier other than exactly
+    `.` and `..`, which are URL dot-segments."""
+    return is_fleet_identifier(value) and value not in (".", "..")
+
+
+def _require_anchor_device(
+    obj: dict[str, Any], anchor_device_id: str, kind: str
+) -> None:
+    """Refuse *obj* unless its `device_id` is the anchor's and a firmware device id."""
+    device_id = _require_str(obj, "device_id", ERR_INVALID_ENVELOPE)
+    if device_id != anchor_device_id or not is_firmware_device_id(device_id):
+        raise FirmwareVerificationError(
+            ERR_UNKNOWN_DEVICE, f"{kind} device_id mismatch"
+        )
+
+
 def is_profile_digest(value: Any) -> bool:
     """``sha256:`` and 64 lowercase hex."""
     return (
@@ -925,10 +942,7 @@ def verify_manifest_message(
         )
     if manifest.get("alg") != SUPPORTED_ALG:
         raise FirmwareVerificationError(ERR_UNSUPPORTED_ALG, str(manifest.get("alg")))
-    if _require_str(manifest, "device_id", ERR_INVALID_ENVELOPE) != anchor_device_id:
-        raise FirmwareVerificationError(
-            ERR_UNKNOWN_DEVICE, "manifest device_id mismatch"
-        )
+    _require_anchor_device(manifest, anchor_device_id, "manifest")
     if (
         _require_str(manifest, "public_key_b64", ERR_PUBLIC_KEY_MISMATCH)
         != anchor_public_key_b64
@@ -1128,13 +1142,7 @@ def verify_telemetry_message(
             raise FirmwareVerificationError(
                 ERR_UNSUPPORTED_ALG, str(envelope.get("alg"))
             )
-        if (
-            _require_str(envelope, "device_id", ERR_INVALID_ENVELOPE)
-            != anchor_device_id
-        ):
-            raise FirmwareVerificationError(
-                ERR_UNKNOWN_DEVICE, "envelope device_id mismatch"
-            )
+        _require_anchor_device(envelope, anchor_device_id, "envelope")
 
         capability_hash = _require_str(
             envelope, "capability_hash", ERR_CAPABILITY_HASH_MISMATCH
@@ -1296,10 +1304,7 @@ def verify_fault_message(
             )
         if fault.get("alg") != SUPPORTED_ALG:
             raise FirmwareVerificationError(ERR_UNSUPPORTED_ALG, str(fault.get("alg")))
-        if _require_str(fault, "device_id", ERR_INVALID_ENVELOPE) != anchor_device_id:
-            raise FirmwareVerificationError(
-                ERR_UNKNOWN_DEVICE, "fault device_id mismatch"
-            )
+        _require_anchor_device(fault, anchor_device_id, "fault")
 
         capability_hash = _require_str(
             fault, "capability_hash", ERR_CAPABILITY_HASH_MISMATCH

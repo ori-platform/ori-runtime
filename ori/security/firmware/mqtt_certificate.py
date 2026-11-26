@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import hashlib
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -16,6 +15,8 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed448, ed25519, rsa
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+
+from ori.security.firmware.telemetry import is_firmware_device_id
 
 __all__ = [
     "FirmwareMqttCertificateAuthority",
@@ -35,7 +36,6 @@ _CaPublicKey = (
     | ed25519.Ed25519PublicKey
     | ed448.Ed448PublicKey
 )
-_DEVICE_ID = re.compile(r"^[A-Za-z0-9._-]{1,48}\Z")
 
 
 class FirmwareMqttCertificateError(ValueError):
@@ -67,7 +67,7 @@ def _certificate_bounds(certificate: x509.Certificate) -> tuple[datetime, dateti
 
 
 def _device_id(value: str) -> str:
-    if not isinstance(value, str) or _DEVICE_ID.fullmatch(value) is None:
+    if not is_firmware_device_id(value):
         raise FirmwareMqttCertificateError(
             "device_id is not a valid firmware fleet identifier"
         )
