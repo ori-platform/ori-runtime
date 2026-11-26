@@ -74,6 +74,7 @@ async def runtime(store: StateStore) -> AsyncIterator[OriRuntime]:
     rt = OriRuntime(config_path="ori.yaml")
     rt._device_id = "dev-01"
     rt._firmware_liveness_scheduler = scheduler
+    rt._state_store = store
     try:
         yield rt
     finally:
