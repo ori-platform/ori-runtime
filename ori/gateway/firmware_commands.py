@@ -24,7 +24,6 @@ import json
 import logging
 import math
 import os
-import re
 import socket
 import time
 from typing import Any, Callable, cast
@@ -42,6 +41,7 @@ from ori.security.firmware.liveness import (
 )
 from ori.security.firmware.reading_age import LivenessTable
 from ori.security.firmware.signing_domains import declares_signing_domains
+from ori.security.firmware.telemetry import is_firmware_device_id
 from ori.security.published_test_keys import is_published_seed
 
 logger = logging.getLogger(__name__)
@@ -54,8 +54,6 @@ try:
 except ImportError:  # pragma: no cover - paho is installed in production images
     mqtt = None
     _PAHO_AVAILABLE = False
-
-_FLEET_ID = re.compile(r"^[A-Za-z0-9._-]{1,48}\Z")
 
 
 class FirmwareCommandPublishError(RuntimeError):
@@ -477,7 +475,7 @@ def load_raw_ed25519_seed_from_env(env_name: str, *, label: str) -> bytes:
 
 
 def _topic(device_id: str, leaf: str) -> str:
-    if not isinstance(device_id, str) or not _FLEET_ID.match(device_id):
+    if not is_firmware_device_id(device_id):
         raise FirmwareCommandPublishError(
             f"device_id is not a valid MQTT fleet identifier: {device_id!r}"
         )

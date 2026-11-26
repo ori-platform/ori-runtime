@@ -440,6 +440,9 @@ EGRESS_CALLEES = frozenset(
         "_require_approved_device",
         "_require_canonical_b64_32",
         "_require_fleet_id",
+        # The firmware device-id rule: predicates over a string, publishing nothing.
+        "_require_device_id",
+        "is_firmware_device_id",
         "_retire",
         "_shut_socket",
         "_stop_client",

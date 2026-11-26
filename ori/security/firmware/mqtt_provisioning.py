@@ -25,6 +25,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 
 from ori.security.ed25519_keys import admit_public_key
+from ori.security.firmware.telemetry import is_firmware_device_id
 from ori.utils.strict_json import unique_members
 from ori.utils.time_utils import now_ms
 
@@ -126,6 +127,12 @@ def _fleet_id(value: str, field: str, *, maximum: int) -> str:
     return value
 
 
+def _device_id(value: str) -> str:
+    if not is_firmware_device_id(value):
+        raise FirmwareMqttProvisioningError("device_id is not a firmware device id")
+    return value
+
+
 def _epoch(value: str, field: str = "anchor_epoch_id") -> str:
     if not isinstance(value, str) or _ANCHOR_EPOCH.fullmatch(value) is None:
         raise FirmwareMqttProvisioningError(
@@ -220,7 +227,7 @@ def build_create_csr_request(
         % (
             _fleet_id(actor, "actor", maximum=64),
             _epoch(anchor_epoch_id),
-            _fleet_id(device_id, "device_id", maximum=48),
+            _device_id(device_id),
             _sequence(provision_seq),
             _reason(reason),
         )
@@ -252,7 +259,7 @@ def build_install_request(
             _canonical_pem_b64(broker_ca_pem_b64, "broker_ca_pem_b64"),
             broker_uri,
             _canonical_pem_b64(client_cert_pem_b64, "client_cert_pem_b64"),
-            _fleet_id(device_id, "device_id", maximum=48),
+            _device_id(device_id),
             _sequence(provision_seq),
             _reason(reason),
             time_server,
@@ -274,7 +281,7 @@ def build_revoke_request(
         % (
             _fleet_id(actor, "actor", maximum=64),
             _epoch(anchor_epoch_id),
-            _fleet_id(device_id, "device_id", maximum=48),
+            _device_id(device_id),
             _sequence(provision_seq),
             _reason(reason),
         )
@@ -294,7 +301,7 @@ def build_status_request(
         % (
             _fleet_id(actor, "actor", maximum=64),
             _epoch(anchor_epoch_id),
-            _fleet_id(device_id, "device_id", maximum=48),
+            _device_id(device_id),
             _fleet_id(request_id, "request_id", maximum=64),
         )
     ).encode()
@@ -338,7 +345,7 @@ class FirmwareMqttProvisioningService:
     async def create_csr(
         self, *, device_id: str, actor: str, reason: str
     ) -> SignedProvisioningRequest:
-        _fleet_id(device_id, "device_id", maximum=48)
+        _device_id(device_id)
         _fleet_id(actor, "actor", maximum=64)
         _reason(reason)
         row = await self._eligible_anchor(device_id, allow_revoked=False)
@@ -370,7 +377,7 @@ class FirmwareMqttProvisioningService:
         client_cert_pem_b64: str,
         time_server: str,
     ) -> SignedProvisioningRequest:
-        _fleet_id(device_id, "device_id", maximum=48)
+        _device_id(device_id)
         _fleet_id(actor, "actor", maximum=64)
         _reason(reason)
         _canonical_pem_b64(broker_ca_pem_b64, "broker_ca_pem_b64")
@@ -407,7 +414,7 @@ class FirmwareMqttProvisioningService:
     async def revoke(
         self, *, device_id: str, actor: str, reason: str
     ) -> SignedProvisioningRequest:
-        _fleet_id(device_id, "device_id", maximum=48)
+        _device_id(device_id)
         _fleet_id(actor, "actor", maximum=64)
         _reason(reason)
         row = await self._eligible_anchor(device_id, allow_revoked=True)
@@ -431,7 +438,7 @@ class FirmwareMqttProvisioningService:
     async def status(
         self, *, device_id: str, actor: str, request_id: str
     ) -> SignedProvisioningRequest:
-        _fleet_id(device_id, "device_id", maximum=48)
+        _device_id(device_id)
         _fleet_id(actor, "actor", maximum=64)
         _fleet_id(request_id, "request_id", maximum=64)
         row = await self._eligible_anchor(device_id, allow_revoked=True)
@@ -795,7 +802,7 @@ def _canonical_response_object(outer_field: str, value: dict[str, Any]) -> bytes
             % (
                 _epoch(value["anchor_epoch_id"]),
                 _canonical_pem_b64(value["csr_pem_b64"], "csr_pem_b64"),
-                _fleet_id(value["device_id"], "device_id", maximum=48),
+                _device_id(value["device_id"]),
                 _sequence(value["provision_seq"]),
             )
         ).encode()
@@ -848,7 +855,7 @@ def _canonical_response_object(outer_field: str, value: dict[str, Any]) -> bytes
             '"provision_seq":%d,"v":1,"verdict":"%s"}'
             % (
                 _epoch(value["anchor_epoch_id"]),
-                _fleet_id(value["device_id"], "device_id", maximum=48),
+                _device_id(value["device_id"]),
                 kind,
                 _sequence(value["provision_seq"]),
                 value["verdict"],

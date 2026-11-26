@@ -47,6 +47,7 @@ from ori.security.firmware.signing_domains import (
     declares_signing_domains,
     liveness_preimage,
 )
+from ori.security.firmware.telemetry import is_firmware_device_id
 
 __all__ = [
     "FirmwareLivenessError",
@@ -63,7 +64,6 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-_FLEET_ID = re.compile(r"^[A-Za-z0-9._-]{1,48}\Z")
 _CAPABILITY_HASH = re.compile(r"^sha256:[0-9a-f]{64}\Z")
 _RUNTIME_SEQ_MAX = 2**53 - 1
 _BOOT_ID_MAX = 2**32 - 1
@@ -156,7 +156,7 @@ def build_liveness_bytes(
     :class:`FirmwareLivenessError` on any field the device verifier would
     refuse — never sign what cannot be accepted.
     """
-    if not isinstance(device_id, str) or not _FLEET_ID.match(device_id):
+    if not is_firmware_device_id(device_id):
         raise FirmwareLivenessError(
             f"device_id is not a fleet identifier: {device_id!r}"
         )
