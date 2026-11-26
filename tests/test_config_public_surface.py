@@ -21,6 +21,7 @@ import ori.config
 INTERFACE: frozenset[str] = frozenset(
     {
         "ActionChannelConfig",
+        "DEVICE_ID_RE",
         "CompactionConfig",
         "Config",
         "ConfigValidationError",

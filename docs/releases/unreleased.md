@@ -849,6 +849,14 @@ release is cut.
   the count since, and health reports `degraded` until a tick's clock is
   back in range (#922).
 
+- The Linux installer accepts every device id runtime-config/v2 allows:
+  1 to 128 letters, digits, dots, dashes or underscores, uppercase included
+  and in any position. It refused ids the runtime itself loads, such as
+  `Edge-Host-01` or one over 64 characters. Both of its checks, on the id
+  given and on the post-install health check, now use the config loader's
+  own pattern, and the prompt's hint and the install guide state the same
+  rule. A refused id is still never echoed back.
+
 ## Security
 
 - The gateway `tier_c_decision_log` export carries only the members
