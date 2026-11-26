@@ -456,7 +456,7 @@ class FirstPartyEvidenceAttestor:
         if self._ledger is None:
             return None
         try:
-            return int(await self._executor.run_async(lambda: self._ledger_boot_id()))
+            return int(await self._executor.run_async(self._ledger_boot_id))
         except Exception as exc:
             logger.warning(
                 "[evidence] boot generation unavailable (%s); no posture record "

@@ -57,11 +57,14 @@ class PostureContent:
 
 
 class PostureSigner(Protocol):
-    def posture_public_key(self) -> bytes | None: ...
+    def posture_public_key(self) -> bytes | None:
+        """The posture key's raw 32 bytes, or None while it is not loaded."""
 
-    async def posture_boot_generation(self) -> int | None: ...
+    async def posture_boot_generation(self) -> int | None:
+        """The boot generation, claimed durably; None while unavailable."""
 
-    def sign_posture_record(self, members: PostureMembers) -> bytes | None: ...
+    def sign_posture_record(self, members: PostureMembers) -> bytes | None:
+        """The signed record, or None while the key is not loaded."""
 
 
 class PostureSchedule:
