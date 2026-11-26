@@ -404,6 +404,7 @@ jobs:
           pytest -q -m "not hardware" \
             tests/evidence/test_disclosure.py \
             tests/evidence/test_harness.py \
+            tests/test_audit_releases.py \
             tests/test_ci_scopes.py \
             tests/test_docs_registration_status.py \
             tests/test_guard_capability_matrix.py \

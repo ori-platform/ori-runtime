@@ -26,6 +26,12 @@ the fixed release, where the runtime will refuse to start instead.
 Where a defect can only be repaired by code — rather than by a configuration an
 operator controls — it is backported to the supported stable line.
 
+Each supported line in the table above is audited daily at its newest final
+tag (`.github/workflows/release-audit.yml`): what the release puts on devices
+(its Python locks other than the development and build locks, and the Android
+payload's `Cargo.lock`) is checked against OSV, and a finding names the
+release. A finding there is what a backport answers.
+
 Production support is expressed as tested platform tuples, not as one global
 interpreter version. A primary Raspberry Pi target cannot honestly require a
 non-stock interpreter while claiming a straightforward authenticated bootstrap,
