@@ -352,6 +352,28 @@ class TestTierD:
         assert result.executed is True
         mock_exec.assert_awaited_once()
 
+    async def test_a_failing_clock_never_keeps_the_act_from_running(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from ori.reasoning import action_dispatcher as module
+
+        def now_ms() -> int:
+            raise RuntimeError("the clock failed")
+
+        mock_exec = AsyncMock(return_value=True)
+        d = ActionDispatcher()
+        d.register_executor("trip_relay", mock_exec)
+        context = _context()
+        monkeypatch.setattr(module, "now_ms", now_ms)
+        result = await d.dispatch(
+            "trip_relay", ActionTier.SAFETY_CRITICAL, context, _result()
+        )
+        monkeypatch.undo()
+
+        mock_exec.assert_awaited_once()
+        assert result.executed is True
+        assert result.timestamp == context.event.timestamp
+
     async def test_approved_is_none(self):
         mock_exec = AsyncMock(return_value=True)
         d = ActionDispatcher()

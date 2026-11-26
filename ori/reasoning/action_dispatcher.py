@@ -82,12 +82,10 @@ from ori.reasoning.elevator import SkillContext
 from ori.reasoning.resource_gate import Admission, Contributor
 from ori.reasoning.tier_c_admission import (
     APPROVAL_BINDING_CHANGED,
-    APPROVAL_EXPIRED_UNDISPATCHED,
     APPROVED_PENDING_DISPATCH,
     DISPATCH_FAILED,
     DISPATCH_NOT_PROVEN,
     DISPATCH_OUTCOME_UNKNOWN,
-    DISPATCH_REFUSED_CONTENTION,
     DISPATCH_STARTED,
     EXECUTED,
     FEEDBACK_ENTRY_POINT,
@@ -104,6 +102,12 @@ from ori.reasoning.tier_c_admission import (
     governed_outcome,
     safe_default_admitted,
     snapshot_bytes,
+)
+from ori.reasoning.tier_c_settlement import (
+    kept_after,
+    refuse_before_act,
+    schedule_dispatch_marker,
+    settle_undispatched,
 )
 from ori.security.evidence.first_party import (
     AUTHORITY_UNAVAILABLE_REASON,
@@ -312,6 +316,18 @@ def _stamp_correlation_id(action_result: ActionResult, context: Any) -> None:
 
 def _safe_int_or_none(value: Any) -> int | None:
     return value if type(value) is int and -(2**63) <= value < 2**63 else None
+
+
+def _completed_at(context: Any) -> int:
+    """Now, or the triggering event's time when the clock fails.
+
+    Read only after the act, so no clock failure can keep an executor from running.
+    """
+    try:
+        return now_ms()
+    except Exception:
+        at = getattr(getattr(context, "event", None), "timestamp", 0)
+        return at if isinstance(at, int) else 0
 
 
 def _cancelled_here(exc: BaseException) -> bool:
@@ -1653,11 +1669,9 @@ class ActionDispatcher:
             await self._log_action(refusal, context)
             return refusal
 
-        # False until an executor runs and reports success. Starting from True
-        # meant a missing executor reported the action as taken: below Tier D
-        # nothing corrected it, so an approved Tier C action with no executor
-        # sealed a signed attestation that a safety circuit had been opened
-        # while nothing was driven.
+        # False until an executor runs and reports success: a missing executor
+        # must never report the action taken, or an approved Tier C action with
+        # none seals an attestation that a circuit opened while nothing was driven.
         executed = False
         suppressed = False
         missing_executor = False
@@ -1743,7 +1757,7 @@ class ActionDispatcher:
                     missing_executor=missing_executor,
                 )
             ),
-            timestamp=now_ms(),
+            timestamp=_completed_at(context),
         )
 
     async def _approval_workflow(
@@ -2526,6 +2540,7 @@ class ActionDispatcher:
                 safe_default_used=inner.executed if creation == "blocked" else False,
             )
 
+        acted: ActionResult | None = None
         try:
             # 2. Ask the operator.
             has_comms = self._tier_c_comms_available()
@@ -2548,7 +2563,6 @@ class ActionDispatcher:
             approval_end = ""
             decision_state = ""
             state_reason = ""
-            acted: ActionResult | None = None
             replies = 0
             while True:
                 remaining = deadline - self._clock()
@@ -2892,9 +2906,8 @@ class ActionDispatcher:
                 on_lost=self._note_decision_lost,
             )
             return action_result
-        except Exception:
-            await self._abort_open_proposal(store, row, reason="workflow_failed")
-            raise
+        except Exception as exc:
+            return await kept_after(self, store, row, exc, acted)
         finally:
             self._proposal_deadlines.pop(proposal_id, None)
 
@@ -3044,12 +3057,10 @@ class ActionDispatcher:
     ) -> ActionResult:
         """Dispatch a committed approval now, with nothing written ahead of it."""
         tier = ActionTier.HARD_PHYSICAL
-        loop = asyncio.get_running_loop()
         proposal_id = str(row["proposal_id"])
-        safe_default_action = str(row["safe_default_action"])
 
         def resolved(
-            executed: bool, taken: str, safe_default_used: bool
+            executed: bool, taken: str, safe_default_used: bool, at: int | None = None
         ) -> ActionResult:
             return ActionResult(
                 action_name=action,
@@ -3057,135 +3068,103 @@ class ActionDispatcher:
                 executed=executed,
                 approved=True,
                 action_taken=taken,
-                timestamp=now_ms(),
+                timestamp=now_ms() if at is None else at,
                 operator_response=operator_response,
                 proposal_id=proposal_id,
                 safe_default_used=safe_default_used,
             )
 
-        if self._clock() > deadline:
-            logger.critical(
-                "ActionDispatcher: approved proposal %s expired before dispatch; not "
-                "carried out, a fresh proposal is required",
-                proposal_id,
+        try:
+            refused = await refuse_before_act(
+                self, action, context, store, row, gate_token, deadline, resolved
             )
-            recorded = await self._close_now(
-                store,
-                proposal_id,
-                APPROVAL_EXPIRED_UNDISPATCHED,
-                from_states=(APPROVED_PENDING_DISPATCH,),
-                reason="expired",
-                safe_default_action=safe_default_action,
+            if refused is not None:
+                return refused
+            schedule_dispatch_marker(self, store, proposal_id)
+        except Exception:
+            # The executor was never invoked: the row is settled now, as a
+            # restart would settle it, and the operator told.
+            return await settle_undispatched(
+                self, action, context, store, row, resolved
             )
-            safe = await self._safe_default_intent(
-                store, proposal_id, safe_default_action, context, reason="expired"
-            )
-            self._governed_notify(
-                action, context, f"approval {proposal_id} not carried out: expired"
-            )
-            return resolved(
-                False,
-                APPROVAL_EXPIRED_UNDISPATCHED
-                if recorded
-                else f"{APPROVAL_EXPIRED_UNDISPATCHED}{UNRECORDED_SUFFIX}",
-                bool(safe is not None and safe.executed),
-            )
-        if (
-            gate_token is not None
-            and self._resource_gate is not None
-            and not await self._resource_gate.reply_admitted(gate_token)
-        ):
-            logger.critical(
-                "ActionDispatcher: approved proposal %s refused at dispatch — an "
-                "opposing act holds its resource; not carried out",
-                proposal_id,
-            )
-            recorded = await self._close_now(
-                store,
-                proposal_id,
-                DISPATCH_REFUSED_CONTENTION,
-                from_states=(APPROVED_PENDING_DISPATCH,),
-                reason="resource_held",
-                safe_default_action=safe_default_action,
-            )
-            safe = await self._safe_default_intent(
-                store, proposal_id, safe_default_action, context, reason="contention"
-            )
-            self._governed_notify(
-                action,
-                context,
-                f"approval {proposal_id} not carried out: the resource is held; "
-                "a fresh evaluation is required",
-            )
-            return resolved(
-                False,
-                DISPATCH_REFUSED_CONTENTION
-                if recorded
-                else f"{DISPATCH_REFUSED_CONTENTION}{UNRECORDED_SUFFIX}",
-                bool(safe is not None and safe.executed),
-            )
-
-        # The act. The marker lands beside it, never ahead of it.
-        self._pending_outcomes[proposal_id] = time.monotonic()
-        if store is not None and hasattr(store, "advance_tier_c_proposal"):
-
-            async def mark() -> None:
-                try:
-                    await store.advance_tier_c_proposal(
-                        proposal_id,
-                        DISPATCH_STARTED,
-                        from_states=(APPROVED_PENDING_DISPATCH,),
-                    )
-                except Exception:
-                    logger.exception(
-                        "ActionDispatcher: dispatch of proposal %s began and could not "
-                        "be marked; a restart before its outcome lands records it "
-                        "dispatch_not_proven rather than replaying it",
-                        proposal_id,
-                    )
-
-            self._track_tier_d_task(loop.create_task(mark(), name="dispatch-started"))
         try:
             inner = await self._execute_immediately(action, tier, context)
         except (Exception, asyncio.CancelledError) as exc:
             if _cancelled_here(exc):
                 # The executor may still be driving; the outcome is unknown.
-                self._record_outcome(
-                    store, row, DISPATCH_OUTCOME_UNKNOWN, {"interrupted": True}
-                )
+                try:
+                    self._record_outcome(
+                        store, row, DISPATCH_OUTCOME_UNKNOWN, {"interrupted": True}
+                    )
+                except Exception:
+                    logger.exception(
+                        "ActionDispatcher: the outcome of cancelled proposal %s "
+                        "could not be recorded",
+                        proposal_id,
+                    )
                 raise
             logger.exception(
                 "ActionDispatcher: executor raised for proposal %s", proposal_id
             )
-            self._record_outcome(
-                store,
-                row,
-                DISPATCH_OUTCOME_UNKNOWN,
-                {"raised": type(exc).__name__},
+            try:
+                self._record_outcome(
+                    store, row, DISPATCH_OUTCOME_UNKNOWN, {"raised": type(exc).__name__}
+                )
+            except Exception:
+                logger.exception(
+                    "ActionDispatcher: the outcome of proposal %s could not be "
+                    "recorded; the result is kept",
+                    proposal_id,
+                )
+            return resolved(
+                False, DISPATCH_OUTCOME_UNKNOWN, False, _completed_at(context)
             )
-            return resolved(False, DISPATCH_OUTCOME_UNKNOWN, False)
         if inner.executed:
             state = EXECUTED
         elif inner.action_taken == NOT_PERFORMED:
             state = DISPATCH_FAILED
         else:
             state = DISPATCH_OUTCOME_UNKNOWN
-        self._record_outcome(
-            store,
-            row,
-            state,
-            {"executed": inner.executed, "action_taken": inner.action_taken},
+        # Built from the executor's own result before anything else can fail, so
+        # no later failure turns an act that ran into a non-execution. An
+        # unknown outcome is named, never reported as a quiet non-execution.
+        kept = dataclasses.replace(
+            inner,
+            approved=True,
+            action_taken=DISPATCH_OUTCOME_UNKNOWN
+            if state == DISPATCH_OUTCOME_UNKNOWN
+            else inner.action_taken,
+            operator_response=operator_response,
+            proposal_id=proposal_id,
+            safe_default_used=False,
         )
-        if state != EXECUTED:
-            logger.critical(
-                "ActionDispatcher: approved proposal %s dispatched and its outcome is %s",
-                proposal_id,
+        try:
+            self._record_outcome(
+                store,
+                row,
                 state,
+                {"executed": inner.executed, "action_taken": inner.action_taken},
             )
-            self._governed_notify(
-                action, context, f"approval {proposal_id} dispatched: outcome {state}"
+            if state != EXECUTED:
+                logger.critical(
+                    "ActionDispatcher: approved proposal %s dispatched and its "
+                    "outcome is %s",
+                    proposal_id,
+                    state,
+                )
+                self._governed_notify(
+                    action,
+                    context,
+                    f"approval {proposal_id} dispatched: outcome {state}",
+                )
+        except Exception:
+            # The act ran; its result is reported whatever befell the record.
+            logger.exception(
+                "ActionDispatcher: approved proposal %s acted, and its outcome record "
+                "or notice failed; the act's result is kept",
+                proposal_id,
             )
-        return resolved(inner.executed, inner.action_taken, False)
+        return kept
 
     def _record_outcome(
         self,
@@ -3206,11 +3185,8 @@ class ActionDispatcher:
         """
         proposal_id = str(row["proposal_id"])
         commanded = (str(row.get("zone_id", "")), str(row.get("outcome", "")))
-        if (
-            len(self._pending_outcomes) > self._pending_ceiling
-            or store is None
-            or not hasattr(store, "advance_tier_c_proposal")
-        ):
+
+        def cannot_hold() -> None:
             self._pending_outcomes.pop(proposal_id, None)
             self._unknown_live[proposal_id] = commanded
             logger.critical(
@@ -3218,8 +3194,19 @@ class ActionDispatcher:
                 "it is unknown until reconciled and is not claimed durable",
                 proposal_id,
             )
+
+        if (
+            len(self._pending_outcomes) > self._pending_ceiling
+            or store is None
+            or not hasattr(store, "advance_tier_c_proposal")
+        ):
+            cannot_hold()
             return
-        outcome_json = json.dumps(outcome, sort_keys=True)
+        try:
+            outcome_json = json.dumps(outcome, sort_keys=True)
+        except (TypeError, ValueError):
+            cannot_hold()
+            return
 
         async def append() -> None:
             delay = 0.05
@@ -3248,15 +3235,23 @@ class ActionDispatcher:
                     continue
                 self._pending_outcomes.pop(proposal_id, None)
                 self._append_failed.pop(proposal_id, None)
+                self._unknown_live.pop(proposal_id, None)
                 if state in UNCERTAIN_STATES:
                     self._uncertain[proposal_id] = state
                 return
 
-        self._track_tier_d_task(
-            asyncio.get_running_loop().create_task(
-                append(), name=f"tier-c-outcome:{proposal_id}"
+        pending = append()
+        try:
+            task = asyncio.get_running_loop().create_task(
+                pending, name=f"tier-c-outcome:{proposal_id}"
             )
-        )
+        except Exception:
+            pending.close()
+            cannot_hold()
+            return
+        # Held in the drained set before anything else can fail: the append
+        # stays the row's only writer, and a stop waits for it.
+        self._track_tier_d_task(task)
 
     async def recover_tier_c_at_start(self, store: Any) -> dict[str, int]:
         """Settle proposals a previous process left; never replay an approval.
