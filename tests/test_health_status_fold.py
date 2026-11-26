@@ -27,6 +27,7 @@ from ori.config import Config
 from ori.runtime import OriRuntime
 from ori.runtime._health_status import firmware_liveness_severity
 from ori.runtime._health_status import fold_health_status as _fold_health_status
+from tests.empty_outbox import EmptyOutboxStore
 from tests.test_health_signing_domains_and_ingress import (
     _gateway_config as gateway_config,
 )
@@ -184,6 +185,7 @@ BRANCHES = len(CONDITIONS) - 5
 def _runtime(*names: str) -> OriRuntime:
     runtime = OriRuntime(config_path="ori.yaml")
     runtime._device_id = "dev-01"
+    runtime._state_store = EmptyOutboxStore()  # type: ignore[assignment]
     for name in names:
         CONDITIONS[name][1](runtime)
     return runtime

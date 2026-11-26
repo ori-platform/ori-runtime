@@ -816,6 +816,7 @@ def built_wheel(tmp_path_factory) -> pathlib.Path:
             "-m",
             "build",
             "--wheel",
+            "--no-isolation",
             "--outdir",
             str(out),
             str(source),

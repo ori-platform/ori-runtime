@@ -19,6 +19,7 @@ from ori.config._device import DeviceConfig
 from ori.config._document import config_env_placeholders, read_config_document
 from ori.config._evidence import EvidenceConfig
 from ori.config._fields import (
+    DEVICE_ID_RE,
     MAX_SKILL_NAME_LENGTH,
     SKILL_NAME_RE,
     ConfigValidationError,
@@ -34,6 +35,7 @@ from ori.config._state import CompactionConfig, StateConfig, StateEncryptionConf
 from ori.config._telemetry_export import TelemetryExportConfig
 
 __all__ = [
+    "DEVICE_ID_RE",
     "MAX_SKILL_NAME_LENGTH",
     "RESERVED_SENSOR_METADATA_KEYS",
     "SKILL_NAME_RE",

@@ -13,6 +13,7 @@ import pytest
 
 from ori.network.events import ActionResult, OriEvent, ReasoningResult, SensorReading
 from ori.state.store import StateStore
+from tests.empty_outbox import EmptyOutboxStore
 from tests.store_layout import freeze_store_clock, store_clock_at
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -849,11 +850,7 @@ class TestAlertOutbox:
 
     async def test_alert_outbox_summary_counts_retryable_oldest(self, store):
         empty = await store.get_alert_outbox_summary()
-        assert empty == {
-            "backlog_count": 0,
-            "oldest_queued_original_ts": None,
-            "oldest_queued_at_ms": None,
-        }
+        assert empty == await EmptyOutboxStore().get_alert_outbox_summary()
 
         await store.enqueue_alert(
             alert_id="newer",
@@ -899,6 +896,85 @@ class TestAlertOutbox:
         assert summary["oldest_queued_original_ts"] == 1000
         # The queue's own receipt is the store's clock, not the alert's time.
         assert summary["oldest_queued_at_ms"] > 1000
+
+    async def test_alert_outbox_summary_counts_each_mandatory_kind(self, store):
+        """By the notice kind fixed at enqueue, never by the dispatched tier."""
+        for alert_id, tier, kind in [
+            ("notify_only_tier_d", "A", "tier_d"),
+            ("trip_notice", "D", "tier_d"),
+            ("degraded", "A", "protection_degraded"),
+            ("optional", "D", "optional"),
+            ("resolved_tier_d", "A", "tier_d"),
+            ("requeued_tier_d", "D", "tier_d"),
+            ("requeued_optional", "A", "optional"),
+            ("unknown_kind", "A", "later_kind"),
+        ]:
+            await store.enqueue_alert(
+                alert_id=alert_id,
+                channel="sms",
+                recipient="+2340000000000",
+                message="msg",
+                action_tier=tier,
+                trigger_name="t",
+                original_ts=1000,
+                notice_kind=kind,
+            )
+        for _ in range(2):
+            await store.mark_alert_attempt_failed("trip_notice", 2000)
+        await store.mark_alert_attempt_failed("degraded", 2000)
+        await store.mark_alert_accepted(
+            "resolved_tier_d",
+            accepted_channel="sms",
+            provider_message_id="m",
+            provider_status="accepted",
+            accepted_at_ms=2000,
+        )
+        # Accepted, then refused by a receipt: the outbox retries it, but a
+        # provider accepted it, so runtime-health/v4 reads it resolved.
+        for n, requeued in enumerate(("requeued_tier_d", "requeued_optional")):
+            await store.mark_alert_accepted(
+                requeued,
+                accepted_channel="sms",
+                provider_message_id=f"m{n}",
+                provider_status="accepted",
+                accepted_at_ms=2000,
+            )
+            await store.record_alert_delivery_status(
+                requeued,
+                provider_status="undelivered",
+                observed_at_ms=3000,
+                delivered_at_ms=None,
+                terminal_failure=True,
+            )
+        conn = store._conn
+        for alert_id, queued_at in [
+            ("requeued_tier_d", 5),
+            ("requeued_optional", 3),
+            ("unknown_kind", 25),
+            ("notify_only_tier_d", 10),
+            ("trip_notice", 20),
+            ("degraded", 30),
+            ("optional", 40),
+            ("resolved_tier_d", 1),
+        ]:
+            conn.execute(
+                "UPDATE alert_outbox SET queued_at_ms = ? WHERE alert_id = ?",
+                (queued_at, alert_id),
+            )
+        conn.commit()
+
+        summary = await store.get_alert_outbox_summary()
+
+        assert summary["tier_d_unresolved_count"] == 2
+        assert summary["tier_d_max_attempts"] == 2
+        assert summary["tier_d_oldest_queued_at_ms"] == 10
+        assert summary["protection_degraded_unresolved_count"] == 1
+        assert summary["protection_degraded_max_attempts"] == 1
+        assert summary["protection_degraded_oldest_queued_at_ms"] == 30
+        # runtime-health/v4: every unresolved alert but a Tier D notification.
+        assert summary["oldest_non_tier_d_queued_at_ms"] == 25
+        # The retry queue still holds the requeued row.
+        assert summary["backlog_count"] == 7
 
     async def test_mark_abandoned_removes_from_retryable(self, store):
         await store.enqueue_alert(

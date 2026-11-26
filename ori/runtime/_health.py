@@ -10,6 +10,11 @@ from typing import Any
 from urllib.parse import urlparse
 
 from ori.hal.base import silence_bound_ms
+from ori.runtime._alert_outbox_health import (
+    ALERT_OUTBOX_CONDITIONS,
+    alert_outbox_block,
+    alert_outbox_conditions,
+)
 from ori.runtime._commissioning import Commissioning
 from ori.runtime._health_status import (
     degradation_reasons,
@@ -369,7 +374,10 @@ class HealthSnapshot(Commissioning):
         # Each condition contributes its severity and none assigns `status`, so
         # the order they are evaluated in never lets a degraded condition
         # overwrite a critical one.
-        severities: list[str] = []
+        severities: list[str] = [
+            ALERT_OUTBOX_CONDITIONS[held]
+            for held in alert_outbox_conditions(snapshot["alert_outbox"])
+        ]
         liveness = firmware_liveness_severity(snapshot["firmware_liveness"])
         if liveness is not None:
             severities.append(liveness)
@@ -812,38 +820,26 @@ class HealthSnapshot(Commissioning):
         }
 
     async def _build_alert_outbox_health(self, now: int) -> dict[str, Any]:
-        summary = {
-            "backlog_count": 0,
-            "oldest_queued_original_ts": None,
-            "oldest_queued_at_ms": None,
-            "oldest_queued_age_ms": None,
-        }
-        if self._state_store is not None:
-            try:
-                raw_summary = await self._state_store.get_alert_outbox_summary()
-                oldest_ts = raw_summary.get("oldest_queued_original_ts")
-                oldest_queued_at = raw_summary.get("oldest_queued_at_ms")
-                summary = {
-                    "backlog_count": int(raw_summary.get("backlog_count") or 0),
-                    "oldest_queued_original_ts": int(oldest_ts)
-                    if oldest_ts is not None
-                    else None,
-                    "oldest_queued_at_ms": int(oldest_queued_at)
-                    if oldest_queued_at is not None
-                    else None,
-                    # Queue latency is the store's own interval; the event's
-                    # producer time is reported beside it and never ages it.
-                    "oldest_queued_age_ms": max(0, now - int(oldest_queued_at))
-                    if oldest_queued_at is not None
-                    else None,
-                }
-            except Exception:
-                logger.exception("[runtime] alert outbox health summary failed")
-
-        return {
-            **summary,
+        """runtime-health/v4's `alert_outbox` block."""
+        configured = {
             "retry_interval_minutes": self._alert_outbox_retry_interval_s / 60.0,
             "max_non_tier_d_attempts": self._alert_outbox_max_non_tier_d_attempts,
             "tier_d_critical_warning_threshold": self._alert_outbox_tier_d_critical_threshold,
             "batch_size": self._alert_outbox_batch_size,
         }
+        summary = None
+        if self._state_store is None:
+            started = self._process_started_monotonic
+            state = (
+                "unavailable"
+                if past_startup_deadline(started, time.monotonic())
+                else "starting"
+            )
+        else:
+            try:
+                summary = await self._state_store.get_alert_outbox_summary()
+                state = "available"
+            except Exception:
+                logger.exception("[runtime] alert outbox health summary failed")
+                state = "unavailable"
+        return alert_outbox_block(summary, state=state, now=now, configured=configured)

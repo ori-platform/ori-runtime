@@ -109,7 +109,7 @@ PYIDENT
 # resolution would put unpinned code into the tooling that signs the artifact.
 "$WORKDIR/venv/bin/pip" install --quiet --require-hashes \
     -r "$SOURCE/requirements/dev.txt" >/dev/null
-"$WORKDIR/venv/bin/pip" install --quiet --no-deps -e . >/dev/null
+"$WORKDIR/venv/bin/pip" install --quiet --no-deps --no-build-isolation -e . >/dev/null
 PY="$WORKDIR/venv/bin/python"
 
 # --- ephemeral signing key, and the trust root that accepts it --------------

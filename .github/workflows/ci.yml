@@ -118,7 +118,7 @@ jobs:
       - name: Install hash-locked dependencies
         run: |
           python -m pip install --require-hashes -r requirements/dev.txt
-          python -m pip install --no-deps -e .
+          python -m pip install --no-deps --no-build-isolation -e .
 
       - name: Guard supply-chain invariants
         if: steps.scope.outputs.run == 'true'
@@ -408,7 +408,8 @@ jobs:
             tests/test_docs_registration_status.py \
             tests/test_guard_capability_matrix.py \
             tests/test_linux_bootstrap.py \
-            tests/test_release_publication.py
+            tests/test_release_publication.py \
+            tests/test_supply_chain_guards.py
 
       # GitHub's runner normally starts at 0022. Debian private-user-group
       # hosts, including stock Raspberry Pi OS Trixie, commonly use 0002;

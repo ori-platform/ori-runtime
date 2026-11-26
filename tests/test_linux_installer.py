@@ -254,6 +254,34 @@ def test_runtime_health_verifier_rejects_malformed_or_critical_health(
     assert "secret" not in raised.value.detail
 
 
+@pytest.mark.parametrize("device_id", ["Edge-Host-01", ".ori-01", "A" * 128])
+def test_runtime_health_verifier_accepts_every_runtime_config_v2_device_id(
+    tmp_path: Path, device_id: str
+) -> None:
+    release = _health_release(tmp_path)
+    health = RuntimeHealthVerifier(
+        socket_path=(tmp_path / "data" / "health.sock").resolve(),
+        expected_device_id=device_id,
+        runner=lambda command, _timeout: _health_result(command, device_id=device_id),
+    ).verify(release)
+    assert health["device_id"] == device_id
+
+
+@pytest.mark.parametrize(
+    "device_id", ["A" * 129, "ori/01", "ori 01", "orí-01", "ori-01\n", ""]
+)
+def test_runtime_health_verifier_refuses_a_device_id_runtime_config_v2_refuses(
+    tmp_path: Path, device_id: str
+) -> None:
+    with pytest.raises(LinuxInstallError) as raised:
+        RuntimeHealthVerifier(
+            socket_path=(tmp_path / "data" / "health.sock").resolve(),
+            expected_device_id=device_id,
+            runner=lambda command, _timeout: _health_result(command),
+        )
+    assert raised.value.detail == "health verification settings are invalid"
+
+
 def test_runtime_health_verifier_reports_wrong_runtime_identity(tmp_path: Path) -> None:
     release = _health_release(tmp_path)
     with pytest.raises(LinuxInstallError) as raised:
@@ -3480,7 +3508,7 @@ def test_invalid_generated_config_preserves_existing_file(tmp_path: Path) -> Non
     [
         (
             {"device_id": "bad id", "name": "Office", "location": "Lagos"},
-            "device ID must be 1-64 lowercase letters.*starting with a letter or digit",
+            "device ID must be 1-128 letters, digits, dots, dashes, or underscores",
         ),
         ({"device_id": "ori-01", "name": "${SECRET}", "location": "Lagos"}, "name"),
         (
@@ -3683,7 +3711,17 @@ def test_real_packaged_commands_start_from_the_final_release(tmp_path: Path) -> 
     """
     wheelhouse = tmp_path / "wheelhouse"
     build = subprocess.run(
-        [sys.executable, "-m", "pip", "wheel", "--no-deps", ".", "-w", str(wheelhouse)],
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "wheel",
+            "--no-deps",
+            "--no-build-isolation",
+            ".",
+            "-w",
+            str(wheelhouse),
+        ],
         capture_output=True,
         text=True,
         check=False,

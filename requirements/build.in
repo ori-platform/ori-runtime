@@ -1,0 +1,5 @@
+# The build backend pyproject.toml declares, installed from this lock so that
+# `pip install --no-build-isolation` never fetches it unpinned from PyPI.
+# Compiled against dev.txt, which pins the same two packages.
+setuptools>=68
+wheel

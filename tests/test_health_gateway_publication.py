@@ -26,6 +26,7 @@ from ori.security.gateway_messages import (
     GatewayMessageAuthenticator,
 )
 from ori.security.signing_clock import SigningClock
+from tests.empty_outbox import EmptyOutboxStore
 from tests.test_health_signing_domains_and_ingress import _gateway_config
 from tests.test_runtime_node_heartbeat import _FakeClient, _publisher, _verifier_cache
 from tests.waiting import wait_until
@@ -45,6 +46,7 @@ def _runtime(tmp_path: Path, *, enabled: bool = True) -> OriRuntime:
     runtime = OriRuntime(config_path="ori.yaml")
     runtime._device_id = "dev-01"
     runtime._config = _gateway_config(tmp_path, enabled=enabled)
+    runtime._state_store = EmptyOutboxStore()  # type: ignore[assignment]
     return runtime
 
 

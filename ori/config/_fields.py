@@ -78,14 +78,14 @@ def checked_device_endpoint(value: str, field: str, *, urls_supported: bool) -> 
     return value
 
 
-_DEVICE_ID = re.compile(r"[A-Za-z0-9._-]{1,128}")
+DEVICE_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,128}")
 _SITE_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
 
 
 def checked_device_id(device_id: str) -> str:
     """runtime-config/v2's `device.id` pattern, which gateway-api/v2 sizes every
     topic by."""
-    if _DEVICE_ID.fullmatch(device_id) is None:
+    if DEVICE_ID_RE.fullmatch(device_id) is None:
         raise ConfigValidationError(
             "device.id must be 1 to 128 characters from A-Z, a-z, 0-9, '.', "
             f"'_' and '-', got: {device_id!r}"

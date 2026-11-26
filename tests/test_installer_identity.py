@@ -102,7 +102,7 @@ def test_the_device_id_prompt_shows_constraints_and_examples(
     monkeypatch.setattr(identity, "host_name", lambda: "pi-ikeja-01")
     operator = _Operator("", "", "Lagos", "", "y")
     _collect(operator)
-    assert "lowercase letters, digits" in operator.shown
+    assert "1-128 characters: letters, digits" in operator.shown
     assert "pi-ikeja-01" in operator.shown
     assert "hvac.roof.3" in operator.shown
 
@@ -146,7 +146,7 @@ def test_rejected_input_is_never_echoed_back(
 ) -> None:
     """A mistyped answer can be anything, including a pasted credential."""
     monkeypatch.setattr(identity, "host_name", lambda: "pi-ikeja-01")
-    secret = "hunter2-SHOULD-NOT-APPEAR"
+    secret = "hunter2 SHOULD/NOT:APPEAR"
     operator = _Operator(secret, "pi-01", "Site", "Lagos", "", "y")
     _collect(operator)
     assert secret not in operator.shown

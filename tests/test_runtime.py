@@ -109,6 +109,7 @@ from tests.conftest import (
     run_runtime_full_startup,
     run_runtime_until,
 )
+from tests.empty_outbox import EmptyOutboxStore
 from tests.gateway_auth_helpers import cache_for
 from tests.package_layout import patch_runtime, patch_skill_loader, patched_runtime
 from tests.skill_races import POINTS as RACE_POINTS
@@ -5128,6 +5129,7 @@ class TestAlertOutbox:
             database_path=str(tmp_path / "ori_state.db"),
             security={},
         )
+        runtime._state_store = EmptyOutboxStore()
         return runtime
 
     async def test_health_snapshot_reports_community_skills_the_anchor_dropped(
@@ -5299,6 +5301,7 @@ class TestAlertOutbox:
         """
         runtime: Any = OriRuntime(config_path="ori.yaml")
         runtime._device_id = "dev-01"
+        runtime._state_store = EmptyOutboxStore()
 
         snapshot = await runtime._build_health_snapshot()
 

@@ -495,6 +495,20 @@ release is cut.
   space. An invalid reply decides nothing: the runtime keeps listening until
   the proposal times out, as before.
 
+- An unresolved mandatory alert now shows in health. The `alert_outbox`
+  block follows runtime-health/v4. It reports `state` and, for Tier D and
+  protection-degraded notices, the unresolved count, the most delivery
+  attempts and the oldest age, each counted by the notice kind fixed when
+  the notice was queued. So a Tier A notice from a notify-only Tier D trigger
+  counts as a Tier D notification. It also reports the oldest age of every
+  other unresolved alert, with the two bounds at their defaults (300 s and
+  one hour). A Tier D or protection-degraded notice still unconfirmed at the
+  attempt threshold or the age bound makes `status` critical, any other alert
+  unresolved for an hour makes it degraded, and an outbox that cannot be read
+  is critical. Before this, no alert-delivery condition reached `status` at
+  all. Runtime health before the state store opens reads `degraded` until
+  startup completes.
+
 - A governed Tier C proposal whose workflow failed after its row committed
   (in composing or sending the approval request, or while listening) stayed
   `proposed` for the life of the process, and its safe default did not run
@@ -848,6 +862,14 @@ release is cut.
   clamped nor signed: a WARNING names the value, at most once a minute with
   the count since, and health reports `degraded` until a tick's clock is
   back in range (#922).
+
+- The Linux installer accepts every device id runtime-config/v2 allows:
+  1 to 128 letters, digits, dots, dashes or underscores, uppercase included
+  and in any position. It refused ids the runtime itself loads, such as
+  `Edge-Host-01` or one over 64 characters. Both of its checks, on the id
+  given and on the post-install health check, now use the config loader's
+  own pattern, and the prompt's hint and the install guide state the same
+  rule. A refused id is still never echoed back.
 
 ## Security
 
