@@ -3683,7 +3683,17 @@ def test_real_packaged_commands_start_from_the_final_release(tmp_path: Path) -> 
     """
     wheelhouse = tmp_path / "wheelhouse"
     build = subprocess.run(
-        [sys.executable, "-m", "pip", "wheel", "--no-deps", ".", "-w", str(wheelhouse)],
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "wheel",
+            "--no-deps",
+            "--no-build-isolation",
+            ".",
+            "-w",
+            str(wheelhouse),
+        ],
         capture_output=True,
         text=True,
         check=False,

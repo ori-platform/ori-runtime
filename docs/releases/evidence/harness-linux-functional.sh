@@ -209,7 +209,8 @@ chmod 600 /tmp/dev-key.pem
 # own setuptools would build a bundle this run then presents as evidence.
 python3 -m pip install --quiet --break-system-packages --require-hashes \
     -r requirements/dev.txt >/dev/null 2>&1
-python3 -m pip install --quiet --break-system-packages --no-deps -e . >/dev/null 2>&1
+python3 -m pip install --quiet --break-system-packages --no-deps --no-build-isolation -e . \
+    >/dev/null 2>&1
 
 # --- determinism: build twice, compare bytes ------------------------------
 echo "=== BUILD ==="

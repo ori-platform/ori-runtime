@@ -263,6 +263,130 @@ def _check_references(path: Path, text: str, failures: list[str]) -> None:
             failures.append(f"{path}: {match.group(0)}: {DOWNLOAD_LIMIT}")
     if path.parent == WORKFLOW_DIR:
         _check_audit_first(path, document, failures)
+        _check_build_backend(path, document, failures)
+
+
+#: A pip command that installs or builds a package.
+PIP_BUILD_RE = re.compile(r"\bpip3?\s+(?:install|wheel)\b")
+#: The hash locks that pin the build backend `pyproject.toml` declares.
+BACKEND_LOCKS = ("requirements/build.txt", "requirements/dev.txt")
+#: pip options whose next word is a value, never the package to install.
+VALUE_OPTIONS = frozenset(
+    {
+        "-r",
+        "--requirement",
+        "-c",
+        "--constraint",
+        "-f",
+        "--find-links",
+        "-w",
+        "--wheel-dir",
+        "-t",
+        "--target",
+        "--root",
+        "--prefix",
+        "--src",
+        "-i",
+        "--index-url",
+        "--extra-index-url",
+        "--cache-dir",
+        "--log",
+        "--report",
+    }
+)
+#: Shell scripts that install or build the project outside a workflow.
+BUILD_SCRIPT_GLOBS = ("scripts/*.sh", "docs/releases/evidence/*.sh")
+BUILD_LIMIT = (
+    "only workflow `run:` text and the shell scripts under scripts/ and "
+    "docs/releases/evidence/ are read; a build spelled through a variable, "
+    "`file:`, a URL fragment, `pipx` or another tool, or made from Python, is a "
+    "review boundary"
+)
+
+
+def _command_words(line: str) -> list[list[str]]:
+    """The commands on a shell line, each as its words, unquoted, to a comment."""
+    commands: list[list[str]] = [[]]
+    for raw in re.split(r"(&&|\|\||[;|&])", line):
+        if raw in ("&&", "||", ";", "|", "&"):
+            commands.append([])
+            continue
+        for word in raw.split():
+            if word.startswith("#"):
+                return commands
+            commands[-1].append(word.strip("'\""))
+    return commands
+
+
+def _names_project(words: list[str]) -> bool:
+    for before, word in zip(["", *words], words):
+        if before in VALUE_OPTIONS:
+            continue
+        if word.startswith(("-e", "--editable=")) and word not in ("-e", "--editable"):
+            word = word.removeprefix("--editable=").removeprefix("-e")
+        if word in (".", "./") or word.startswith((".[", "./[")):
+            return True
+    return False
+
+
+def _build_problems(text: str, *, lock_first: bool) -> list[str]:
+    """Each command in *text* that builds this project on an unpinned backend.
+
+    pip naming the project (`.`, `./`, `.[x]`) must pass `--no-build-isolation`
+    and `python -m build` must pass `--no-isolation`: build isolation fetches
+    `setuptools` and `wheel` from PyPI unpinned. With *lock_first*, a
+    hash-checked install of a backend lock must come earlier in *text*; a
+    script leaves that to its caller.
+    """
+    problems: list[str] = []
+    pinned = False
+    for line in text.replace("\\\n", " ").splitlines():
+        for words in _command_words(line):
+            command = " ".join(words)
+            is_pip = PIP_BUILD_RE.search(command) is not None
+            if is_pip and "--require-hashes" in words:
+                pinned = pinned or any(w.endswith(BACKEND_LOCKS) for w in words)
+            if is_pip and _names_project(words):
+                flag = "--no-build-isolation"
+            elif re.search(r"(?:^|\s)-m\s+build(?:\s|$)", command):
+                flag = "--no-isolation"
+            else:
+                continue
+            if flag not in words:
+                problems.append(f"builds this project with isolation: {command!r}")
+            elif lock_first and not pinned:
+                problems.append(
+                    f"builds this project before installing "
+                    f"{' or '.join(BACKEND_LOCKS)} with --require-hashes"
+                )
+    return problems
+
+
+def _check_build_backend(
+    path: Path, document: dict[str, object], failures: list[str]
+) -> None:
+    """Refuse a workflow job that builds this project on an unpinned backend."""
+    jobs = document.get("jobs")
+    if not isinstance(jobs, dict):
+        return
+    for name, job in jobs.items():
+        steps = job.get("steps") if isinstance(job, dict) else None
+        runs = [
+            str(step.get("run") or "")
+            for step in (steps if isinstance(steps, list) else [])
+            if isinstance(step, dict)
+        ]
+        for problem in _build_problems("\n".join(runs), lock_first=True):
+            failures.append(f"{path}: job {name!r} {problem}; {BUILD_LIMIT}")
+
+
+def _check_build_scripts(failures: list[str]) -> None:
+    """Refuse a shell script that builds this project on an unpinned backend."""
+    for pattern in BUILD_SCRIPT_GLOBS:
+        for path in sorted(Path().glob(pattern)):
+            text = path.read_text(encoding="utf-8")
+            for problem in _build_problems(text, lock_first=False):
+                failures.append(f"{path}: {problem}; {BUILD_LIMIT}")
 
 
 def _line_number(text: str, index: int) -> int:
@@ -493,6 +617,7 @@ def main() -> int:
     for path in _action_files():
         _check_references(path, path.read_text(), failures)
     _check_pre_commit_config(failures)
+    _check_build_scripts(failures)
     if failures:
         print("Supply-chain guard failed:", file=sys.stderr)
         for failure in failures:

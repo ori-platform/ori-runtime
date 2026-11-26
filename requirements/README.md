@@ -11,6 +11,8 @@ outputs out of the project root.
 | `runtime.txt` | Hash-locked runtime dependencies | No |
 | `dev.in` | Human-readable development and CI constraints | Yes |
 | `dev.txt` | Hash-locked development and CI dependencies | No |
+| `build.in` | The build backend `pyproject.toml` declares | Yes |
+| `build.txt` | Hash-locked build backend, for `pip install --no-build-isolation` | No |
 | `phone.in` | Phone lab-profile source/build constraints | Yes |
 | `phone.txt` | Hash-locked phone lab-profile source/build dependencies | No |
 | `phone-growatt.in` | Additive Growatt phone profile constraints | Yes |
@@ -27,6 +29,7 @@ Use `pip-tools` and keep generated files hash-locked:
 ```bash
 pip-compile requirements/runtime.in --generate-hashes --annotate -o requirements/runtime.txt
 pip-compile requirements/dev.in --generate-hashes --annotate --constraint requirements/runtime.txt -o requirements/dev.txt
+pip-compile requirements/build.in --allow-unsafe --generate-hashes --constraint requirements/dev.txt -o requirements/build.txt
 pip-compile requirements/phone.in --allow-unsafe --generate-hashes -o requirements/phone.txt
 pip-compile requirements/phone-growatt.in --allow-unsafe --generate-hashes -o requirements/phone-growatt.txt
 pip-compile requirements/phone-victron.in --allow-unsafe --generate-hashes -o requirements/phone-victron.txt

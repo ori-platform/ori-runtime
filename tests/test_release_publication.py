@@ -1695,7 +1695,7 @@ def test_every_job_invoking_an_ori_importing_script_installs_the_package(
         commands = "\n".join(str(step.get("run", "")) for step in _steps(workflow, job))
         invoked = sorted(script for script in needing if script in commands)
         if invoked:
-            assert "pip install --no-deps -e ." in commands, (
+            assert "pip install --no-deps --no-build-isolation -e ." in commands, (
                 f"job {job!r} runs {invoked} but never installs the package"
             )
 
