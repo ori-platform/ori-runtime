@@ -159,12 +159,38 @@ class AlertOutboxStore(StoreCore):
             if row["oldest_queued_at_ms"] is not None
             else None
         )
-        return {
+        summary: dict[str, int | None] = {
             "backlog_count": backlog_count,
             # The producer's account, reported beside the store's own receipt.
             "oldest_queued_original_ts": oldest_ts,
             "oldest_queued_at_ms": oldest_queued_at,
         }
+        # runtime-health/v4 counts each mandatory kind by the notice kind fixed
+        # at enqueue, never by the tier a notice was dispatched at. A row a
+        # provider once accepted is resolved, though the outbox retries it.
+        for kind in ("tier_d", "protection_degraded"):
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS unresolved, MAX(attempt_count) AS max_attempts,
+                       MIN(queued_at_ms) AS oldest_queued_at_ms
+                FROM alert_outbox
+                WHERE status IN ('pending', 'failed') AND notice_kind = ?
+                  AND accepted_at_ms IS NULL
+                """,
+                (kind,),
+            ).fetchone()
+            summary[f"{kind}_unresolved_count"] = int(row["unresolved"] or 0)
+            summary[f"{kind}_max_attempts"] = row["max_attempts"]
+            summary[f"{kind}_oldest_queued_at_ms"] = row["oldest_queued_at_ms"]
+        row = conn.execute(
+            """
+            SELECT MIN(queued_at_ms) AS oldest FROM alert_outbox
+            WHERE status IN ('pending', 'failed') AND accepted_at_ms IS NULL
+              AND COALESCE(notice_kind, '') != 'tier_d'
+            """
+        ).fetchone()
+        summary["oldest_non_tier_d_queued_at_ms"] = row["oldest"]
+        return summary
 
     async def mark_alert_accepted(
         self,

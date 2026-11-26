@@ -389,11 +389,12 @@ async def test_runtime_health_snapshot_shape():
     assert isinstance(snapshot["sensors"], list)
     assert snapshot["sensors"][0]["id"] == "sensor-1"
     assert snapshot["last_alert_timestamps"]["by_channel"]["sms"] > 0
+    # No store opened yet: runtime-health/v4's `starting` block, configured
+    # members only.
     assert snapshot["alert_outbox"] == {
-        "backlog_count": 0,
-        "oldest_queued_original_ts": None,
-        "oldest_queued_at_ms": None,
-        "oldest_queued_age_ms": None,
+        "state": "starting",
+        "tier_d_age_bound_ms": 300_000,
+        "overdue_bound_ms": 3_600_000,
         "retry_interval_minutes": 0.5,
         "max_non_tier_d_attempts": 10,
         "tier_d_critical_warning_threshold": 3,
