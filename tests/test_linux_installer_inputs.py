@@ -93,8 +93,7 @@ def test_interactive_collection_retries_invalid_values_without_echoing_them() ->
     assert labels[0].startswith("Device ID")
     shown = "\n".join(messages)
     assert (
-        "device ID must be 1-64 lowercase letters, digits, dots, dashes, or "
-        "underscores, starting with a letter or digit"
+        "device ID must be 1-128 letters, digits, dots, dashes, or underscores"
     ) in shown
     assert "BAD SECRET" not in shown
     assert "BAD SECRET" not in "\n".join(labels)
@@ -132,8 +131,7 @@ def test_supplied_interactive_value_fails_without_retry_or_value_disclosure() ->
         )
 
     assert error.value.detail == (
-        "device ID must be 1-64 lowercase letters, digits, dots, dashes, or "
-        "underscores, starting with a letter or digit"
+        "device ID must be 1-128 letters, digits, dots, dashes, or underscores"
     )
     assert "BAD SECRET" not in str(error.value)
 
@@ -149,27 +147,36 @@ def test_device_id_whitespace_error_explains_constraint_without_echoing_value() 
             )
         )
 
-    assert (
-        "lowercase letters, digits, dots, dashes, or underscores" in error.value.detail
-    )
+    assert "letters, digits, dots, dashes, or underscores" in error.value.detail
     assert "ori-01 " not in str(error.value)
 
 
-@pytest.mark.parametrize("device_id", [".ori-01", "-ori-01", "_ori-01"])
-def test_device_id_leading_punctuation_error_explains_first_character(
+_ACCEPTED_IDS = [".ori-01", "-ori-01", "_ori-01", "Edge-Host-01", "a", "A" * 128]
+_REFUSED_IDS = ["A" * 129, "ori/01", "ori 01", "orí-01", "ori:01", "ori-01\n", ""]
+
+
+def _unattended(device_id: str) -> InstallerInputOptions:
+    return InstallerInputOptions(
+        unattended=True, device_id=device_id, name="Office", location="Lagos"
+    )
+
+
+@pytest.mark.parametrize("device_id", _ACCEPTED_IDS)
+def test_every_device_id_runtime_config_v2_allows_is_accepted(device_id: str) -> None:
+    assert collect_installer_config(_unattended(device_id)).device_id == device_id
+
+
+@pytest.mark.parametrize("device_id", [d for d in _REFUSED_IDS if d])
+def test_a_device_id_runtime_config_v2_refuses_is_refused_unechoed(
     device_id: str,
 ) -> None:
     with pytest.raises(LinuxInstallError) as error:
-        collect_installer_config(
-            InstallerInputOptions(
-                unattended=True,
-                device_id=device_id,
-                name="Office",
-                location="Lagos",
-            )
-        )
+        collect_installer_config(_unattended(device_id))
 
-    assert "starting with a letter or digit" in error.value.detail
+    assert error.value.code == "config_validation_failed"
+    assert error.value.detail == (
+        "device ID must be 1-128 letters, digits, dots, dashes, or underscores"
+    )
     assert device_id not in str(error.value)
 
 
