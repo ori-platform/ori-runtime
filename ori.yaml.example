@@ -426,8 +426,10 @@ telemetry_export:
 
 device_policy:
   enabled: false
-  url: "https://api.ori.cloud/v1/device-policy" # ori-cloud endpoint for signed DevicePolicy
-  auth_token: "${ORI_DEVICE_POLICY_TOKEN}"      # device auth bearer token
+  # Issued in the signed runtime config: the device's own policy route, and
+  # the device key (the telemetry key's variable) as its bearer token.
+  url: "https://<policy-base-url>/devices/<device_id>/policy"
+  auth_token: "${ORI_DEVICE_API_KEY}"
   public_key_b64: "${ORI_CLOUD_PUBKEY_B64}"     # ori-cloud Ed25519 public key (base64)
   request_timeout_ms: 3000
   max_clock_skew_s: 300
