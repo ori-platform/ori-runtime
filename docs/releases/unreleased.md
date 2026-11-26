@@ -494,6 +494,20 @@ release is cut.
 
 ## Fixed
 
+- A governed Tier C approval whose workflow failed after its commit and before
+  the executor was invoked stayed `approved_pending_dispatch` for the life of
+  the process, with no CRITICAL event and no operator notice. It is now settled
+  at once as a restart would settle it: `dispatch_not_proven` with reason
+  `workflow_failed`, a CRITICAL event, an operator notice, and the same outcome
+  on the zone blocked until reconciled. No safe default runs, as after a
+  restart. The live result names that state only once the move is confirmed.
+  Otherwise it names the state read back (`dispatch_started` when the dispatch
+  marker landed first), or reports the settlement unrecorded. Once the
+  executor has returned, its result is kept, and the live result no longer
+  reports `executed=False` for an act that ran because its outcome record, its
+  notice or the decision log failed. An outcome the runtime cannot schedule is
+  held as unknown until reconciled, and a confirmed outcome clears that.
+
 - A firmware `device_id` of exactly `.` or `..` is refused, as
   firmware-telemetry/v2 and firmware-commands/v2 now require. Both are URL
   dot-segments. One rule in `ori/security/firmware/telemetry.py` applies

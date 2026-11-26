@@ -29,7 +29,7 @@ LIMIT = (
 
 OVERSIZE_CEILINGS: dict[str, int] = {
     "ori/reasoning/action_dispatcher.py::ActionDispatcher._run_approval_workflow": 519,
-    "ori/reasoning/action_dispatcher.py::ActionDispatcher._run_governed_workflow": 457,
+    "ori/reasoning/action_dispatcher.py::ActionDispatcher._run_governed_workflow": 456,
     "ori/config/_config.py::Config._interpret": 366,
     "ori/config/_gateway.py::parse_gateway": 323,
     "ori/reasoning/elevator.py::IntelligenceElevator.reason_and_dispatch": 336,
@@ -42,7 +42,7 @@ OVERSIZE_CEILINGS: dict[str, int] = {
     "ori/runtime/_alerts.py::AlertDelivery._send_or_queue_alert": 166,
     "ori/state/_migrations.py::StoreMigrations._migrate_sync": 209,
     "ori/installer/linux.py::provision_runtime_config": 198,
-    "ori/reasoning/action_dispatcher.py::ActionDispatcher._execute_immediately": 174,
+    "ori/reasoning/action_dispatcher.py::ActionDispatcher._execute_immediately": 172,
     "ori/state/_firmware.py::FirmwareStore._upsert_firmware_device_anchor_sync": 196,
     "ori/security/commissioning/proof_operation.py::ProofOperation._command": 194,
     "ori/reasoning/action_dispatcher.py::ActionDispatcher._governed_approval_workflow": 193,
@@ -59,7 +59,6 @@ OVERSIZE_CEILINGS: dict[str, int] = {
     "ori/security/firmware/telemetry.py::verify_fault_message": 156,
     "ori/config/_firmware_mqtt_provisioning.py::parse_firmware_mqtt_provisioning": 158,
     "ori/installer/linux.py::collect_installer_config": 154,
-    "ori/reasoning/action_dispatcher.py::ActionDispatcher._dispatch_admitted": 154,
     "ori/security/offline_tokens.py::OfflineTierCTokenVerifier.verify_token": 154,
     "ori/state/_migrations.py::StoreMigrations._complete_backfilled_activation_history_on_conn": 153,
     "ori/state/_migrations.py::StoreMigrations._backfill_firmware_anchor_epochs_on_conn": 152,
