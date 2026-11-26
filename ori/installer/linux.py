@@ -24,6 +24,7 @@ from typing import Callable, Generator, Literal, NoReturn, Sequence
 
 import yaml
 
+from ori.config import DEVICE_ID_RE
 from ori.installer import identity
 from ori.installer.trusted_paths import trust_failure
 from ori.security.release_bundles import ExtractedReleaseBundle, distribution_version
@@ -381,11 +382,10 @@ def _validated_input(value: str, validate: Callable[[str], None]) -> str:
 
 
 def _validate_device_id(value: str) -> None:
-    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", value):
+    if not DEVICE_ID_RE.fullmatch(value):  # runtime-config/v2 `device.id`
         raise LinuxInstallError(
             "config_validation_failed",
-            "device ID must be 1-64 lowercase letters, digits, dots, dashes, or "
-            "underscores, starting with a letter or digit",
+            "device ID must be 1-128 letters, digits, dots, dashes, or underscores",
         )
 
 
@@ -777,7 +777,7 @@ class RuntimeHealthVerifier:
             not socket_path.is_absolute()
             or _has_control_character(str(socket_path))
             or not socket_parent_is_canonical
-            or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", expected_device_id)
+            or not DEVICE_ID_RE.fullmatch(expected_device_id)
             or not 0 < timeout_seconds <= 300
             or not 0 < poll_interval_seconds <= timeout_seconds
         ):

@@ -484,6 +484,17 @@ release is cut.
 
 ## Fixed
 
+- A Tier C approval reply decides only with the words the runtime asks for.
+  `YES-<proposal_id>` approves and `NO-<proposal_id>` rejects, and with
+  scoped replies turned off a bare `YES` or `NO` also decides. Synonyms such
+  as `OK`, `GO`, `Y`, `APPROVE`, `STOP` or `CANCEL` are invalid in both modes,
+  and the proposal id must be given as sent, ignoring only ASCII case.
+  Separators inside the id, whitespace before the hyphen and any other text
+  after the id now make the reply invalid. Surrounding ASCII whitespace is
+  trimmed, and so are trailing periods, which phone keyboards add on a double
+  space. An invalid reply decides nothing: the runtime keeps listening until
+  the proposal times out, as before.
+
 - An unresolved mandatory alert now shows in health. The `alert_outbox`
   block follows runtime-health/v4. It reports `state` and, for Tier D and
   protection-degraded notices, the unresolved count, the most delivery
@@ -852,6 +863,14 @@ release is cut.
   the count since, and health reports `degraded` until a tick's clock is
   back in range (#922).
 
+- The Linux installer accepts every device id runtime-config/v2 allows:
+  1 to 128 letters, digits, dots, dashes or underscores, uppercase included
+  and in any position. It refused ids the runtime itself loads, such as
+  `Edge-Host-01` or one over 64 characters. Both of its checks, on the id
+  given and on the post-install health check, now use the config loader's
+  own pattern, and the prompt's hint and the install guide state the same
+  rule. A refused id is still never echoed back.
+
 ## Security
 
 - The gateway `tier_c_decision_log` export carries only the members
@@ -899,9 +918,10 @@ release is cut.
     without spaces;
   - a Tier C approval reply is case-folded and trimmed in ASCII only, so a
     look-alike letter in its yes/no word or proposal id no longer reads as an
-    approval. Every ASCII reply is classified as before; a reply that opens
-    with non-ASCII whitespace, such as a non-breaking space, is now invalid,
-    and SMS ingress keeps that character rather than trimming it away.
+    approval. A reply that opens with non-ASCII whitespace, such as a
+    non-breaking space, is now invalid, and SMS ingress keeps that character
+    rather than trimming it away. The reply grammar itself is narrowed under
+    Fixed.
 
 - A `skills` directory beside the installed `ori` package is no longer
   first-party. On a wheel install that directory is `site-packages/skills`,

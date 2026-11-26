@@ -1158,11 +1158,17 @@ def test_a_cancelled_background_future_is_not_logged_as_a_failure(
     cancelled.cancel()
     failed: concurrent.futures.Future[None] = concurrent.futures.Future()
     failed.set_exception(RuntimeError("a defect"))
+
+    # Only this module's records: another test's background thread may log on
+    # the same worker while this one runs.
+    def logged() -> list[int]:
+        return [r.levelno for r in caplog.records if r.name == module]
+
     with caplog.at_level(logging.ERROR, logger=module):
         log(cancelled)
-        assert [r for r in caplog.records if r.levelno >= logging.ERROR] == []
+        assert [level for level in logged() if level >= logging.ERROR] == []
         log(failed)
-    assert [r.levelno for r in caplog.records] == [logging.ERROR]
+    assert logged() == [logging.ERROR]
 
 
 async def test_a_stalled_store_bounds_the_export_work_in_flight(tmp_path):

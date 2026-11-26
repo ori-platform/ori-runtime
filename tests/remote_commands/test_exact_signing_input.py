@@ -490,9 +490,9 @@ async def test_the_signature_headers_are_bounded_in_length() -> None:
 
 @pytest.mark.parametrize(
     ("reply", "kind"),
-    [("YES-AB12 👍", "approve"), ("Yes-AB12 ", "approve"), ("no-ab-12", "reject")],
+    [("YES-AB12 👍", "invalid"), ("Yes-AB12 ", "approve"), ("no-ab-12", "invalid")],
 )
-def test_text_after_an_ascii_reply_is_ignored(reply: str, kind: str) -> None:
+def test_only_ascii_whitespace_may_follow_a_reply(reply: str, kind: str) -> None:
     assert (
         classify_approval_response(reply, proposal_id="AB12", require_scoped=True)
         == kind
@@ -508,6 +508,11 @@ def test_a_ligature_never_folds_into_the_proposal_id() -> None:
     assert (
         classify_approval_response("YES-FF12", proposal_id="FF12", require_scoped=True)
         == "approve"
+    )
+    # Nor does a stored id that is not ASCII fold into an ASCII reply.
+    assert (
+        classify_approval_response("YES-FF12", proposal_id="ﬀ12", require_scoped=True)
+        == "invalid"
     )
 
 
@@ -553,10 +558,10 @@ def test_a_configured_gsm_recipient_reads_the_configured_rule(
     )
 
 
-@pytest.mark.parametrize("reply", ["OK", "oK", "Yİ"])
+@pytest.mark.parametrize("reply", ["YE\u017f", "ye\u017f"])
 def test_an_unscoped_look_alike_reply_is_invalid(reply: str) -> None:
     assert classify_approval_response(reply) == "invalid"
-    assert classify_approval_response("ok") == "approve"
+    assert classify_approval_response("yes") == "approve"
 
 
 async def test_a_reply_binds_a_configured_contact_written_with_spaces() -> None:
@@ -583,10 +588,10 @@ async def test_a_reply_binds_a_configured_contact_written_with_spaces() -> None:
 @pytest.mark.parametrize(
     ("reply", "scoped", "kind"),
     [
-        ("Y\x0c", False, "approve"),
-        ("\x1fY", False, "approve"),
-        ("YES\n-AB12", True, "approve"),
-        ("N\r-ab12", True, "reject"),
+        ("YES\x0c", False, "approve"),
+        ("\x1fNO", False, "reject"),
+        ("\x0bYES-AB12\x1c", True, "approve"),
+        ("\x1dno-ab12\x1e", True, "reject"),
     ],
 )
 def test_every_ascii_space_main_trimmed_is_still_trimmed(
@@ -606,7 +611,7 @@ def test_every_ascii_space_main_trimmed_is_still_trimmed(
     [
         ("\xa0YES-AB12", "invalid"),
         ("　YES-AB12", "invalid"),
-        ("YES-AB12 ", "approve"),
+        ("YES-AB12 ", "invalid"),
         (" YES-AB12\n", "approve"),
     ],
     ids=["leading nbsp", "ideographic space", "trailing separator", "ascii spaces"],
