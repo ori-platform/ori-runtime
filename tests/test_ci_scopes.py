@@ -273,6 +273,44 @@ def _decide(repo: Path, tmp_path: Path, **env: str) -> tuple[str, str]:
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the decision runs under bash")
+def test_the_decision_leaves_a_full_clone_able_to_find_a_merge_base(
+    tmp_path: Path,
+) -> None:
+    """A depth-1 fetch of a base the clone already holds marks it shallow, and the
+    capability-matrix guard then finds no merge base for a branch behind it."""
+    upstream, _, _ = _repo(tmp_path)
+    git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", str(upstream)]
+    (upstream / "ori" / "x.py").write_text("x = 2\n")
+    subprocess.run(git + ["commit", "-q", "-am", "main moves on"], check=True)
+    base = subprocess.run(
+        git + ["rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    clone = tmp_path / "clone"
+    subprocess.run(
+        ["git", "clone", "-q", "--no-local", str(upstream), str(clone)], check=True
+    )
+    branch = subprocess.run(
+        ["git", "-C", str(clone), "rev-parse", "HEAD~1"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    subprocess.run(["git", "-C", str(clone), "checkout", "-q", branch], check=True)
+
+    _decide(
+        clone, tmp_path, EVENT_NAME="pull_request", PR_BASE_SHA=base, PATTERN="^ori/"
+    )
+
+    assert not (clone / ".git" / "shallow").exists()
+    merge_base = subprocess.run(
+        ["git", "-C", str(clone), "merge-base", base, branch],
+        capture_output=True,
+        text=True,
+    )
+    assert merge_base.returncode == 0 and merge_base.stdout.strip() == branch
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the decision runs under bash")
 def test_the_decision_skips_a_job_whose_paths_did_not_change(tmp_path: Path) -> None:
     repo, base, _ = _repo(tmp_path)
     run, log = _decide(

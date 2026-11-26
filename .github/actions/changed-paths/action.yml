@@ -49,7 +49,10 @@ runs:
           decide true "No comparison base for event '$EVENT_NAME': $REASON."
           exit 0
         fi
-        if ! git fetch --no-tags --depth=1 origin "$base"; then
+        # Fetched only when missing: a depth-1 fetch into a full clone marks the
+        # base shallow, and a later merge-base against a branch behind it fails.
+        if ! git cat-file -e "${base}^{commit}" 2>/dev/null \
+          && ! git fetch --no-tags --depth=1 origin "$base"; then
           decide true "Comparison base $base is not reachable (force-push?): $REASON."
           exit 0
         fi
