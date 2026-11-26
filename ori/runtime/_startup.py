@@ -57,9 +57,11 @@ from ori.runtime._gateway_wiring import (
     build_gateway_heartbeat_subscriber,
     build_gateway_reasoner,
     build_runtime_node_heartbeat_publisher,
+    build_runtime_posture_publisher,
     warn_gateway_security_posture,
 )
 from ori.runtime._loops import BackgroundLoops
+from ori.runtime._posture import posture_content
 from ori.runtime._remote_command_wiring import warn_sms_webhook_security_posture
 from ori.runtime._remote_commands import RemoteCommands
 from ori.runtime._sensors import SensorPolling
@@ -732,6 +734,20 @@ class StartupStages(
                 asyncio.create_task(
                     node_heartbeat.serve_until(self._shutdown_event),
                     name="runtime-node-heartbeat",
+                )
+            )
+        posture = build_runtime_posture_publisher(
+            context.config,
+            context.gateway_envelope_state,
+            context.evidence_attestor,
+            lambda: posture_content(
+                self._config, self._commissioning_state, self._loaded_skills
+            ),
+        )
+        if posture is not None:
+            self._background_tasks.append(
+                asyncio.create_task(
+                    posture.serve_until(self._shutdown_event), name="runtime-posture"
                 )
             )
 

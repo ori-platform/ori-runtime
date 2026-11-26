@@ -4,6 +4,7 @@
 """runtime-posture/v1's record, held to the vendored corpus byte for byte."""
 
 import base64
+import dataclasses
 import hashlib
 import json
 from pathlib import Path
@@ -95,6 +96,11 @@ MALFORMED_MEMBERS: list[tuple[str, dict[str, Any]]] = [
     ("alert_classes", {"alert_classes": ("b", "a")}),
     ("alert_classes", {"alert_classes": ("a", "a")}),
     ("alert_classes", {"alert_classes": ("Bad",)}),
+    ("alert_classes", {"alert_classes": ("a" + "b" * 32,)}),
+    ("alert_classes", {"alert_classes": ("caf\u00e9",)}),
+    ("alert_classes", {"alert_classes": (1,)}),
+    ("device_id", {"device_id": 7}),
+    ("release", {"release": "1" * 56 + ".0.0-rc.1"}),
     ("alert_classes", {"alert_classes": tuple(f"c{i}" for i in range(11))}),
     ("boot_generation", {"boot_generation": 0}),
     ("posture_seq", {"posture_seq": True}),
@@ -125,7 +131,7 @@ def test_the_bounds_v1_states_are_accepted_at_their_edge() -> None:
     edge = base.__dict__ | {
         "device_id": "A" * 128,
         "release": "1" * 60 + ".0.0",
-        "alert_classes": tuple(sorted(f"c{i}" for i in range(10))),
+        "alert_classes": tuple(sorted(f"c{i}" + "x" * 30 for i in range(10))),
         "issued_at_ms": 2**53 - 1,
         "commissioned_binding": None,
     }
@@ -174,3 +180,33 @@ async def test_the_readback_answers_every_corpus_case(
     if not answer.get("ok"):
         answer = answer | {"error": {"code": answer["error"]["code"]}}
     assert answer == case["expected"]
+
+
+def test_the_largest_record_v1_allows_fits_the_gateway_payload_bound() -> None:
+    from ori.gateway.payload_bounds import PAYLOAD_MAXIMA, RUNTIME_POSTURE
+
+    largest = PostureMembers(
+        device_id="A" * 128,
+        release="1" * 60 + ".0.0",
+        deployment_profile="development",
+        commissioned_binding="sha256:" + "f" * 64,
+        alert_classes=tuple(sorted(f"{c}" + "x" * 31 for c in "abcdefghij")),
+        boot_generation=2**53 - 1,
+        posture_seq=2**53 - 1,
+        issued_at_ms=2**53 - 1,
+    )
+    record = build_record(
+        largest,
+        public_key=KEYS["A"].public_key().public_bytes_raw(),
+        sign=KEYS["A"].sign,
+    )
+    assert len(record) <= PAYLOAD_MAXIMA[RUNTIME_POSTURE]
+
+
+def test_a_candidate_release_of_exactly_64_characters_is_accepted() -> None:
+    base = _members(json.loads(PASSING[0]["record"]))
+    build_record(
+        dataclasses.replace(base, release="1" * 55 + ".0.0-rc.1"),
+        public_key=KEYS["A"].public_key().public_bytes_raw(),
+        sign=KEYS["A"].sign,
+    )

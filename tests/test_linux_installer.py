@@ -41,7 +41,7 @@ from ori.installer.linux import (
     render_systemd_unit,
     uninstall_runtime,
 )
-from ori.security.release_bundles import ExtractedReleaseBundle
+from ori.security.release_bundles import RELEASE_MANIFEST, ExtractedReleaseBundle
 
 
 def _short_socket_temp_dir() -> str:
@@ -1501,6 +1501,7 @@ def test_offline_preparer_uses_only_verified_wheelhouse_and_exact_version(
     wheelhouse = root / "wheelhouse"
     wheelhouse.mkdir(parents=True)
     (wheelhouse / "requirements.txt").write_text("locked", encoding="utf-8")
+    (wheelhouse.parent / RELEASE_MANIFEST).write_bytes(b"{}")
     (wheelhouse / "ori_runtime-2.3.0-py3-none-any.whl").write_bytes(b"wheel")
     bundle = ExtractedReleaseBundle(root, "2.3.0", "linux-x86_64-python3.12", "3.12", 2)
     commands: list[Sequence[str]] = []
@@ -1530,6 +1531,11 @@ def test_offline_preparer_uses_only_verified_wheelhouse_and_exact_version(
     )
     assert "--require-hashes" in pip_commands[0]
     assert "--no-deps" in pip_commands[-1]
+    # runtime-posture/v1 reads the release from this manifest, so the verified
+    # bytes are left in the installed release unchanged.
+    assert (release / RELEASE_MANIFEST).read_bytes() == (
+        root / RELEASE_MANIFEST
+    ).read_bytes()
 
 
 _EXT_SUFFIX = ".cpython-313-aarch64-linux-gnu.so"
@@ -1555,6 +1561,7 @@ def _pi_preparer(
     wheelhouse = root / "wheelhouse"
     wheelhouse.mkdir(parents=True)
     (wheelhouse / "requirements.txt").write_text("locked", encoding="utf-8")
+    (wheelhouse.parent / RELEASE_MANIFEST).write_bytes(b"{}")
     (wheelhouse / "requirements-pi.txt").write_text("locked", encoding="utf-8")
     (wheelhouse / "ori_runtime-2.3.0-py3-none-any.whl").write_bytes(b"wheel")
     bundle = ExtractedReleaseBundle(
@@ -2010,6 +2017,7 @@ def test_offline_preparer_leaves_a_generic_venv_isolated(tmp_path: Path) -> None
     wheelhouse = root / "wheelhouse"
     wheelhouse.mkdir(parents=True)
     (wheelhouse / "requirements.txt").write_text("locked", encoding="utf-8")
+    (wheelhouse.parent / RELEASE_MANIFEST).write_bytes(b"{}")
     (wheelhouse / "ori_runtime-2.3.0-py3-none-any.whl").write_bytes(b"wheel")
     bundle = ExtractedReleaseBundle(root, "2.3.0", "linux-x86_64-python3.13", "3.13", 2)
     commands: list[Sequence[str]] = []
@@ -2042,6 +2050,7 @@ def test_offline_preparer_rejects_missing_or_ambiguous_runtime_wheel(
     wheelhouse = root / "wheelhouse"
     wheelhouse.mkdir(parents=True)
     (wheelhouse / "requirements.txt").write_text("locked", encoding="utf-8")
+    (wheelhouse.parent / RELEASE_MANIFEST).write_bytes(b"{}")
     bundle = ExtractedReleaseBundle(root, "2.3.0", "linux-x86_64-python3.12", "3.12", 1)
     preparer = OfflineReleasePreparer(bundle=bundle)
     with pytest.raises(LinuxInstallError, match="offline_install_failed"):

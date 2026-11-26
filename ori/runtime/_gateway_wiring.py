@@ -15,7 +15,15 @@ from ori.gateway.envelope_auth import (
     build_gateway_message_auth as _build_gateway_message_auth,
 )
 from ori.gateway.heartbeat import MqttGatewayHeartbeatSubscriber
-from ori.gateway.node_heartbeat import MqttRuntimeNodeHeartbeatPublisher
+from ori.gateway.node_heartbeat import (
+    MqttRuntimeNodeHeartbeatPublisher,
+    _default_client_factory,
+)
+from ori.gateway.posture_publisher import (
+    PostureContent,
+    PostureSigner,
+    RuntimePosturePublisher,
+)
 from ori.gateway.reasoning import MqttGatewayReasoner
 from ori.reasoning.capability_posture import CapabilityPostureTracker
 from ori.reasoning.context_enricher import ContextEnricher, ContextEnricherConfig
@@ -210,6 +218,48 @@ def build_runtime_node_heartbeat_publisher(
         "[runtime] MQTT runtime node heartbeat publisher enabled on ori/%s/runtime/heartbeat (auth=%s)",
         config.device.id,
         "enabled" if auth_enabled else "disabled",
+    )
+    return publisher
+
+
+def build_runtime_posture_publisher(
+    config: Config,
+    envelope_state: GatewayEnvelopeState | None,
+    signer: PostureSigner | None,
+    content: Callable[[], PostureContent | None],
+) -> RuntimePosturePublisher | None:
+    """runtime-posture/v1's publisher, when the gateway, its signing clock and
+    the evidence key all exist; otherwise none, and the device reads `unknown`
+    or `stale` at the gateway."""
+    if not bool(config.gateway.enabled):
+        return None
+    if (
+        envelope_state is None
+        or signer is None
+        or not envelope_state.signing_clock.durable
+    ):
+        logger.warning(
+            "[runtime-posture] no posture record is published: it needs gateway "
+            "authentication with a durable store (the signing clock) and evidence "
+            "(the posture key)"
+        )
+        return None
+    try:
+        publisher = RuntimePosturePublisher(
+            broker_url=config.gateway.broker_url,
+            device_id=config.device.id,
+            content=content,
+            signer=signer,
+            issue_time=envelope_state.signing_clock.issue,
+            client_factory=_default_client_factory,
+            tls_config=getattr(config.gateway, "tls", {}),
+        )
+    except Exception:
+        logger.exception("[runtime] invalid runtime posture configuration")
+        return None
+    logger.info(
+        "[runtime] runtime posture publisher enabled on ori/%s/runtime/posture",
+        config.device.id,
     )
     return publisher
 

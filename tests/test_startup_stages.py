@@ -229,7 +229,14 @@ SURFACE: dict[str, tuple[set[str], set[str], set[str]]] = {
         },
     ),
     "operator_services": (
-        {"_background_tasks", "_build_health_snapshot", "_shutdown_event"},
+        {
+            "_background_tasks",
+            "_build_health_snapshot",
+            "_commissioning_state",
+            "_config",
+            "_loaded_skills",
+            "_shutdown_event",
+        },
         {"_runtime_node_heartbeat_publisher"},
         {"_start_firmware_mqtt_operator_if_enabled"},
     ),

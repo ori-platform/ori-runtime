@@ -2228,9 +2228,8 @@ class OfflineReleasePreparer:
         self._bundle = bundle
         self._runner = runner or _run_command
         self._bootstrap_python = bootstrap_python
-        # Non-fatal conditions an operator needs to know about. Retained as
-        # well as printed: a degradation nobody can see is the failure this
-        # project refuses, and a caller may want to carry it into a report.
+        # Non-fatal conditions for the operator, retained as well as printed:
+        # a degradation nobody can see is the failure this project refuses.
         self.notes: list[str] = []
 
     def prepare(self, staging: Path) -> None:
@@ -2260,6 +2259,7 @@ class OfflineReleasePreparer:
         self._run([*base, "--no-deps", str(wheels[0])])
         if pi_requirements.is_file() and _is_raspberry_pi():
             self._stage_system_modules(venv)
+        self._bundle.leave_manifest(staging)
 
     def validate(self, release: Path) -> None:
         python = release / "venv" / "bin" / "python"

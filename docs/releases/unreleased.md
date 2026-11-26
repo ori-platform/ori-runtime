@@ -235,6 +235,16 @@ release is cut.
 
 ## Added
 
+- The runtime publishes its signed posture record (runtime-posture/v1) on
+  `ori/{device_id}/runtime/posture`, retained. The record carries its
+  verified release, deployment profile, commissioned binding hash and alert
+  classes, signed by the evidence device key. The operator socket's
+  `runtime_device_key` serves the key an installer pins at the gateway. It
+  needs evidence and gateway authentication; without them nothing is
+  published. The installer now leaves the verified bundle manifest in each
+  installed release, which is where `release` is read from; any other install
+  reports `null`.
+
 - Health names the devices this runtime signs nothing for:
   `firmware_liveness.undeclared_device_ids` lists every held device whose
   accepted manifest does not declare `runtime_key_domains`, re-read from the

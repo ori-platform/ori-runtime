@@ -73,21 +73,30 @@ def alert_class_list(classes: Iterable[str]) -> tuple[str, ...]:
     A run that can raise more classes than v1 carries, or a longer name,
     publishes no record rather than a truncated list.
     """
-    ordered = tuple(sorted(set(classes), key=lambda name: name.encode("ascii")))
+    names = list(classes)
+    for name in names:
+        if not (
+            isinstance(name, str) and name.isascii() and _ALERT_CLASS.fullmatch(name)
+        ):
+            raise PostureRecordError(f"alert class {name!r} is outside v1's form")
+    ordered = tuple(sorted(set(names), key=lambda name: name.encode("ascii")))
     if len(ordered) > _ALERT_CLASSES_MAX:
         raise PostureRecordError(f"more than {_ALERT_CLASSES_MAX} alert classes")
-    for name in ordered:
-        if not (name.isascii() and _ALERT_CLASS.fullmatch(name)):
-            raise PostureRecordError(f"alert class {name!r} is outside v1's form")
     return ordered
 
 
 def _checked(members: PostureMembers) -> dict[str, object]:
-    if not (members.device_id.isascii() and _DEVICE_ID.fullmatch(members.device_id)):
+    device_id = members.device_id
+    if not (
+        isinstance(device_id, str)
+        and device_id.isascii()
+        and _DEVICE_ID.fullmatch(device_id)
+    ):
         raise PostureRecordError("device_id is outside v1's form")
     release = members.release
     if release is not None and not (
-        release.isascii()
+        isinstance(release, str)
+        and release.isascii()
         and len(release) <= _RELEASE_MAX
         and _RELEASE.fullmatch(release)
     ):
@@ -95,7 +104,9 @@ def _checked(members: PostureMembers) -> dict[str, object]:
     if members.deployment_profile not in _PROFILES:
         raise PostureRecordError("deployment_profile is outside v1's form")
     binding = members.commissioned_binding
-    if binding is not None and not _SHA256.fullmatch(binding):
+    if binding is not None and not (
+        isinstance(binding, str) and _SHA256.fullmatch(binding)
+    ):
         raise PostureRecordError("commissioned_binding is outside v1's form")
     classes = alert_class_list(members.alert_classes)
     if classes != tuple(members.alert_classes):

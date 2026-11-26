@@ -70,6 +70,7 @@ from ori.security.evidence.registration import (
     build_anchor_registration,
     is_digest,
 )
+from ori.security.posture import PostureMembers, build_record
 from ori.utils.time_utils import now_ms
 
 logger = logging.getLogger(__name__)
@@ -439,6 +440,47 @@ class FirstPartyEvidenceAttestor:
                 safe_failure_reason(exc),
             )
             return None
+
+    def posture_public_key(self) -> bytes | None:
+        """The posture key's raw 32 bytes, or None while the key is not loaded.
+
+        runtime-posture/v1's posture key is this evidence device key.
+        """
+        if self._device_key is None:
+            return None
+        return bytes.fromhex(self._device_key.public_key_hex)
+
+    async def posture_boot_generation(self) -> int | None:
+        """The ledger's boot counter, claimed durably before first use; None
+        while the ledger is unavailable, so no posture record is signed."""
+        if self._ledger is None:
+            return None
+        try:
+            return int(await self._executor.run_async(lambda: self._ledger_boot_id()))
+        except Exception as exc:
+            logger.warning(
+                "[evidence] boot generation unavailable (%s); no posture record "
+                "is signed",
+                safe_failure_reason(exc),
+            )
+            return None
+
+    def _ledger_boot_id(self) -> int:
+        assert self._ledger is not None
+        return self._ledger.boot_id
+
+    def sign_posture_record(self, members: PostureMembers) -> bytes | None:
+        """The signed posture record, or None while the key is not loaded.
+
+        The key signs only through `build_record`, so every posture input it
+        signs carries the `ori.runtime_posture.v1` prefix.
+        """
+        key = self._device_key
+        if key is None:
+            return None
+        return build_record(
+            members, public_key=bytes.fromhex(key.public_key_hex), sign=key.sign
+        )
 
     async def issue_checkpoint(self) -> dict[str, Any] | None:
         """Sign a checkpoint for the current high-water mark and retain it.
