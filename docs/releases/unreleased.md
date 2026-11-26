@@ -484,6 +484,17 @@ release is cut.
 
 ## Fixed
 
+- A Tier C approval reply decides only with the words the runtime asks for.
+  `YES-<proposal_id>` approves and `NO-<proposal_id>` rejects, and with
+  scoped replies turned off a bare `YES` or `NO` also decides. Synonyms such
+  as `OK`, `GO`, `Y`, `APPROVE`, `STOP` or `CANCEL` are invalid in both modes,
+  and the proposal id must be given as sent, ignoring only ASCII case.
+  Separators inside the id, whitespace before the hyphen and any other text
+  after the id now make the reply invalid. Surrounding ASCII whitespace is
+  trimmed, and so are trailing periods, which phone keyboards add on a double
+  space. An invalid reply decides nothing: the runtime keeps listening until
+  the proposal times out, as before.
+
 - A governed Tier C proposal whose workflow failed after its row committed
   (in composing or sending the approval request, or while listening) stayed
   `proposed` for the life of the process, and its safe default did not run
@@ -893,9 +904,10 @@ release is cut.
     without spaces;
   - a Tier C approval reply is case-folded and trimmed in ASCII only, so a
     look-alike letter in its yes/no word or proposal id no longer reads as an
-    approval. Every ASCII reply is classified as before; a reply that opens
-    with non-ASCII whitespace, such as a non-breaking space, is now invalid,
-    and SMS ingress keeps that character rather than trimming it away.
+    approval. A reply that opens with non-ASCII whitespace, such as a
+    non-breaking space, is now invalid, and SMS ingress keeps that character
+    rather than trimming it away. The reply grammar itself is narrowed under
+    Fixed.
 
 - A `skills` directory beside the installed `ori` package is no longer
   first-party. On a wheel install that directory is `site-packages/skills`,
