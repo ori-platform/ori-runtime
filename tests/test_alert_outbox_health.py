@@ -176,9 +176,11 @@ async def test_an_unopened_store_is_starting_until_the_startup_deadline(
 ) -> None:
     runtime = OriRuntime(config_path="ori.yaml")
     runtime._device_id = "dev-01"
-    started = runtime._process_started_monotonic
+    # A small start keeps `now - started` exact in floating point, so the
+    # boundary is the deadline itself on any host's monotonic clock.
+    runtime._process_started_monotonic = 1000.0
     monkeypatch.setattr(
-        "ori.runtime._health.time.monotonic", lambda: started + elapsed_s
+        "ori.runtime._health.time.monotonic", lambda: 1000.0 + elapsed_s
     )
 
     snapshot = await runtime._build_health_snapshot()

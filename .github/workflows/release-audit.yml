@@ -1,0 +1,66 @@
+# Audits what each supported release puts on devices, daily, against OSV. A
+# PR's audit covers the branch under test; this covers the releases devices
+# run, so an advisory published after a release names that release.
+name: Release audit
+
+on:
+  schedule:
+    - cron: "41 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    # Every shipped lock passes OSV before any job here installs or builds a
+    # dependency: an install or a build script runs a package's code.
+    name: Audit lock files
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: none
+
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Audit every shipped lock against OSV
+        run: python3 scripts/audit_locks.py
+
+  releases:
+    # Reads each supported tag's locks from git as data, with main's audit;
+    # nothing from a tag is checked out, installed or run.
+    name: Audit supported releases
+    needs: audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c # v2
+        with:
+          egress-policy: audit
+
+      - name: Checkout with tags
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Audit each supported release against OSV
+        run: python3 scripts/audit_releases.py
