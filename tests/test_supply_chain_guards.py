@@ -686,3 +686,133 @@ def test_the_audit_runs_only_on_a_hosted_ubuntu_image(
 ) -> None:
     text = _workflow().replace("runs-on: ubuntu-latest", f"runs-on: {runner}", 1)
     assert (_main_on(tmp_path, monkeypatch, text) == 0) is allowed
+
+
+# --- the build backend ------------------------------------------------------
+
+LOCKED = "python -m pip install --require-hashes -r requirements/"
+BUILD = "python -m pip install --no-deps --no-build-isolation -e ."
+
+
+def _builds_refused(*runs: str) -> list[str]:
+    steps = "".join(f"      - run: |\n          {run}\n" for run in runs)
+    failures: list[str] = []
+    guard._check_build_backend(
+        Path("ci.yml"),
+        guard._load_workflow(
+            "on: push\njobs:\n  build:\n    runs-on: x\n    steps:\n" + steps
+        ),
+        failures,
+    )
+    return failures
+
+
+@pytest.mark.parametrize(
+    "runs",
+    [
+        (LOCKED + "build.txt", BUILD),
+        (LOCKED + "dev.txt", BUILD),
+        (
+            LOCKED
+            + "runtime.txt\n          "
+            + LOCKED
+            + "build.txt\n          "
+            + BUILD,
+        ),
+        (LOCKED + "build.txt", "python -m pip wheel --no-deps --no-build-isolation ."),
+        (
+            LOCKED + "build.txt",
+            "pip install --no-build-isolation \\\n            .[dev]",
+        ),
+        ("python -m pip install --require-hashes -r requirements/runtime.txt",),
+        (LOCKED + "dev.txt", "python -m build --wheel --no-isolation"),
+        (LOCKED + "build.txt", LOCKED + "runtime.txt", BUILD),
+        (LOCKED + "dev.txt --find-links .", "pip download -d . x"),
+        (LOCKED + "dev.txt", "pip install --no-deps -r requirements/x.txt -c ."),
+        (LOCKED + "dev.txt && " + BUILD,),
+        (LOCKED + "dev.txt", "pip install --no-build-isolation -e './[dev]'"),
+        (
+            '"${PY}" -m pip install --require-hashes -r "$SRC/requirements/dev.txt"',
+            BUILD,
+        ),
+    ],
+)
+def test_a_build_on_the_pinned_backend_passes(runs: tuple[str, ...]) -> None:
+    assert _builds_refused(*runs) == []
+
+
+@pytest.mark.parametrize(
+    "runs",
+    [
+        (LOCKED + "build.txt", "python -m pip install --no-deps -e ."),
+        (LOCKED + "dev.txt", "pip install ."),
+        (LOCKED + "dev.txt", "pip3 install --editable .[dev]"),
+        (LOCKED + "build.txt", "python -m pip wheel --no-deps ."),
+        (LOCKED + "build.txt", "pip install \\\n            -e ."),
+        (BUILD,),
+        (LOCKED + "runtime.txt", BUILD),
+        ("python -m pip install -r requirements/build.txt", BUILD),
+        (BUILD, LOCKED + "build.txt"),
+        (LOCKED + "dev.txt", "pip install -e ./"),
+        (LOCKED + "dev.txt", "pip install -e './[dev]'"),
+        (LOCKED + "dev.txt", "pip install --no-build-isolation x && pip install -e ."),
+        (LOCKED + "dev.txt", "pip install -e .;pip install --no-build-isolation y"),
+        (LOCKED + "dev.txt", "pip install -e."),
+        (LOCKED + "dev.txt", "pip install --editable=.[dev]"),
+        (LOCKED + "dev.txt", "pip install -e '.[dev]'"),
+        (LOCKED + "dev.txt", 'pip install -e "."'),
+        (LOCKED + "dev.txt", "pip install -e . # --no-build-isolation"),
+        (LOCKED + "dev.txt", "python -m build --wheel"),
+        ("python -m build --no-isolation",),
+        (LOCKED + "runtime.txt  # requirements/build.txt", BUILD),
+    ],
+)
+def test_a_build_with_an_unpinned_backend_is_refused(runs: tuple[str, ...]) -> None:
+    assert _builds_refused(*runs)
+
+
+def test_the_backend_lock_matches_the_development_lock() -> None:
+    def pins(lock: str) -> dict[str, str]:
+        text = (ROOT / "requirements" / lock).read_text(encoding="utf-8")
+        return {name: version for _, name, version in locks.python_pins(text)}
+
+    build, dev = pins("build.txt"), pins("dev.txt")
+    assert {"setuptools", "wheel"} <= set(build)
+    assert {name: dev.get(name) for name in build} == build
+
+
+def test_the_local_run_builds_on_the_pinned_backend() -> None:
+    script = (ROOT / "scripts" / "ci_local.sh").read_text()
+    build = script.index("pip install --no-deps --no-build-isolation -e .")
+    assert script.index("--require-hashes -r requirements/dev.txt") < build
+
+
+def test_the_guard_refuses_an_isolated_build_through_its_entry_point(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    steps = "    steps:\n      - run: {}\n"
+    pinned = steps.format(LOCKED + "build.txt") + f"      - run: {BUILD}\n"
+    assert _main_on(tmp_path, monkeypatch, _workflow() + pinned) == 0
+    isolated = steps.format("python -m pip install --no-deps -e .")
+    assert _main_on(tmp_path, monkeypatch, _workflow() + isolated) == 1
+
+
+@pytest.mark.parametrize(
+    ("script", "refused"),
+    [
+        ("pip install --no-deps -e .\n", True),
+        ('"$PY" -m pip wheel --no-deps \\\n  .\n', True),
+        ("python -m build --wheel\n", True),
+        ("pip install --no-deps --no-build-isolation -e .\n", False),
+        ('"$PY" -m pip wheel --no-build-isolation .\n', False),
+    ],
+)
+def test_a_script_must_build_without_isolation_and_leaves_the_lock_to_its_caller(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, script: str, refused: bool
+) -> None:
+    for where in ("scripts", "docs/releases/evidence"):
+        target = tmp_path / where / "build.sh"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(script)
+        assert _main_on(tmp_path, monkeypatch, _workflow()) == int(refused)
+        target.unlink()

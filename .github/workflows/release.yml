@@ -101,7 +101,9 @@ jobs:
       # Only after the protections above have passed, and only then, is code
       # from the tagged commit executed in this job.
       - name: Install build dependencies
-        run: python -m pip install --no-deps -e .
+        run: |
+          python -m pip install --require-hashes -r requirements/build.txt
+          python -m pip install --no-deps --no-build-isolation -e .
 
       # The trigger is a glob and admits any `v*.*.*-*` tag, so this is where a
       # tag that cannot produce a coherent release is refused — before a bundle
@@ -146,7 +148,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --require-hashes -r requirements/dev.txt
-          python -m pip install --no-deps -e .
+          python -m pip install --no-deps --no-build-isolation -e .
 
       - name: Guard supply-chain invariants
         run: |
@@ -271,7 +273,7 @@ jobs:
       - name: Install build dependencies
         run: |
           python -m pip install --require-hashes -r requirements/dev.txt
-          python -m pip install --no-deps -e .
+          python -m pip install --no-deps --no-build-isolation -e .
 
       - name: Resolve release identity
         id: identity
@@ -558,7 +560,8 @@ jobs:
       - name: Install signing dependencies
         run: |
           python -m pip install --require-hashes -r requirements/runtime.txt
-          python -m pip install --no-deps -e .
+          python -m pip install --require-hashes -r requirements/build.txt
+          python -m pip install --no-deps --no-build-isolation -e .
 
       - name: Download unsigned bundles
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -689,7 +692,8 @@ jobs:
       - name: Install verification dependencies
         run: |
           python -m pip install --require-hashes -r requirements/runtime.txt
-          python -m pip install --no-deps -e .
+          python -m pip install --require-hashes -r requirements/build.txt
+          python -m pip install --no-deps --no-build-isolation -e .
 
       - name: Download bundles
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -905,7 +909,8 @@ jobs:
       - name: Install verification dependencies
         run: |
           python -m pip install --require-hashes -r requirements/runtime.txt
-          python -m pip install --no-deps -e .
+          python -m pip install --require-hashes -r requirements/build.txt
+          python -m pip install --no-deps --no-build-isolation -e .
 
       # Re-downloads from the public release origin rather than reusing
       # workflow artifacts, so this exercises exactly what an operator gets.
