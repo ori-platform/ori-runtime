@@ -4,7 +4,9 @@
 """runtime-posture/v1 Publication: when a record goes out, and that it never
 goes out unsigned, stale or without its inputs."""
 
+import asyncio
 import base64
+import contextlib
 import hashlib
 import json
 from dataclasses import replace
@@ -46,16 +48,17 @@ def test_nothing_is_published_in_the_first_minute() -> None:
 
 def test_a_record_is_refreshed_every_sixty_seconds_and_at_once_on_a_change() -> None:
     schedule = PostureSchedule(0.0)
-    schedule.published(60.0, CONTENT)
-    assert not schedule.due(119.999, CONTENT)
-    assert schedule.due(120.0, CONTENT)
+    schedule.published(60.0, 60.0, CONTENT)
+    # Due two polls early, so even a late poll finds it within 60 s of the last send.
+    assert not schedule.due(117.999, CONTENT)
+    assert schedule.due(118.0, CONTENT)
     assert schedule.due(61.0, replace(CONTENT, deployment_profile="staging"))
 
 
 def test_at_most_two_records_in_any_ten_seconds() -> None:
     schedule = PostureSchedule(0.0)
-    schedule.published(60.0, CONTENT)
-    schedule.published(61.0, CONTENT)
+    schedule.published(60.0, 60.0, CONTENT)
+    schedule.published(61.0, 61.0, CONTENT)
     assert not schedule.allowed(69.999)
     assert schedule.allowed(70.0)
 
@@ -63,7 +66,7 @@ def test_at_most_two_records_in_any_ten_seconds() -> None:
 def test_at_most_five_records_in_any_minute() -> None:
     schedule = PostureSchedule(0.0)
     for at in (60.0, 70.0, 80.0, 90.0, 100.0):
-        schedule.published(at, CONTENT)
+        schedule.published(at, at, CONTENT)
     assert not schedule.allowed(110.0)
     assert not schedule.allowed(119.999)
     assert schedule.allowed(120.0)
@@ -375,3 +378,177 @@ def test_code_not_running_from_a_release_venv_has_no_release(tmp_path: Any) -> N
     (release / "env").mkdir()
     installed_release.cache_clear()
     assert installed_release(str(release / "env")) is None
+
+
+# --- across the awaits: current content, windows judged when sent ------------
+
+
+class _SlowSigner(_Signer):
+    """A boot lookup that waits, as the evidence worker can, and moves time."""
+
+    def __init__(self, clock: list[float], advance: float = 0.0) -> None:
+        super().__init__()
+        self.clock = clock
+        self.advance = advance
+        self.release = asyncio.Event()
+
+    async def posture_boot_generation(self) -> int | None:
+        await self.release.wait()
+        self.clock[0] += self.advance
+        return self.generation
+
+
+async def test_a_change_during_the_boot_lookup_is_what_gets_signed() -> None:
+    clock, client = [0.0], _Client()
+    signer = _SlowSigner(clock)
+    live = [CONTENT]
+    publisher = _publisher(signer, clock, [1_000], lambda: live[0])
+    clock[0] = 60.0
+    task = asyncio.create_task(publisher.publish_if_due(client))
+    await asyncio.sleep(0)
+    live[0] = replace(CONTENT, commissioned_binding="sha256:" + "c" * 64)
+    signer.release.set()
+    record = await task
+
+    assert record is not None
+    assert _verified(record)["commissioned_binding"] == "sha256:" + "c" * 64
+
+
+async def test_a_slow_preparation_never_lets_three_through_in_ten_seconds() -> None:
+    clock, client = [0.0], _Client()
+    signer = _SlowSigner(clock, advance=40.0)
+    live = [CONTENT]
+    publisher = _publisher(signer, clock, [1_000, 2_000, 3_000], lambda: live[0])
+    clock[0] = 60.0
+    signer.release.set()
+    sent: list[float] = []
+    for at, profile in (
+        (60.0, "staging"),
+        (100.0, "development"),
+        (101.0, "production"),
+    ):
+        if clock[0] < at:
+            clock[0] = at
+        live[0] = replace(CONTENT, deployment_profile=profile)
+        signer.advance = 40.0 if at == 60.0 else 0.0
+        if await publisher.publish_if_due(client) is not None:
+            sent.append(clock[0])
+    assert all(sum(1 for s in sent if t <= s < t + 10) <= 2 for t in sent)
+
+
+class _TimedClient(_Client):
+    """Records when each submission reaches it; *slow* says how long each takes."""
+
+    def __init__(self, clock: list[float], slow: list[float], rc: int = 0) -> None:
+        super().__init__(rc)
+        self.clock = clock
+        self.slow = slow
+        self.at: list[float] = []
+
+    def publish(self, topic: str, payload: bytes, *, qos: int, retain: bool) -> Any:
+        self.at.append(self.clock[0])
+        self.clock[0] += self.slow.pop(0) if self.slow else 0.0
+        return super().publish(topic, payload, qos=qos, retain=retain)
+
+
+async def _poll(
+    publisher: RuntimePosturePublisher,
+    client: _TimedClient,
+    clock: list[float],
+    until: float,
+) -> None:
+    """The publisher's loop: a check, then the poll interval, on one clock."""
+    from ori.gateway.posture_publisher import POLL_S
+
+    while clock[0] < until:
+        # As the publisher's own loop does: a refused publish is logged there
+        # and the next poll goes on.
+        with contextlib.suppress(RuntimeError):
+            await publisher.publish_if_due(client)
+        clock[0] += POLL_S
+
+
+async def test_a_slow_publish_never_delays_the_refresh_past_sixty_seconds() -> None:
+    clock = [0.0]
+    client = _TimedClient(clock, slow=[30.0, 30.0])
+    publisher = _publisher(_Signer(), clock, list(range(1_000, 9_000, 1_000)))
+    await _poll(publisher, client, clock, until=300.0)
+
+    assert len(client.at) >= 4
+    assert all(b - a <= 60.0 for a, b in zip(client.at, client.at[1:], strict=False))
+
+
+async def test_a_slow_publish_is_counted_when_it_returns() -> None:
+    clock = [0.0]
+    client = _TimedClient(clock, slow=[30.0], rc=4)
+    live = [CONTENT]
+    publisher = _publisher(_Signer(), clock, [1_000, 2_000, 3_000], lambda: live[0])
+    clock[0] = 60.0
+    with pytest.raises(RuntimeError):
+        await publisher.publish_if_due(client)
+    assert clock[0] == 90.0
+    client.rc = 0
+    for at, profile in ((91.0, "staging"), (92.0, "development")):
+        clock[0] = at
+        live[0] = replace(CONTENT, deployment_profile=profile)
+        await publisher.publish_if_due(client)
+
+    # Counted at 90 and 91: the third, at 92, is held.
+    assert client.at == [60.0, 91.0]
+
+
+async def test_refused_submissions_count_toward_five_in_any_minute() -> None:
+    clock = [0.0]
+    client = _TimedClient(clock, slow=[], rc=4)
+    live = [CONTENT]
+    publisher = _publisher(
+        _Signer(), clock, list(range(1_000, 9_000, 1_000)), lambda: live[0]
+    )
+    clock[0] = 60.0
+    for n, at in enumerate((60.0, 70.0, 80.0, 90.0, 100.0, 110.0, 119.0)):
+        clock[0] = at
+        live[0] = replace(CONTENT, deployment_profile=("staging", "development")[n % 2])
+        with pytest.raises(RuntimeError) if n < 5 else contextlib.nullcontext():
+            await publisher.publish_if_due(client)
+
+    assert client.at == [60.0, 70.0, 80.0, 90.0, 100.0]
+
+
+async def test_the_installation_manifest_is_read_off_the_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+
+    from ori.runtime import OriRuntime
+    from tests.package_layout import patch_runtime
+
+    readers: list[bool] = []
+
+    def installed_release() -> None:
+        readers.append(threading.current_thread() is threading.main_thread())
+
+    class _Posture:
+        async def serve_until(self, _event: asyncio.Event) -> None:
+            return None
+
+    patch_runtime(monkeypatch, "installed_release", installed_release)
+    patch_runtime(
+        monkeypatch, "build_runtime_node_heartbeat_publisher", lambda *_a: None
+    )
+    patch_runtime(
+        monkeypatch, "build_runtime_posture_publisher", lambda *_a: _Posture()
+    )
+    runtime: Any = OriRuntime(config_path="ori.yaml")
+
+    async def no_operator(*_a: Any) -> None:
+        return None
+
+    runtime._start_firmware_mqtt_operator_if_enabled = no_operator
+    context = SimpleNamespace(
+        config=_config(), gateway_envelope_state=None, evidence_attestor=None
+    )
+    await runtime._stage_operator_services(context)
+    for task in runtime._background_tasks:
+        await task
+
+    assert readers == [False]
