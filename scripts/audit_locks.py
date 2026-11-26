@@ -28,7 +28,15 @@ from typing import Any
 
 PYTHON_LOCKS = tuple(
     Path("requirements") / f"{name}.txt"
-    for name in ("runtime", "dev", "pi", "phone", "phone-growatt", "phone-victron")
+    for name in (
+        "runtime",
+        "dev",
+        "build",
+        "pi",
+        "phone",
+        "phone-growatt",
+        "phone-victron",
+    )
 )
 CARGO_LOCK = Path("mobile/ori-runtime-mobile/Cargo.lock")
 OSV_QUERYBATCH = "https://api.osv.dev/v1/querybatch"

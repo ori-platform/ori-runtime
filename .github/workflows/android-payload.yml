@@ -202,7 +202,8 @@ jobs:
       - name: Install verification dependencies
         run: |
           python -m pip install --require-hashes -r requirements/runtime.txt
-          python -m pip install --no-deps -e .
+          python -m pip install --require-hashes -r requirements/build.txt
+          python -m pip install --no-deps --no-build-isolation -e .
 
       # The release signs through KMS; the producer and verifier are the same
       # code. A throwaway key exercises them on the bytes this runner built:

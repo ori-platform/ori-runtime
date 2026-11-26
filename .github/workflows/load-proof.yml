@@ -124,7 +124,7 @@ jobs:
       - name: Install hash-locked dependencies
         run: |
           python -m pip install --require-hashes -r requirements/dev.txt
-          python -m pip install --no-deps -e .
+          python -m pip install --no-deps --no-build-isolation -e .
 
       - name: Refuse a retry plugin that could mask a failure
         run: |

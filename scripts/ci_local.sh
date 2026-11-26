@@ -221,7 +221,7 @@ python3 scripts/audit_locks.py || { echo "the lock audit failed; nothing was ins
 python -m pip --version
 # The install is not a step: nothing below is meaningful without it.
 python -m pip install --require-hashes -r requirements/dev.txt -q || { echo "installing requirements/dev.txt failed" >&2; exit 1; }
-python -m pip install --no-deps -e . -q || { echo "installing the runtime failed" >&2; exit 1; }
+python -m pip install --no-deps --no-build-isolation -e . -q || { echo "installing the runtime failed" >&2; exit 1; }
 
 echo "==> Decide whether this change reaches the runtime'"'"'s checks"
 SCOPE="$(decide "$(pattern_of scope)" "running the runtime'"'"'s tests, type checks and audits")"
