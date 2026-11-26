@@ -61,7 +61,7 @@ from ori.runtime._gateway_wiring import (
     warn_gateway_security_posture,
 )
 from ori.runtime._loops import BackgroundLoops
-from ori.runtime._posture import posture_content
+from ori.runtime._posture import installed_release, posture_content
 from ori.runtime._remote_command_wiring import warn_sms_webhook_security_posture
 from ori.runtime._remote_commands import RemoteCommands
 from ori.runtime._sensors import SensorPolling
@@ -745,6 +745,8 @@ class StartupStages(
             ),
         )
         if posture is not None:
+            # The installation's manifest is read once, off the event loop.
+            await asyncio.to_thread(installed_release)
             self._background_tasks.append(
                 asyncio.create_task(
                     posture.serve_until(self._shutdown_event), name="runtime-posture"

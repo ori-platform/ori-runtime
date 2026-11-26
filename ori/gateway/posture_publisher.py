@@ -70,9 +70,12 @@ class PostureSigner(Protocol):
 class PostureSchedule:
     """When a record may be published, on a monotonic clock.
 
-    Due at the first chance after the start wait, after a change, and once the
-    refresh interval has passed; allowed only while both sliding windows have
-    room. Only a publication counts in the windows.
+    Due at the first chance after the start wait, after a change, and two polls
+    before the refresh interval has passed since the last submission (one to
+    find it, one for a late loop). Allowed only while both sliding windows have
+    room; a publication counts in them when its call returns. Preparation, an
+    unreturned publication or a reconnect can postpone a submission past the
+    interval: no maximum gap is promised.
     """
 
     def __init__(self, started: float) -> None:
@@ -86,7 +89,7 @@ class PostureSchedule:
         if self._last is None:
             return True
         at, published = self._last
-        return published != content or now - at >= REFRESH_S
+        return published != content or now - at >= REFRESH_S - 2 * POLL_S
 
     def allowed(self, now: float) -> bool:
         return all(
@@ -94,11 +97,13 @@ class PostureSchedule:
             for span, limit in WINDOWS
         )
 
-    def published(self, now: float, content: PostureContent) -> None:
-        self._published.append(now)
-        while self._published and now - self._published[0] >= WINDOWS[-1][0]:
+    def published(
+        self, submitted: float, returned: float, content: PostureContent
+    ) -> None:
+        self._published.append(returned)
+        while self._published and returned - self._published[0] >= WINDOWS[-1][0]:
             self._published.popleft()
-        self._last = (now, content)
+        self._last = (submitted, content)
 
 
 class RuntimePosturePublisher:
@@ -176,34 +181,50 @@ class RuntimePosturePublisher:
 
     async def publish_if_due(self, client: Any) -> bytes | None:
         """Publish one record when one is due and allowed; the bytes, or None."""
-        now = self._monotonic()
+        if not self._eligible(self._content()):
+            return None
+        generation = await self._generation()
+        if generation is None:
+            return None
+        # Read again after the await: the record describes the run as signed,
+        # and the windows are judged when it is sent, not when it was wanted.
         content = self._content()
-        if content is None or not self._schedule.due(now, content):
+        if content is None or not self._eligible(content):
             return None
-        if not self._schedule.allowed(now):
-            return None
-        record = await self._signed(content)
+        record = self._signed(content, generation)
         if record is None:
             return None
+        submitted = self._monotonic()
         info = await asyncio.to_thread(
             client.publish, self.topic, record, qos=1, retain=True
         )
-        # Counted however paho answers: a refusal (rc != 0) can leave the
+        # The refresh runs from the submission; the windows count the call when
+        # it returns, however paho answers: a refusal (rc != 0) can leave the
         # message queued, to be sent on reconnect.
-        self._schedule.published(now, content)
+        self._schedule.published(submitted, self._monotonic(), content)
         rc = getattr(info, "rc", 0)
         if rc != 0:
             raise RuntimeError(f"the broker client refused the publish (rc={rc})")
         return record
 
-    async def _signed(self, content: PostureContent) -> bytes | None:
+    def _eligible(self, content: PostureContent | None) -> bool:
+        now = self._monotonic()
+        return (
+            content is not None
+            and self._schedule.due(now, content)
+            and self._schedule.allowed(now)
+        )
+
+    async def _generation(self) -> int | None:
         if self._signer.posture_public_key() is None:
             self._skip("the posture key is not loaded")
             return None
         generation = await self._signer.posture_boot_generation()
         if generation is None:
             self._skip("the boot generation cannot be claimed")
-            return None
+        return generation
+
+    def _signed(self, content: PostureContent, generation: int) -> bytes | None:
         try:
             issued_at_ms = self._issue_time()
         except SigningClockUnavailableError:
