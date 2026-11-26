@@ -24,6 +24,7 @@ from ori.network.events import (
 )
 from ori.policy.device_policy import DevicePolicy
 from ori.reasoning.action_dispatcher import (
+    _PROPOSAL_ID_ALPHABET,
     ActionDispatcher,
 )
 from ori.reasoning.action_taken import NO_EXECUTOR
@@ -170,20 +171,90 @@ class TestParseApprovalResponse:
             == "invalid"
         )
 
-    def test_y_returns_true(self):
-        assert classify_approval_response("Y") == "approve"
-
-    def test_approve_returns_true(self):
-        assert classify_approval_response("approve") == "approve"
-
-    def test_go_returns_true(self):
-        assert classify_approval_response("go") == "approve"
-
     def test_no_returns_false(self):
         assert classify_approval_response("NO") == "reject"
 
-    def test_cancel_returns_false(self):
-        assert classify_approval_response("cancel") == "reject"
+    @pytest.mark.parametrize(
+        "word",
+        [
+            "Y",
+            "N",
+            "ok",
+            "go",
+            "approve",
+            "confirm",
+            "cancel",
+            "stop",
+            "reject",
+            "deny",
+        ],
+    )
+    @pytest.mark.parametrize("require_scoped", [False, True])
+    def test_a_synonym_of_yes_or_no_decides_nothing(
+        self, word: str, require_scoped: bool
+    ):
+        for reply in (word, f"{word}-AB12CD34"):
+            assert (
+                classify_approval_response(
+                    reply, proposal_id="AB12CD34", require_scoped=require_scoped
+                )
+                == "invalid"
+            )
+
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            "YES-AB-12-CD-34",
+            ".YES-AB12CD34",
+            "YES-.AB12CD34",
+            "YES-AB12CD34!",
+            "YES-AB12CD34.ok",
+            "YES -AB12CD34",
+            "YES-AB12CD34 ok",
+            "YES-",
+        ],
+    )
+    def test_the_proposal_id_is_matched_as_given(self, reply: str):
+        assert (
+            classify_approval_response(
+                reply, proposal_id="AB12CD34", require_scoped=True
+            )
+            == "invalid"
+        )
+
+    @pytest.mark.parametrize(
+        ("reply", "kind"),
+        [
+            ("YES-AB12CD34.", "approve"),
+            ("no-ab12cd34. ", "reject"),
+            ("YES-AB12CD34 ..", "approve"),
+        ],
+    )
+    def test_a_trailing_period_a_keyboard_adds_is_trimmed(self, reply: str, kind: str):
+        assert (
+            classify_approval_response(
+                reply, proposal_id="AB12CD34", require_scoped=True
+            )
+            == kind
+        )
+        assert "." not in _PROPOSAL_ID_ALPHABET
+
+    def test_a_trailing_period_never_makes_a_bare_reply_scoped(self):
+        assert classify_approval_response("YES.") == "approve"
+        assert (
+            classify_approval_response(
+                "YES.", proposal_id="AB12CD34", require_scoped=True
+            )
+            == "invalid"
+        )
+
+    def test_the_proposal_id_ignores_ascii_case(self):
+        assert (
+            classify_approval_response(
+                "no-ab12cd34", proposal_id="AB12CD34", require_scoped=True
+            )
+            == "reject"
+        )
 
     def test_none_returns_false(self):
         assert classify_approval_response(None) == "invalid"

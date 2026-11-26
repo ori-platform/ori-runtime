@@ -47,7 +47,7 @@ GENERIC_HOSTNAMES = frozenset(
 )
 
 DEVICE_ID_HINT = (
-    "1-64 characters: lowercase letters, digits, dots, dashes, underscores. "
+    "1-128 characters: letters, digits, dots, dashes, underscores. "
     "Examples: pi-ikeja-01, hvac.roof.3, meter_02"
 )
 
