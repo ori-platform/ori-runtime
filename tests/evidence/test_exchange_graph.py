@@ -702,6 +702,16 @@ VECTOR_CONSUMERS = {
 #: tracked, because naming a repository says who is answerable rather than that
 #: the work is done.
 VECTOR_EXEMPTIONS = {
+    ("gateway_api", "heartbeat-evidence-v2"): {
+        "owner": "the runtime",
+        "status": "proof_pending",
+        "tracking": "ori-runtime#1066",
+        "reason": (
+            "Which runtime node heartbeat evidence blocks a gateway admits. The "
+            "runtime builds these blocks; no test yet holds what it builds to "
+            "the admitted cases."
+        ),
+    },
     ("gateway_api", "health-transition-v2"): {
         "owner": "the site gateway",
         "status": "proof_pending",

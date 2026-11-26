@@ -1,0 +1,368 @@
+{
+  "vector_set": "gateway-api/v2 runtime node heartbeat evidence block",
+  "contract": "gateway-api/v2.md",
+  "section": "## Runtime Node Heartbeat Payload",
+  "comment": "Each case is the evidence block of an otherwise admissible runtime node heartbeat, differing from the base case in at most one member, and whether the gateway admits that heartbeat. Members are judged on their own; no case tests how they relate.",
+  "cases": [
+    {
+      "name": "base",
+      "member": null,
+      "note": "every member within its bound",
+      "evidence": {
+        "chain_head_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "attestation_gap_count": 0,
+        "available": true,
+        "action_event_type": "SAFETY_ACTION_EXECUTED"
+      },
+      "admitted": true
+    },
+    {
+      "name": "event_type_empty",
+      "member": "action_event_type",
+      "note": "0 characters",
+      "evidence": {
+        "chain_head_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "attestation_gap_count": 0,
+        "available": true,
+        "action_event_type": ""
+      },
+      "admitted": true
+    },
+    {
+      "name": "event_type_one",
+      "member": "action_event_type",
+      "note": "1 character",
+      "evidence": {
+        "chain_head_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "attestation_gap_count": 0,
+        "available": true,
+        "action_event_type": "A"
+      },
+      "admitted": true
+    },
+    {
+      "name": "event_type_underscore_only",
+      "member": "action_event_type",
+      "note": "an underscore alone",
+      "evidence": {
+        "chain_head_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "attestation_gap_count": 0,
+        "available": true,
+        "action_event_type": "_"
+      },
+      "admitted": true
+    },
+    {
+      "name": "event_type_64",
+      "member": "action_event_type",
+      "note": "64 characters",
+      "evidence": {
+        "chain_head_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "attestation_gap_count": 0,
+        "available": true,
+        "action_event_type": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA_"
+      },
+      "admitted": true
+    },
+    {
+      "name": "event_type_65",
+      "member": "action_event_type",
+      "note": "65 characters",
+      "evidence": {
+        "chain_head_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "attestation_gap_count": 0,
+        "available": true,
+        "action_event_type": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA_"
+      },
+      "admitted": false
+    },
+    {
+      "name": "event_type_lowercase",
+      "member": "action_event_type",
+      "note": "one lowercase character",
+      "evidence": {
+        "chain_head_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "attestation_gap_count": 0,
+        "available": true,
+        "action_event_type": "SAFETY_ACTION_EXECUTEd"
+      },
+      "admitted": false
+    },
+    {
+      "name": "event_type_digit",
+      "member": "action_event_type",
+      "note": "one digit",
+      "evidence": {
+        "chain_head_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "attestation_gap_count": 0,
+        "available": true,
+        "action_event_type": "TIER2_ACTION"
+      },
+      "admitted": false
+    },
+    {
+      "name": "event_type_hyphen",
+      "member": "action_event_type",
+      "note": "a hyphen",
+      "evidence": {
+        "chain_head_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "attestation_gap_count": 0,
+        "available": true,
+        "action_event_type": "SAFETY-ACTION"
+      },
+      "admitted": false
+    },
+    {
+      "name": "event_type_before_a",
+      "member": "action_event_type",
+      "note": "@, the character before A",
+      "evidence": {
+        "chain_head_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "attestation_gap_count": 0,
+        "available": true,
+        "action_event_type": "SAFETY@ACTION"
+      },
+      "admitted": false
+    },
+    {
+      "name": "event_type_after_z",
+      "member": "action_event_type",
+      "note": "[, the character after Z",
+      "evidence": {
+        "chain_head_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "attestation_gap_count": 0,
+        "available": true,
+        "action_event_type": "SAFETY[ACTION"
+      },
+      "admitted": false
+    },
+    {
+      "name": "event_type_before_underscore",
+      "member": "action_event_type",
+      "note": "^, the character before _",
+      "evidence": {
+        "chain_head_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "attestation_gap_count": 0,
+        "available": true,
+        "action_event_type": "SAFETY^ACTION"
+      },
+      "admitted": false
+    },
+    {
+      "name": "event_type_after_underscore",
+      "member": "action_event_type",
+      "note": "a backtick, the character after _",
+      "evidence": {
+        "chain_head_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "attestation_gap_count": 0,
+        "available": true,
+        "action_event_type": "SAFETY`ACTION"
+      },
+      "admitted": false
+    },
+    {
+      "name": "event_type_space",
+      "member": "action_event_type",
+      "note": "a space",
+      "evidence": {
+        "chain_head_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "attestation_gap_count": 0,
+        "available": true,
+        "action_event_type": "SAFETY ACTION"
+      },
+      "admitted": false
+    },
+    {
+      "name": "event_type_non_ascii",
+      "member": "action_event_type",
+      "note": "a letter outside ASCII",
+      "evidence": {
+        "chain_head_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "attestation_gap_count": 0,
+        "available": true,
+        "action_event_type": "SAFETY_ACTIÖN"
+      },
+      "admitted": false
+    },
+    {
+      "name": "event_type_null",
+      "member": "action_event_type",
+      "note": "not a string",
+      "evidence": {
+        "chain_head_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "attestation_gap_count": 0,
+        "available": true,
+        "action_event_type": null
+      },
+      "admitted": false
+    },
+    {
+      "name": "event_type_number",
+      "member": "action_event_type",
+      "note": "not a string",
+      "evidence": {
+        "chain_head_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "attestation_gap_count": 0,
+        "available": true,
+        "action_event_type": 7
+      },
+      "admitted": false
+    },
+    {
+      "name": "chain_head_empty",
+      "member": "chain_head_hash",
+      "note": "the empty string",
+      "evidence": {
+        "chain_head_hash": "",
+        "attestation_gap_count": 0,
+        "available": true,
+        "action_event_type": "SAFETY_ACTION_EXECUTED"
+      },
+      "admitted": true
+    },
+    {
+      "name": "chain_head_63",
+      "member": "chain_head_hash",
+      "note": "63 hex characters",
+      "evidence": {
+        "chain_head_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde",
+        "attestation_gap_count": 0,
+        "available": true,
+        "action_event_type": "SAFETY_ACTION_EXECUTED"
+      },
+      "admitted": false
+    },
+    {
+      "name": "chain_head_65",
+      "member": "chain_head_hash",
+      "note": "65 hex characters",
+      "evidence": {
+        "chain_head_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0",
+        "attestation_gap_count": 0,
+        "available": true,
+        "action_event_type": "SAFETY_ACTION_EXECUTED"
+      },
+      "admitted": false
+    },
+    {
+      "name": "chain_head_uppercase",
+      "member": "chain_head_hash",
+      "note": "uppercase hex",
+      "evidence": {
+        "chain_head_hash": "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF",
+        "attestation_gap_count": 0,
+        "available": true,
+        "action_event_type": "SAFETY_ACTION_EXECUTED"
+      },
+      "admitted": false
+    },
+    {
+      "name": "chain_head_non_hex",
+      "member": "chain_head_hash",
+      "note": "a character outside hex",
+      "evidence": {
+        "chain_head_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeg",
+        "attestation_gap_count": 0,
+        "available": true,
+        "action_event_type": "SAFETY_ACTION_EXECUTED"
+      },
+      "admitted": false
+    },
+    {
+      "name": "chain_head_null",
+      "member": "chain_head_hash",
+      "note": "not a string",
+      "evidence": {
+        "chain_head_hash": null,
+        "attestation_gap_count": 0,
+        "available": true,
+        "action_event_type": "SAFETY_ACTION_EXECUTED"
+      },
+      "admitted": false
+    },
+    {
+      "name": "gap_count_positive",
+      "member": "attestation_gap_count",
+      "note": "a positive count",
+      "evidence": {
+        "chain_head_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "attestation_gap_count": 7,
+        "available": true,
+        "action_event_type": "SAFETY_ACTION_EXECUTED"
+      },
+      "admitted": true
+    },
+    {
+      "name": "gap_count_negative",
+      "member": "attestation_gap_count",
+      "note": "below 0",
+      "evidence": {
+        "chain_head_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "attestation_gap_count": -1,
+        "available": true,
+        "action_event_type": "SAFETY_ACTION_EXECUTED"
+      },
+      "admitted": false
+    },
+    {
+      "name": "gap_count_string",
+      "member": "attestation_gap_count",
+      "note": "not an int",
+      "evidence": {
+        "chain_head_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "attestation_gap_count": "0",
+        "available": true,
+        "action_event_type": "SAFETY_ACTION_EXECUTED"
+      },
+      "admitted": false
+    },
+    {
+      "name": "gap_count_bool",
+      "member": "attestation_gap_count",
+      "note": "a bool, not an int",
+      "evidence": {
+        "chain_head_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "attestation_gap_count": false,
+        "available": true,
+        "action_event_type": "SAFETY_ACTION_EXECUTED"
+      },
+      "admitted": false
+    },
+    {
+      "name": "available_false",
+      "member": "available",
+      "note": "false",
+      "evidence": {
+        "chain_head_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "attestation_gap_count": 0,
+        "available": false,
+        "action_event_type": "SAFETY_ACTION_EXECUTED"
+      },
+      "admitted": true
+    },
+    {
+      "name": "available_string",
+      "member": "available",
+      "note": "not a bool",
+      "evidence": {
+        "chain_head_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "attestation_gap_count": 0,
+        "available": "true",
+        "action_event_type": "SAFETY_ACTION_EXECUTED"
+      },
+      "admitted": false
+    },
+    {
+      "name": "available_int",
+      "member": "available",
+      "note": "an int, not a bool",
+      "evidence": {
+        "chain_head_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "attestation_gap_count": 0,
+        "available": 1,
+        "action_event_type": "SAFETY_ACTION_EXECUTED"
+      },
+      "admitted": false
+    }
+  ]
+}

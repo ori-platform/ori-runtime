@@ -300,9 +300,9 @@ def test_the_corpus_is_the_one_the_contract_pins() -> None:
     manifest = json.loads((VECTORS / "MANIFEST.json").read_text(encoding="utf-8"))
     assert (
         manifest["files"]["controller-profile-vectors-v2.json"]
-        == "3504e144432b3c8f05f66850c60d974ed44588f175702a0a2f2162dbaa6ea6d3"
+        == "ecae54dc1c582226efc088fa3953af6c58381caf163221fe7094035251d61362"
     )
-    assert len(DOCUMENTS) == 7 and len(REJECTS) == 97 and len(REJECT_BYTES) == 6
+    assert len(DOCUMENTS) == 8 and len(REJECTS) == 97 and len(REJECT_BYTES) == 6
     assert len(STATES) == 42
 
 
