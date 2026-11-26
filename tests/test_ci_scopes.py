@@ -360,3 +360,25 @@ def test_the_decision_fails_open_without_a_usable_base(
     repo, _, _ = _repo(tmp_path)
     run, log = _decide(repo, tmp_path, PATTERN="^ori/", **env)
     assert run == "true", log
+
+
+SUITE_ON_PULL_REQUEST = (
+    "(github.event_name != 'pull_request' || matrix.python-version == '3.13')"
+)
+
+
+def test_a_pull_request_runs_the_suite_on_one_interpreter_and_main_on_all() -> None:
+    """The suite and its broker run on 3.13 for a pull request; nothing else is held."""
+    steps = {step.get("name", ""): str(step.get("if", "")) for step in _steps("test")}
+    suite = [
+        name for name, condition in steps.items() if SUITE_ON_PULL_REQUEST in condition
+    ]
+    assert "Run tests" in suite
+    assert all("broker" in name.lower() or name == "Run tests" for name in suite), suite
+    assert sorted(
+        _workflow()["jobs"]["test"]["strategy"]["matrix"]["python-version"]
+    ) == [
+        "3.11",
+        "3.12",
+        "3.13",
+    ]

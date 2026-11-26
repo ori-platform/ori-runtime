@@ -334,21 +334,25 @@ jobs:
       # skip, so the proof cannot drop out of CI unnoticed.
       # The broker's packages are cached per runner image, so a cache hit
       # installs without touching an apt mirror; only a new image downloads.
+      # A pull request runs the suite, and the broker it needs, on 3.13, the
+      # devices' interpreter; every push to main runs them on all three, so an
+      # interpreter-only regression shows at the merge that caused it. 3.11 and
+      # 3.12 keep their other checks on a pull request.
       - name: Key the MQTT broker packages to this runner image
         id: broker-key
-        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests'
+        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests' && (github.event_name != 'pull_request' || matrix.python-version == '3.13')
         run: echo "key=mosquitto-${ImageOS}-${ImageVersion}-$(uname -m)" >> "$GITHUB_OUTPUT"
 
       - name: Restore the MQTT broker packages
         id: broker-cache
-        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests'
+        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests' && (github.event_name != 'pull_request' || matrix.python-version == '3.13')
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/broker-debs
           key: ${{ steps.broker-key.outputs.key }}
 
       - name: Download the MQTT broker packages
-        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests' && steps.broker-cache.outputs.cache-hit != 'true'
+        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests' && (github.event_name != 'pull_request' || matrix.python-version == '3.13') && steps.broker-cache.outputs.cache-hit != 'true'
         # A slow or hung mirror fails here, not at the job's bound.
         timeout-minutes: 10
         run: |
@@ -361,7 +365,7 @@ jobs:
           sudo chown -R "$(id -u):$(id -g)" ~/broker-debs
 
       - name: Install the MQTT broker the redelivery proof runs against
-        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests'
+        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests' && (github.event_name != 'pull_request' || matrix.python-version == '3.13')
         timeout-minutes: 2
         run: |
           sudo dpkg -i ~/broker-debs/*.deb
@@ -369,7 +373,7 @@ jobs:
           command -v mosquitto
 
       - name: Allow the confined test broker to read its temporary config
-        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests'
+        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests' && (github.event_name != 'pull_request' || matrix.python-version == '3.13')
         run: |
           # Ubuntu's Mosquitto profile permits system configs, but these
           # loopback-only brokers use pytest-owned configs and no persistence.
@@ -380,7 +384,7 @@ jobs:
           fi
 
       - name: Run tests
-        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests'
+        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests' && (github.event_name != 'pull_request' || matrix.python-version == '3.13')
         env:
           ORI_REQUIRE_MQTT_BROKER: "1"
           # Coverage is measured once, on the version whose report is uploaded,
