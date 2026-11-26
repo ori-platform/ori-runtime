@@ -56,7 +56,7 @@ OVERSIZE_CEILINGS: dict[str, int] = {
     "ori/state/_firmware.py::FirmwareStore._approve_firmware_device_sync": 168,
     "ori/installer/cli.py::_install": 166,
     "ori/runtime/_remote_commands.py::RemoteCommands._execute_remote_command": 165,
-    "ori/security/firmware/telemetry.py::verify_fault_message": 159,
+    "ori/security/firmware/telemetry.py::verify_fault_message": 156,
     "ori/config/_firmware_mqtt_provisioning.py::parse_firmware_mqtt_provisioning": 158,
     "ori/installer/linux.py::collect_installer_config": 154,
     "ori/reasoning/action_dispatcher.py::ActionDispatcher._dispatch_admitted": 154,
