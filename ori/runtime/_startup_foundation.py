@@ -565,7 +565,7 @@ class StartupFoundation(Commissioning, RemoteCommands):
             ),
             state_store=self._state_store,
             alert_sender=context.alert_sender,
-            emergency_sms_sender=context.sms_action,
+            tier_d_failure_notice=self._tier_d_failure_notice_route(context),
             offline_token_verifier=build_offline_token_verifier(context.config.actions),
             status_indicator=context.status_indicator,
             evidence_attestor=context.evidence_attestor,

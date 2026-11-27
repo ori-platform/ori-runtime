@@ -109,6 +109,7 @@ from ori.reasoning.tier_c_settlement import (
     schedule_dispatch_marker,
     settle_undispatched,
 )
+from ori.reasoning.tier_d_failure_notice import direct_failure_notice
 from ori.security.evidence.first_party import (
     AUTHORITY_UNAVAILABLE_REASON,
     AuthorityUnavailableError,
@@ -451,7 +452,7 @@ class ActionDispatcher:
         self,
         state_store: Any = None,
         alert_sender: Any = None,
-        emergency_sms_sender: Any = None,
+        tier_d_failure_notice: Callable[[str, str], Awaitable[object]] | None = None,
         offline_token_verifier: OfflineTierCTokenVerifier | None = None,
         status_indicator: Any = None,
         config: dict | None = None,
@@ -495,7 +496,7 @@ class ActionDispatcher:
         self._clock: Callable[[], float] = time.monotonic
         self._pending_ceiling: int = _PENDING_OUTCOME_CEILING
         self._alert_sender = alert_sender
-        self._emergency_sms_sender = emergency_sms_sender
+        self._tier_d_failure_notice = tier_d_failure_notice
         self._offline_token_verifier = offline_token_verifier
         self._evidence_attestor = evidence_attestor
         self._config: dict = config or {}
@@ -4550,38 +4551,20 @@ class ActionDispatcher:
             )
 
     async def _emergency_sms(self, action: str, device_id: str) -> None:
-        """Last-resort SMS when a Tier D safety action fails to execute.
+        """Notify the operator that a Tier D act failed. Never raises.
 
-        Uses :class:`~ori.actions.sms.SMSAction` directly — independent of
-        ``_alert_sender`` so that a misconfigured alert channel does not
-        prevent the emergency notification.  Never raises.
-
-        Args:
-            action: The Tier D action name that failed.
-            device_id: The device on which the failure occurred.
+        Through the runtime's route when one is wired (the alert outbox, with
+        the direct SMS as its last resort); otherwise the direct SMS alone.
         """
         try:
-            sms = self._emergency_sms_sender
-            if sms is None:
-                from ori.actions.sms import SMSAction
-
-                sms = SMSAction()
-            contact = self._config.get("operator_contact", "")
-            if not contact:
-                logger.critical(
-                    "ActionDispatcher: no operator_contact configured — "
-                    "cannot send emergency SMS for failed Tier D action=%r",
-                    action,
-                )
+            if self._tier_d_failure_notice is not None:
+                await self._tier_d_failure_notice(action, device_id)
                 return
-            await sms.send(
-                f"CRITICAL: Ori safety action '{action}' FAILED to execute "
-                f"on device {device_id}. Manual intervention required immediately.",
-                to_number=contact,
-            )
+            contact = self._config.get("operator_contact", "")
+            await direct_failure_notice(None, contact, action, device_id)
         except Exception:
             logger.exception(
-                "ActionDispatcher: emergency SMS also failed for action=%r",
+                "ActionDispatcher: the notice that action=%r failed was not sent",
                 action,
             )
 

@@ -125,6 +125,7 @@ SURFACE: dict[str, tuple[set[str], set[str], set[str]]] = {
             "_load_cached_device_policy",
             "_maybe_refresh_remote_device_policy_once",
             "_send_or_queue_alert",
+            "_tier_d_failure_notice_route",
         },
     ),
     "reasoning": (

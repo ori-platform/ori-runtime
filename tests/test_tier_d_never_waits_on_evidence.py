@@ -12,6 +12,7 @@ event. The record of every attempt still lands afterwards, in order.
 from __future__ import annotations
 
 import asyncio
+import functools
 from typing import Any
 
 import pytest
@@ -26,6 +27,7 @@ from ori.reasoning.dispatch_plan import (
 )
 from ori.reasoning.elevator import IntelligenceElevator
 from ori.reasoning.resource_gate import ResourceGate
+from ori.reasoning.tier_d_failure_notice import direct_failure_notice
 from ori.state.store import StateStore
 from ori.utils.time_utils import now_ms
 from tests.waiting import drained, latency_bounds_apply, settle
@@ -704,7 +706,9 @@ class TestAFailedTripsNoticeDoesNotHoldTheNextTrip:
             store, signer=_Signer(), gate=False, approver=_Approver()
         )
         sender = _HeldSender()
-        dispatcher._emergency_sms_sender = sender
+        dispatcher._tier_d_failure_notice = functools.partial(
+            direct_failure_notice, sender, "+2348000000000"
+        )
 
         async def failing(*_args: Any, **_kwargs: Any) -> bool:
             return False
