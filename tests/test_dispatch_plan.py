@@ -1395,7 +1395,8 @@ class TestACancelledTripDoesNotFreeTheResource:
                 action="trip_relay", tier="D", context=context, result=result
             )
         )
-        await started.wait()
+        # Bounded: an executor that never starts fails here, not by hanging.
+        await asyncio.wait_for(started.wait(), 5)
         task.cancel()
         # Let the cancellation settle without re-raising it: the point is what
         # the gate does with a shielded executor that is still driving, not how
