@@ -41,6 +41,14 @@ influence approval or command handling:
   the carrier (see below). Each number keeps at
   most 16 unread replies, the newest, and a reply older than the longest
   approval window plus ten minutes is removed, since no listener can read it.
+- Once its source and rate are admitted, a request must arrive whole, headers
+  and body, within 10 seconds; bytes that trickle in do not extend that. Past
+  it the webhook answers 408 and closes the connection, so a request that
+  never finishes arriving holds its connection, and the runtime's shutdown, for
+  at most that long. A request that did arrive is verified and handed to the
+  SMS action outside that deadline, and is never cut off by it. On Python 3.12
+  and later shutdown waits for that request to finish, for as long as it
+  takes; on Python 3.11 it does not wait (ori-runtime#1076).
 - Before anything is read, each peer address is limited to 600 requests a
   minute. That protects the process's CPU, not the approval path: through a
   signing bridge every request arrives from one address, so this limit cannot

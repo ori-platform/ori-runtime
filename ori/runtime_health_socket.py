@@ -176,6 +176,10 @@ class RuntimeHealthSocketServer:
         self._mode = int(mode)
         self._snapshot_provider = snapshot_provider
         self._server: asyncio.AbstractServer | None = None
+        # The handlers running now, so close() can end them; each only reads a
+        # snapshot, so cancelling one loses nothing.
+        self._handlers: set[asyncio.Task[Any]] = set()
+        self._closing = False
         self._bound_path: str = self._socket_path
         # Device and inode of the socket file this server actually bound.
         self._bound_identity: tuple[int, int, int] | None = None
@@ -189,6 +193,7 @@ class RuntimeHealthSocketServer:
         if os_name() == "nt":
             raise RuntimeError("Unix domain sockets are unsupported on Windows.")
 
+        self._closing = False
         try:
             return await self._bind(self._socket_path)
         except OSError as exc:
@@ -253,11 +258,21 @@ class RuntimeHealthSocketServer:
         return bound
 
     async def close(self) -> None:
-        """Stop serving and cleanup socket file."""
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
-            self._server = None
+        """Stop serving, end every connection handler, and remove the socket file.
+
+        `Server.wait_closed()` waits for connections, not handlers, so a handler
+        still running is cancelled and awaited first, however slow its snapshot.
+        """
+        self._closing = True
+        # Taken before any await, so a concurrent close() finds nothing to close.
+        server, self._server = self._server, None
+        if server is not None:
+            server.close()
+            while running := [task for task in self._handlers if not task.done()]:
+                for task in running:
+                    task.cancel()
+                await asyncio.gather(*running, return_exceptions=True)
+            await server.wait_closed()
         await asyncio.to_thread(self._cleanup_bound_socket)
 
     def _prepare_socket_path(self, socket_path: str) -> str:
@@ -290,6 +305,29 @@ class RuntimeHealthSocketServer:
         self._bound_identity = None
 
     async def _handle_client(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        if self._closing:
+            # Accepted before close() and started after it: not served.
+            writer.transport.abort()
+            return
+        task = asyncio.current_task()
+        if task is not None:
+            self._handlers.add(task)
+        try:
+            await self._serve_client(reader, writer)
+        except asyncio.CancelledError:
+            # Whatever await the cancel reached, the final flush included,
+            # nothing unwritten is left for a peer that may never read it.
+            writer.transport.abort()
+            raise
+        finally:
+            if task is not None:
+                self._handlers.discard(task)
+
+    async def _serve_client(
         self,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
@@ -343,6 +381,11 @@ class RuntimeHealthSocketServer:
             if not _peer_disconnected(exc):
                 raise
         finally:
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                # Cancelled mid-answer: what is unwritten is dropped, not
+                # flushed to a peer that may never read it.
+                writer.transport.abort()
             writer.close()
             try:
                 await writer.wait_closed()
