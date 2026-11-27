@@ -28,9 +28,59 @@ def test_only_a_supported_row_names_a_line() -> None:
     assert releases.supported_lines(text + "| `3.0.x` | Yes |\n") == [(2, 5), (3, 0)]
 
 
+_HEADER = "| Version | Supported |\n| ------- | --------- |\n"
+
+
 def test_no_supported_line_fails_closed() -> None:
+    with pytest.raises(ValueError, match="no supported release line"):
+        releases.supported_lines(_HEADER + "| `2.5.x` | No |\n")
+
+
+def test_no_version_table_fails_closed() -> None:
+    with pytest.raises(ValueError, match="has no"):
+        releases.supported_lines("| `2.5.x` (stable) | Yes |\n")
+
+
+def test_only_the_version_table_is_read() -> None:
+    """A later table quoting values in backticks is not a version table."""
+    text = (
+        _HEADER
+        + "| `2.5.x` (stable) | Yes |\n\nPlatforms:\n\n"
+        + "| Platform | Architecture | Python | Status |\n| --- | --- | --- | --- |\n"
+        + "| Raspberry Pi OS Trixie | `aarch64` | 3.13 (stock) | Production-supported |\n"
+    )
+    assert releases.supported_lines(text) == [(2, 5)]
+
+
+def test_the_real_security_policy_names_its_supported_lines() -> None:
+    text = (Path(__file__).resolve().parents[1] / "SECURITY.md").read_text()
+    yes_rows = [line for line in text.splitlines() if line.rstrip().endswith("| Yes |")]
+    assert len(releases.supported_lines(text)) == len(yes_rows) >= 1
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        _HEADER + "| `2.5.x` | Yes |\n\n| `2.4.x` | Yes |\n",
+        _HEADER + "| `2.5.x` | Yes |\nnote\n| `2.4.x` | Yes |\n",
+        _HEADER + "| `2.5.x` | Yes |\n\n" + _HEADER + "| `2.4.x` | Yes |\n",
+        _HEADER + "| `2.4.x` | Yes | No |\n| `2.5.x` | Yes |\n",
+        "```\n"
+        + _HEADER
+        + "| `2.9.x` | Yes |\n```\n"
+        + _HEADER
+        + "| `2.5.x` | Yes |\n",
+    ],
+    ids=["blank-line", "note-in-table", "second-table", "three-cells", "fenced-copy"],
+)
+def test_a_supported_line_the_parser_would_not_read_fails_closed(text: str) -> None:
     with pytest.raises(ValueError):
-        releases.supported_lines("| `2.5.x` | No |\n")
+        releases.supported_lines(text)
+
+
+def test_crlf_and_alignment_colons_still_read() -> None:
+    text = "| Version | Supported |\r\n| :---: | :---: |\r\n| `2.5.x` | Yes |\r\n"
+    assert releases.supported_lines(text) == [(2, 5)]
 
 
 def test_the_newest_final_patch_is_audited_and_a_prerelease_never() -> None:
@@ -102,7 +152,7 @@ def test_every_finding_names_its_release(
     repo = _tagged_repo(
         tmp_path,
         {
-            "SECURITY.md": "| `2.5.x` (stable) | Yes |\n",
+            "SECURITY.md": _HEADER + "| `2.5.x` (stable) | Yes |\n",
             "requirements/runtime.txt": PIN,
         },
     )
@@ -122,7 +172,10 @@ def test_an_outage_fails_the_release_audit(
 ) -> None:
     repo = _tagged_repo(
         tmp_path,
-        {"SECURITY.md": "| `2.5.x` | Yes |\n", "requirements/runtime.txt": PIN},
+        {
+            "SECURITY.md": _HEADER + "| `2.5.x` | Yes |\n",
+            "requirements/runtime.txt": PIN,
+        },
     )
     monkeypatch.chdir(repo)
 
@@ -145,7 +198,7 @@ def test_an_outage_fails_the_release_audit(
 )
 def test_a_version_row_it_cannot_read_fails_rather_than_drops_a_line(row: str) -> None:
     with pytest.raises(ValueError):
-        releases.supported_lines("| `2.5.x` (stable) | Yes |\n" + row + "\n")
+        releases.supported_lines(_HEADER + "| `2.5.x` (stable) | Yes |\n" + row + "\n")
 
 
 def test_a_tag_is_read_as_exactly_major_minor_patch() -> None:
@@ -162,7 +215,7 @@ def test_one_unreadable_release_does_not_hide_another_releases_findings(
     repo = _tagged_repo(
         tmp_path,
         {
-            "SECURITY.md": "| `2.4.x` | Yes |\n| `2.5.x` | Yes |\n",
+            "SECURITY.md": _HEADER + "| `2.4.x` | Yes |\n| `2.5.x` | Yes |\n",
             "requirements/runtime.txt": PIN,
         },
     )

@@ -33,19 +33,52 @@ CARGO_LOCK = "mobile/ori-runtime-mobile/Cargo.lock"
 NOT_ON_DEVICES = frozenset({"requirements/dev.txt", "requirements/build.txt"})
 
 
+#: The header row of the *Supported Versions* table, the only table read.
+VERSION_HEADER_RE = re.compile(r"^\|\s*Version\s*\|\s*Supported\s*\|\s*$")
+#: A line that reads as a version row, wherever it is: `| `2.5.x` ...` or `| <2.5.0`.
+VERSION_LIKE_RE = re.compile(r"^\s*\|\s*`?<?\d")
+
+
+def _version_rows(security_text: str) -> list[str]:
+    """The rows of the table headed `| Version | Supported |`, separator excluded.
+
+    Fails on no such table, and on any version-like line outside it, such as one
+    past a blank line or a note inside the table, or in another such table: a
+    row that is not read must not be a supported line silently dropped.
+    """
+    text = [line.rstrip("\r") for line in security_text.splitlines()]
+    headers = [i for i, line in enumerate(text) if VERSION_HEADER_RE.match(line)]
+    if not headers:
+        raise ValueError("SECURITY.md has no | Version | Supported | table")
+    end = headers[0] + 1
+    while end < len(text) and text[end].startswith("|"):
+        end += 1
+    stray = [
+        line
+        for i, line in enumerate(text)
+        if not headers[0] < i < end and VERSION_LIKE_RE.match(line)
+    ]
+    if stray:
+        raise ValueError(
+            f"SECURITY.md has a version row outside its table: {stray[0]!r}"
+        )
+    rows = text[headers[0] + 1 : end]
+    return [row for row in rows if not re.fullmatch(r"[|\s:-]+", row)]
+
+
 def supported_lines(security_text: str) -> list[tuple[int, int]]:
     """The `(major, minor)` of every release line SECURITY.md supports.
 
-    A version row that neither reads exactly `No` nor parses fails, rather than
-    dropping a supported line from the audit.
+    Only the *Supported Versions* table is read. A row there of two cells whose
+    second is not exactly `Yes` (and parsed) or `No` fails, rather than dropping
+    a supported line.
     """
     lines: list[tuple[int, int]] = []
-    for row in security_text.splitlines():
-        if not (row.startswith("|") and "`" in row):
-            continue
+    for row in _version_rows(security_text):
+        cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
         if m := SUPPORTED_ROW_RE.match(row):
             lines.append((int(m.group(1)), int(m.group(2))))
-        elif [cell.strip() for cell in row.strip().strip("|").split("|")][-1] != "No":
+        elif len(cells) != 2 or cells[1] != "No":
             raise ValueError(f"SECURITY.md has a version row it cannot read: {row!r}")
     if not lines:
         raise ValueError("SECURITY.md names no supported release line")
