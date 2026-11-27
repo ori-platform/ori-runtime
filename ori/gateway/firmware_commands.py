@@ -13,13 +13,17 @@ This module owns only the transport binding from
 
 Commands are never retained. Provisioning approvals are retained so a rebooted
 device can reload the current runtime command key for its accepted manifest
-epoch.
+epoch. A revoked identity, and one not promoted since it was registered or
+reinstated, has its retained approval cleared by a zero-length retained
+publish, repeated until a promotion (firmware-commands/v2, *Provisioning
+Approval*).
 """
 
 from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import math
@@ -45,6 +49,10 @@ from ori.security.firmware.telemetry import is_firmware_device_id
 from ori.security.published_test_keys import is_published_seed
 
 logger = logging.getLogger(__name__)
+
+#: How often the provisioning topics of withdrawn identities are cleared
+#: again. firmware-commands/v2 bounds no convergence time.
+PROVISIONING_CLEAR_INTERVAL_S = 60.0
 
 mqtt: Any
 try:
@@ -151,6 +159,10 @@ class MqttFirmwareCommandPublisher:
             retain=True,
         )
 
+    async def clear_provisioning_approval(self, device_id: str) -> None:
+        """Delete the topic's retained approval: the one empty payload sent."""
+        await self._send(_topic(device_id, "provision"), b"", retain=True)
+
     async def publish_command(self, device_id: str, message: bytes) -> None:
         await self._publish(
             _topic(device_id, "cmd"),
@@ -177,6 +189,9 @@ class MqttFirmwareCommandPublisher:
     async def _publish(self, topic: str, message: bytes, *, retain: bool) -> None:
         if not isinstance(message, bytes) or not message:
             raise FirmwareCommandPublishError("firmware command payload must be bytes")
+        await self._send(topic, message, retain=retain)
+
+    async def _send(self, topic: str, message: bytes, *, retain: bool) -> None:
         # A publication that fails is never delivered later by this process:
         # nothing is handed to a disconnected client, which would queue it,
         # and a client that took a message and failed it is discarded. A
@@ -276,6 +291,10 @@ class FirmwareCommandService:
                 "the same key; they must differ"
             )
         self._provisioner_key_bytes = provisioner_key_bytes
+        # Orders approvals after any clear that read the authority they
+        # replace: a clear landing after a promotion's approval would leave
+        # the topic empty with nothing to repeat it.
+        self._provision_lock = asyncio.Lock()
 
     async def undeclared_device_ids(self) -> tuple[str, ...]:
         """Held, unrevoked devices whose accepted manifest does not declare the domains.
@@ -316,6 +335,52 @@ class FirmwareCommandService:
             )
 
     async def publish_provisioning_approval(self, device_id: str) -> bytes:
+        async with self._provision_lock:
+            return await self._publish_provisioning_approval(device_id)
+
+    async def clear_withdrawn_provisioning_approvals(self) -> None:
+        """Clear the retained approval of every revoked or unpromoted identity.
+
+        Every identity is attempted, so one that keeps failing holds back no
+        other; if any failed, the pass raises once it has tried them all.
+        """
+        failed: list[tuple[str, Exception]] = []
+        async with self._provision_lock:
+            device_ids = await self._store.list_firmware_devices_revoked_or_unpromoted()
+            for device_id in device_ids:
+                try:
+                    await self._publisher.clear_provisioning_approval(device_id)
+                except Exception as exc:
+                    failed.append((device_id, exc))
+        if failed:
+            device_id, first = failed[0]
+            raise FirmwareCommandPublishError(
+                f"{len(failed)} of {len(device_ids)} clears failed, first "
+                f"{device_id!r}: {first}"
+            ) from first
+
+    async def clear_provisioning_until(
+        self,
+        stop: asyncio.Event,
+        *,
+        interval_s: float = PROVISIONING_CLEAR_INTERVAL_S,
+    ) -> None:
+        """Clear at once, then every *interval_s*, until *stop* is set."""
+        while not stop.is_set():
+            try:
+                await self.clear_withdrawn_provisioning_approvals()
+            except Exception as exc:
+                logger.warning(
+                    "[firmware-commands] could not clear the retained approvals of "
+                    "revoked or unpromoted identities (%s); retrying in %.0fs",
+                    exc,
+                    interval_s,
+                )
+            # The wait ends at the interval, or at once when stop is set.
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stop.wait(), interval_s)
+
+    async def _publish_provisioning_approval(self, device_id: str) -> bytes:
         row = await self._require_approved_device(device_id)
         message = build_provisioning_approval_bytes(
             capability_hash=row["capability_hash"],

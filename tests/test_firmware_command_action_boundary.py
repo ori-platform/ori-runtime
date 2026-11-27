@@ -677,7 +677,13 @@ START_HOLDER_ATTRIBUTES = (
 )
 # report_undeclared_devices reads the registry and logs; it signs nothing,
 # publishes nothing, and is awaited in start rather than handed anywhere.
-START_LIFECYCLE_METHODS = ("connect", "serve_until", "report_undeclared_devices")
+START_LIFECYCLE_METHODS = (
+    "connect",
+    "serve_until",
+    "report_undeclared_devices",
+    # A loop on the runtime's own task list, publishing only the empty clear.
+    "clear_provisioning_until",
+)
 
 
 #: How a reading says it came from firmware: the keys the telemetry gate sets on

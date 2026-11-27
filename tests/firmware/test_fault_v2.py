@@ -336,7 +336,7 @@ EGRESS_SCHEDULING = Counter(
         ): 1,
         (
             "ori/gateway/firmware_commands.py",
-            "MqttFirmwareCommandPublisher._publish",
+            "MqttFirmwareCommandPublisher._send",
             "to_thread",
         ): 2,
         ("ori/gateway/firmware_commands.py", "_stop_client", "to_thread"): 2,
@@ -436,6 +436,24 @@ EGRESS_CALLEES = frozenset(
         "_connect_locked",
         "_manifest_authorizes",
         "_publish",
+        # _publish_provisioning_approval is the approval path, private behind
+        # publish_provisioning_approval and its lock; it publishes once a call.
+        # The rest are the clearing loop: a zero-length retained publish on the
+        # provisioning topic, which reissues no command and no approval. _send
+        # is the one write it and _publish reach. is_set, wait and wait_for are
+        # admitted by name in every egress module, not only in that loop.
+        "_publish_provisioning_approval",
+        "_send",
+        "clear_provisioning_approval",
+        "clear_withdrawn_provisioning_approvals",
+        "is_set",
+        "list_firmware_devices_revoked_or_unpromoted",
+        # A list of the identities a pass failed to clear, and the loop's wait
+        # between passes: neither publishes anything.
+        "append",
+        "suppress",
+        "wait",
+        "wait_for",
         "_refuse_published_seed",
         "_require_approved_device",
         "_require_canonical_b64_32",
