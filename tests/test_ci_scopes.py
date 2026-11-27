@@ -375,10 +375,129 @@ def test_a_pull_request_runs_the_suite_on_one_interpreter_and_main_on_all() -> N
     ]
     assert "Run tests" in suite
     assert all("broker" in name.lower() or name == "Run tests" for name in suite), suite
-    assert sorted(
-        _workflow()["jobs"]["test"]["strategy"]["matrix"]["python-version"]
-    ) == [
-        "3.11",
-        "3.12",
-        "3.13",
+    assert sorted(_suite_shards()) == ["3.11", "3.12", "3.13"]
+
+
+def _suite_shards() -> dict[str, list[tuple[int, int]]]:
+    """(shard, shards) of each test entry, by interpreter."""
+    matrix = _workflow()["jobs"]["test"]["strategy"]["matrix"]
+    # Any key beside `include` would multiply the entries listed there.
+    assert list(matrix) == ["include"], matrix
+    by_version: dict[str, list[tuple[int, int]]] = {}
+    for entry in matrix["include"]:
+        if entry["role"] == "tests":
+            by_version.setdefault(entry["python-version"], []).append(
+                (entry["shard"], entry["shards"])
+            )
+    return by_version
+
+
+def test_each_interpreters_shards_cover_its_whole_suite() -> None:
+    """A shard entry missing, repeated or miscounted would leave tests unrun."""
+    for version, shards in _suite_shards().items():
+        count = len(shards)
+        assert sorted(shards) == [(k, count) for k in range(1, count + 1)], (
+            f"Python {version}'s test entries must be shards 1 to N of N: {shards}"
+        )
+    run = next(step for step in _steps("test") if step.get("name") == "Run tests")
+    assert run["env"]["SHARD"] == "${{ matrix.shard }}/${{ matrix.shards }}"
+    assert '--ori-shard="${SHARD}"' in run["run"]
+
+
+def test_every_role_a_step_names_has_an_entry_and_every_entry_runs_one() -> None:
+    """A role misspelt on either side would skip its steps and read as green."""
+    entries = _workflow()["jobs"]["test"]["strategy"]["matrix"]["include"]
+    declared = {entry["role"] for entry in entries}
+    named = {
+        role
+        for step in _steps("test")
+        for role in re.findall(r"matrix\.role == '([^']*)'", str(step.get("if", "")))
+    }
+    assert named == declared, (
+        f"roles only in steps: {sorted(named - declared)}; "
+        f"roles no step runs: {sorted(declared - named)}"
+    )
+    assert re.findall(r"matrix\.role != ", CI.read_text(encoding="utf-8")) == []
+
+
+#: The only shapes a test-job condition naming the matrix may take, whole. A
+#: step runs on every shard only as part of the suite, its broker or its
+#: coverage upload; anything else outside the suite runs on the first shard or
+#: the last, and the 3.12-only work on its own role's entry.
+MATRIX_CONDITIONS = [
+    rf"{GATE} == 'true' && matrix\.role == '(checks|phone|latency)'",
+    rf"{GATE} == 'true' && matrix\.role == 'tests' && matrix\.shard == 1",
+    rf"{GATE} == 'true' && matrix\.role == 'tests' && "
+    + re.escape(SUITE_ON_PULL_REQUEST)
+    + r"( && steps\.broker-cache\.outputs\.cache-hit != 'true')?",
+    rf"{GATE} == 'true' && matrix\.python-version == '3\.13'",
+    rf"{GATE} == 'true' && matrix\.role == 'tests' && matrix\.shard == matrix\.shards",
+]
+
+
+#: Every name a test-job condition may use. Any other spelling, `matrix['role']`
+#: or a function over the matrix, would pass the shapes below unread.
+CONDITION_NAMES = {
+    "github.event_name",
+    "matrix.python-version",
+    "matrix.role",
+    "matrix.shard",
+    "matrix.shards",
+    "steps.broker-cache.outputs.cache-hit",
+    "steps.docs.outputs.run",
+    "steps.scope.outputs.run",
+}
+#: The steps with a condition that runs them on every entry, by design.
+EVERY_ENTRY = {
+    "Guard supply-chain invariants",
+    "Type check runtime contract boundaries",
+    "Type check the whole package",
+    "Guard Capability Matrix Updated",
+    DOCS_STEP,
+}
+
+
+def test_every_condition_uses_only_the_names_the_guards_read() -> None:
+    for step in _steps("test"):
+        condition = str(step.get("if", ""))
+        bare = re.sub(r"'[^']*'", "''", condition)
+        names = set(re.findall(r"[A-Za-z_][\w.\-]*", bare))
+        assert names <= CONDITION_NAMES, (
+            f"{step.get('name')!r} uses {sorted(names - CONDITION_NAMES)}: "
+            "spell a condition with the names in CONDITION_NAMES"
+        )
+        assert re.fullmatch(r"[\w.\-' ()=!&|]*", condition), (
+            f"{step.get('name')!r}: {condition}"
+        )
+
+
+def test_a_condition_without_the_matrix_is_meant_for_every_entry() -> None:
+    everywhere = {
+        step["name"]
+        for step in _steps("test")
+        if "if" in step and "matrix." not in str(step["if"])
+    }
+    assert everywhere == EVERY_ENTRY, (
+        f"runs on every entry unlisted: {sorted(everywhere - EVERY_ENTRY)}; "
+        f"listed but gated: {sorted(EVERY_ENTRY - everywhere)}"
+    )
+    assert not [s for s in _steps("test") if "continue-on-error" in s]
+
+
+def test_every_matrix_condition_has_an_allowed_shape() -> None:
+    """Read whole, so `|| true` or a dropped role cannot pass as a shard gate."""
+    odd = [
+        f"{step.get('name')!r}: {step['if']}"
+        for step in _steps("test")
+        if "matrix." in str(step.get("if", ""))
+        and not any(
+            re.fullmatch(shape, str(step["if"]).strip()) for shape in MATRIX_CONDITIONS
+        )
     ]
+    assert not odd, f"conditions of no allowed shape: {odd}"
+    per_shard = [
+        step["name"]
+        for step in _steps("test")
+        if re.fullmatch(MATRIX_CONDITIONS[3], str(step.get("if", "")).strip())
+    ]
+    assert per_shard == ["Upload coverage report"], per_shard

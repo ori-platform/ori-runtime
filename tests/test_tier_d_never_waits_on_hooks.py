@@ -890,21 +890,28 @@ class TestASkippedHookLeavesNothingBehind:
     async def test_a_queued_hook_past_its_deadline_never_starts(self) -> None:
         from ori.skills.hook_runner import HookRunner, HookSkippedError
 
-        runner = HookRunner(timeout_s=0.2)
+        # The first must be picked up within the deadline and hold the thread
+        # until the second has timed out; the margins keep both true under load.
+        runner = HookRunner(timeout_s=1.0)
         release = threading.Event()
         started: list[str] = []
 
         def first() -> None:
             started.append("first")
-            release.wait(1.0)
+            release.wait(10.0)
 
         def second() -> None:
             started.append("second")
 
         try:
+            # The second is queued once the first holds the thread, and is
+            # released only after the second timed out and was cancelled.
+            running = asyncio.ensure_future(runner.run(first))
+            await wait_until(lambda: started == ["first"], what="the first hook runs")
             with pytest.raises(HookSkippedError):
-                await asyncio.gather(runner.run(first), runner.run(second))
+                await runner.run(second)
             release.set()
+            await asyncio.gather(running, return_exceptions=True)
             await wait_until(
                 lambda: runner.expired_unstarted == 1,
                 what="runner.expired_unstarted == 1",
