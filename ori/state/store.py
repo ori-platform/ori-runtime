@@ -20,6 +20,7 @@ from ori.state._firmware import (
     FIRMWARE_ANCHOR_COLUMNS,
     FirmwareStore,
 )
+from ori.state._firmware_provisioning import FirmwareProvisioningStore
 from ori.state._history import (
     RAW_HISTORY_RETENTION_MS,
     RECEIPT_READ_TOLERANCE_MS,
@@ -66,6 +67,7 @@ class StateStore(
     RemoteCommandStore,
     AlertOutboxStore,
     FirmwareStore,
+    FirmwareProvisioningStore,
     CommissioningStore,
     DevicePolicyCacheStore,
     ReasoningStore,

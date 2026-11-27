@@ -692,6 +692,14 @@ class StartupStages(
                         name="firmware-liveness",
                     )
                 )
+            # Its first pass runs now, so a revocation committed while this
+            # runtime was down is cleared at start.
+            self._background_tasks.append(
+                asyncio.create_task(
+                    service.clear_provisioning_until(self._shutdown_event),
+                    name="firmware-provision-clear",
+                )
+            )
 
     def _start_evidence_outbound(self, context: StartupContext) -> None:
         """Build the outbound evidence route, and serve it when evidence is on."""

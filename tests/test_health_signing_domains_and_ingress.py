@@ -464,3 +464,34 @@ async def test_a_failed_connect_then_stop_releases_the_scheduler(
     assert runtime._firmware_liveness_scheduler is not None
     await runtime.stop()
     assert runtime._firmware_liveness_scheduler is None
+
+
+async def test_a_start_clears_the_approvals_of_withdrawn_identities(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Through a real start: the first clearing pass runs, so a revocation
+    committed while the runtime was down is cleared at start."""
+    from ori.gateway.firmware_commands import (
+        FirmwareCommandService,
+        MqttFirmwareCommandPublisher,
+    )
+
+    runtime = _firmware_egress_runtime(tmp_path, monkeypatch)
+    passes: list[int] = []
+
+    async def connect(_self: Any) -> None:
+        return None
+
+    async def one_pass(_self: Any) -> None:
+        passes.append(1)
+
+    monkeypatch.setattr(MqttFirmwareCommandPublisher, "connect", connect)
+    monkeypatch.setattr(
+        FirmwareCommandService, "clear_withdrawn_provisioning_approvals", one_pass
+    )
+    task = asyncio.ensure_future(runtime.start())
+    try:
+        await wait_until(lambda: bool(passes), what="the clearing pass at start")
+    finally:
+        await runtime.stop()
+        await asyncio.wait_for(task, timeout=30.0)
