@@ -57,10 +57,11 @@ jobs:
 
     strategy:
       fail-fast: false
-      # A test entry's steps outside the suite, its broker and its coverage
-      # upload run on shard 1 alone. tests/test_ci_scopes.py holds that each
-      # interpreter's entries are shards 1 to N, none missing, and where every
-      # step may run.
+      # Every shard runs its part of the suite with the broker it needs, and
+      # uploads its coverage. A test entry's other steps run on one shard: the
+      # installer checks on the last, the rest on the first, so neither shard
+      # carries them all. tests/test_ci_scopes.py holds that each interpreter's
+      # entries are shards 1 to N, none missing, and where every step may run.
       matrix:
         include:
           - { python-version: "3.11", role: tests, shard: 1, shards: 1 }
@@ -431,7 +432,7 @@ jobs:
       # hosts, including stock Raspberry Pi OS Trixie, commonly use 0002;
       # installer fixtures must not depend on the runner's ambient umask.
       - name: Installer checks under private-group umask
-        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests' && matrix.shard == 1
+        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests' && matrix.shard == matrix.shards
         run: |
           umask 0002
           pytest -q \
@@ -444,7 +445,7 @@ jobs:
       # rather than skipping, so a missing privileged invocation fails here
       # instead of quietly reporting green.
       - name: System-scope installer checks (root, real venv)
-        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests' && matrix.shard == 1
+        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests' && matrix.shard == matrix.shards
         run: |
           sudo -H env ORI_REQUIRE_ROOT_TESTS=1 \
             "$(which python)" -m pytest \

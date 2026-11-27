@@ -422,8 +422,8 @@ def test_every_role_a_step_names_has_an_entry_and_every_entry_runs_one() -> None
 
 #: The only shapes a test-job condition naming the matrix may take, whole. A
 #: step runs on every shard only as part of the suite, its broker or its
-#: coverage upload; anything else outside the suite runs on shard 1, and the
-#: 3.12-only work on its own role's entry.
+#: coverage upload; anything else outside the suite runs on the first shard or
+#: the last, and the 3.12-only work on its own role's entry.
 MATRIX_CONDITIONS = [
     rf"{GATE} == 'true' && matrix\.role == '(checks|phone|latency)'",
     rf"{GATE} == 'true' && matrix\.role == 'tests' && matrix\.shard == 1",
@@ -431,6 +431,7 @@ MATRIX_CONDITIONS = [
     + re.escape(SUITE_ON_PULL_REQUEST)
     + r"( && steps\.broker-cache\.outputs\.cache-hit != 'true')?",
     rf"{GATE} == 'true' && matrix\.python-version == '3\.13'",
+    rf"{GATE} == 'true' && matrix\.role == 'tests' && matrix\.shard == matrix\.shards",
 ]
 
 
@@ -441,6 +442,7 @@ CONDITION_NAMES = {
     "matrix.python-version",
     "matrix.role",
     "matrix.shard",
+    "matrix.shards",
     "steps.broker-cache.outputs.cache-hit",
     "steps.docs.outputs.run",
     "steps.scope.outputs.run",
