@@ -73,6 +73,20 @@ def _real_gpio_allowed() -> bool:
     return os.environ.get(ALLOW_GPIO_ENV, "").strip().lower() in {"1", "true", "yes"}
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    from tests import sharding
+
+    sharding.add_option(parser)
+
+
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    from tests import sharding
+
+    sharding.select(config, items)
+
+
 def pytest_configure(config: pytest.Config) -> None:
     from tests import action_taken_guard
     from tests.package_layout import hold_reexports

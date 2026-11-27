@@ -45,9 +45,10 @@ jobs:
         run: python3 scripts/audit_locks.py
 
   test:
-    # The 3.12-only checks run as their own matrix entry beside the 3.12 tests,
-    # so neither waits on the other.
-    name: ${{ matrix.role == 'checks' && 'Checks (Python 3.12)' || format('Test (Python {0})', matrix.python-version) }}
+    # Every entry runs beside the others, and each entry's name is a required
+    # check: the 3.13 suite, which every pull request waits on, is split across
+    # shards, and the 3.12-only checks across three roles.
+    name: ${{ matrix.role == 'tests' && (matrix.shards > 1 && format('Test (Python {0}, shard {1} of {2})', matrix.python-version, matrix.shard, matrix.shards) || format('Test (Python {0})', matrix.python-version)) || format('{0} (Python {1})', matrix.title, matrix.python-version) }}
     needs: audit
     runs-on: ubuntu-latest
     # About three times the slowest healthy run. Without a bound a hung step
@@ -56,12 +57,20 @@ jobs:
 
     strategy:
       fail-fast: false
+      # A test entry's steps outside the suite, its broker and its coverage
+      # upload run on shard 1 alone. tests/test_ci_scopes.py holds that each
+      # interpreter's entries are shards 1 to N, none missing, and where every
+      # step may run.
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
-        role: ["tests"]
         include:
-          - python-version: "3.12"
-            role: checks
+          - { python-version: "3.11", role: tests, shard: 1, shards: 1 }
+          - { python-version: "3.12", role: tests, shard: 1, shards: 1 }
+          - { python-version: "3.13", role: tests, shard: 1, shards: 3 }
+          - { python-version: "3.13", role: tests, shard: 2, shards: 3 }
+          - { python-version: "3.13", role: tests, shard: 3, shards: 3 }
+          - { python-version: "3.12", role: checks, title: Checks }
+          - { python-version: "3.12", role: phone, title: Phone delivery }
+          - { python-version: "3.12", role: latency, title: Latency budgets }
 
     steps:
       - name: Harden runner
@@ -100,7 +109,7 @@ jobs:
           reason: running the tests that read documents
 
       - name: Start the phone payload build in the background
-        if: steps.scope.outputs.run == 'true' && matrix.role == 'checks'
+        if: steps.scope.outputs.run == 'true' && matrix.role == 'phone'
         # It compiles while dependencies install; the phone tests' own cargo
         # build then waits on cargo's lock for it instead of building on a worker.
         run: |
@@ -315,7 +324,7 @@ jobs:
           bash scripts/guard-capability-matrix.sh "$FROM_REF" "$TO_REF"
 
       - name: Guard Tier Escalation Invariants
-        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests'
+        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests' && matrix.shard == 1
         run: |
           pytest -v \
             tests/test_action_dispatcher.py::TestCapabilityTierGuard \
@@ -323,7 +332,7 @@ jobs:
             tests/test_soundness_verification.py::test_dispatcher_never_downgrades_tier
 
       - name: Guard Skill Capability Invariants
-        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests'
+        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests' && matrix.shard == 1
         run: |
           pytest -v \
             tests/test_skill_loader.py::TestValidation::test_missing_defaults_mapping_for_trigger_raises \
@@ -389,17 +398,19 @@ jobs:
           ORI_REQUIRE_MQTT_BROKER: "1"
           # Coverage is measured once, on the version whose report is uploaded,
           # through sys.monitoring, which costs far less than a trace function.
-          COVERAGE: ${{ matrix.python-version == '3.13' && '--cov=ori --cov-report=term-missing --cov-report=xml' || '' }}
+          # Each shard uploads its part; Codecov merges a commit's uploads.
+          COVERAGE: ${{ matrix.python-version == '3.13' && '--cov=ori --cov-report=xml' || '' }}
+          SHARD: ${{ matrix.shard }}/${{ matrix.shards }}
           COVERAGE_CORE: sysmon
           # The phone delivery tests exercise the Rust payload, not the
-          # interpreter; the checks entry runs them beside these suites.
+          # interpreter; the phone entry runs them beside these suites.
           ORI_SKIP_PHONE_E2E: "1"
         run: |
           # One worker per core; tests that build from the repository share one
           # worker through xdist_group("repo_build"), held by test_parallel_safety.
           # shellcheck disable=SC2086
           pytest tests/ -q -n auto --dist loadgroup --durations=25 \
-            ${COVERAGE} \
+            --ori-shard="${SHARD}" ${COVERAGE} \
             -m "not hardware"
 
       - name: Run the tests that read documents
@@ -420,7 +431,7 @@ jobs:
       # hosts, including stock Raspberry Pi OS Trixie, commonly use 0002;
       # installer fixtures must not depend on the runner's ambient umask.
       - name: Installer checks under private-group umask
-        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests'
+        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests' && matrix.shard == 1
         run: |
           umask 0002
           pytest -q \
@@ -433,7 +444,7 @@ jobs:
       # rather than skipping, so a missing privileged invocation fails here
       # instead of quietly reporting green.
       - name: System-scope installer checks (root, real venv)
-        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests'
+        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests' && matrix.shard == 1
         run: |
           sudo -H env ORI_REQUIRE_ROOT_TESTS=1 \
             "$(which python)" -m pytest \
@@ -457,7 +468,7 @@ jobs:
           if-no-files-found: error
 
       - name: Validate bundled skills load cleanly
-        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests'
+        if: steps.scope.outputs.run == 'true' && matrix.role == 'tests' && matrix.shard == 1
         run: |
           python -c "
           import asyncio, sys
@@ -485,17 +496,16 @@ jobs:
           "
 
       - name: Run the phone delivery tests
-        if: steps.scope.outputs.run == 'true' && matrix.role == 'checks'
-        # Run here rather than in the test entries: they exercise the Rust
-        # payload, and this entry otherwise finishes well before the suites.
+        if: steps.scope.outputs.run == 'true' && matrix.role == 'phone'
+        # Their own entry rather than the test entries': they exercise the Rust
+        # payload, whose build started before the dependencies installed.
         run: pytest tests/test_runtime_mobile_delivery_e2e.py -q -n auto --durations=10
 
       - name: Run the latency budgets alone
-        if: steps.scope.outputs.run == 'true' && matrix.role == 'checks'
+        if: steps.scope.outputs.run == 'true' && matrix.role == 'latency'
         # Wall-clock budgets are waived under parallel workers, whose clock
-        # measures the run's load; here they hold, one test at a time. After the
-        # phone step, which waits on the background payload build, so no
-        # compile runs beside them.
+        # measures the run's load; here they hold, one test at a time, in an
+        # entry that builds and runs nothing else beside them.
         # tests/test_latency_budgets.py keeps this list equal to the modules
         # that carry a budget.
         run: >-
