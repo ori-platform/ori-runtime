@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 _MAX_HEADER_BYTES = 64 * 1024
 _MAX_BODY_BYTES = 64 * 1024
 _CHUNK_BYTES = 4096
+#: The whole request, headers and body, must arrive within this; bytes that
+#: trickle in do not extend it.
+_REQUEST_TIMEOUT_SECONDS = 10.0
 _CONTENT_LENGTH = re.compile(r"[0-9]{1,10}")
 #: Headers whose value decides framing or authentication: one of them repeated
 #: would let two readers take different values, so the request is refused.
@@ -160,7 +163,13 @@ class SMSWebhookServer:
                 await self._respond(writer, 429, "too many requests")
                 return
 
-            request = await self._read_request(reader)
+            try:
+                request = await asyncio.wait_for(
+                    self._read_request(reader), timeout=_REQUEST_TIMEOUT_SECONDS
+                )
+            except TimeoutError:
+                await self._respond(writer, 408, "request timeout")
+                return
             if request is None:
                 await self._respond(writer, 400, "bad request")
                 return
@@ -304,6 +313,7 @@ class SMSWebhookServer:
             403: "Forbidden",
             404: "Not Found",
             405: "Method Not Allowed",
+            408: "Request Timeout",
             429: "Too Many Requests",
             500: "Internal Server Error",
         }.get(status, "OK")

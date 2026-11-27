@@ -347,3 +347,77 @@ async def test_the_per_peer_limit_is_a_cpu_backstop_not_an_approval_budget(
     assert "429" not in await answer("10.0.0.2"), "another peer has its own window"
     clock[0] += 60.001
     assert "429" not in await answer("10.0.0.1")
+
+
+async def _served(monkeypatch: pytest.MonkeyPatch) -> tuple[SMSWebhookServer, Any]:
+    from ori.network import sms_webhook
+
+    monkeypatch.setattr(sms_webhook, "_REQUEST_TIMEOUT_SECONDS", 0.5)
+    sms_action = AsyncMock()
+    sms_action.ingest_incoming_webhook.return_value = True
+    server = SMSWebhookServer(sms_action=sms_action, port=0, token="secret-token")
+    await server.start()
+    return server, sms_action
+
+
+async def test_a_peer_that_sends_nothing_is_answered_408_and_releases_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server, sms_action = await _served(monkeypatch)
+    reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+    try:
+        answer = await asyncio.wait_for(reader.read(), timeout=5)
+        assert answer.startswith(b"HTTP/1.1 408 ")
+        await asyncio.wait_for(server.stop(), timeout=5)
+    finally:
+        writer.transport.abort()
+    sms_action.ingest_incoming_webhook.assert_not_called()
+
+
+async def test_bytes_that_trickle_in_do_not_extend_the_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server, sms_action = await _served(monkeypatch)
+    reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+    try:
+
+        async def trickle() -> None:
+            for byte in b"POST /webhooks/sms/africastalking HTTP/1.1\r\nX-A: " * 4:
+                writer.write(bytes([byte]))
+                await writer.drain()
+                await asyncio.sleep(0.05)
+
+        sending = asyncio.create_task(trickle())
+        answer = await asyncio.wait_for(reader.read(), timeout=5)
+        # Answered while bytes were still arriving: the trickle, about 10 s of
+        # them, did not extend the 0.5 s deadline.
+        assert not sending.done()
+        sending.cancel()
+        assert answer.startswith(b"HTTP/1.1 408 ")
+    finally:
+        writer.transport.abort()
+        await server.stop()
+    sms_action.ingest_incoming_webhook.assert_not_called()
+
+
+async def test_a_request_that_arrives_in_time_is_served(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server, sms_action = await _served(monkeypatch)
+    body = b"from=%2B2348000000000&text=YES"
+    reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+    try:
+        writer.write(
+            b"POST /webhooks/sms/africastalking HTTP/1.1\r\n"
+            b"X-Ori-Webhook-Token: secret-token\r\n"
+            b"Content-Type: application/x-www-form-urlencoded\r\n"
+            + f"Content-Length: {len(body)}\r\n\r\n".encode()
+            + body
+        )
+        await writer.drain()
+        answer = await asyncio.wait_for(reader.read(), timeout=5)
+        assert answer.startswith(b"HTTP/1.1 200 ")
+    finally:
+        writer.transport.abort()
+        await server.stop()
+    sms_action.ingest_incoming_webhook.assert_awaited_once()

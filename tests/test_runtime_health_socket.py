@@ -18,6 +18,7 @@ from ori.runtime import OriRuntime
 from ori.runtime_health_socket import RuntimeHealthSocketServer, _peer_disconnected
 from ori.state.store import StateStore
 from ori.utils.time_utils import now_ms
+from tests.waiting import wait_until
 
 
 def _short_socket_path(suffix: str) -> str:
@@ -279,6 +280,228 @@ async def test_a_peer_that_hangs_up_before_the_answer_is_not_an_error(caplog):
     finally:
         await server.close()
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("peer", ["hung_up", "waiting"])
+async def test_close_ends_every_handler_it_started(peer: str) -> None:
+    """However slowly a handler runs, none is left pending after close()."""
+    _require_unix_socket_bindable()
+    socket_path = _short_socket_path(f"close-{peer}")
+    served = asyncio.Event()
+    never = asyncio.Event()
+
+    async def stuck_snapshot() -> dict[str, Any]:
+        served.set()
+        await never.wait()
+        return {}
+
+    server = RuntimeHealthSocketServer(
+        socket_path=socket_path,
+        mode=0o660,
+        snapshot_provider=stuck_snapshot,
+    )
+    bound = await server.start()
+    _, writer = await asyncio.open_unix_connection(bound)
+    try:
+        writer.write(b"GET_HEALTH\n")
+        await writer.drain()
+        await asyncio.wait_for(served.wait(), timeout=5)
+        if peer == "hung_up":
+            writer.transport.abort()
+        await asyncio.wait_for(server.close(), timeout=5)
+        pending = [
+            task
+            for task in asyncio.all_tasks()
+            if not task.done() and "_handle_client" in repr(task.get_coro())
+        ]
+        assert pending == []
+    finally:
+        writer.transport.abort()
+
+
+@pytest.mark.asyncio
+async def test_a_finished_handler_is_not_held() -> None:
+    _require_unix_socket_bindable()
+    server = RuntimeHealthSocketServer(
+        socket_path=_short_socket_path("held"),
+        mode=0o660,
+        snapshot_provider=lambda: {"ok": True},
+    )
+    bound = await server.start()
+    try:
+        for _ in range(3):
+            reader, writer = await asyncio.open_unix_connection(bound)
+            writer.write(b"GET_HEALTH\n")
+            await writer.drain()
+            assert await asyncio.wait_for(reader.readline(), timeout=5)
+            writer.close()
+        await wait_until(lambda: not server._handlers, what="no handler held")
+    finally:
+        await server.close()
+
+
+async def _get_health(bound: str) -> bytes:
+    reader, writer = await asyncio.open_unix_connection(bound)
+    try:
+        writer.write(b"GET_HEALTH\n")
+        await writer.drain()
+        return await asyncio.wait_for(reader.readline(), timeout=5)
+    finally:
+        writer.close()
+
+
+@pytest.mark.asyncio
+async def test_a_server_started_again_after_close_serves() -> None:
+    _require_unix_socket_bindable()
+    server = RuntimeHealthSocketServer(
+        socket_path=_short_socket_path("again"),
+        mode=0o660,
+        snapshot_provider=lambda: {"device_id": "dev-01"},
+    )
+    bound = await server.start()
+    assert b'"ok":true' in await _get_health(bound)
+    await server.close()
+    bound = await server.start()
+    try:
+        assert b'"ok":true' in await _get_health(bound)
+    finally:
+        await server.close()
+
+
+@pytest.mark.asyncio
+async def test_two_closes_at_once_both_succeed() -> None:
+    _require_unix_socket_bindable()
+    served = asyncio.Event()
+
+    async def stuck() -> dict[str, Any]:
+        served.set()
+        await asyncio.Event().wait()
+        return {}
+
+    server = RuntimeHealthSocketServer(
+        socket_path=_short_socket_path("twice"),
+        mode=0o660,
+        snapshot_provider=stuck,
+    )
+    bound = await server.start()
+    _, writer = await asyncio.open_unix_connection(bound)
+    try:
+        writer.write(b"GET_HEALTH\n")
+        await writer.drain()
+        await asyncio.wait_for(served.wait(), timeout=5)
+        results = await asyncio.wait_for(
+            asyncio.gather(server.close(), server.close(), return_exceptions=True),
+            timeout=5,
+        )
+        assert results == [None, None]
+    finally:
+        writer.transport.abort()
+
+
+@pytest.mark.asyncio
+async def test_close_does_not_wait_on_an_answer_its_peer_never_reads() -> None:
+    _require_unix_socket_bindable()
+    writing = asyncio.Event()
+
+    def large() -> dict[str, Any]:
+        writing.set()
+        return {"pad": "x" * 50 * 1024 * 1024}
+
+    server = RuntimeHealthSocketServer(
+        socket_path=_short_socket_path("unread"),
+        mode=0o660,
+        snapshot_provider=large,
+    )
+    bound = await server.start()
+    peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    peer.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
+    peer.setblocking(False)
+    try:
+        await asyncio.get_running_loop().sock_connect(peer, bound)
+        await asyncio.get_running_loop().sock_sendall(peer, b"GET_HEALTH\n")
+        await asyncio.wait_for(writing.wait(), timeout=5)
+        await asyncio.sleep(0.2)  # the answer is now stuck in the socket buffers
+        await asyncio.wait_for(server.close(), timeout=5)
+    finally:
+        peer.close()
+
+
+@pytest.mark.asyncio
+async def test_close_does_not_wait_on_a_final_flush_its_peer_never_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancelled while closing: the answer is written, drain() has returned,
+    and the handler is waiting for its buffered bytes to reach the peer."""
+    _require_unix_socket_bindable()
+    served: list[asyncio.StreamWriter] = []
+    start_unix_server = asyncio.start_unix_server
+
+    async def small_buffers(callback: Any, *args: Any, **kwargs: Any) -> Any:
+        async def held(reader: Any, writer: asyncio.StreamWriter) -> None:
+            sock = writer.get_extra_info("socket")
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 2048)
+            served.append(writer)
+            await callback(reader, writer)
+
+        return await start_unix_server(held, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "start_unix_server", small_buffers)
+    server = RuntimeHealthSocketServer(
+        socket_path=_short_socket_path("flush"),
+        mode=0o660,
+        # Below asyncio's 64 KiB write high-water mark, so drain() returns.
+        snapshot_provider=lambda: {"pad": "x" * 32 * 1024},
+    )
+    bound = await server.start()
+    peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    peer.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
+    peer.setblocking(False)
+    try:
+        loop = asyncio.get_running_loop()
+        await loop.sock_connect(peer, bound)
+        await loop.sock_sendall(peer, b"GET_HEALTH\n")
+        await wait_until(lambda: bool(served), what="the connection")
+        writer = served[0]
+        # The handler's finally has closed the writer and waits on the flush.
+        await wait_until(
+            lambda: (
+                writer.is_closing() and writer.transport.get_write_buffer_size() > 0
+            ),
+            what="the final flush, unread",
+        )
+        await asyncio.wait_for(server.close(), timeout=5)
+    finally:
+        peer.close()
+
+
+@pytest.mark.asyncio
+async def test_a_handler_starting_after_close_is_not_served() -> None:
+    """A connection accepted before close() whose handler starts after it."""
+    asked: list[int] = []
+
+    def snapshot() -> dict[str, Any]:
+        asked.append(1)
+        return {}
+
+    server = RuntimeHealthSocketServer(
+        socket_path=_short_socket_path("late"), mode=0o660, snapshot_provider=snapshot
+    )
+    await server.close()
+    aborted: list[int] = []
+
+    class _Transport:
+        def abort(self) -> None:
+            aborted.append(1)
+
+    class _Writer:
+        transport = _Transport()
+
+    reader = asyncio.StreamReader()
+    reader.feed_data(b"GET_HEALTH\n")
+    await server._handle_client(reader, _Writer())  # type: ignore[arg-type]
+    assert asked == []
+    assert aborted == [1]
 
 
 @pytest.mark.asyncio
