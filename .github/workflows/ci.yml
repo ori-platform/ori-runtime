@@ -45,10 +45,11 @@ jobs:
         run: python3 scripts/audit_locks.py
 
   test:
-    # Every entry runs beside the others, and each entry's name is a required
-    # check: the 3.13 suite, which every pull request waits on, is split across
-    # shards, and the 3.12-only checks across three roles.
-    name: ${{ matrix.role == 'tests' && (matrix.shards > 1 && format('Test (Python {0}, shard {1} of {2})', matrix.python-version, matrix.shard, matrix.shards) || format('Test (Python {0})', matrix.python-version)) || format('{0} (Python {1})', matrix.title, matrix.python-version) }}
+    # Every entry runs beside the others, and the ruleset requires each one's
+    # name: each interpreter's suite is split across shards (a pull request
+    # runs the suite on 3.13; the queue and main on all three), and the
+    # 3.12-only checks across three roles.
+    name: ${{ matrix.role == 'tests' && format('Test (Python {0}, shard {1} of {2})', matrix.python-version, matrix.shard, matrix.shards) || format('{0} (Python {1})', matrix.title, matrix.python-version) }}
     needs: audit
     runs-on: ubuntu-latest
     # About three times the slowest healthy run. Without a bound a hung step
@@ -64,8 +65,12 @@ jobs:
       # entries are shards 1 to N, none missing, and where every step may run.
       matrix:
         include:
-          - { python-version: "3.11", role: tests, shard: 1, shards: 1 }
-          - { python-version: "3.12", role: tests, shard: 1, shards: 1 }
+          - { python-version: "3.11", role: tests, shard: 1, shards: 3 }
+          - { python-version: "3.11", role: tests, shard: 2, shards: 3 }
+          - { python-version: "3.11", role: tests, shard: 3, shards: 3 }
+          - { python-version: "3.12", role: tests, shard: 1, shards: 3 }
+          - { python-version: "3.12", role: tests, shard: 2, shards: 3 }
+          - { python-version: "3.12", role: tests, shard: 3, shards: 3 }
           - { python-version: "3.13", role: tests, shard: 1, shards: 3 }
           - { python-version: "3.13", role: tests, shard: 2, shards: 3 }
           - { python-version: "3.13", role: tests, shard: 3, shards: 3 }
