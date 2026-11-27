@@ -46,9 +46,8 @@ influence approval or command handling:
   it the webhook answers 408 and closes the connection, so a request that
   never finishes arriving holds its connection, and the runtime's shutdown, for
   at most that long. A request that did arrive is verified and handed to the
-  SMS action outside that deadline, and is never cut off by it. On Python 3.12
-  and later shutdown waits for that request to finish, for as long as it
-  takes; on Python 3.11 it does not wait (ori-runtime#1076).
+  SMS action outside that deadline, and is never cut off by it: shutdown waits
+  for that request to finish, for as long as it takes.
 - Before anything is read, each peer address is limited to 600 requests a
   minute. That protects the process's CPU, not the approval path: through a
   signing bridge every request arrives from one address, so this limit cannot

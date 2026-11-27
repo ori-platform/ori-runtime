@@ -63,6 +63,11 @@ class SMSWebhookServer:
         allowed_source_cidrs: list[str] | tuple[str, ...] | None = None,
     ) -> None:
         self._sms_action = sms_action
+        # The handlers running now, so stop() can wait for each to finish.
+        self._handlers: set[asyncio.Task[Any]] = set()
+        # The one drain of a stop(): every caller waits for it to finish.
+        self._drain: asyncio.Future[None] | None = None
+        self._stopping = False
         self._host = host
         self._port = int(port)
         self._path = path
@@ -100,8 +105,10 @@ class SMSWebhookServer:
     async def start(self) -> None:
         if self._server is not None:
             return
+        self._stopping = False
+        self._drain = None
         self._server = await asyncio.start_server(
-            self._handle_client, self._host, self._port
+            self._tracked_client, self._host, self._port
         )
         logger.info(
             "SMSWebhookServer: listening on host=%s port=%d path=%s",
@@ -111,11 +118,53 @@ class SMSWebhookServer:
         )
 
     async def stop(self) -> None:
-        if self._server is None:
+        """Stop accepting, and return once every request being handled is done.
+
+        Handlers are awaited, never cancelled: a request that arrived is
+        processed to completion. Every caller waits for the same drain, and a
+        caller cancelled meanwhile still waits for it, then re-raises: shutdown
+        cancels its tasks, and a cancel passed on would cut a request off.
+        `Server.wait_closed()` waits for connections on Python 3.12 and later
+        but not on 3.11, so the handlers are awaited here.
+        """
+        self._stopping = True
+        if self._drain is None:
+            server, self._server = self._server, None
+            if server is None:
+                return
+            self._drain = asyncio.ensure_future(self._drain_server(server))
+        drain, cancelled = self._drain, False
+        while not drain.done():
+            try:
+                await asyncio.shield(drain)
+            except asyncio.CancelledError:
+                cancelled = True
+        if cancelled:
+            raise asyncio.CancelledError
+        drain.result()
+
+    async def _drain_server(self, server: asyncio.AbstractServer) -> None:
+        server.close()
+        # asyncio.wait, unlike gather, cancels nothing it waits on.
+        while running := [task for task in self._handlers if not task.done()]:
+            await asyncio.wait(running)
+        await server.wait_closed()
+
+    async def _tracked_client(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        if self._stopping:
+            # Accepted before stop() and started after it: not served.
+            writer.close()
             return
-        self._server.close()
-        await self._server.wait_closed()
-        self._server = None
+        task = asyncio.current_task()
+        if task is not None:
+            self._handlers.add(task)
+        try:
+            await self._handle_client(reader, writer)
+        finally:
+            if task is not None:
+                self._handlers.discard(task)
 
     def _rate_check(self, peer_ip: str) -> bool:
         """Return True when the request is within rate limits, False to reject."""
