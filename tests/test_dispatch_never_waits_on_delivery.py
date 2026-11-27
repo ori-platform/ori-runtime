@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import functools
 import hashlib
 import json
 import os
@@ -72,6 +73,7 @@ from ori.reasoning.dispatch_plan import (
 from ori.reasoning.elevator import IntelligenceElevator
 from ori.reasoning.resource_gate import ResourceGate
 from ori.reasoning.tier_c_admission import TierCAuthorityFacts
+from ori.reasoning.tier_d_failure_notice import direct_failure_notice
 from ori.security.evidence import first_party
 from ori.security.evidence.authority_keys import (
     PURPOSE_RECEIPT,
@@ -934,7 +936,9 @@ class TestAFailedTripStillRaisesTheAlarm:
                     sent.append(time.monotonic())
                     return True
 
-            site.dispatcher._emergency_sms_sender = _Sms()
+            site.dispatcher._tier_d_failure_notice = functools.partial(
+                direct_failure_notice, _Sms(), "+2348000000000"
+            )
             attempted: list[float] = []
 
             async def fails(*_a: Any, **_k: Any) -> bool:

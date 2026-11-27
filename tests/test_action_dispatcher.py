@@ -2050,18 +2050,33 @@ class TestPolicyStateSnapshot:
         assert snapshot["is_expired"] is False
 
 
-class TestEmergencySmsSender:
-    async def test_emergency_sms_uses_injected_sender(self):
-        injected_sms = AsyncMock()
-        injected_sms.send = AsyncMock(return_value=True)
+class TestTierDFailureNoticeRoute:
+    async def test_the_notice_takes_the_injected_route(self):
+        route = AsyncMock()
         d = ActionDispatcher(
-            emergency_sms_sender=injected_sms,
+            tier_d_failure_notice=route,
             config={"operator_contact": "+2348000000000"},
         )
 
         await d._emergency_sms("trip_relay", "dev-01")
 
-        injected_sms.send.assert_awaited_once()
+        route.assert_awaited_once_with("trip_relay", "dev-01")
+
+    async def test_without_a_route_the_direct_sms_is_sent(self, monkeypatch):
+        from ori.reasoning import action_dispatcher
+
+        direct = AsyncMock(return_value=True)
+        monkeypatch.setattr(action_dispatcher, "direct_failure_notice", direct)
+        d = ActionDispatcher(config={"operator_contact": "+2348000000000"})
+
+        await d._emergency_sms("trip_relay", "dev-01")
+
+        direct.assert_awaited_once_with(None, "+2348000000000", "trip_relay", "dev-01")
+
+    async def test_a_route_that_raises_is_contained(self):
+        d = ActionDispatcher(tier_d_failure_notice=AsyncMock(side_effect=RuntimeError))
+
+        await d._emergency_sms("trip_relay", "dev-01")
 
 
 class TestOfflineTokenApproval:

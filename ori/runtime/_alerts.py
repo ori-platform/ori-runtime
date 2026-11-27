@@ -6,6 +6,7 @@
 import asyncio
 import json
 import logging
+import secrets
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
@@ -21,6 +22,11 @@ from ori.actions.alert_failover import CAP_SPENT, AlertFailoverSender
 from ori.config import Config
 from ori.policy.alert_classes import alert_class_for_trigger
 from ori.reasoning.action_taken import SUPPRESSED
+from ori.reasoning.tier_d_failure_notice import (
+    FAILURE_NOTICE_TRIGGER,
+    direct_failure_notice,
+    failure_notice_text,
+)
 from ori.runtime._alert_text import (
     alert_policy_count_key,
     build_alert_id,
@@ -321,6 +327,151 @@ class AlertDelivery(RuntimeCore):
             return True
         logger.error("[safety] notice submission failed and StateStore is unavailable")
         return False
+
+    def _tier_d_failure_notice_route(
+        self, context: Any
+    ) -> Callable[[str, str], Awaitable[None]]:
+        """The dispatcher's route for the notice that a Tier D act failed."""
+        alert_sender = context.alert_sender
+        sms_action = context.sms_action
+        self._tier_d_last_resort = sms_action
+
+        async def route(action: str, device_id: str) -> None:
+            if alert_sender is None:
+                # No outbox route: the direct SMS alone, as before it existed.
+                contact = self._operator_contact
+                await direct_failure_notice(sms_action, contact, action, device_id)
+                return
+            await self._send_tier_d_failure_notice(
+                action, device_id, alert_sender=alert_sender, last_resort=sms_action
+            )
+
+        return route
+
+    async def _send_tier_d_failure_notice(
+        self,
+        action: str,
+        device_id: str,
+        *,
+        alert_sender: AlertFailoverSender,
+        last_resort: Any,
+    ) -> None:
+        """Notify the operator that a Tier D act failed: sent at once, queued beside.
+
+        The first attempt waits on no store: the failover sender, then the
+        direct SMS as last resort, whatever channel configuration or posture
+        would exclude. Its `tier_d` row is written beside it, and the retry
+        loop leaves the row alone until that attempt is settled: refused, or
+        accepted and recorded. An acceptance that cannot be recorded keeps the
+        row out of this process's retries; after a restart it is sent again.
+        Until the row commits there is no durable retry obligation: a crash
+        before then loses the notice. A shutdown that finds the primary channel
+        hung can end its drain before the SMS is tried, and so lose an
+        uncommitted notice.
+        """
+        recipient = self._operator_contact
+        if not recipient:
+            await direct_failure_notice(last_resort, recipient, action, device_id)
+            return
+        channel = self._primary_alert_channel
+        alert_ts = now_ms()
+        alert = build_outbound_alert(
+            intent=AlertIntent.TIER_A_ALERT,
+            sms_body=failure_notice_text(action, device_id),
+            template_variables=(
+                f"{action} failed"[:64],
+                self._device_location or self._device_id or "site",
+                format_alert_timestamp(alert_ts, self._device_timezone),
+            ),
+        )
+        trigger_name = f"{FAILURE_NOTICE_TRIGGER}{action}"
+        # Random, not derived from the clock or the text: every failure is its
+        # own notice, whatever the clock reads, before or after a restart.
+        alert_id = secrets.token_hex(32)
+        self._alert_first_attempts.add(alert_id)
+        accepted = settled = False
+        try:
+            queued = (
+                None
+                if self._state_store is None
+                else asyncio.ensure_future(
+                    self._state_store.enqueue_alert(
+                        alert_id=alert_id,
+                        channel=channel,
+                        recipient=recipient,
+                        message=alert.sms_body,
+                        intent=alert.intent.value,
+                        template_variables=alert.template_variables,
+                        action_tier="A",
+                        trigger_name=trigger_name,
+                        original_ts=alert_ts,
+                        notice_kind=NoticeKind.TIER_D.value,
+                    )
+                )
+            )
+            receipt = await self._submit(
+                alert_sender,
+                alert,
+                recipient,
+                channel,
+                allow_failover=True,
+                budget=self._budget_check(NoticeKind.TIER_D.value, "A"),
+            )
+            if not receipt.accepted and await direct_failure_notice(
+                last_resort, recipient, action, device_id
+            ):
+                receipt = AlertSendReceipt.accepted_without_provider_receipt(
+                    channel="sms"
+                )
+            accepted = receipt.accepted
+            settled = await self._record_tier_d_failure_notice(
+                queued, alert_id, receipt
+            )
+        finally:
+            # An acceptance not yet recorded stays out of the retry loop.
+            if settled or not accepted:
+                self._alert_first_attempts.discard(alert_id)
+
+    async def _record_tier_d_failure_notice(
+        self,
+        queued: asyncio.Future[bool] | None,
+        alert_id: str,
+        receipt: AlertSendReceipt,
+    ) -> bool:
+        """Settle the first attempt's row: accepted, or left for the retry loop.
+
+        False only when the send was accepted and that could not be recorded.
+        """
+        inserted = False
+        if queued is not None:
+            try:
+                inserted = await queued
+            except Exception:
+                logger.exception("[runtime] the Tier D failure notice was not queued")
+        if receipt.accepted and inserted and self._state_store is not None:
+            try:
+                await self._state_store.mark_alert_accepted(
+                    alert_id,
+                    accepted_channel=receipt.channel,
+                    provider_message_id=receipt.provider_message_id,
+                    provider_status=receipt.provider_status or "accepted",
+                    accepted_at_ms=receipt.accepted_at_ms or now_ms(),
+                    delivered_at_ms=receipt.delivered_at_ms,
+                )
+            except Exception:
+                logger.exception(
+                    "[runtime] an accepted Tier D failure notice was not recorded "
+                    "(alert id %s); it is sent again after a restart",
+                    alert_id,
+                )
+                return False
+        elif not receipt.accepted and not inserted:
+            logger.critical(
+                "[runtime] the notice that a Tier D act failed was neither accepted "
+                "nor queued: nothing will retry it (alert id %s)",
+                alert_id,
+            )
+        return True
 
     async def _submit(
         self,
@@ -696,7 +847,11 @@ class AlertDelivery(RuntimeCore):
             if self._state_store is None:
                 continue
 
-            await self._reconcile_alert_delivery_receipts(alert_sender)
+            try:
+                await self._reconcile_alert_delivery_receipts(alert_sender)
+            except Exception:
+                # As a failed fetch: logged, and the retries below still run.
+                logger.exception("[runtime] alert receipt reconcile failed")
 
             try:
                 pending = await self._next_retry_batch(self._alert_outbox_batch_size)
@@ -738,94 +893,157 @@ class AlertDelivery(RuntimeCore):
                     logger.exception("[runtime] malformed outbox row: %r", alert)
                     continue
 
-                receipt = AlertSendReceipt.refused(
-                    channel=channel, error="submission_not_attempted"
-                )
+                # A store error on one row is logged, and the loop goes on:
+                # a loop ended by one row would leave every row unsent.
                 try:
-                    preferred_channel = channel
-                    if channel not in {"sms", "whatsapp"}:
-                        logger.error(
-                            "[runtime] alert outbox has unknown channel=%r id=%s",
-                            channel,
-                            alert_id,
-                        )
-                        preferred_channel = "sms"
-                    elif attempt_count >= 1:
-                        # On retries, switch first attempt preference to the other
-                        # channel so a persistent single-channel outage does not
-                        # stall notification delivery.
-                        preferred_channel = "whatsapp" if channel == "sms" else "sms"
+                    # Re-read just before the send: the batch is a snapshot, and a
+                    # first attempt may have taken the row, or settled it, since.
+                    if not await self._state_store.alert_is_retryable(alert_id):
+                        continue
+                    if alert_id in self._alert_first_attempts:
+                        continue
+                    receipt = await self._retry_submit(
+                        alert_sender,
+                        outbound_alert,
+                        alert,
+                        recipient=recipient,
+                        channel=channel,
+                        attempt_count=attempt_count,
+                        action_tier=action_tier,
+                    )
 
-                    receipt = coerce_alert_send_receipt(
-                        await alert_sender.send(
-                            alert=outbound_alert,
-                            to_number=recipient,
-                            preferred_channel=preferred_channel,
-                            **self._budget_check(alert.get("notice_kind"), action_tier),
-                        ),
-                        fallback_channel=preferred_channel,
+                    if receipt.accepted:
+                        accepted_ts = receipt.accepted_at_ms or now_ms()
+                        self._last_alert_timestamps_by_channel[receipt.channel] = (
+                            accepted_ts
+                        )
+                        if trigger_name:
+                            self._last_alert_timestamps_by_trigger[trigger_name] = (
+                                accepted_ts
+                            )
+                        try:
+                            await self._state_store.mark_alert_accepted(
+                                alert_id,
+                                accepted_channel=receipt.channel,
+                                provider_message_id=receipt.provider_message_id,
+                                provider_status=receipt.provider_status or "accepted",
+                                accepted_at_ms=accepted_ts,
+                                delivered_at_ms=receipt.delivered_at_ms,
+                            )
+                        except Exception:
+                            # Accepted but not recorded: kept out of this
+                            # process's retries, as a first attempt's is.
+                            self._alert_first_attempts.add(alert_id)
+                            raise
+                        if not mandatory:  # accepted now, so counted now
+                            await self._record_policy_counted_alert(
+                                receipt.channel, action_tier=action_tier
+                            )
+                        logger.info(
+                            "[runtime] provider accepted queued alert id=%s channel=%s "
+                            "status=%s sid=%s after %d attempt(s)",
+                            alert_id,
+                            receipt.channel,
+                            receipt.provider_status,
+                            receipt.provider_message_id,
+                            attempt_count + 1,
+                        )
+                        continue
+
+                    if receipt.error == CAP_SPENT:
+                        # Nothing was submitted: behind other eligible work, with
+                        # no attempt charged, until a channel has budget again.
+                        await self._state_store.defer_alert(alert_id)
+                        continue
+                    await self._state_store.mark_alert_attempt_failed(alert_id)
+                    failed_ts = now_ms()
+                    self._last_alert_timestamps_by_channel[channel] = failed_ts
+                    if trigger_name:
+                        self._last_alert_timestamps_by_trigger[trigger_name] = failed_ts
+                    attempts_after = attempt_count + 1
+                    logger.warning(
+                        "[runtime] retry failed for queued alert id=%s channel=%s tier=%s attempt=%d",
+                        alert_id,
+                        channel,
+                        action_tier,
+                        attempts_after,
+                    )
+
+                    await self._settle_failed_retry(
+                        alert_id, channel, attempts_after, mandatory=mandatory
                     )
                 except Exception:
                     logger.exception(
-                        "[runtime] alert outbox send failed for id=%s channel=%s",
+                        "[runtime] alert outbox retry of id=%s failed",
                         alert_id,
-                        channel,
                     )
 
-                if receipt.accepted:
-                    accepted_ts = receipt.accepted_at_ms or now_ms()
-                    self._last_alert_timestamps_by_channel[receipt.channel] = (
-                        accepted_ts
-                    )
-                    if trigger_name:
-                        self._last_alert_timestamps_by_trigger[trigger_name] = (
-                            accepted_ts
-                        )
-                    await self._state_store.mark_alert_accepted(
-                        alert_id,
-                        accepted_channel=receipt.channel,
-                        provider_message_id=receipt.provider_message_id,
-                        provider_status=receipt.provider_status or "accepted",
-                        accepted_at_ms=accepted_ts,
-                        delivered_at_ms=receipt.delivered_at_ms,
-                    )
-                    if not mandatory:  # accepted now, so counted now
-                        await self._record_policy_counted_alert(
-                            receipt.channel, action_tier=action_tier
-                        )
-                    logger.info(
-                        "[runtime] provider accepted queued alert id=%s channel=%s "
-                        "status=%s sid=%s after %d attempt(s)",
-                        alert_id,
-                        receipt.channel,
-                        receipt.provider_status,
-                        receipt.provider_message_id,
-                        attempt_count + 1,
-                    )
-                    continue
-
-                if receipt.error == CAP_SPENT:
-                    # Nothing was submitted: behind other eligible work, with
-                    # no attempt charged, until a channel has budget again.
-                    await self._state_store.defer_alert(alert_id)
-                    continue
-                await self._state_store.mark_alert_attempt_failed(alert_id)
-                failed_ts = now_ms()
-                self._last_alert_timestamps_by_channel[channel] = failed_ts
-                if trigger_name:
-                    self._last_alert_timestamps_by_trigger[trigger_name] = failed_ts
-                attempts_after = attempt_count + 1
-                logger.warning(
-                    "[runtime] retry failed for queued alert id=%s channel=%s tier=%s attempt=%d",
-                    alert_id,
+    async def _retry_submit(
+        self,
+        alert_sender: AlertFailoverSender,
+        outbound_alert: OutboundAlert,
+        alert: dict[str, Any],
+        *,
+        recipient: str,
+        channel: str,
+        attempt_count: int,
+        action_tier: str,
+    ) -> AlertSendReceipt:
+        """One retry of a queued row; a failure notice keeps its direct SMS."""
+        alert_id = str(alert["alert_id"])
+        receipt = AlertSendReceipt.refused(
+            channel=channel, error="submission_not_attempted"
+        )
+        try:
+            preferred_channel = channel
+            if channel not in {"sms", "whatsapp"}:
+                logger.error(
+                    "[runtime] alert outbox has unknown channel=%r id=%s",
                     channel,
-                    action_tier,
-                    attempts_after,
+                    alert_id,
                 )
-
-                await self._settle_failed_retry(
-                    alert_id, channel, attempts_after, mandatory=mandatory
+                preferred_channel = "sms"
+            elif attempt_count >= 1:
+                # On retries, switch first attempt preference to the other
+                # channel so a persistent single-channel outage does not
+                # stall notification delivery.
+                preferred_channel = "whatsapp" if channel == "sms" else "sms"
+            receipt = coerce_alert_send_receipt(
+                await alert_sender.send(
+                    alert=outbound_alert,
+                    to_number=recipient,
+                    preferred_channel=preferred_channel,
+                    **self._budget_check(alert.get("notice_kind"), action_tier),
+                ),
+                fallback_channel=preferred_channel,
+            )
+        except Exception:
+            logger.exception(
+                "[runtime] alert outbox send failed for id=%s channel=%s",
+                alert_id,
+                channel,
+            )
+        trigger_name = str(alert.get("trigger_name") or "")
+        last_resort = self._tier_d_last_resort
+        # The kind as well as the name: a sensor id can spell the prefix, and an
+        # optional notice gains no last resort past its cap or its channels.
+        if (
+            not receipt.accepted
+            and alert.get("notice_kind") == NoticeKind.TIER_D.value
+            and trigger_name.startswith(FAILURE_NOTICE_TRIGGER)
+            and last_resort is not None
+        ):
+            try:
+                if await last_resort.send(outbound_alert.sms_body, to_number=recipient):
+                    return AlertSendReceipt.accepted_without_provider_receipt(
+                        channel="sms"
+                    )
+            except Exception:
+                logger.exception(
+                    "[runtime] the direct SMS retry of failure notice id=%s failed",
+                    alert_id,
                 )
+        return receipt
 
     async def _next_retry_batch(self, size: int) -> list[dict[str, Any]]:
         """A batch from two lanes, mandatory and optional, each first in first out.
@@ -836,8 +1054,15 @@ class AlertDelivery(RuntimeCore):
         other.
         """
         assert self._state_store is not None
-        mandatory = await self._state_store.get_retryable_alerts(size, mandatory=True)
-        optional = await self._state_store.get_retryable_alerts(size, mandatory=False)
+        # Rows whose first attempt is in flight are left out before the limit,
+        # so they hold no slot another notice could use.
+        exclude = frozenset(self._alert_first_attempts)
+        mandatory = await self._state_store.get_retryable_alerts(
+            size, mandatory=True, exclude=exclude
+        )
+        optional = await self._state_store.get_retryable_alerts(
+            size, mandatory=False, exclude=exclude
+        )
         share = (size + int(self._mandatory_takes_spare_slot)) // 2
         self._mandatory_takes_spare_slot = not self._mandatory_takes_spare_slot
         take = min(len(mandatory), max(share, size - len(optional)))

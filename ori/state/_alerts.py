@@ -91,22 +91,30 @@ class AlertOutboxStore(StoreCore):
         return int(cur.rowcount) > 0
 
     async def get_retryable_alerts(
-        self, limit: int = 50, *, mandatory: bool | None = None
+        self,
+        limit: int = 50,
+        *,
+        mandatory: bool | None = None,
+        exclude: frozenset[str] = frozenset(),
     ) -> list[dict]:
         """Fetch pending/failed outbox alerts in queue order, first in first out.
 
         A row takes the next ``retry_seq`` when it is queued and again when an
         attempt fails, so a failed row goes behind every row queued before then
         and none can be overtaken for ever. The order reads no clock. With
-        *mandatory*, only mandatory (``True``) or optional (``False``) rows.
+        *mandatory*, only mandatory (``True``) or optional (``False``) rows. Rows
+        whose id is in *exclude* are left out before the limit is applied.
         """
-        return await self._run_read(self._get_retryable_alerts_sync, limit, mandatory)
+        return await self._run_read(
+            self._get_retryable_alerts_sync, limit, mandatory, exclude
+        )
 
     def _get_retryable_alerts_sync(
         self,
         conn: sqlite3.Connection,
         limit: int,
         mandatory: bool | None,
+        exclude: frozenset[str] = frozenset(),
     ) -> list[dict]:
         rows = conn.execute(
             """
@@ -117,10 +125,11 @@ class AlertOutboxStore(StoreCore):
             FROM alert_outbox
             WHERE status IN ('pending', 'failed')
               AND (? IS NULL OR (COALESCE(notice_kind, '') != 'optional') = ?)
+              AND alert_id NOT IN (SELECT value FROM json_each(?))
             ORDER BY retry_seq ASC, id ASC
             LIMIT ?
             """,
-            (mandatory, mandatory, limit),
+            (mandatory, mandatory, json.dumps(sorted(exclude)), limit),
         ).fetchall()
         result = []
         for row in rows:
@@ -130,6 +139,17 @@ class AlertOutboxStore(StoreCore):
             )
             result.append(item)
         return result
+
+    async def alert_is_retryable(self, alert_id: str) -> bool:
+        """Whether the row is still pending or failed, read now."""
+        return await self._run_read(self._alert_is_retryable_sync, alert_id)
+
+    def _alert_is_retryable_sync(self, conn: sqlite3.Connection, alert_id: str) -> bool:
+        row = conn.execute(
+            "SELECT 1 FROM alert_outbox WHERE alert_id = ? AND status IN ('pending', 'failed')",
+            (alert_id,),
+        ).fetchone()
+        return row is not None
 
     async def get_alert_outbox_summary(self) -> dict[str, int | None]:
         """Return a bounded health summary for pending/failed outbound alerts."""
