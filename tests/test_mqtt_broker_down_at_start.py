@@ -13,8 +13,10 @@ refuse until its first value, and it reports unconnected until then.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import textwrap
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -236,6 +238,28 @@ async def test_a_timeout_that_cannot_wait_fails_the_connect(
     assert not broker.clients and adapter._listener_task is None
 
 
+async def _emit_until(
+    client: Any, payload: bytes, done: Callable[[], Any], *, what: str
+) -> None:
+    """Publish *payload* every 50 ms until *done* holds, as a sensor does.
+
+    One message is not enough: a read that lands past the adapter's silence
+    bound, as it can on a loaded runner, refuses it as stale.
+    """
+
+    async def published() -> bool:
+        await client.emit(TOPIC, payload)
+        result = done()
+        if inspect.isawaitable(result):
+            result = await result
+        if result:
+            return True
+        await asyncio.sleep(0.05)
+        return False
+
+    await wait_until(published, what=what)
+
+
 async def test_a_close_during_the_start_back_off_ends_it() -> None:
     broker = _Broker()
     available, module, backoff = _patched(broker, lambda _a: 3600.0)
@@ -352,13 +376,28 @@ async def test_the_runtime_connects_a_sensor_whose_broker_starts_late(
                 await adapter.read(SENSOR_ID)
             assert runtime._unconnected_sensors == {SENSOR_ID}
 
-            await client.emit(TOPIC, b'{"value": 21.5}')
-            await wait_until(
+            await _emit_until(
+                client,
+                b'{"value": 21.5}',
                 lambda: SENSOR_ID in runtime._connected_sensor_ids,
                 what="the first reading to connect the sensor",
             )
             assert not runtime._unconnected_sensors
-            assert (await adapter.read(SENSOR_ID)).value == pytest.approx(21.5)
+
+            async def reads_the_value() -> bool:
+                # A read of its own is held to the silence bound too.
+                try:
+                    reading = await adapter.read(SENSOR_ID)
+                except AdapterReadError:
+                    return False
+                return bool(reading.value == pytest.approx(21.5))
+
+            await _emit_until(
+                client,
+                b'{"value": 21.5}',
+                reads_the_value,
+                what="a fresh read of the value",
+            )
             snapshot = await runtime._build_health_snapshot()
             assert _sensor(snapshot)["connected"] is True
             assert _sensor(snapshot)["last_seen_ms"] is not None
@@ -492,13 +531,18 @@ async def test_one_notice_at_start_and_one_when_the_sensor_is_read(
             running.record_reads()
             broker.up = True
             await wait_until(broker.connected, what="the broker to be reached")
-            await running.client().emit(TOPIC, b'{"value": 21.5}')
-            await wait_until(
+            await _emit_until(
+                running.client(),
+                b'{"value": 21.5}',
                 lambda: running.sent("sensor_connected_notice"),
                 what="the recovery notice",
             )
-            await running.client().emit(TOPIC, b'{"value": 22.5}')
-            await wait_until(lambda: 22.5 in running.reads, what="a second value")
+            await _emit_until(
+                running.client(),
+                b'{"value": 22.5}',
+                lambda: 22.5 in running.reads,
+                what="a second value",
+            )
             await running.polls()
             assert running.notices == [
                 ("sensor_unconnected_warning", True),
@@ -525,8 +569,9 @@ async def test_no_recovery_notice_without_a_start_notice(
             running.record_reads()
             broker.up = True
             await wait_until(broker.connected, what="the broker to be reached")
-            await running.client().emit(TOPIC, b'{"value": 21.5}')
-            await wait_until(
+            await _emit_until(
+                running.client(),
+                b'{"value": 21.5}',
                 lambda: SENSOR_ID in running.runtime._connected_sensor_ids,
                 what="the first reading",
             )
@@ -549,8 +594,9 @@ async def test_a_refused_payload_does_not_connect_the_sensor(
             running.record_reads()
             broker.up = True
             await wait_until(broker.connected, what="the broker to be reached")
-            await running.client().emit(TOPIC, f'{{"value": {value}}}'.encode())
-            await wait_until(
+            await _emit_until(
+                running.client(),
+                f'{{"value": {value}}}'.encode(),
                 lambda: any("refused" in str(r) for r in running.reads),
                 what="the payload to be refused",
             )
@@ -595,8 +641,9 @@ async def test_a_subscription_refused_at_start_is_retried_by_the_runtime(
 
             broker.suback = (0,)
             await wait_until(broker.connected, what="the grant")
-            await running.client().emit(TOPIC, b'{"value": 21.5}')
-            await wait_until(
+            await _emit_until(
+                running.client(),
+                b'{"value": 21.5}',
                 lambda: SENSOR_ID in running.runtime._connected_sensor_ids,
                 what="the first reading",
             )
@@ -663,12 +710,16 @@ async def test_a_pair_on_a_retrying_sensor_recovers_on_its_first_reading(
 
             broker.up = True
             await wait_until(broker.connected, what="the broker to be reached")
-            await running.client().emit(TOPIC, b'{"value": 0.5}')
 
             async def recovered() -> bool:
                 return (await zone())["measurement_degraded"] is False
 
-            await wait_until(recovered, what="the pair to recover")
+            await _emit_until(
+                running.client(),
+                b'{"value": 0.5}',
+                recovered,
+                what="the pair to recover",
+            )
             await wait_until(
                 lambda: running.sent("sensor_connected_notice"),
                 what="the recovery notice",
@@ -691,8 +742,9 @@ async def test_a_later_drop_sends_no_second_recovery_notice(
             broker.up = True
             await wait_until(broker.connected, what="the broker to be reached")
             first = running.client()
-            await first.emit(TOPIC, b'{"value": 21.5}')
-            await wait_until(
+            await _emit_until(
+                first,
+                b'{"value": 21.5}',
                 lambda: running.sent("sensor_connected_notice"),
                 what="the recovery notice",
             )
@@ -701,8 +753,12 @@ async def test_a_later_drop_sends_no_second_recovery_notice(
                 lambda: broker.connected() and running.client() is not first,
                 what="the reconnect",
             )
-            await running.client().emit(TOPIC, b'{"value": 23.5}')
-            await wait_until(lambda: 23.5 in running.reads, what="a value after it")
+            await _emit_until(
+                running.client(),
+                b'{"value": 23.5}',
+                lambda: 23.5 in running.reads,
+                what="a value after it",
+            )
             await running.polls()
             assert running.sent("sensor_connected_notice") == 1
             assert [
@@ -727,8 +783,9 @@ async def test_a_recovery_notice_in_flight_is_cancelled_at_stop(
             await _wait_retrying(running, start_task)
             broker.up = True
             await wait_until(broker.connected, what="the broker to be reached")
-            await running.client().emit(TOPIC, b'{"value": 21.5}')
-            await wait_until(
+            await _emit_until(
+                running.client(),
+                b'{"value": 21.5}',
                 lambda: running.sent("sensor_connected_notice"),
                 what="the recovery notice to be in flight",
             )
