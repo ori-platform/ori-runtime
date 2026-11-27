@@ -448,8 +448,10 @@ EGRESS_CALLEES = frozenset(
         "clear_withdrawn_provisioning_approvals",
         "is_set",
         "list_firmware_devices_revoked_or_unpromoted",
-        # A list of the identities a pass failed to clear; it publishes nothing.
+        # A list of the identities a pass failed to clear, and the loop's wait
+        # between passes: neither publishes anything.
         "append",
+        "suppress",
         "wait",
         "wait_for",
         "_refuse_published_seed",

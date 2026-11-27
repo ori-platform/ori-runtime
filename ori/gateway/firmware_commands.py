@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import math
@@ -375,10 +376,9 @@ class FirmwareCommandService:
                     exc,
                     interval_s,
                 )
-            try:
+            # The wait ends at the interval, or at once when stop is set.
+            with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(stop.wait(), interval_s)
-            except TimeoutError:
-                pass
 
     async def _publish_provisioning_approval(self, device_id: str) -> bytes:
         row = await self._require_approved_device(device_id)
