@@ -502,6 +502,12 @@ jobs:
         # payload, whose build started before the dependencies installed.
         run: pytest tests/test_runtime_mobile_delivery_e2e.py -q -n auto --durations=10
 
+      - name: Compile the package before the budgets are timed
+        if: steps.scope.outputs.run == 'true' && matrix.role == 'latency'
+        # The budgets are the first Python this entry runs: a module first
+        # imported inside a timed window would otherwise be compiled there.
+        run: python -m compileall -q ori tests
+
       - name: Run the latency budgets alone
         if: steps.scope.outputs.run == 'true' && matrix.role == 'latency'
         # Wall-clock budgets are waived under parallel workers, whose clock
