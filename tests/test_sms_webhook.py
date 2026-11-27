@@ -421,3 +421,125 @@ async def test_a_request_that_arrives_in_time_is_served(
         writer.transport.abort()
         await server.stop()
     sms_action.ingest_incoming_webhook.assert_awaited_once()
+
+
+async def test_stop_waits_for_a_request_being_processed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On every supported interpreter: Python 3.11's wait_closed() would not."""
+    server, sms_action = await _served(monkeypatch)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_ingest(_payload: Any) -> bool:
+        entered.set()
+        await release.wait()
+        return True
+
+    sms_action.ingest_incoming_webhook.side_effect = slow_ingest
+    body = b"from=%2B2348000000000&text=YES"
+    reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+    stopping: asyncio.Task[None] | None = None
+    try:
+        writer.write(
+            b"POST /webhooks/sms/africastalking HTTP/1.1\r\n"
+            b"X-Ori-Webhook-Token: secret-token\r\n"
+            b"Content-Type: application/x-www-form-urlencoded\r\n"
+            + f"Content-Length: {len(body)}\r\n\r\n".encode()
+            + body
+        )
+        await writer.drain()
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        stopping = asyncio.create_task(server.stop())
+        await asyncio.sleep(0.2)
+        assert not stopping.done(), "stop() returned while the request was processed"
+        release.set()
+        await asyncio.wait_for(stopping, timeout=5)
+        answer = await asyncio.wait_for(reader.read(), timeout=5)
+        assert answer.startswith(b"HTTP/1.1 200 ")
+    finally:
+        release.set()
+        writer.transport.abort()
+        if stopping is not None and not stopping.done():
+            stopping.cancel()
+
+
+async def test_a_handler_starting_after_stop_is_not_served(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server, sms_action = await _served(monkeypatch)
+    await server.stop()
+    writer = _fakewriter()
+    reader = asyncio.StreamReader()
+    reader.feed_data(b"POST /webhooks/sms/africastalking HTTP/1.1\r\n\r\n")
+    reader.feed_eof()
+    await server._tracked_client(reader, writer)  # type: ignore[arg-type]
+    sms_action.ingest_incoming_webhook.assert_not_called()
+    assert writer.buffer == b""
+
+
+async def _mid_ingest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[
+    SMSWebhookServer, asyncio.StreamReader, asyncio.Event, asyncio.StreamWriter, Any
+]:
+    """A server with one complete request whose ingest is held."""
+    server, sms_action = await _served(monkeypatch)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def slow_ingest(_payload: Any) -> bool:
+        entered.set()
+        await release.wait()
+        return True
+
+    sms_action.ingest_incoming_webhook.side_effect = slow_ingest
+    body = b"from=%2B2348000000000&text=YES"
+    reader, writer = await asyncio.open_connection("127.0.0.1", server.port)
+    writer.write(
+        b"POST /webhooks/sms/africastalking HTTP/1.1\r\n"
+        b"X-Ori-Webhook-Token: secret-token\r\n"
+        b"Content-Type: application/x-www-form-urlencoded\r\n"
+        + f"Content-Length: {len(body)}\r\n\r\n".encode()
+        + body
+    )
+    await writer.drain()
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    return server, reader, release, writer, sms_action
+
+
+async def test_a_second_stop_waits_for_the_first_drain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server, reader, release, writer, _ = await _mid_ingest(monkeypatch)
+    try:
+        first = asyncio.create_task(server.stop())
+        second = asyncio.create_task(server.stop())
+        await asyncio.sleep(0.2)
+        assert not first.done() and not second.done()
+        release.set()
+        await asyncio.wait_for(asyncio.gather(first, second), timeout=5)
+    finally:
+        release.set()
+        writer.transport.abort()
+
+
+async def test_a_cancelled_stop_still_lets_the_request_finish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Shutdown cancels its tasks; the cancel must not reach a handler."""
+    server, reader, release, writer, sms_action = await _mid_ingest(monkeypatch)
+    try:
+        stopping = asyncio.create_task(server.stop())
+        await asyncio.sleep(0.1)
+        stopping.cancel()
+        await asyncio.sleep(0.2)
+        assert not stopping.done(), "a cancelled stop() returned while a request ran"
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(stopping, timeout=5)
+        answer = await asyncio.wait_for(reader.read(), timeout=5)
+        assert answer.startswith(b"HTTP/1.1 200 ")
+        sms_action.ingest_incoming_webhook.assert_awaited_once()
+    finally:
+        release.set()
+        writer.transport.abort()
