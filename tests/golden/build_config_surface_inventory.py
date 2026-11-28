@@ -136,6 +136,10 @@ class SectionWalker(ast.NodeVisitor):
         self.env: dict[str, str] = {param: base_path}
         self.function = function
         self.rows: dict[str, dict[str, Any]] = {}
+        # (path, key) pairs an enclosing `if "key" in receiver:` has tested,
+        # by the path the receiver held: a subscript read of one is optional,
+        # and a receiver rebound to another section loses the guard.
+        self.guarded: set[tuple[str, str]] = set()
 
     # -- recording --------------------------------------------------------
 
@@ -183,10 +187,62 @@ class SectionWalker(ast.NodeVisitor):
             prefix = self.env.get(_receiver(node.value) or "")
             key = _string(node.slice)
             if prefix is not None and key:
-                return prefix, key, True, None
+                return prefix, key, (prefix, key) not in self.guarded, None
         return None
 
+    def membership_tests(self, test: ast.AST) -> set[tuple[str, str]]:
+        """The (path, key) pairs *test* requires present: `"k" in x`, and
+        each operand of an `and` of such tests. An `or` guarantees none."""
+        if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And):
+            found: set[tuple[str, str]] = set()
+            for value in test.values:
+                found |= self.membership_tests(value)
+            return found
+        if (
+            isinstance(test, ast.Compare)
+            and len(test.ops) == 1
+            and isinstance(test.ops[0], ast.In)
+        ):
+            key = _string(test.left)
+            path = self.env.get(_receiver(test.comparators[0]) or "")
+            if key and path is not None:
+                return {(path, key)}
+        return set()
+
     # -- traversal --------------------------------------------------------
+
+    def visit_If(self, node: ast.If) -> None:
+        """A read under `if "k" in x:` is optional; the `else` branch is not."""
+        self.visit(node.test)
+        added = self.membership_tests(node.test) - self.guarded
+        self.guarded |= added
+        for statement in node.body:
+            self.visit(statement)
+        self.guarded -= added
+        for statement in node.orelse:
+            self.visit(statement)
+
+    def visit_BoolOp(self, node: ast.BoolOp) -> None:
+        """In `"k" in x and x["k"]`, each operand is guarded by those before it."""
+        if not isinstance(node.op, ast.And):
+            self.generic_visit(node)
+            return
+        added: set[tuple[str, str]] = set()
+        for value in node.values:
+            self.visit(value)
+            new = self.membership_tests(value) - self.guarded
+            self.guarded |= new
+            added |= new
+        self.guarded -= added
+
+    def visit_IfExp(self, node: ast.IfExp) -> None:
+        """`x["k"] if "k" in x else d` is the expression form of the same guard."""
+        self.visit(node.test)
+        added = self.membership_tests(node.test) - self.guarded
+        self.guarded |= added
+        self.visit(node.body)
+        self.guarded -= added
+        self.visit(node.orelse)
 
     def visit_Assign(self, node: ast.Assign) -> None:
         hit = self.read(node.value)
