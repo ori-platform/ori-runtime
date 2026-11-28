@@ -521,6 +521,61 @@ async def test_an_interrupted_start_leaves_no_child(
     await wait_until(lambda: not _running("sleep 614"), what="no child left")
 
 
+def test_a_child_that_exits_between_the_read_and_the_poll_is_reported_started(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The status is written and the supervisor gone after a read found nothing."""
+    from tests import supervised_process
+
+    read = supervised_process.Supervised._fields
+    reads: list[int] = []
+
+    def late(self: Supervised) -> list[str]:
+        reads.append(1)
+        # Only a read made while the supervisor still runs is held: one made
+        # after it exited is real, so a slow start cannot fake the race.
+        if len(reads) == 1 and self._supervisor.poll() is None:
+            deadline = time.monotonic() + 30
+            while self._supervisor.poll() is None:
+                assert time.monotonic() < deadline, "the supervisor never exited"
+                time.sleep(0.01)
+            return []
+        return read(self)
+
+    monkeypatch.setattr(supervised_process.Supervised, "_fields", late)
+    child = Supervised(["true"])
+    assert child.pid > 0
+    assert child.wait(10) == 0
+
+
+def test_a_child_that_exits_between_the_read_and_the_poll_keeps_its_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """poll reads the recorded code after its supervisor exits, never -SIGKILL."""
+    from tests import supervised_process
+
+    child = Supervised(["sh", "-c", "read _; exit 7"], stdin=subprocess.PIPE)
+    read = supervised_process.Supervised._exited
+    held: list[int] = []
+
+    def late(self: Supervised) -> int | None:
+        if not held and self._supervisor.poll() is None:
+            held.append(1)
+            assert self.stdin is not None
+            self.stdin.close()  # the child exits now, and its supervisor after it
+            deadline = time.monotonic() + 30
+            while self._supervisor.poll() is None:
+                assert time.monotonic() < deadline, "the supervisor never exited"
+                time.sleep(0.01)
+            return None
+        return read(self)
+
+    monkeypatch.setattr(supervised_process.Supervised, "_exited", late)
+    assert child.poll() is None  # the read was held while the supervisor ran
+    assert held
+    assert child.poll() == 7
+
+
 def test_fds_are_refused_rather_than_dropped() -> None:
     with pytest.raises(TypeError):
         Supervised(["sleep", "1"], pass_fds=(0,))
