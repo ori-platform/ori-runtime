@@ -24,10 +24,11 @@ Contract rules enforced here (fail closed, before signing):
   locally, and never reuse a value.
 
 The ``firmware-commands/v2`` draft keeps these bytes and adds that a command
-is never reissued to recover its delivery: not after a ``rate_limited``
-refusal, and not when nothing came back. Nothing here or in the egress
-service retries. A fresh Tier D attempt under ``safety-profile/v1`` is a new
-command, and no firmware-commanded zone exists in this runtime to make one.
+is never reissued to recover its delivery: not after a ``rate_limited`` or
+``orphaned`` refusal, and not when nothing came back. Nothing here or in the
+egress service retries. A fresh Tier D attempt under ``safety-profile/v1`` is
+a new command, and no firmware-commanded zone exists in this runtime to make
+one.
 
 The command corpus vendored from ori-specs
 (``tests/vectors/firmware_commands/command-vectors-v2.json``) and the

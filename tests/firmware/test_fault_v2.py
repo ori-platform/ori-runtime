@@ -146,6 +146,7 @@ def test_the_v2_closed_sets_are_the_contracts() -> None:
                 "replayed",
                 "capability_mismatch",
                 "unknown_action",
+                "orphaned",
                 "rate_limited",
                 "storage_failure",
             }
@@ -171,6 +172,7 @@ def test_the_v2_closed_sets_are_the_contracts() -> None:
     }
     assert "command_record_write_failed" not in CLOSED_FAULT_DETAILS["storage_degraded"]
     assert "rate_limited" not in CLOSED_FAULT_DETAILS["command_rejected"]
+    assert "orphaned" not in CLOSED_FAULT_DETAILS["command_rejected"]
 
 
 @pytest.mark.parametrize(
@@ -204,10 +206,15 @@ def test_a_fault_version_other_than_the_integer_one_or_two_is_refused(
     assert result.error_detail == "unsupported fault version"
 
 
-async def test_a_rate_limited_refusal_is_recorded_and_nothing_is_reissued(
-    tmp_path: Path,
+@pytest.mark.parametrize("verdict", ["rate_limited", "orphaned"])
+async def test_a_v2_refusal_is_recorded_and_nothing_is_reissued(
+    tmp_path: Path, verdict: str
 ) -> None:
-    """firmware-commands/v2: a refusal is never an execution and never retried."""
+    """firmware-commands/v2: a refusal is never an execution and never retried.
+
+    A fault names no command, so the vendored manifest's one commanded action
+    stands in for the close both verdicts answer.
+    """
     store = StateStore(db_path=str(tmp_path / "state.db"))
     await store.open()
     try:
@@ -225,7 +232,7 @@ async def test_a_rate_limited_refusal_is_recorded_and_nothing_is_reissued(
         await service.publish_command(
             device_id=device_id, action="relay_open", channel="relay0"
         )
-        refusal = CASES["v2_command_rejected_rate_limited"]
+        refusal = CASES[f"v2_command_rejected_{verdict}"]
         # The device signs its fault under the manifest it declared, the one
         # the command was signed against.
         row = await store.get_firmware_device(device_id)
@@ -238,7 +245,7 @@ async def test_a_rate_limited_refusal_is_recorded_and_nothing_is_reissued(
         # and both operations have returned, so any task still alive is one.
         assert _other_tasks() <= before, _other_tasks() - before
 
-        assert verification.accepted and verification.detail == "rate_limited"
+        assert verification.accepted and verification.detail == verdict
         assert len(publisher.commands) == 1
         assert _last_cmd_seq(store, device_id) == 1
         assert await _rows(store, "action_log") == []
