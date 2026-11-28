@@ -78,9 +78,10 @@ class AlertDelivery(RuntimeCore):
         """Keep *alert_id*'s row out of the retry loop while its first send runs.
 
         Each send holds the row once, so an overlapping send of the same alert
-        keeps it held. The hold ends with the send unless the send was accepted
-        and that was not recorded: the row then stays out of this process's
-        retries, and is sent again after a restart.
+        keeps it held. The hold ends with the send unless an acceptance was
+        observed and not recorded: the row then stays out of this process's
+        retries, and is sent again after a restart. A send cancelled before its
+        receipt returned is released, as a refusal is.
         """
         attempt = _FirstAttempt()
         holds = self._alert_first_attempts
@@ -1010,9 +1011,10 @@ class AlertDelivery(RuntimeCore):
                                 accepted_at_ms=accepted_ts,
                                 delivered_at_ms=receipt.delivered_at_ms,
                             )
-                        except Exception:
-                            # Accepted but not recorded: kept out of this
-                            # process's retries, as a first attempt's is.
+                        except BaseException:
+                            # Accepted but not recorded, cancellation included:
+                            # kept out of this process's retries, as a first
+                            # attempt's is.
                             self._alert_first_attempts[alert_id] += 1
                             raise
                         if not mandatory:  # accepted now, so counted now

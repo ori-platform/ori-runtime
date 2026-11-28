@@ -144,3 +144,73 @@ async def test_an_overlapping_send_of_the_same_alert_keeps_the_row_held(
     assert await asyncio.wait_for(first, 5) is True
     assert len(transport.sent) == 1
     assert not runtime._alert_first_attempts
+
+
+def _block_recording(
+    store: StateStore, monkeypatch: pytest.MonkeyPatch
+) -> asyncio.Event:
+    """Recording waits for ever; the returned event is set once it is entered."""
+    entered = asyncio.Event()
+
+    async def blocked(*_args: Any, **_kwargs: Any) -> None:
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(store, "mark_alert_accepted", blocked)
+    return entered
+
+
+@PATHS
+async def test_a_first_send_cancelled_while_recording_is_not_sent_again(
+    store: StateStore, monkeypatch: pytest.MonkeyPatch, send: Send
+) -> None:
+    runtime, transport = _runtime(store), _Transport(accepted=True)
+    entered = _block_recording(store, monkeypatch)
+    sending = asyncio.create_task(send(runtime, transport))
+    await asyncio.wait_for(entered.wait(), 5)
+    sending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await sending
+    await _one_retry_pass(runtime, transport, passes=3)
+    assert len(transport.sent) == 1
+
+
+async def test_a_retry_cancelled_while_recording_is_not_sent_again(
+    store: StateStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A retry loop restarted in the same process leaves the row alone."""
+    runtime, transport = _runtime(store), _Transport(accepted=True)
+    assert await store.enqueue_alert(
+        alert_id="x",
+        channel="whatsapp",
+        recipient=runtime._operator_contact,
+        message="CRITICAL",
+        action_tier="A",
+        trigger_name="overcurrent",
+        original_ts=1,
+        notice_kind="protection_degraded",
+    )
+    entered = _block_recording(store, monkeypatch)
+    runtime._alert_outbox_retry_interval_s = 0.01
+    loop = asyncio.create_task(runtime._alert_delivery_loop(_sender(transport)))
+    await asyncio.wait_for(entered.wait(), 5)
+    loop.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await loop
+    assert len(transport.sent) == 1
+    await _one_retry_pass(runtime, transport, passes=3)
+    assert len(transport.sent) == 1
+
+
+@PATHS
+async def test_after_a_restart_an_unrecorded_acceptance_is_sent_once_more(
+    store: StateStore, monkeypatch: pytest.MonkeyPatch, send: Send
+) -> None:
+    runtime, transport = _runtime(store), _Transport(accepted=True)
+    _break_recording(store, monkeypatch)
+    with pytest.raises(RuntimeError):
+        await send(runtime, transport)
+    monkeypatch.undo()  # the restarted process records normally
+    await _one_retry_pass(_runtime(store), transport, passes=3)
+    assert len(transport.sent) == 2
+    assert await store.get_retryable_alerts(10, mandatory=True) == []
