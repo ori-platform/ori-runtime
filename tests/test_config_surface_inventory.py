@@ -158,6 +158,69 @@ def _parse_device(data):
     assert rows["device.name"]["presence"] == "optional"
 
 
+@pytest.mark.parametrize(
+    "guarded",
+    [
+        'if "pin" in data:\n        n = data["pin"]',
+        'if "on" in data and "pin" in data:\n        n = data["pin"]',
+        'n = data["pin"] if "pin" in data else 0',
+        'n = "pin" in data and data["pin"]',
+        'if "pin" in data and data["pin"]:\n        pass',
+    ],
+    ids=["if", "and", "ifexp", "and-operand", "if-test-operand"],
+)
+def test_a_read_guarded_by_its_own_membership_test_is_optional(guarded: str) -> None:
+    """`skills[].config` is read only under `if "config" in item:`."""
+    rows = walk(f"def _parse(data):\n    {guarded}\n", base="s")
+    assert rows["s.pin"]["presence"] == "optional"
+
+
+@pytest.mark.parametrize(
+    "unguarded",
+    [
+        'if "pin" in data:\n        pass\n    else:\n        n = data["pin"]',
+        'if "pin" in data or "on" in data:\n        n = data["pin"]',
+        'if "other" in data:\n        n = data["pin"]',
+        'if "pin" in other:\n        n = data["pin"]',
+        'if "pin" in data:\n        pass\n    n = data["pin"]',
+        'n = 0 if "pin" in data else data["pin"]',
+        'n = data["pin"] and "pin" in data',
+    ],
+    ids=[
+        "else",
+        "or",
+        "other-key",
+        "other-receiver",
+        "after",
+        "ifexp-else",
+        "and-before",
+    ],
+)
+def test_a_read_outside_its_guard_stays_required(unguarded: str) -> None:
+    rows = walk(f"def _parse(data):\n    {unguarded}\n", base="s")
+    assert rows["s.pin"]["presence"] == "required"
+
+
+def test_a_receiver_rebound_to_another_section_loses_the_guard() -> None:
+    rows = walk(
+        """
+def _parse(data):
+    if "pin" in data:
+        data = data.get("sub") or {}
+        n = data["pin"]
+""",
+        base="s",
+    )
+    assert rows["s.sub.pin"]["presence"] == "required"
+
+
+def test_the_real_tree_does_not_record_the_refused_skill_config_as_required() -> None:
+    from tests.golden.build_config_surface_inventory import CONFIG, collect
+
+    rows = {row["path"]: row for row in collect(ast.parse(CONFIG.read_text()))}
+    assert rows["skills[].config"]["presence"] == "optional"
+
+
 def test_literal_defaults_are_captured() -> None:
     rows = walk(
         """
