@@ -100,6 +100,9 @@ class Supervised:
     def _await_pid(self) -> int:
         deadline = time.monotonic() + START_S
         while True:
+            # Polled before the read: a supervisor that wrote its status and
+            # exited in between is then read, not reported as never starting.
+            exited = self._supervisor.poll() is not None
             fields = self._fields()
             if fields and fields[0] == "error":
                 self._reap_supervisor()
@@ -107,7 +110,7 @@ class Supervised:
                 raise FileNotFoundError(" ".join(fields[1:]))
             if fields:
                 return int(fields[0])
-            if self._supervisor.poll() is not None:
+            if exited:
                 shutil.rmtree(self._dir, ignore_errors=True)
                 raise RuntimeError("the supervisor exited before its child started")
             if time.monotonic() >= deadline:
@@ -139,11 +142,14 @@ class Supervised:
     def poll(self) -> int | None:
         if self.returncode is not None:
             return self.returncode
+        # Polled before the read, as in `_await_pid`: a supervisor that
+        # records the code and exits in between is read, not reported killed.
+        exited = self._supervisor.poll() is not None
         code = self._exited()
         if code is not None:
             self._supervisor.wait()
             return self._settle(code)
-        if self._supervisor.poll() is not None:
+        if exited:
             # The supervisor died without recording the child: never assume the
             # child exited with it. Kill its group, and report it killed.
             self._kill_group()
