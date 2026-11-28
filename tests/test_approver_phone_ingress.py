@@ -485,3 +485,32 @@ async def test_stop_closes_a_webhook_whose_serve_task_never_ran() -> None:
     assert server._server is not None
     await runtime.stop()
     assert server._server is None
+
+
+async def test_a_webhook_that_fails_to_stop_does_not_cut_shutdown_short() -> None:
+    from ori.runtime import OriRuntime
+
+    runtime = OriRuntime(config_path="ori.yaml")
+    webhook = AsyncMock()
+    webhook.stop.side_effect = OSError("wait_closed failed")
+    runtime._sms_webhook_server = webhook
+    store = AsyncMock()
+    runtime._state_store = store
+    await runtime.stop()
+    webhook.stop.assert_awaited()
+    store.close.assert_awaited()
+
+
+@pytest.mark.parametrize("token", [" ", "   "])
+def test_a_blank_webhook_token_is_refused_at_load(token: str, tmp_path: Path) -> None:
+    from ori.config import Config, ConfigValidationError
+
+    config = tmp_path / "ori.yaml"
+    config.write_text(
+        "device:\n  id: edge-1\n  name: Edge\n  location: Bench\n"
+        'actions:\n  operator_contact: "+2348012345678"\n'
+        "  sms:\n    incoming_webhook:\n      enabled: true\n"
+        f"      token: {token!r}\n"
+    )
+    with pytest.raises(ConfigValidationError):
+        Config.load(str(config))

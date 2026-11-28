@@ -640,7 +640,7 @@ class RemoteCommands(DevicePolicyRefresh, AlertDelivery):
         path = str(webhook_cfg.get("path", "/webhooks/sms/africastalking"))
         signature_cfg = webhook_cfg.get("signature") or {}
         signature_mode = (
-            str(signature_cfg.get("mode", "token_only") or "token_only").lower()
+            str(signature_cfg.get("mode", "token_only") or "token_only").strip().lower()
             if isinstance(signature_cfg, dict)
             else "token_only"
         )

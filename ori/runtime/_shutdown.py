@@ -78,7 +78,10 @@ class Shutdown(MeasurementSupervision, EvidenceLoops, SkillReload):
             await asyncio.gather(*tasks, return_exceptions=True)
         webhook = self._sms_webhook_server
         if webhook is not None:
-            await webhook.stop()
+            try:
+                await webhook.stop()
+            except Exception:
+                logger.exception("[shutdown] the SMS webhook did not stop cleanly")
 
     async def stop(self) -> None:
         """Graceful shutdown. Called by SIGTERM/SIGINT signal handlers."""

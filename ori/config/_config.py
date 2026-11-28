@@ -96,7 +96,7 @@ def _validate_sms_incoming_webhook(sms: dict) -> None:
                         "actions.sms.incoming_webhook.signature.mode must be one of: "
                         "token_only, hmac_required, token_and_hmac."
                     )
-            token = str(incoming.get("token", ""))
+            token = str(incoming.get("token", "")).strip()
             if mode != "hmac_required" and (not token or "${" in token):
                 resolved_value = incoming.get("token", "")
                 raise ConfigValidationError(
