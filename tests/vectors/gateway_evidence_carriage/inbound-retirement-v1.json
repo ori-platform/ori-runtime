@@ -173,6 +173,42 @@
       "clause": "A gateway accepts and retires on a reason before any runtime it serves sends it; a gateway that does not recognise a reason cannot retire the artifact, and holds it at the head of that device's lane as a non-retiring refusal."
     },
     {
+      "name": "applied_with_a_reason",
+      "note": "An applied acknowledgement that carries a reason breaks the grammar and is held.",
+      "acknowledgement": {
+        "outcome": "applied",
+        "reason": "malformed"
+      },
+      "retire": false,
+      "head": "kept",
+      "redelivery": "on_state_change",
+      "clause": "An authenticated acknowledgement that names the `artifact_type` and `artifact_digest` of the artifact at the head of that device's lane, but whose `outcome` is neither `applied` nor `refused`, whose `outcome` is `applied` with a `reason` other than `\"\"`, or whose `outcome` is `refused` with `reason` `\"\"`, cannot retire the artifact either, and the gateway holds it at the head of that device's lane as a non-retiring refusal, as it holds a reason it does not recognise."
+    },
+    {
+      "name": "refused_without_a_reason",
+      "note": "A refusal with an empty reason breaks the grammar and is held.",
+      "acknowledgement": {
+        "outcome": "refused",
+        "reason": ""
+      },
+      "retire": false,
+      "head": "kept",
+      "redelivery": "on_state_change",
+      "clause": "An authenticated acknowledgement that names the `artifact_type` and `artifact_digest` of the artifact at the head of that device's lane, but whose `outcome` is neither `applied` nor `refused`, whose `outcome` is `applied` with a `reason` other than `\"\"`, or whose `outcome` is `refused` with `reason` `\"\"`, cannot retire the artifact either, and the gateway holds it at the head of that device's lane as a non-retiring refusal, as it holds a reason it does not recognise."
+    },
+    {
+      "name": "outcome_outside_the_grammar",
+      "note": "An outcome that is neither applied nor refused breaks the grammar and is held.",
+      "acknowledgement": {
+        "outcome": "queued",
+        "reason": ""
+      },
+      "retire": false,
+      "head": "kept",
+      "redelivery": "on_state_change",
+      "clause": "An authenticated acknowledgement that names the `artifact_type` and `artifact_digest` of the artifact at the head of that device's lane, but whose `outcome` is neither `applied` nor `refused`, whose `outcome` is `applied` with a `reason` other than `\"\"`, or whose `outcome` is `refused` with `reason` `\"\"`, cannot retire the artifact either, and the gateway holds it at the head of that device's lane as a non-retiring refusal, as it holds a reason it does not recognise."
+    },
+    {
       "name": "no_acknowledgement_after_store_fault",
       "note": "The runtime's store faulted: it released the broker message and sent no acknowledgement. The head stays and is redelivered in a newly signed envelope.",
       "acknowledgement": null,
