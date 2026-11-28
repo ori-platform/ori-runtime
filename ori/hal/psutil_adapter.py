@@ -51,8 +51,32 @@ _SUPPORTED = frozenset(
 )
 
 
+# What each platform reads a sleep assertion with; elsewhere there is nothing.
+_SLEEP_ASSERTION_TOOLS = {"Linux": "systemd-inhibit", "Darwin": "pmset"}
+
+
 def missing_library(config: dict) -> str | None:
-    """``psutil`` is imported at load, so nothing a sensor names can be missing."""
+    """What this host lacks to measure *config*'s sensor type, or ``None``.
+
+    ``psutil`` is imported at load. A sleep assertion needs its platform's tool,
+    and CPU temperature psutil's sensor API or, on macOS, ``osx-cpu-temp``;
+    without them every reading has quality 0.
+    """
+    sensor_type = str(config.get("sensor_type", ""))
+    system = platform.system()
+    if sensor_type == "sleep_blocking_process":
+        tool = _SLEEP_ASSERTION_TOOLS.get(system)
+        if tool is None:
+            return f"no sleep-assertion tool is known on {system}"
+        return None if shutil.which(tool) else f"'{tool}' is not installed"
+    if sensor_type == "cpu_temp":
+        if getattr(psutil, "sensors_temperatures", None) is not None:
+            return None
+        if system == "Darwin":
+            if shutil.which("osx-cpu-temp"):
+                return None
+            return "'osx-cpu-temp' is not installed"
+        return f"no CPU temperature backend is known on {system}"
     return None
 
 

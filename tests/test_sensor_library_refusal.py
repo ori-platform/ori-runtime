@@ -56,10 +56,6 @@ OPTIONAL = {
     ),
 }
 
-# Modules whose guarded imports are checked another way: i2c loads its chip
-# drivers lazily and names them per sensor type (i2c_driver_unavailable_reason).
-CHECKED_OTHERWISE = {"ori.hal.i2c_adapter"}
-
 
 def _sensor(protocol: str, sensor_type: str = "temperature") -> SensorConfig:
     return SensorConfig(
@@ -105,63 +101,107 @@ def test_a_module_without_the_check_is_refused(monkeypatch: pytest.MonkeyPatch) 
         protocol_library_check("http")
 
 
-def _guarded_flags(path: Path) -> set[str]:
-    """Flags a module sets False in a top-level `except ImportError`."""
-    flags: set[str] = set()
-    for node in ast.parse(path.read_text()).body:
-        if not isinstance(node, ast.Try):
-            continue
-        for handler in node.handlers:
-            names = ast.unparse(handler.type) if handler.type else ""
-            if "ImportError" not in names:
-                continue
-            for statement in handler.body:
-                if (
-                    isinstance(statement, ast.Assign)
-                    and isinstance(statement.value, ast.Constant)
-                    and statement.value.value is False
-                ):
-                    flags |= {
-                        t.id for t in statement.targets if isinstance(t, ast.Name)
-                    }
-    return flags
+# Every guarded import in ori/hal, by module and imported package, with what
+# names it to a hardened start. A new one, at any depth, must be added here.
+DEPENDENCIES = {
+    ("ori.hal.coap_adapter", "aiocoap"): "coap missing_library",
+    ("ori.hal.growatt_adapter", "pysolarmanv5"): "growatt missing_library",
+    ("ori.hal.http_adapter", "httpx"): "http missing_library",
+    ("ori.hal.i2c_adapter", "smbus2"): "i2c_driver_unavailable_reason",
+    ("ori.hal.i2c_adapter", "bme280"): "i2c_driver_unavailable_reason",
+    ("ori.hal.i2c_adapter", "adafruit_ads1x15"): "i2c_driver_unavailable_reason",
+    ("ori.hal.i2c_adapter", "board"): "i2c_driver_unavailable_reason (blinka)",
+    ("ori.hal.i2c_adapter", "busio"): "i2c_driver_unavailable_reason (blinka)",
+    ("ori.hal.i2c_adapter", "adafruit_scd4x"): "i2c_driver_unavailable_reason",
+    ("ori.hal.mqtt_base", "aiomqtt"): "mqtt_base missing_library, re-exported",
+    ("ori.hal.opcua_adapter", "asyncua"): "opcua missing_library",
+    ("ori.hal.serial_adapter", "serial"): "serial missing_library",
+    ("ori.hal.smart_adapter", "pySMART"): OPTIONAL[
+        ("ori.hal.smart_adapter", "_PYSMART_AVAILABLE")
+    ],
+    ("ori.hal.solarman_modbus_adapter", "pysolarmanv5"): "solarman missing_library",
+    ("ori.hal.usb_serial_adapter", "serial"): "usb_serial missing_library",
+}
+
+_IMPORT_FAILURES = {"ImportError", "ModuleNotFoundError"}
 
 
-def test_every_guarded_import_of_a_protocol_module_is_covered() -> None:
-    """A new optional import in an adapter module must be named here."""
-    covered = {(module, flag) for module, flag, _lib in GUARDED.values()}
-    covered |= set(OPTIONAL)
-    modules = {d.module for d in PROTOCOL_DEFINITIONS.values()} | {"ori.hal.mqtt_base"}
-    for module in sorted(modules):
-        path = HAL / f"{module.rsplit('.', 1)[1]}.py"
-        for flag in _guarded_flags(path):
-            assert (module, flag) in covered, f"{module}.{flag} is not covered"
+def _names(expr: ast.AST, aliases: dict[str, set[str]]) -> set[str]:
+    found: set[str] = set()
+    for node in ast.walk(expr):
+        if isinstance(node, ast.Name):
+            found |= {node.id} | aliases.get(node.id, set())
+        elif isinstance(node, ast.Attribute):
+            found.add(node.attr)
+    return found
 
 
-def _catches_an_import_failure(handler: ast.ExceptHandler) -> bool:
-    if handler.type is None:
-        return False
-    names = {
-        n.id if isinstance(n, ast.Name) else getattr(n, "attr", "")
-        for n in ast.walk(handler.type)
+def _guarded_imports(path: Path, module: str) -> set[tuple[str, str]]:
+    """(module, package) for each import inside a `try` that catches an import
+    failure, at any depth, by name or through a module-level tuple of them."""
+    tree = ast.parse(path.read_text())
+    aliases = {
+        target.id: _names(statement.value, {})
+        for statement in tree.body
+        if isinstance(statement, ast.Assign)
+        for target in statement.targets
+        if isinstance(target, ast.Name)
     }
-    return bool(names & {"ImportError", "ModuleNotFoundError"})
+    found: set[tuple[str, str]] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try) or not any(
+            h.type is not None and _names(h.type, aliases) & _IMPORT_FAILURES
+            for h in node.handlers
+        ):
+            continue
+        for statement in node.body:
+            for child in ast.walk(statement):
+                if isinstance(child, ast.Import):
+                    found |= {(module, a.name.split(".")[0]) for a in child.names}
+                elif (
+                    isinstance(child, ast.ImportFrom)
+                    and child.module
+                    and not child.level
+                ):
+                    found.add((module, child.module.split(".")[0]))
+    return found
 
 
-def test_every_hal_module_that_guards_an_import_is_accounted_for() -> None:
-    """At any depth, in any ori/hal module, helpers included: a guarded import
-    is either named by its module's missing_library or listed with its reason."""
-    accounted = {m for m, _f, _l in GUARDED.values()}
-    accounted |= {m for m, _f in OPTIONAL} | CHECKED_OTHERWISE
-    for path in sorted(HAL.glob("*.py")):
-        guarded = any(
-            _catches_an_import_failure(handler)
-            for node in ast.walk(ast.parse(path.read_text()))
-            if isinstance(node, ast.Try)
-            for handler in node.handlers
-        )
-        module = f"ori.hal.{path.stem}"
-        assert not guarded or module in accounted, f"{module} guards an import"
+def _hal_guarded_imports(root: Path = HAL) -> set[tuple[str, str]]:
+    found: set[tuple[str, str]] = set()
+    for path in sorted(root.rglob("*.py")):
+        module = ".".join(("ori", "hal", *path.relative_to(root).with_suffix("").parts))
+        found |= _guarded_imports(path, module)
+    return found
+
+
+def test_every_guarded_import_in_hal_is_accounted_for() -> None:
+    """Each dependency, not each module: a new import in a covered module fails."""
+    assert _hal_guarded_imports() == set(DEPENDENCIES)
+
+
+def test_the_guard_sees_a_nested_import_in_a_covered_module(tmp_path: Path) -> None:
+    package = tmp_path / "hal" / "helpers"
+    package.mkdir(parents=True)
+    (tmp_path / "hal" / "http_adapter.py").write_text(
+        "def connect():\n"
+        "    try:\n"
+        "        import newlib\n"
+        "    except ModuleNotFoundError:\n"
+        "        pass\n"
+    )
+    (package / "probe.py").write_text(
+        "FAILS = (ImportError, RuntimeError)\n"
+        "def load():\n"
+        "    try:\n"
+        "        from otherlib import thing\n"
+        "    except FAILS:\n"
+        "        pass\n"
+    )
+    assert _hal_guarded_imports(tmp_path / "hal") == {
+        ("ori.hal.http_adapter", "newlib"),
+        ("ori.hal.helpers.probe", "otherlib"),
+    }
 
 
 @pytest.mark.parametrize("protocol", sorted(GUARDED))
@@ -174,6 +214,61 @@ def test_a_missing_library_is_named(
     assert reason is not None and library in reason
     monkeypatch.setattr(importlib.import_module(module), flag, True)
     assert _check(_sensor(protocol)) is None
+
+
+@pytest.mark.parametrize(
+    ("system", "tool"), [("Linux", "systemd-inhibit"), ("Darwin", "pmset")]
+)
+def test_a_sleep_assertion_sensor_needs_its_platform_tool(
+    system: str, tool: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ori.hal import psutil_adapter
+
+    monkeypatch.setattr(psutil_adapter.platform, "system", lambda: system)
+    monkeypatch.setattr(psutil_adapter.shutil, "which", lambda name: None)
+    reason = _check(_sensor("psutil", "sleep_blocking_process"))
+    assert reason is not None and tool in reason
+    monkeypatch.setattr(psutil_adapter.shutil, "which", lambda name: f"/bin/{name}")
+    assert _check(_sensor("psutil", "sleep_blocking_process")) is None
+    monkeypatch.setattr(psutil_adapter.platform, "system", lambda: "Windows")
+    assert _check(_sensor("psutil", "sleep_blocking_process")) is not None
+
+
+def test_cpu_temperature_needs_a_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ori.hal import psutil_adapter
+
+    monkeypatch.setattr(psutil_adapter.shutil, "which", lambda name: None)
+    monkeypatch.delattr(psutil_adapter.psutil, "sensors_temperatures", raising=False)
+    monkeypatch.setattr(psutil_adapter.platform, "system", lambda: "Darwin")
+    reason = _check(_sensor("psutil", "cpu_temp"))
+    assert reason is not None and "osx-cpu-temp" in reason
+    monkeypatch.setattr(psutil_adapter.shutil, "which", lambda name: f"/bin/{name}")
+    assert _check(_sensor("psutil", "cpu_temp")) is None
+    monkeypatch.setattr(psutil_adapter.platform, "system", lambda: "Windows")
+    assert _check(_sensor("psutil", "cpu_temp")) is not None
+    monkeypatch.setattr(
+        psutil_adapter.psutil, "sensors_temperatures", lambda: {}, raising=False
+    )
+    assert _check(_sensor("psutil", "cpu_temp")) is None
+    assert _check(_sensor("psutil", "cpu_percent")) is None
+
+
+async def test_the_startup_stage_refuses_before_the_store_opens(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from ori.hal import mqtt_base
+    from ori.runtime import OriRuntime, _startup_foundation
+    from ori.startup_stages import StartupContext
+
+    monkeypatch.setattr(mqtt_base, "_AIOMQTT_AVAILABLE", False)
+    config = _config("production", [_sensor("mqtt")])
+    monkeypatch.setattr(
+        _startup_foundation.Config, "load", staticmethod(lambda path: config)
+    )
+    runtime = OriRuntime(config_path=str(tmp_path / "ori.yaml"))
+    with pytest.raises(ConfigValidationError, match=r"'mqtt-1'.*aiomqtt"):
+        await runtime._stage_configuration(StartupContext())
+    assert runtime._state_store is None
 
 
 def test_a_smart_sensor_needs_smartctl(monkeypatch: pytest.MonkeyPatch) -> None:
