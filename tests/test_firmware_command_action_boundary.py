@@ -332,6 +332,7 @@ DEFINING_MODULES = (
     "ori/security/firmware/commands.py",
     *state_store_modules(),
     "ori/security/evidence/ledger.py",
+    "ori/security/evidence/_ledger_schema.py",  # the ledger's tables, moved out
     "ori/security/evidence/bound.py",
     "ori/security/evidence/ingest_service.py",
 )
@@ -348,6 +349,12 @@ RUNTIME_MODULES = tuple(
 #: Every touch on the surface outside ori/runtime/ and the defining modules,
 #: keyed ``path::qualified scope::name``. Stale entries fail.
 SURFACE_TOUCHES: dict[str, str] = {
+    "ori/security/evidence/first_party.py::FirstPartyEvidenceAttestor._open_sync"
+    "::record_current_anchor": (
+        "evidence open at startup, before any dispatch: records the sealing "
+        "anchor and moves the projection to its held confirmation "
+        "(evidence-exchange/v3); no action path reaches it"
+    ),
     "ori/security/firmware/confirmation.py::FirmwareConfirmationCoordinator"
     "._readback::active_anchor_epoch_id": (
         "grant side: the coordinator's evidence read-back for a newly approved epoch"

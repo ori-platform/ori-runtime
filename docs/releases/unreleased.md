@@ -496,6 +496,13 @@ release is cut.
 
 ## Fixed
 
+- The evidence ledger's active epoch now follows the epoch it seals under.
+  A release rolled back or forward to an epoch whose confirmation is already
+  held makes that epoch active again at its start, with no new confirmation;
+  before, the active epoch stayed on the last epoch first confirmed. A start
+  also repairs an active-epoch record an earlier release left on the wrong
+  epoch or with wrong members. An epoch with no confirmation leaves it
+  unchanged, and a held confirmation lifts no stop (`evidence-exchange/v3`).
 - A staging or production start now refuses a configured sensor whose
   adapter's library is not installed, naming the sensor and the library. It
   had checked only GPIO, CoAP and local reasoning, so a v2.5.0 Pi install
