@@ -640,7 +640,7 @@ class RemoteCommands(DevicePolicyRefresh, AlertDelivery):
         path = str(webhook_cfg.get("path", "/webhooks/sms/africastalking"))
         signature_cfg = webhook_cfg.get("signature") or {}
         signature_mode = (
-            str(signature_cfg.get("mode", "token_only") or "token_only").lower()
+            str(signature_cfg.get("mode", "token_only") or "token_only").strip().lower()
             if isinstance(signature_cfg, dict)
             else "token_only"
         )
@@ -670,11 +670,52 @@ class RemoteCommands(DevicePolicyRefresh, AlertDelivery):
             signature_verifier=signature_verifier,
             state_store=self._state_store,
             allowed_source_cidrs=list(webhook_cfg.get("allowed_source_cidrs") or []),
+            registry_text=self._registry_phone_text,
         )
+        # Bound before the serve task exists: the approver registry takes `sms`
+        # as authenticated from this server, so one that never bound must not
+        # be left standing for it to read.
+        try:
+            await self._sms_webhook_server.start()
+        except Exception as exc:
+            logger.critical(
+                "[runtime] the SMS webhook could not bind %s:%d (%s); no inbound "
+                "SMS is received and no phone approver can enrol",
+                host,
+                port,
+                type(exc).__name__,
+            )
+            self._sms_webhook_server = None
+            return None
         return asyncio.create_task(
             self._sms_webhook_server.serve_until(self._shutdown_event),
             name="sms-webhook",
         )
+
+    async def _registry_phone_text(
+        self, sender: str, text: str, authenticated: bool
+    ) -> None:
+        """One registry text from the SMS webhook.
+
+        Dropped, changing nothing, when this ingress did not authenticate it or
+        there is no registry. A failure to apply it is logged without the text,
+        which can carry a possession code.
+        """
+        registry = self._approver_registry
+        if not authenticated or registry is None:
+            logger.warning(
+                "[approvers] a registry text arrived %s; it changes nothing",
+                "unauthenticated" if not authenticated else "with no approver registry",
+            )
+            return
+        try:
+            await registry.phone_text("sms", sender, text, authenticated=True)
+        except Exception as exc:
+            logger.error(
+                "[approvers] a registry text could not be applied (%s); it changes "
+                "nothing",
+                type(exc).__name__,
+            )
 
     def _build_sms_webhook_signature_verifier(
         self, webhook_cfg: dict[str, Any]

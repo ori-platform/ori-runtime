@@ -856,6 +856,9 @@ def _bare_runtime() -> OriRuntime:
     runtime._state_store = None
     runtime._config = None
     runtime._device_id = "dev-1"
+    runtime._sms_webhook_server = None
+    runtime._sms_action = None
+    runtime._approver_registry = None
     return runtime
 
 

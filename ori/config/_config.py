@@ -49,6 +49,7 @@ from ori.security.config_signatures import (
     config_signature_policy_from_raw_config,
     verify_config_signature_if_needed,
 )
+from ori.utils.bool_utils import is_truthy
 from ori.utils.path_utils import shown
 
 logger = logging.getLogger("ori.config")
@@ -61,6 +62,82 @@ _WHATSAPP_TEMPLATE_INTENTS = (
     "tier_c_approval",
     "tier_c_escalation",
 )
+
+
+def _validate_sms_incoming_webhook(sms: dict) -> None:
+    """Validate the SMS webhook whenever the runtime would start it.
+
+    The runtime starts it on `is_truthy(incoming_webhook.enabled)` and never
+    reads `actions.sms.enabled`, so neither may gate these checks: otherwise a
+    disabled or oddly spelled SMS flag let a placeholder secret through.
+    """
+    incoming = sms.get("incoming_webhook") or {}
+    if isinstance(incoming, dict):
+        # The runtime starts the webhook on `is_truthy`, so it is
+        # validated on the same reading: "on" or "yes" must not skip
+        # the secret checks and still start the webhook.
+        webhook_enabled = is_truthy(incoming.get("enabled", False))
+        if webhook_enabled:
+            validate_sms_webhook_source_cidrs(incoming.get("allowed_source_cidrs"))
+            signature_cfg = incoming.get("signature") or {}
+            if signature_cfg and not isinstance(signature_cfg, dict):
+                raise ConfigValidationError(
+                    "actions.sms.incoming_webhook.signature must be a mapping."
+                )
+            mode = "token_only"
+            if isinstance(signature_cfg, dict):
+                mode = str(signature_cfg.get("mode", "token_only")).strip().lower()
+                if mode not in {
+                    "token_only",
+                    "hmac_required",
+                    "token_and_hmac",
+                }:
+                    raise ConfigValidationError(
+                        "actions.sms.incoming_webhook.signature.mode must be one of: "
+                        "token_only, hmac_required, token_and_hmac."
+                    )
+            token = str(incoming.get("token", "")).strip()
+            if mode != "hmac_required" and (not token or "${" in token):
+                resolved_value = incoming.get("token", "")
+                raise ConfigValidationError(
+                    f"Environment variable not set: {resolved_value}. "
+                    f"Set it in your .env file before starting Ori."
+                )
+            if isinstance(signature_cfg, dict):
+                if mode != "token_only":
+                    secret = str(signature_cfg.get("shared_secret", ""))
+                    if not secret or "${" in secret:
+                        resolved_value = signature_cfg.get("shared_secret", "")
+                        raise ConfigValidationError(
+                            f"Environment variable not set: {resolved_value}. "
+                            f"Set it in your .env file before starting Ori."
+                        )
+                    previous_secret = str(
+                        signature_cfg.get("previous_shared_secret", "")
+                    )
+                    if previous_secret and "${" in previous_secret:
+                        resolved_value = signature_cfg.get("previous_shared_secret", "")
+                        raise ConfigValidationError(
+                            f"Environment variable not set: {resolved_value}. "
+                            f"Set it in your .env file before starting Ori."
+                        )
+                    if previous_secret and previous_secret == secret:
+                        raise ConfigValidationError(
+                            "actions.sms.incoming_webhook.signature.previous_shared_secret "
+                            "must differ from shared_secret"
+                        )
+                for key in ("max_skew_seconds", "replay_ttl_seconds"):
+                    if key in signature_cfg:
+                        try:
+                            value = int(signature_cfg[key])
+                        except (TypeError, ValueError) as exc:
+                            raise ConfigValidationError(
+                                f"actions.sms.incoming_webhook.signature.{key} must be an integer."
+                            ) from exc
+                        if value < 0:
+                            raise ConfigValidationError(
+                                f"actions.sms.incoming_webhook.signature.{key} must be >= 0."
+                            )
 
 
 @dataclass
@@ -369,79 +446,9 @@ class Config:
                     "actions.sms.transport=hybrid requires at least one configured transport path (IP credentials or GSM modem config)."
                 )
 
-            incoming = actions.sms.get("incoming_webhook") or {}
-            if isinstance(incoming, dict):
-                webhook_enabled = (
-                    str(incoming.get("enabled", "")).lower() == "true"
-                    or incoming.get("enabled") is True
-                )
-                if webhook_enabled:
-                    validate_sms_webhook_source_cidrs(
-                        incoming.get("allowed_source_cidrs")
-                    )
-                    signature_cfg = incoming.get("signature") or {}
-                    if signature_cfg and not isinstance(signature_cfg, dict):
-                        raise ConfigValidationError(
-                            "actions.sms.incoming_webhook.signature must be a mapping."
-                        )
-                    mode = "token_only"
-                    if isinstance(signature_cfg, dict):
-                        mode = (
-                            str(signature_cfg.get("mode", "token_only")).strip().lower()
-                        )
-                        if mode not in {
-                            "token_only",
-                            "hmac_required",
-                            "token_and_hmac",
-                        }:
-                            raise ConfigValidationError(
-                                "actions.sms.incoming_webhook.signature.mode must be one of: "
-                                "token_only, hmac_required, token_and_hmac."
-                            )
-                    token = str(incoming.get("token", ""))
-                    if mode != "hmac_required" and (not token or "${" in token):
-                        resolved_value = incoming.get("token", "")
-                        raise ConfigValidationError(
-                            f"Environment variable not set: {resolved_value}. "
-                            f"Set it in your .env file before starting Ori."
-                        )
-                    if isinstance(signature_cfg, dict):
-                        if mode != "token_only":
-                            secret = str(signature_cfg.get("shared_secret", ""))
-                            if not secret or "${" in secret:
-                                resolved_value = signature_cfg.get("shared_secret", "")
-                                raise ConfigValidationError(
-                                    f"Environment variable not set: {resolved_value}. "
-                                    f"Set it in your .env file before starting Ori."
-                                )
-                            previous_secret = str(
-                                signature_cfg.get("previous_shared_secret", "")
-                            )
-                            if previous_secret and "${" in previous_secret:
-                                resolved_value = signature_cfg.get(
-                                    "previous_shared_secret", ""
-                                )
-                                raise ConfigValidationError(
-                                    f"Environment variable not set: {resolved_value}. "
-                                    f"Set it in your .env file before starting Ori."
-                                )
-                            if previous_secret and previous_secret == secret:
-                                raise ConfigValidationError(
-                                    "actions.sms.incoming_webhook.signature.previous_shared_secret "
-                                    "must differ from shared_secret"
-                                )
-                        for key in ("max_skew_seconds", "replay_ttl_seconds"):
-                            if key in signature_cfg:
-                                try:
-                                    value = int(signature_cfg[key])
-                                except (TypeError, ValueError) as exc:
-                                    raise ConfigValidationError(
-                                        f"actions.sms.incoming_webhook.signature.{key} must be an integer."
-                                    ) from exc
-                                if value < 0:
-                                    raise ConfigValidationError(
-                                        f"actions.sms.incoming_webhook.signature.{key} must be >= 0."
-                                    )
+        _validate_sms_incoming_webhook(
+            actions.sms if isinstance(actions.sms, dict) else {}
+        )
 
         if device.deployment_type == "phone":
             logger.info(

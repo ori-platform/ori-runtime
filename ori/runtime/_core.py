@@ -95,6 +95,9 @@ class RuntimeCore:
         # The direct SMS a failure notice's retries fall back to.
         self._tier_d_last_resort: Any = None
         self._sms_webhook_server: SMSWebhookServer | None = None
+        # The approver registry the operator socket serves, once it is bound;
+        # the SMS webhook hands it registry texts.
+        self._approver_registry: Any = None
         self._dispatcher: ActionDispatcher | None = None
         self._event_bus: EventBus | None = None
         self._elevator: IntelligenceElevator | None = None

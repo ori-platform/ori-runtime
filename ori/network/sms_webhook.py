@@ -9,12 +9,15 @@ import json
 import logging
 import re
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from ipaddress import ip_address, ip_network
 from typing import Any, cast
 from urllib.parse import parse_qs, urlsplit
 
+from ori.security.approvers.registry import ENROL_TOKEN, POSSESS_TOKEN
 from ori.security.webhook_signatures import WebhookSignatureVerifier
+from ori.utils.ascii_text import ASCII_WHITESPACE
 from ori.utils.path_utils import shown
 from ori.utils.strict_json import unique_members
 
@@ -38,6 +41,12 @@ _RATE_WINDOW_SECONDS: float = 60.0
 # cannot tell an operator from a stranger; SMSAction limits each allowlisted
 # sender after its allowlist, and the bridge limits senders (ori-gateway#138).
 _RATE_MAX_REQUESTS: int = 600
+# A text whose first token is one of these belongs to the approver registry and
+# never reaches the approval allowlist.
+_REGISTRY_TOKENS = frozenset({ENROL_TOKEN, POSSESS_TOKEN})
+
+#: (sender, text, authenticated) for one registry text from this SMS ingress.
+RegistryText = Callable[[str, str, bool], Awaitable[None]]
 
 
 @dataclass
@@ -61,8 +70,10 @@ class SMSWebhookServer:
         signature_verifier: WebhookSignatureVerifier | None = None,
         state_store: Any = None,
         allowed_source_cidrs: list[str] | tuple[str, ...] | None = None,
+        registry_text: RegistryText | None = None,
     ) -> None:
         self._sms_action = sms_action
+        self._registry_text = registry_text
         # The handlers running now, so stop() can wait for each to finish.
         self._handlers: set[asyncio.Task[Any]] = set()
         # The one drain of a stop(): every caller waits for it to finish.
@@ -166,6 +177,34 @@ class SMSWebhookServer:
             if task is not None:
                 self._handlers.discard(task)
 
+    @property
+    def authenticates_each_request(self) -> bool:
+        """Whether every text this ingress accepts was signed and not replayed."""
+        verifier = self._signature_verifier
+        return verifier is not None and verifier.authenticates_each_request
+
+    async def _routed_to_registry(self, payload: dict[str, Any]) -> bool:
+        """Hand a registry text to the registry; True when it was one.
+
+        The channel is this ingress's own, and *authenticated* is its own
+        verdict: the request passed the verifier above, and that verifier signs
+        every request with a mandatory nonce. Nothing in the payload selects
+        either.
+        """
+        text = str(payload.get("text") or payload.get("message") or "")
+        # Routed on the token the approval path would read, so a registry text
+        # never reaches it however it is padded; the registry gets the raw text
+        # and refuses any that is not exact.
+        stripped = text.strip(ASCII_WHITESPACE)
+        if stripped.split(" ", 1)[0] not in _REGISTRY_TOKENS:
+            return False
+        if self._registry_text is not None:
+            # Raw: the registry refuses a sender that is not canonical E.164,
+            # rather than this ingress coercing another channel's into one.
+            sender = str(payload.get("from") or payload.get("from_number") or "")
+            await self._registry_text(sender, text, self.authenticates_each_request)
+        return True
+
     def _rate_check(self, peer_ip: str) -> bool:
         """Return True when the request is within rate limits, False to reject."""
         now = time.monotonic()
@@ -249,6 +288,9 @@ class SMSWebhookServer:
                     return
 
             payload = self._decode_payload(request.headers, request.body)
+            if await self._routed_to_registry(payload):
+                await self._respond(writer, 200, "ok")
+                return
             ok = await self._sms_action.ingest_incoming_webhook(payload)
             if ok:
                 await self._respond(writer, 200, "ok")

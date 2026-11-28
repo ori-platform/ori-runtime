@@ -4624,6 +4624,8 @@ class TestWebhookServerStartup:
                 self.args = args
                 self.kwargs = kwargs
                 self.serve_until = AsyncMock(side_effect=self._serve_until)
+                self.start = AsyncMock()
+                self.stop = AsyncMock()
 
             async def _serve_until(self, shutdown_event):
                 await shutdown_event.wait()
@@ -4725,6 +4727,8 @@ class TestWebhookServerStartup:
                 self.args = args
                 self.kwargs = kwargs
                 self.serve_until = AsyncMock(side_effect=self._serve_until)
+                self.start = AsyncMock()
+                self.stop = AsyncMock()
 
             async def _serve_until(self, shutdown_event):
                 await shutdown_event.wait()
@@ -4741,7 +4745,11 @@ class TestWebhookServerStartup:
         cls.assert_called_once()
         assert cls.call_args.kwargs["host"] == "127.0.0.1"
 
-    async def test_runtime_skips_sms_webhook_without_token(self, tmp_path, monkeypatch):
+    async def test_runtime_refuses_an_enabled_sms_webhook_without_token(
+        self, tmp_path, monkeypatch
+    ):
+        """Refused at load whatever `actions.sms.enabled` says: the runtime would
+        start the webhook on its own flag alone."""
         _patch_external(monkeypatch)
 
         skill_dir = tmp_path / "skills" / "test-skill"
@@ -4810,10 +4818,8 @@ class TestWebhookServerStartup:
 
         runtime = OriRuntime(config_path=str(cfg))
         with patched_runtime("SMSWebhookServer") as cls:
-            # An absence cannot be waited for, so this waits for the end of
-            # startup: if the webhook were going to be constructed, it would
-            # have been by then.
-            await run_runtime_full_startup(runtime)
+            with pytest.raises(ConfigValidationError, match="Environment variable"):
+                await run_runtime_full_startup(runtime)
 
         cls.assert_not_called()
 
