@@ -30,7 +30,7 @@ LIMIT = (
 OVERSIZE_CEILINGS: dict[str, int] = {
     "ori/reasoning/action_dispatcher.py::ActionDispatcher._run_approval_workflow": 519,
     "ori/reasoning/action_dispatcher.py::ActionDispatcher._run_governed_workflow": 456,
-    "ori/config/_config.py::Config._interpret": 366,
+    "ori/config/_config.py::Config._interpret": 296,
     "ori/config/_gateway.py::parse_gateway": 323,
     "ori/reasoning/elevator.py::IntelligenceElevator.reason_and_dispatch": 336,
     "ori/reasoning/action_dispatcher.py::ActionDispatcher._admit_and_run": 265,
@@ -50,7 +50,7 @@ OVERSIZE_CEILINGS: dict[str, int] = {
     "ori/reasoning/elevator.py::IntelligenceElevator._reason_with_rule_result": 184,
     "ori/state/_history.py::HistoryStore._compact_sync": 184,
     "ori/reasoning/action_dispatcher.py::ActionDispatcher._log_action": 178,
-    "ori/runtime/_shutdown.py::Shutdown.stop": 174,
+    "ori/runtime/_shutdown.py::Shutdown.stop": 170,
     "ori/config/_hal.py::parse_hal": 168,
     "ori/state/_firmware.py::FirmwareStore._approve_firmware_device_sync": 168,
     "ori/installer/cli.py::_install": 166,

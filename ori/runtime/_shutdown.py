@@ -64,6 +64,22 @@ class Shutdown(MeasurementSupervision, EvidenceLoops, SkillReload):
         await self.stop()
         return True
 
+    async def _cancel_background_tasks(self) -> None:
+        """Cancel the tracked background tasks and wait for each to end.
+
+        The SMS webhook binds before its serve task runs, and a task cancelled
+        before its first step never reaches the stop in its `finally`, so it
+        is stopped here too.
+        """
+        tasks = [t for t in self._background_tasks if not t.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        webhook = self._sms_webhook_server
+        if webhook is not None:
+            await webhook.stop()
+
     async def stop(self) -> None:
         """Graceful shutdown. Called by SIGTERM/SIGINT signal handlers."""
         if self._shutdown_event.is_set():
@@ -105,11 +121,7 @@ class Shutdown(MeasurementSupervision, EvidenceLoops, SkillReload):
         #    running start() itself, which returns naturally once the shutdown
         #    event is set. This stops the sensor loops, so no act starts after
         #    its records have been closed below.
-        tasks = [t for t in self._background_tasks if not t.done()]
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        await self._cancel_background_tasks()
 
         # 2a. An open proposal has no live process to admit its reply once this
         #     one stops: closed now, with its one non-actuating safe default,

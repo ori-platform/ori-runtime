@@ -444,10 +444,16 @@ def test_the_configured_verifier_decides_the_channel(
     assert verifier is not None and verifier.authenticates_each_request is expected
 
 
+@pytest.mark.parametrize("sms_enabled", ["true", "'on'", "false", None])
 @pytest.mark.parametrize("enabled", ["on", "yes", "1", "true", True])
 def test_a_webhook_enabled_in_any_spelling_has_its_secret_checked(
-    enabled: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    enabled: Any,
+    sms_enabled: str | None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Whatever `actions.sms.enabled` says: the runtime never reads it to start
+    the webhook, so it cannot gate the webhook's checks."""
     from ori.config import Config, ConfigValidationError
 
     monkeypatch.delenv("ORI_SMS_WEBHOOK_HMAC_SECRET", raising=False)
@@ -455,10 +461,27 @@ def test_a_webhook_enabled_in_any_spelling_has_its_secret_checked(
     config.write_text(
         "device:\n  id: edge-1\n  name: Edge\n  location: Bench\n"
         'actions:\n  operator_contact: "+2348012345678"\n'
-        "  sms:\n    enabled: true\n    AT_USERNAME: sandbox\n    AT_API_KEY: k\n"
+        "  sms:\n"
+        + (f"    enabled: {sms_enabled}\n" if sms_enabled is not None else "")
+        + "    AT_USERNAME: sandbox\n    AT_API_KEY: k\n"
         f"    incoming_webhook:\n      enabled: {enabled!r}\n      token: t\n"
         "      signature:\n        mode: hmac_required\n"
         "        shared_secret: ${ORI_SMS_WEBHOOK_HMAC_SECRET}\n"
     )
     with pytest.raises(ConfigValidationError, match="ORI_SMS_WEBHOOK_HMAC_SECRET"):
         Config.load(str(config))
+
+
+async def test_stop_closes_a_webhook_whose_serve_task_never_ran() -> None:
+    from ori.runtime import OriRuntime
+
+    runtime = OriRuntime(config_path="ori.yaml")
+    server = SMSWebhookServer(sms_action=AsyncMock(), token="t", port=0)
+    await server.start()
+    runtime._sms_webhook_server = server
+    task = asyncio.create_task(server.serve_until(runtime._shutdown_event))
+    task.cancel()  # before its first step: its `finally` never runs
+    runtime._background_tasks.append(task)
+    assert server._server is not None
+    await runtime.stop()
+    assert server._server is None
