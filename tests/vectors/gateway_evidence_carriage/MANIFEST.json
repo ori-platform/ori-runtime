@@ -1,12 +1,12 @@
 {
   "source_repository": "ori-platform/ori-specs",
   "source_path": "gateway-evidence-carriage/vectors",
-  "source_commit": "ade939057fb05487183d1e53774dd1deabfe47a8",
+  "source_commit": "66cbf507ca9c48bd6cac3cd779a5a251bdc650fb",
   "contract_version": "v1",
   "note": "Vendored copies of the normative vectors. The runtime must produce and accept the bytes they describe, so they are its conformance fixtures. Digests detect a local edit; the source commit is the provenance trail.",
   "files": {
-    "inbound-retirement-v1.json": "4cee709804568e2bdd05f7fee1f983fc458cbccb4d300862e491776bd00c418f",
-    "return-path.json": "a9ce8c861f4aba70379251efba45081fccd18c8c1a59b444647b2fa2dd44060a",
+    "inbound-retirement-v1.json": "5b3d139d688ce8842a5666f479f0fb402fb61371cb41b6ad94271197d2e03e5b",
+    "return-path.json": "9e49a88c82c4f2c40399129c9964e3696c6688524b85f70e819021b3ccaa8268",
     "site-health-evidence-delivery.json": "05cbe0d8a7e50f4a6a1be85e82b51eb34c43ef3d733f81913bab73834f28e326"
   }
 }

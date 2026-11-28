@@ -415,6 +415,15 @@ def test_a_saturated_evidence_worker_releases_the_message_unacknowledged():
 # --------------------------------------------------------------------------
 
 
+def _breaks_the_grammar(ack: dict[str, str]) -> bool:
+    """`applied` with no reason and `refused` with one are the only shapes."""
+    if ack["outcome"] == "applied":
+        return ack["reason"] != ""
+    if ack["outcome"] == "refused":
+        return ack["reason"] == ""
+    return True
+
+
 def test_the_runtime_refuses_with_exactly_the_carriage_vocabulary():
     assert set(RETIREMENT["vocabulary"]) == REJECT_REASONS
 
@@ -425,6 +434,12 @@ def test_the_runtime_refuses_with_exactly_the_carriage_vocabulary():
 def test_each_answer_the_runtime_gives_is_the_one_the_courier_reads(case):
     """The courier's retirement is the gateway's; the acknowledgement is ours."""
     ack = case["acknowledgement"]
+    if ack is not None and _breaks_the_grammar(ack):
+        # The courier holds it; the runtime can never build it to send.
+        state = {"applied": ACCEPTED, "refused": REJECTED}.get(ack["outcome"], "queued")
+        with pytest.raises(ValueError):
+            IngestOutcome(artifact=ARTIFACT_CUSTODY, state=state, reason=ack["reason"])
+        return
     if ack is None:
         outcome = IngestOutcome(artifact=ARTIFACT_CUSTODY, state=UNDECIDED)
     elif ack["outcome"] == "applied":
