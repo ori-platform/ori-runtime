@@ -142,6 +142,16 @@ jobs:
           command -v mosquitto
           command -v stress-ng
 
+      - name: Allow the confined test broker to read its temporary config
+        run: |
+          # Ubuntu's Mosquitto profile permits system configs, but these
+          # loopback-only brokers use pytest-owned configs and no persistence.
+          if test -f /etc/apparmor.d/mosquitto; then
+            sudo install -d /etc/apparmor.d/local
+            echo 'owner /tmp/pytest-of-*/**/mosquitto*.conf r,' | sudo tee -a /etc/apparmor.d/local/mosquitto
+            sudo apparmor_parser -r /etc/apparmor.d/mosquitto
+          fi
+
       # The phone tests build the Rust payload themselves; building it now, on
       # an idle runner, keeps a compile out of the loaded runs.
       - name: Build the phone payload
@@ -261,6 +271,7 @@ jobs:
             set +e
             timeout 55m pytest tests/ -q -n "$(cat "${RUNNER_TEMP}/workers")" --dist loadgroup -m "not hardware" \
               --junitxml="${RUNNER_TEMP}/proof/run-${i}.xml" \
+              -o junit_logging=all -o junit_log_passing_tests=false \
               > "${RUNNER_TEMP}/proof/run-${i}.log" 2>&1
             status=$?
             set -e
