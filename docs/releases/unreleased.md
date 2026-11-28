@@ -496,6 +496,14 @@ release is cut.
 
 ## Fixed
 
+- An alert whose first send a provider accepted, but whose acceptance could
+  not be recorded, is no longer sent again by the outbox retry loop in the
+  same process, nor is a retry whose recording was cancelled; after a restart
+  it is sent once more. The rule covers an acceptance the runtime observed: a
+  send cancelled before its receipt returned is retried. The retry loop also
+  leaves a row alone while its first send is still in flight. Both rules held
+  only for the notice that a Tier D act failed; they now hold for every first
+  send.
 - A governed Tier C approval whose workflow failed after its commit and before
   the executor was invoked stayed `approved_pending_dispatch` for the life of
   the process, with no CRITICAL event and no operator notice. It is now settled

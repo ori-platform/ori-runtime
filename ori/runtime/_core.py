@@ -6,6 +6,7 @@
 import asyncio
 import logging
 import time
+from collections import Counter
 from typing import Any
 
 from ori.actions.alert_failover import AlertFailoverSender
@@ -88,9 +89,9 @@ class RuntimeCore:
         self._background_tasks: list[asyncio.Task] = []
         self._sms_action: SMSAction | None = None
         self._alert_sender: AlertFailoverSender | None = None
-        # Rows the retry loop leaves alone: a Tier D failure notice whose first
-        # attempt is in flight, and any accepted send that could not be recorded.
-        self._alert_first_attempts: set[str] = set()
+        # Rows the retry loop leaves alone, each with the holds on it: a first
+        # send in flight, and any accepted send that could not be recorded.
+        self._alert_first_attempts: Counter[str] = Counter()
         # The direct SMS a failure notice's retries fall back to.
         self._tier_d_last_resort: Any = None
         self._sms_webhook_server: SMSWebhookServer | None = None

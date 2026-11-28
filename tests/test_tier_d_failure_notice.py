@@ -211,7 +211,7 @@ async def test_a_cancelled_first_send_leaves_its_row_to_the_retry_loop(
     notifying.cancel()
     with pytest.raises(asyncio.CancelledError):
         await notifying
-    assert runtime._alert_first_attempts == set()
+    assert not runtime._alert_first_attempts
     (row,) = await runtime._next_retry_batch(10)
     assert row["notice_kind"] == "tier_d"
 
@@ -353,7 +353,7 @@ async def test_a_row_in_flight_holds_no_slot_another_notice_needs(
             original_ts=1,
             notice_kind="tier_d",
         )
-    runtime._alert_first_attempts.add("older")
+    runtime._alert_first_attempts["older"] += 1
     for _ in range(3):
         assert [r["alert_id"] for r in await runtime._next_retry_batch(1)] == ["later"]
 
@@ -475,7 +475,7 @@ async def test_a_batch_row_taken_or_settled_since_the_fetch_is_not_sent(
     async def racing(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
         rows = await get(*args, **kwargs)
         if ordering == "claimed-during-fetch":
-            runtime._alert_first_attempts.add("x")  # its first attempt began meanwhile
+            runtime._alert_first_attempts["x"] += 1  # its first attempt began meanwhile
         else:
             await store.mark_alert_accepted(
                 "x",

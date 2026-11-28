@@ -4,10 +4,12 @@
 """Alert delivery: send or queue, alert policy, the setup notice, and the outbox."""
 
 import asyncio
+import contextlib
 import json
 import logging
 import secrets
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from dataclasses import dataclass
 from typing import Any, cast
 
 from ori.actions.alert_delivery import (
@@ -47,6 +49,14 @@ logger = logging.getLogger("ori.runtime")
 _WITHHELD_REASONS = {"disabled": "customer_preference", "capped": "monthly_cap"}
 
 
+@dataclass
+class _FirstAttempt:
+    """What a first send settled: whether it was accepted, and recorded if so."""
+
+    accepted: bool = False
+    recorded: bool = False
+
+
 class AlertDelivery(RuntimeCore):
     """Sending or queueing alerts under alert policy, and draining the durable outbox."""
 
@@ -62,6 +72,27 @@ class AlertDelivery(RuntimeCore):
         self._alert_outbox_tier_d_critical_threshold = int(
             cfg.get("tier_d_critical_warning_threshold", 3)
         )
+
+    @contextlib.contextmanager
+    def _first_attempt(self, alert_id: str) -> Iterator[_FirstAttempt]:
+        """Keep *alert_id*'s row out of the retry loop while its first send runs.
+
+        Each send holds the row once, so an overlapping send of the same alert
+        keeps it held. The hold ends with the send unless an acceptance was
+        observed and not recorded: the row then stays out of this process's
+        retries, and is sent again after a restart. A send cancelled before its
+        receipt returned is released, as a refusal is.
+        """
+        attempt = _FirstAttempt()
+        holds = self._alert_first_attempts
+        holds[alert_id] += 1
+        try:
+            yield attempt
+        finally:
+            if attempt.recorded or not attempt.accepted:
+                holds[alert_id] -= 1
+                if holds[alert_id] <= 0:
+                    del holds[alert_id]
 
     async def _send_or_queue_alert(
         self,
@@ -149,6 +180,37 @@ class AlertDelivery(RuntimeCore):
             original_ts=original_ts,
         )
 
+        with self._first_attempt(alert_id) as attempt:
+            return await self._first_send(
+                attempt,
+                alert_id,
+                alert,
+                channel=channel,
+                recipient=recipient,
+                action_tier=action_tier,
+                trigger_name=trigger_name,
+                original_ts=original_ts,
+                alert_sender=alert_sender,
+                allow_failover=allow_failover,
+                notice_kind=notice_kind,
+            )
+
+    async def _first_send(
+        self,
+        attempt: _FirstAttempt,
+        alert_id: str,
+        alert: OutboundAlert,
+        *,
+        channel: str,
+        recipient: str,
+        action_tier: str,
+        trigger_name: str,
+        original_ts: int,
+        alert_sender: AlertFailoverSender,
+        allow_failover: bool,
+        notice_kind: str,
+    ) -> bool:
+        """Queue the row, then make the first attempt: `_send_or_queue_alert`'s send."""
         inserted = False
         if self._state_store is not None:
             inserted = await self._state_store.enqueue_alert(
@@ -189,17 +251,9 @@ class AlertDelivery(RuntimeCore):
             budget=self._budget_check(notice_kind, action_tier),
         )
 
+        attempt.accepted = receipt.accepted
         if receipt.accepted:
-            if self._state_store is not None:
-                accepted_at_ms = receipt.accepted_at_ms or now_ms()
-                await self._state_store.mark_alert_accepted(
-                    alert_id,
-                    accepted_channel=receipt.channel,
-                    provider_message_id=receipt.provider_message_id,
-                    provider_status=receipt.provider_status or "accepted",
-                    accepted_at_ms=accepted_at_ms,
-                    delivered_at_ms=receipt.delivered_at_ms,
-                )
+            await self._record_first_acceptance(attempt, alert_id, receipt)
             await self._record_policy_counted_alert(
                 receipt.channel, action_tier=action_tier, notice_kind=notice_kind
             )
@@ -279,6 +333,31 @@ class AlertDelivery(RuntimeCore):
             trigger_name=trigger_name,
             original_ts=alert_ts,
         )
+        with self._first_attempt(alert_id) as attempt:
+            return await self._first_safety_send(
+                attempt,
+                alert_id,
+                alert,
+                channel=channel,
+                recipient=recipient,
+                trigger_name=trigger_name,
+                alert_ts=alert_ts,
+                alert_sender=alert_sender,
+            )
+
+    async def _first_safety_send(
+        self,
+        attempt: _FirstAttempt,
+        alert_id: str,
+        alert: OutboundAlert,
+        *,
+        channel: str,
+        recipient: str,
+        trigger_name: str,
+        alert_ts: int,
+        alert_sender: AlertFailoverSender,
+    ) -> bool:
+        """Queue the row, then make the first attempt: the safety notice's send."""
         inserted = False
         if self._state_store is not None:
             inserted = await self._state_store.enqueue_alert(
@@ -312,21 +391,29 @@ class AlertDelivery(RuntimeCore):
                 "[safety] %s notice send failed; falling back to outbox", channel
             )
             receipt = AlertSendReceipt.refused(channel=channel, error="sender_raised")
+        attempt.accepted = receipt.accepted
         if receipt.accepted:
-            if self._state_store is not None:
-                await self._state_store.mark_alert_accepted(
-                    alert_id,
-                    accepted_channel=receipt.channel,
-                    provider_message_id=receipt.provider_message_id,
-                    provider_status=receipt.provider_status or "accepted",
-                    accepted_at_ms=receipt.accepted_at_ms or now_ms(),
-                    delivered_at_ms=receipt.delivered_at_ms,
-                )
+            await self._record_first_acceptance(attempt, alert_id, receipt)
             return True
         if inserted:
             return True
         logger.error("[safety] notice submission failed and StateStore is unavailable")
         return False
+
+    async def _record_first_acceptance(
+        self, attempt: _FirstAttempt, alert_id: str, receipt: AlertSendReceipt
+    ) -> None:
+        """Record a first send's acceptance; a failure to record it is raised."""
+        if self._state_store is not None:
+            await self._state_store.mark_alert_accepted(
+                alert_id,
+                accepted_channel=receipt.channel,
+                provider_message_id=receipt.provider_message_id,
+                provider_status=receipt.provider_status or "accepted",
+                accepted_at_ms=receipt.accepted_at_ms or now_ms(),
+                delivered_at_ms=receipt.delivered_at_ms,
+            )
+        attempt.recorded = True
 
     def _tier_d_failure_notice_route(
         self, context: Any
@@ -388,9 +475,7 @@ class AlertDelivery(RuntimeCore):
         # Random, not derived from the clock or the text: every failure is its
         # own notice, whatever the clock reads, before or after a restart.
         alert_id = secrets.token_hex(32)
-        self._alert_first_attempts.add(alert_id)
-        accepted = settled = False
-        try:
+        with self._first_attempt(alert_id) as attempt:
             queued = (
                 None
                 if self._state_store is None
@@ -423,14 +508,10 @@ class AlertDelivery(RuntimeCore):
                 receipt = AlertSendReceipt.accepted_without_provider_receipt(
                     channel="sms"
                 )
-            accepted = receipt.accepted
-            settled = await self._record_tier_d_failure_notice(
+            attempt.accepted = receipt.accepted
+            attempt.recorded = await self._record_tier_d_failure_notice(
                 queued, alert_id, receipt
             )
-        finally:
-            # An acceptance not yet recorded stays out of the retry loop.
-            if settled or not accepted:
-                self._alert_first_attempts.discard(alert_id)
 
     async def _record_tier_d_failure_notice(
         self,
@@ -930,10 +1011,11 @@ class AlertDelivery(RuntimeCore):
                                 accepted_at_ms=accepted_ts,
                                 delivered_at_ms=receipt.delivered_at_ms,
                             )
-                        except Exception:
-                            # Accepted but not recorded: kept out of this
-                            # process's retries, as a first attempt's is.
-                            self._alert_first_attempts.add(alert_id)
+                        except (Exception, asyncio.CancelledError):
+                            # Accepted but not recorded, cancellation included:
+                            # kept out of this process's retries, as a first
+                            # attempt's is.
+                            self._alert_first_attempts[alert_id] += 1
                             raise
                         if not mandatory:  # accepted now, so counted now
                             await self._record_policy_counted_alert(
