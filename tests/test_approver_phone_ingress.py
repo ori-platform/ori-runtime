@@ -324,6 +324,9 @@ async def test_the_started_webhook_carries_the_registry_hook(
         def __init__(self, **kwargs: Any) -> None:
             built.update(kwargs)
 
+        async def start(self) -> None:
+            return None
+
         async def serve_until(self, event: Any) -> None:
             return None
 
@@ -339,3 +342,123 @@ async def test_the_started_webhook_carries_the_registry_hook(
     assert task is not None
     await task
     assert built["registry_text"] == runtime._registry_phone_text
+
+
+async def test_a_webhook_that_cannot_bind_leaves_no_authenticated_channel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from ori.runtime import OriRuntime
+    from tests.package_layout import patch_runtime
+
+    class _Unbindable:
+        def __init__(self, **kwargs: Any) -> None:
+            self.authenticates_each_request = True
+
+        async def start(self) -> None:
+            raise OSError("address in use")
+
+    patch_runtime(monkeypatch, "SMSWebhookServer", _Unbindable)
+    runtime = OriRuntime(config_path="ori.yaml")
+    runtime._sms_action = AsyncMock()
+    config: Any = SimpleNamespace(
+        actions=SimpleNamespace(
+            sms={"incoming_webhook": {"enabled": True, "token": "t"}}
+        )
+    )
+    assert await runtime._start_sms_webhook_if_enabled(config) is None
+    assert runtime._sms_webhook_server is None
+
+
+@pytest.mark.parametrize(
+    "sender", ["whatsapp:+2348012345678", "tel:+2348012345678", "2348012345678"]
+)
+async def test_a_sender_that_is_not_canonical_reaches_the_registry_unchanged(
+    sender: str,
+) -> None:
+    server, _sms, registry_text = _server(_verifier())
+    body = f"from={quote(sender)}&text={quote('ORI-POSSESS-V1 a b')}".encode()
+    at = now_ms()
+    request = _HttpRequest(
+        "POST",
+        "/webhooks/sms/africastalking",
+        {
+            "x-ori-webhook-token": "t",
+            "content-type": "application/x-www-form-urlencoded",
+            "x-ori-webhook-signature": sign_webhook_body(
+                body, shared_secret=SECRET, signed_at_ms=at, nonce="n-raw"
+            ),
+            "x-ori-webhook-timestamp": str(at),
+            "x-ori-webhook-nonce": "n-raw",
+        },
+        body,
+    )
+    await _deliver(server, request)
+    registry_text.assert_awaited_once_with(sender, "ORI-POSSESS-V1 a b", True)
+
+
+async def test_a_padded_registry_text_never_takes_the_approval_path() -> None:
+    server, sms_action, registry_text = _server(_verifier())
+    await _deliver(server, _request(" ORI-POSSESS-V1 a b\n"))
+    registry_text.assert_awaited_once_with(SENDER, " ORI-POSSESS-V1 a b\n", True)
+    sms_action.ingest_incoming_webhook.assert_not_awaited()
+
+
+async def test_a_message_field_registry_text_is_routed_too() -> None:
+    server, sms_action, registry_text = _server(_verifier())
+    body = f"from={quote(SENDER)}&message={quote('ORI-ENROL-V1 a b')}".encode()
+    at = now_ms()
+    request = _HttpRequest(
+        "POST",
+        "/webhooks/sms/africastalking",
+        {
+            "x-ori-webhook-token": "t",
+            "content-type": "application/x-www-form-urlencoded",
+            "x-ori-webhook-signature": sign_webhook_body(
+                body, shared_secret=SECRET, signed_at_ms=at, nonce="n-msg"
+            ),
+            "x-ori-webhook-timestamp": str(at),
+            "x-ori-webhook-nonce": "n-msg",
+        },
+        body,
+    )
+    await _deliver(server, request)
+    registry_text.assert_awaited_once_with(SENDER, "ORI-ENROL-V1 a b", True)
+    sms_action.ingest_incoming_webhook.assert_not_awaited()
+
+
+@pytest.mark.parametrize(("require_nonce", "expected"), [(None, True), (False, False)])
+def test_the_configured_verifier_decides_the_channel(
+    require_nonce: bool | None, expected: bool
+) -> None:
+    """config -> verifier -> authenticates_each_request, nonce mandatory by default."""
+    from ori.runtime import OriRuntime
+
+    signature: dict[str, Any] = {"mode": "hmac_required", "shared_secret": SECRET}
+    if require_nonce is not None:
+        signature["require_nonce"] = require_nonce
+    verifier = OriRuntime(config_path="ori.yaml")._build_sms_webhook_signature_verifier(
+        {"signature": signature}
+    )
+    assert verifier is not None and verifier.authenticates_each_request is expected
+
+
+@pytest.mark.parametrize("enabled", ["on", "yes", "1", "true", True])
+def test_a_webhook_enabled_in_any_spelling_has_its_secret_checked(
+    enabled: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ori.config import Config, ConfigValidationError
+
+    monkeypatch.delenv("ORI_SMS_WEBHOOK_HMAC_SECRET", raising=False)
+    config = tmp_path / "ori.yaml"
+    config.write_text(
+        "device:\n  id: edge-1\n  name: Edge\n  location: Bench\n"
+        'actions:\n  operator_contact: "+2348012345678"\n'
+        "  sms:\n    enabled: true\n    AT_USERNAME: sandbox\n    AT_API_KEY: k\n"
+        f"    incoming_webhook:\n      enabled: {enabled!r}\n      token: t\n"
+        "      signature:\n        mode: hmac_required\n"
+        "        shared_secret: ${ORI_SMS_WEBHOOK_HMAC_SECRET}\n"
+    )
+    with pytest.raises(ConfigValidationError, match="ORI_SMS_WEBHOOK_HMAC_SECRET"):
+        Config.load(str(config))

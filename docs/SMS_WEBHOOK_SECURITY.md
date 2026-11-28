@@ -175,6 +175,17 @@ hosts must configure:
 
 `token_only` is forbidden for public production webhook ingress.
 
+## Tier C approver enrolment
+
+The Tier C approver registry (`tier-c-approvers/v1`) treats `sms` as an
+authenticated phone channel only when this webhook binds and runs in
+`token_and_hmac` or `hmac_required` with `require_nonce: true` (the default):
+every request signed, and none accepted twice. Under `token_only`, with
+`require_nonce: false`, or with no webhook bound, an `sms` approver candidate is
+refused `channel_unauthenticated`, and a text starting `ORI-ENROL-V1` or
+`ORI-POSSESS-V1` changes nothing. Such a text never reaches the Tier C approval
+allowlist.
+
 Outside production posture, the runtime emits startup warnings when a non-loopback
 SMS webhook host uses `token_only` or omits source CIDR allowlisting. These are
 warnings so development setups are not broken accidentally; they are not a

@@ -49,6 +49,7 @@ from ori.security.config_signatures import (
     config_signature_policy_from_raw_config,
     verify_config_signature_if_needed,
 )
+from ori.utils.bool_utils import is_truthy
 from ori.utils.path_utils import shown
 
 logger = logging.getLogger("ori.config")
@@ -371,10 +372,10 @@ class Config:
 
             incoming = actions.sms.get("incoming_webhook") or {}
             if isinstance(incoming, dict):
-                webhook_enabled = (
-                    str(incoming.get("enabled", "")).lower() == "true"
-                    or incoming.get("enabled") is True
-                )
+                # The runtime starts the webhook on `is_truthy`, so it is
+                # validated on the same reading: "on" or "yes" must not skip
+                # the secret checks and still start the webhook.
+                webhook_enabled = is_truthy(incoming.get("enabled", False))
                 if webhook_enabled:
                     validate_sms_webhook_source_cidrs(
                         incoming.get("allowed_source_cidrs")

@@ -16,8 +16,8 @@ from typing import Any, cast
 from urllib.parse import parse_qs, urlsplit
 
 from ori.security.approvers.registry import ENROL_TOKEN, POSSESS_TOKEN
-from ori.security.remote_commands.commands import normalize_remote_command_sender
 from ori.security.webhook_signatures import WebhookSignatureVerifier
+from ori.utils.ascii_text import ASCII_WHITESPACE
 from ori.utils.path_utils import shown
 from ori.utils.strict_json import unique_members
 
@@ -192,12 +192,16 @@ class SMSWebhookServer:
         either.
         """
         text = str(payload.get("text") or payload.get("message") or "")
-        if text.split(" ", 1)[0] not in _REGISTRY_TOKENS:
+        # Routed on the token the approval path would read, so a registry text
+        # never reaches it however it is padded; the registry gets the raw text
+        # and refuses any that is not exact.
+        stripped = text.strip(ASCII_WHITESPACE)
+        if stripped.split(" ", 1)[0] not in _REGISTRY_TOKENS:
             return False
         if self._registry_text is not None:
-            sender = normalize_remote_command_sender(
-                "sms", str(payload.get("from") or payload.get("from_number") or "")
-            )
+            # Raw: the registry refuses a sender that is not canonical E.164,
+            # rather than this ingress coercing another channel's into one.
+            sender = str(payload.get("from") or payload.get("from_number") or "")
             await self._registry_text(sender, text, self.authenticates_each_request)
         return True
 

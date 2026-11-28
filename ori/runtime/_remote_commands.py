@@ -672,6 +672,21 @@ class RemoteCommands(DevicePolicyRefresh, AlertDelivery):
             allowed_source_cidrs=list(webhook_cfg.get("allowed_source_cidrs") or []),
             registry_text=self._registry_phone_text,
         )
+        # Bound before the serve task exists: the approver registry takes `sms`
+        # as authenticated from this server, so one that never bound must not
+        # be left standing for it to read.
+        try:
+            await self._sms_webhook_server.start()
+        except Exception as exc:
+            logger.critical(
+                "[runtime] the SMS webhook could not bind %s:%d (%s); no inbound "
+                "SMS is received and no phone approver can enrol",
+                host,
+                port,
+                type(exc).__name__,
+            )
+            self._sms_webhook_server = None
+            return None
         return asyncio.create_task(
             self._sms_webhook_server.serve_until(self._shutdown_event),
             name="sms-webhook",

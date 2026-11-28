@@ -4631,6 +4631,7 @@ class TestWebhookServerStartup:
                 self.args = args
                 self.kwargs = kwargs
                 self.serve_until = AsyncMock(side_effect=self._serve_until)
+                self.start = AsyncMock()
 
             async def _serve_until(self, shutdown_event):
                 await shutdown_event.wait()
@@ -4732,6 +4733,7 @@ class TestWebhookServerStartup:
                 self.args = args
                 self.kwargs = kwargs
                 self.serve_until = AsyncMock(side_effect=self._serve_until)
+                self.start = AsyncMock()
 
             async def _serve_until(self, shutdown_event):
                 await shutdown_event.wait()
