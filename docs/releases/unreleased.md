@@ -303,11 +303,13 @@ release is cut.
 - Firmware fault events are verified under their own fault version. A fault
   at `v` 2 (`firmware-telemetry/v2`, a draft) may carry `command_rejected` /
   `rate_limited`, the edge firmware's signed refusal of a command that
-  arrived sooner than its release-owned actuation rate policy allows. The
-  refusal is recorded in `firmware_fault_events` and never as an execution,
-  and the runtime does not reissue the command. At `v` 1 the same token is
-  refused, as is any `v` other than the integer 1 or 2. Faults still never
-  reach readings, skills, dispatch or Tier D.
+  arrived sooner than its release-owned actuation rate policy allows, or
+  `orphaned`, its refusal of a `close_protected_circuit` while it is
+  orphaned (`firmware-commands/v2`). Either refusal is recorded in
+  `firmware_fault_events` and never as an execution, and the runtime does not
+  reissue the command. At `v` 1 either token is refused, as is any `v` other
+  than the integer 1 or 2. Faults still never reach readings, skills,
+  dispatch or Tier D.
 - Firmware Controller Profiles (`firmware-telemetry/v2`). Registration
   applies the four new refusals and the one-profile rule. Profile documents
   are held from `gateway.firmware_telemetry.controller_profiles_dir`, by

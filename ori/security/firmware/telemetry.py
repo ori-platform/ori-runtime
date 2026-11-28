@@ -340,10 +340,14 @@ CLOSED_FAULT_DETAILS: dict[str, frozenset[str]] = {
     "storage_degraded": frozenset({"buffer_write_failed", "buffer_mount_failed"}),
 }
 
-# firmware-commands/v2 adds one verdict: the command was verified, fresh and
-# authorised, and the device's release-owned actuation rate policy refused it.
-# It is a refusal and never an execution.
-COMMAND_REJECTION_VERDICTS_V2 = COMMAND_REJECTION_VERDICTS | {"rate_limited"}
+# firmware-commands/v2 adds two verdicts for a command that was verified, fresh
+# and authorised: the device's release-owned actuation rate policy refused it,
+# or the device was orphaned and refused a close. Each is a refusal and never
+# an execution.
+COMMAND_REJECTION_VERDICTS_V2 = COMMAND_REJECTION_VERDICTS | {
+    "rate_limited",
+    "orphaned",
+}
 
 # firmware-telemetry/v2 lists its closed sets in full for a fault object at
 # v 2. ingress_degraded carries liveness_authority_failed there; v1's set is
