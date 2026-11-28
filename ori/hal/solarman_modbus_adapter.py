@@ -43,6 +43,12 @@ except ImportError:
     _PYSOLARMAN_AVAILABLE = False
 
 
+def missing_library(config: dict) -> str | None:
+    """The library this install lacks for *config*, or ``None``; a hardened start
+    refuses a sensor that names one."""
+    return None if _PYSOLARMAN_AVAILABLE else "'pysolarmanv5' is not installed"
+
+
 def refuse_unusable_config(config: dict) -> InverterProfile:
     """Return the profile, refusing what connect would from the configuration alone.
 

@@ -74,6 +74,12 @@ _DEFAULT_TIMEOUT = 1.0  # seconds
 _DEFAULT_SLAVE_ID = 1  # Modbus slave address
 
 
+def missing_library(config: dict) -> str | None:
+    """The library this install lacks for *config*, or ``None``; a hardened start
+    refuses a sensor that names one."""
+    return None if _SERIAL_AVAILABLE else "'pyserial' is not installed"
+
+
 def refuse_unusable_config(config: dict) -> None:
     """Refuse what connect would from the configuration alone; config load runs it."""
     sensor_type = config.get("sensor_type", "")

@@ -104,6 +104,12 @@ _DIRECT_SERIAL_GLOBS = ("/dev/ttyUSB*", "/dev/ttyACM*")
 _TERMUX_USB_TIMEOUT_S = 2.0
 
 
+def missing_library(config: dict) -> str | None:
+    """The library this install lacks for *config*, or ``None``; a hardened start
+    refuses a sensor that names one."""
+    return None if _PYSERIAL_AVAILABLE else "'pyserial' is not installed"
+
+
 def refuse_unusable_config(config: dict) -> None:
     """Refuse what connect would from the configuration alone; config load runs it."""
     sensor_type = str(config.get("sensor_type", ""))
