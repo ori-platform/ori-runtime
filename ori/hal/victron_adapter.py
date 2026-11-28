@@ -13,10 +13,13 @@ from ori.hal.mqtt_base import (
     refuse_unusable_mqtt_connection,
 )
 from ori.hal.mqtt_base import (
-    missing_library as missing_library,
+    missing_library as mqtt_missing_library,
 )
 from ori.hal.producer_paths import ARRIVAL_CLOCK, producer_time_for
 from ori.network.events import SensorReading
+
+# Every MQTT-family adapter needs what its base does: `aiomqtt`.
+missing_library = mqtt_missing_library
 
 _DEFAULT_PORT = 1883
 
