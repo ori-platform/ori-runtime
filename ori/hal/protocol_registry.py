@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from importlib import import_module
 from types import MappingProxyType
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, cast
 
 from ori.hal.base import BaseAdapter
 from ori.hal.config_schema import ValidatedSchema, validate_schema
@@ -193,3 +193,26 @@ def protocol_config_check(protocol: str) -> Callable[[dict[str, Any]], object]:
             f"{CONFIG_CHECK_NAME}"
         )
     return check
+
+
+# The function every adapter module exposes to name a library this install
+# lacks for a sensor, so a hardened start refuses that sensor before it runs.
+LIBRARY_CHECK_NAME = "missing_library"
+
+
+def protocol_library_check(protocol: str) -> Callable[[dict[str, Any]], str | None]:
+    """Return the protocol's library check without constructing its adapter.
+
+    The check takes the mapping ``connect()`` receives and returns the library
+    this install lacks for it, or ``None``. A module without one is refused
+    here, never treated as needing nothing.
+    """
+    definition = protocol_definition(protocol)
+    module = import_module(definition.module)
+    check = getattr(module, LIBRARY_CHECK_NAME, None)
+    if not callable(check):
+        raise ValueError(
+            f"protocol {protocol!r} module {definition.module!r} is missing "
+            f"{LIBRARY_CHECK_NAME}"
+        )
+    return cast(Callable[[dict[str, Any]], str | None], check)

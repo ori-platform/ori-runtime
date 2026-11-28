@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import re
+import shutil
 import subprocess
 from typing import Any
 
@@ -46,6 +47,14 @@ _SENSOR_UNITS = {
     "reallocated_sectors": "count",
     "power_on_hours": "hours",
 }
+
+
+def missing_library(config: dict) -> str | None:
+    """``smartctl`` is what every read needs, through pySMART or the subprocess
+    fallback, so a hardened start refuses a sensor only when it is absent."""
+    if shutil.which("smartctl") is not None:
+        return None
+    return "smartctl (smartmontools) is not installed"
 
 
 def refuse_unusable_config(config: dict) -> None:

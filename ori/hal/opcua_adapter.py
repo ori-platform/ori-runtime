@@ -34,6 +34,12 @@ except ImportError:
     _ASYNCUA_AVAILABLE = False
 
 
+def missing_library(config: dict) -> str | None:
+    """The library this install lacks for *config*, or ``None``; a hardened start
+    refuses a sensor that names one."""
+    return None if _ASYNCUA_AVAILABLE else "'asyncua' is not installed"
+
+
 def refuse_unusable_config(config: dict) -> None:
     """Refuse a blank required field; config load runs this as connect does."""
     for key in ("sensor_type", "url", "node_id"):

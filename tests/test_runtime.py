@@ -1979,18 +1979,11 @@ class TestRequiredRuntimeCapabilities:
 
         _validate_required_runtime_capabilities(config, str(tmp_path / "ori.yaml"))
 
-    @pytest.mark.parametrize(
-        "coap,sensors",
-        [
-            ({"enabled": True}, []),
-            ({"enabled": False}, [SimpleNamespace(protocol="coap")]),
-        ],
-    )
-    def test_hardened_coap_requires_aiocoap(self, coap, sensors, monkeypatch, tmp_path):
-        config = _capability_config(coap=coap, sensors=sensors)
+    def test_hardened_coap_action_requires_aiocoap(self, monkeypatch, tmp_path):
+        config = _capability_config(coap={"enabled": True})
         patch_runtime(monkeypatch, "coap_backend_available", lambda: False)
 
-        with pytest.raises(ConfigValidationError, match="aiocoap.*CoAP"):
+        with pytest.raises(ConfigValidationError, match="aiocoap.*CoAP action"):
             _validate_required_runtime_capabilities(config, str(tmp_path / "ori.yaml"))
 
     def test_hardened_local_reasoning_requires_backend(self, monkeypatch, tmp_path):

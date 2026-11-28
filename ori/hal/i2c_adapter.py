@@ -265,8 +265,8 @@ def i2c_driver_unavailable_reason(sensor_type: str) -> str | None:
     ``None`` means every driver it needs imported. It does **not** mean the
     sensor can be read: a wrong address, a bus this adapter refuses, an
     unsupported type, or a device that does not answer all fail later, at
-    ``connect()``. The boundary covering those is the hardened refusal in the
-    runtime's sensor startup, not this function.
+    ``connect()``, and the runtime reports the sensor unconnected. A missing
+    driver is refused earlier, at a hardened start, through `missing_library`.
     """
     _load_drivers()
     reasons = []
@@ -545,6 +545,12 @@ def _resolve_calibration(config: dict) -> dict[str, float]:
             f"{_MIN_SAMPLES_PER_CYCLE} are needed to resolve the waveform's peaks"
         )
     return resolved
+
+
+def missing_library(config: dict) -> str | None:
+    """The drivers this sensor type lacks, or ``None``; a hardened start refuses
+    a sensor that names one."""
+    return i2c_driver_unavailable_reason(str(config.get("sensor_type", "")))
 
 
 def refuse_unusable_config(config: dict) -> None:
