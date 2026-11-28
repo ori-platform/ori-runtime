@@ -1,0 +1,764 @@
+{
+  "vector_set": "evidence-exchange/v3 epoch return",
+  "contract": "evidence-exchange/v3",
+  "artifact": "epoch_return_state",
+  "why_this_file_exists": "The active-epoch projection after the receiver comes to seal under an epoch depends on the confirmation records it holds, and no artifact carries that change, so restated-records-v3.json, whose every case is an artifact, cannot express it. Each case states every held record before, the epoch the receiver sealed under before and after, and every held record after.",
+  "device": {
+    "device_id": "energy-monitor-ikeja-01",
+    "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8"
+  },
+  "sealed_registrations": [
+    {
+      "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+      "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4"
+    },
+    {
+      "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+      "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8"
+    }
+  ],
+  "material_note": "The device, its sealed registrations and every held record are restated-records-v3.json's.",
+  "state_note": "held_before and held_after carry exactly the members restated-records-v3.json's held records carry, as evidence-exchange/v3 Test vectors defines them.",
+  "cases": [
+    {
+      "name": "return_to_an_earlier_confirmed_epoch",
+      "note": "Both epochs are confirmed and the current one is effective. A release rolled back across the evidence-epoch migration seals under the earlier epoch again. No registration is sealed and no confirmation arrives: the projection names the earlier epoch and carries its record, and nothing else changes.",
+      "sealing_before": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+      "sealing_after": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+      "held_before": {
+        "custody": [],
+        "receipts": [],
+        "epoch_confirmations": [
+          {
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+            "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+            "actor": "commissioning@site",
+            "confirmed_at_ms": 1787000001000,
+            "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "applied_at_ms": 1787000001100
+          },
+          {
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "actor": "commissioning@site",
+            "confirmed_at_ms": 1787000002000,
+            "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "applied_at_ms": 1787000002100
+          }
+        ],
+        "active_epoch": {
+          "device_id": "energy-monitor-ikeja-01",
+          "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+          "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+          "actor": "commissioning@site",
+          "confirmed_at_ms": 1787000002000,
+          "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464"
+        },
+        "registration_obligations": [
+          {
+            "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+            "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+            "state": "confirmed",
+            "closed_at_ms": 1787000001100
+          },
+          {
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "state": "confirmed",
+            "closed_at_ms": 1787000002100
+          }
+        ],
+        "dispositions": [],
+        "stops": [],
+        "application_storage_fault": false
+      },
+      "held_after": {
+        "custody": [],
+        "receipts": [],
+        "epoch_confirmations": [
+          {
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+            "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+            "actor": "commissioning@site",
+            "confirmed_at_ms": 1787000001000,
+            "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "applied_at_ms": 1787000001100
+          },
+          {
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "actor": "commissioning@site",
+            "confirmed_at_ms": 1787000002000,
+            "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "applied_at_ms": 1787000002100
+          }
+        ],
+        "active_epoch": {
+          "device_id": "energy-monitor-ikeja-01",
+          "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+          "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+          "actor": "commissioning@site",
+          "confirmed_at_ms": 1787000001000,
+          "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464"
+        },
+        "registration_obligations": [
+          {
+            "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+            "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+            "state": "confirmed",
+            "closed_at_ms": 1787000001100
+          },
+          {
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "state": "confirmed",
+            "closed_at_ms": 1787000002100
+          }
+        ],
+        "dispositions": [],
+        "stops": [],
+        "application_storage_fault": false
+      }
+    },
+    {
+      "name": "start_after_a_return",
+      "note": "The receiver starts again under the earlier epoch it returned to. The projection already names that epoch's record, so nothing changes.",
+      "sealing_before": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+      "sealing_after": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+      "held_before": {
+        "custody": [],
+        "receipts": [],
+        "epoch_confirmations": [
+          {
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+            "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+            "actor": "commissioning@site",
+            "confirmed_at_ms": 1787000001000,
+            "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "applied_at_ms": 1787000001100
+          },
+          {
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "actor": "commissioning@site",
+            "confirmed_at_ms": 1787000002000,
+            "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "applied_at_ms": 1787000002100
+          }
+        ],
+        "active_epoch": {
+          "device_id": "energy-monitor-ikeja-01",
+          "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+          "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+          "actor": "commissioning@site",
+          "confirmed_at_ms": 1787000001000,
+          "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464"
+        },
+        "registration_obligations": [
+          {
+            "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+            "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+            "state": "confirmed",
+            "closed_at_ms": 1787000001100
+          },
+          {
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "state": "confirmed",
+            "closed_at_ms": 1787000002100
+          }
+        ],
+        "dispositions": [],
+        "stops": [],
+        "application_storage_fault": false
+      },
+      "held_after": {
+        "custody": [],
+        "receipts": [],
+        "epoch_confirmations": [
+          {
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+            "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+            "actor": "commissioning@site",
+            "confirmed_at_ms": 1787000001000,
+            "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "applied_at_ms": 1787000001100
+          },
+          {
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "actor": "commissioning@site",
+            "confirmed_at_ms": 1787000002000,
+            "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "applied_at_ms": 1787000002100
+          }
+        ],
+        "active_epoch": {
+          "device_id": "energy-monitor-ikeja-01",
+          "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+          "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+          "actor": "commissioning@site",
+          "confirmed_at_ms": 1787000001000,
+          "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464"
+        },
+        "registration_obligations": [
+          {
+            "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+            "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+            "state": "confirmed",
+            "closed_at_ms": 1787000001100
+          },
+          {
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "state": "confirmed",
+            "closed_at_ms": 1787000002100
+          }
+        ],
+        "dispositions": [],
+        "stops": [],
+        "application_storage_fault": false
+      }
+    },
+    {
+      "name": "forward_again_to_the_later_confirmed_epoch",
+      "note": "After the return, the later release is installed again. Its epoch's record is held, so the projection names it again without a new confirmation.",
+      "sealing_before": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+      "sealing_after": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+      "held_before": {
+        "custody": [],
+        "receipts": [],
+        "epoch_confirmations": [
+          {
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+            "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+            "actor": "commissioning@site",
+            "confirmed_at_ms": 1787000001000,
+            "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "applied_at_ms": 1787000001100
+          },
+          {
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "actor": "commissioning@site",
+            "confirmed_at_ms": 1787000002000,
+            "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "applied_at_ms": 1787000002100
+          }
+        ],
+        "active_epoch": {
+          "device_id": "energy-monitor-ikeja-01",
+          "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+          "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+          "actor": "commissioning@site",
+          "confirmed_at_ms": 1787000001000,
+          "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464"
+        },
+        "registration_obligations": [
+          {
+            "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+            "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+            "state": "confirmed",
+            "closed_at_ms": 1787000001100
+          },
+          {
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "state": "confirmed",
+            "closed_at_ms": 1787000002100
+          }
+        ],
+        "dispositions": [],
+        "stops": [],
+        "application_storage_fault": false
+      },
+      "held_after": {
+        "custody": [],
+        "receipts": [],
+        "epoch_confirmations": [
+          {
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+            "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+            "actor": "commissioning@site",
+            "confirmed_at_ms": 1787000001000,
+            "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "applied_at_ms": 1787000001100
+          },
+          {
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "actor": "commissioning@site",
+            "confirmed_at_ms": 1787000002000,
+            "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "applied_at_ms": 1787000002100
+          }
+        ],
+        "active_epoch": {
+          "device_id": "energy-monitor-ikeja-01",
+          "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+          "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+          "actor": "commissioning@site",
+          "confirmed_at_ms": 1787000002000,
+          "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464"
+        },
+        "registration_obligations": [
+          {
+            "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+            "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+            "state": "confirmed",
+            "closed_at_ms": 1787000001100
+          },
+          {
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "state": "confirmed",
+            "closed_at_ms": 1787000002100
+          }
+        ],
+        "dispositions": [],
+        "stops": [],
+        "application_storage_fault": false
+      }
+    },
+    {
+      "name": "move_to_an_epoch_with_no_confirmation_record",
+      "note": "Only the earlier epoch is confirmed, and the receiver begins sealing under the current one, whose obligation is open. The projection, and so the effective epoch, stay on the earlier epoch until the current one's confirmation is applied.",
+      "sealing_before": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+      "sealing_after": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+      "held_before": {
+        "custody": [],
+        "receipts": [],
+        "epoch_confirmations": [
+          {
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+            "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+            "actor": "commissioning@site",
+            "confirmed_at_ms": 1787000001000,
+            "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "applied_at_ms": 1787000001100
+          }
+        ],
+        "active_epoch": {
+          "device_id": "energy-monitor-ikeja-01",
+          "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+          "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+          "actor": "commissioning@site",
+          "confirmed_at_ms": 1787000001000,
+          "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464"
+        },
+        "registration_obligations": [
+          {
+            "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+            "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+            "state": "confirmed",
+            "closed_at_ms": 1787000001100
+          },
+          {
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "state": "open",
+            "closed_at_ms": null
+          }
+        ],
+        "dispositions": [],
+        "stops": [],
+        "application_storage_fault": false
+      },
+      "held_after": {
+        "custody": [],
+        "receipts": [],
+        "epoch_confirmations": [
+          {
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+            "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+            "actor": "commissioning@site",
+            "confirmed_at_ms": 1787000001000,
+            "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "applied_at_ms": 1787000001100
+          }
+        ],
+        "active_epoch": {
+          "device_id": "energy-monitor-ikeja-01",
+          "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+          "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+          "actor": "commissioning@site",
+          "confirmed_at_ms": 1787000001000,
+          "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464"
+        },
+        "registration_obligations": [
+          {
+            "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+            "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+            "state": "confirmed",
+            "closed_at_ms": 1787000001100
+          },
+          {
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "state": "open",
+            "closed_at_ms": null
+          }
+        ],
+        "dispositions": [],
+        "stops": [],
+        "application_storage_fault": false
+      }
+    },
+    {
+      "name": "return_to_a_confirmed_epoch_a_stop_names",
+      "note": "The current epoch is confirmed and an epoch stop names it; the receiver rolled back to the earlier epoch and now returns to the current one. The projection names the current epoch, and the stop, its disposition and every obligation are unchanged: a held confirmation lifts no stop.",
+      "sealing_before": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+      "sealing_after": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+      "held_before": {
+        "custody": [],
+        "receipts": [],
+        "epoch_confirmations": [
+          {
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+            "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+            "actor": "commissioning@site",
+            "confirmed_at_ms": 1787000001000,
+            "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "applied_at_ms": 1787000001100
+          },
+          {
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "actor": "commissioning@site",
+            "confirmed_at_ms": 1787000002000,
+            "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "applied_at_ms": 1787000002100
+          }
+        ],
+        "active_epoch": {
+          "device_id": "energy-monitor-ikeja-01",
+          "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+          "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+          "actor": "commissioning@site",
+          "confirmed_at_ms": 1787000001000,
+          "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464"
+        },
+        "registration_obligations": [
+          {
+            "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+            "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+            "state": "confirmed",
+            "closed_at_ms": 1787000001100
+          },
+          {
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "state": "confirmed",
+            "closed_at_ms": 1787000002100
+          }
+        ],
+        "dispositions": [
+          {
+            "triggering_digest": "sha256:bd629a3a8a1901298cfe9005352f9d25dc1f44bcce78f96cab61d3500c04ea76",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "scope": "epoch",
+            "disposition": "epoch_reprovisioning_required",
+            "decided_at_ms": 1787000003000,
+            "key_id": "sha256:b9bef121776426480c44779d5a3de6320d7aa639973b419f576a74ac2a4356ea",
+            "artifact_digest": "sha256:5cde9b9c2a89fbb6caa4121fc4e944d6095d8a799895f4c154243802db2aad69"
+          }
+        ],
+        "stops": [
+          {
+            "scope": "epoch",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a"
+          }
+        ],
+        "application_storage_fault": false
+      },
+      "held_after": {
+        "custody": [],
+        "receipts": [],
+        "epoch_confirmations": [
+          {
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+            "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+            "actor": "commissioning@site",
+            "confirmed_at_ms": 1787000001000,
+            "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "applied_at_ms": 1787000001100
+          },
+          {
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "actor": "commissioning@site",
+            "confirmed_at_ms": 1787000002000,
+            "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "applied_at_ms": 1787000002100
+          }
+        ],
+        "active_epoch": {
+          "device_id": "energy-monitor-ikeja-01",
+          "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+          "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+          "actor": "commissioning@site",
+          "confirmed_at_ms": 1787000002000,
+          "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464"
+        },
+        "registration_obligations": [
+          {
+            "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+            "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+            "state": "confirmed",
+            "closed_at_ms": 1787000001100
+          },
+          {
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "state": "confirmed",
+            "closed_at_ms": 1787000002100
+          }
+        ],
+        "dispositions": [
+          {
+            "triggering_digest": "sha256:bd629a3a8a1901298cfe9005352f9d25dc1f44bcce78f96cab61d3500c04ea76",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "scope": "epoch",
+            "disposition": "epoch_reprovisioning_required",
+            "decided_at_ms": 1787000003000,
+            "key_id": "sha256:b9bef121776426480c44779d5a3de6320d7aa639973b419f576a74ac2a4356ea",
+            "artifact_digest": "sha256:5cde9b9c2a89fbb6caa4121fc4e944d6095d8a799895f4c154243802db2aad69"
+          }
+        ],
+        "stops": [
+          {
+            "scope": "epoch",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a"
+          }
+        ],
+        "application_storage_fault": false
+      }
+    },
+    {
+      "name": "start_rewrites_a_projection_an_earlier_receiver_left",
+      "note": "An earlier receiver that let the last confirmation win left the projection on the earlier epoch while the receiver seals under the current one, which is confirmed. At a start under the current epoch the projection names the current epoch's record.",
+      "sealing_before": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+      "sealing_after": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+      "held_before": {
+        "custody": [],
+        "receipts": [],
+        "epoch_confirmations": [
+          {
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+            "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+            "actor": "commissioning@site",
+            "confirmed_at_ms": 1787000001000,
+            "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "applied_at_ms": 1787000001100
+          },
+          {
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "actor": "commissioning@site",
+            "confirmed_at_ms": 1787000002000,
+            "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "applied_at_ms": 1787000002100
+          }
+        ],
+        "active_epoch": {
+          "device_id": "energy-monitor-ikeja-01",
+          "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+          "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+          "actor": "commissioning@site",
+          "confirmed_at_ms": 1787000001000,
+          "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464"
+        },
+        "registration_obligations": [
+          {
+            "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+            "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+            "state": "confirmed",
+            "closed_at_ms": 1787000001100
+          },
+          {
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "state": "confirmed",
+            "closed_at_ms": 1787000002100
+          }
+        ],
+        "dispositions": [],
+        "stops": [],
+        "application_storage_fault": false
+      },
+      "held_after": {
+        "custody": [],
+        "receipts": [],
+        "epoch_confirmations": [
+          {
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+            "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+            "actor": "commissioning@site",
+            "confirmed_at_ms": 1787000001000,
+            "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "applied_at_ms": 1787000001100
+          },
+          {
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "actor": "commissioning@site",
+            "confirmed_at_ms": 1787000002000,
+            "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "applied_at_ms": 1787000002100
+          }
+        ],
+        "active_epoch": {
+          "device_id": "energy-monitor-ikeja-01",
+          "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+          "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+          "actor": "commissioning@site",
+          "confirmed_at_ms": 1787000002000,
+          "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464"
+        },
+        "registration_obligations": [
+          {
+            "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+            "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+            "state": "confirmed",
+            "closed_at_ms": 1787000001100
+          },
+          {
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "state": "confirmed",
+            "closed_at_ms": 1787000002100
+          }
+        ],
+        "dispositions": [],
+        "stops": [],
+        "application_storage_fault": false
+      }
+    },
+    {
+      "name": "start_repairs_stale_members_of_the_sealing_epochs_projection",
+      "note": "An earlier receiver left the projection on the current epoch, which the receiver seals under and holds a confirmation record for, but with an actor the record does not carry. At a start the projection carries the record's members.",
+      "sealing_before": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+      "sealing_after": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+      "held_before": {
+        "custody": [],
+        "receipts": [],
+        "epoch_confirmations": [
+          {
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+            "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+            "actor": "commissioning@site",
+            "confirmed_at_ms": 1787000001000,
+            "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "applied_at_ms": 1787000001100
+          },
+          {
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "actor": "commissioning@site",
+            "confirmed_at_ms": 1787000002000,
+            "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "applied_at_ms": 1787000002100
+          }
+        ],
+        "active_epoch": {
+          "device_id": "energy-monitor-ikeja-01",
+          "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+          "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+          "actor": "earlier@site",
+          "confirmed_at_ms": 1787000002000,
+          "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464"
+        },
+        "registration_obligations": [
+          {
+            "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+            "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+            "state": "confirmed",
+            "closed_at_ms": 1787000001100
+          },
+          {
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "state": "confirmed",
+            "closed_at_ms": 1787000002100
+          }
+        ],
+        "dispositions": [],
+        "stops": [],
+        "application_storage_fault": false
+      },
+      "held_after": {
+        "custody": [],
+        "receipts": [],
+        "epoch_confirmations": [
+          {
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+            "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+            "actor": "commissioning@site",
+            "confirmed_at_ms": 1787000001000,
+            "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "applied_at_ms": 1787000001100
+          },
+          {
+            "device_id": "energy-monitor-ikeja-01",
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "actor": "commissioning@site",
+            "confirmed_at_ms": 1787000002000,
+            "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464",
+            "applied_at_ms": 1787000002100
+          }
+        ],
+        "active_epoch": {
+          "device_id": "energy-monitor-ikeja-01",
+          "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+          "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+          "actor": "commissioning@site",
+          "confirmed_at_ms": 1787000002000,
+          "key_id": "sha256:03396219237f75a64f12aeb7f39723abf400b160c364980a765dac24aeba2464"
+        },
+        "registration_obligations": [
+          {
+            "anchor_epoch_id": "sha256:516ed6e944fb883a281e1f6e98656493813271a44a9287855823b41f362db299",
+            "pubkey_hex": "4fd099ccd47d7893dfe9ec24414ecb0d9b5420232aad30d91c465be33cbe65c4",
+            "state": "confirmed",
+            "closed_at_ms": 1787000001100
+          },
+          {
+            "anchor_epoch_id": "sha256:7f1b65b8b24f69807441d80c8901207cf22657a9630b12901418a99efbd36f0a",
+            "pubkey_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+            "state": "confirmed",
+            "closed_at_ms": 1787000002100
+          }
+        ],
+        "dispositions": [],
+        "stops": [],
+        "application_storage_fault": false
+      }
+    }
+  ]
+}

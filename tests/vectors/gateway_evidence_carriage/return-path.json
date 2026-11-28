@@ -1,6 +1,6 @@
 {
   "contract": "gateway-evidence-carriage/v1 per-device return order and declared inbound carriage",
-  "note": "Each sequence replays one site gateway's return queue. `devices` are the configured runtime devices and `declared` their `gateway-config/v1` `evidence.device_carriage` declarations; a device it does not name is `gateway-api/v1`. `stage` stages one authority artifact for a device, `publish` publishes every lane head the gateway may publish at once, and `ack` is that device's runtime acknowledging the artifact at its lane's head; a runtime that never acknowledges is one that never sends `ack`. `declare` changes one device's declaration. `published` lists the artifacts one `publish` sends, `lanes` each device's ordered return lane, `kept` the artifacts kept outside every lane because the device's declared contract cannot carry them, and `faults` the courier faults this raises. A `stage` may name the artifact's `digest`, which defaults to its `id`, and its `bytes`, which default to 1. `capacity` is the return store's item and byte capacity, which every lane entry and every kept artifact counts toward; `outbound` is each device's outbound lane, and `response` is the authority's response to the entry at its head, carrying `artifacts` staged in order: when one cannot be kept the response is not durably staged, the entry stays at the head, and `retrying` lists it. `remove` removes a device from configuration, and a later `declare` restores it. `stored` is the return store's items and bytes.",
+  "note": "Each sequence replays one site gateway's return queue. `devices` are the configured runtime devices and `declared` their `gateway-config/v1` `evidence.device_carriage` declarations; a device it does not name is `gateway-api/v1`. `stage` stages one authority artifact for a device, `publish` publishes every lane head the gateway may publish at once, and `ack` is that device's runtime acknowledging the artifact at its lane's head; a runtime that never acknowledges is one that never sends `ack`. `declare` changes one device's declaration. `published` lists the artifacts one `publish` sends, `lanes` each device's ordered return lane, `kept` the artifacts kept outside every lane because the device's declared contract cannot carry them, and `faults` the courier faults this raises. A `stage` may name the artifact's `digest`, which defaults to its `id`, and its `bytes`, which default to 1. `capacity` is the return store's item and byte capacity, which every lane entry and every kept artifact counts toward; `outbound` is each device's outbound lane, and `response` is the authority's response to the entry at its head, carrying `artifacts` staged in order: when one cannot be kept the response is not durably staged, the entry stays at the head, and `retrying` lists it. `remove` removes a device from configuration, and a later `declare` restores it; `unconfigured` names the devices not in `gateway.device_ids` when the sequence starts, which a `declare` configures. A removed device's lane is paused: `publish` sends nothing from it, an `ack` for it is not processed, a `stage` for it is staged as under its declaration at removal, and it resumes from its head when that device is restored under a declaration that carries every entry in it. `stored` is the return store's items and bytes.",
   "sequences": [
     {
       "name": "a mixed site: legacy device A never acknowledges and device B still receives its receipt and confirmation",
@@ -122,6 +122,82 @@
         {"event": "response", "device_id": "site-a-edge-01", "entry": "env-a1", "artifacts": [{"id": "disp-a1", "bytes": 1000, "artifact_type": "evidence_disposition"}, {"id": "disp-a2", "bytes": 1000, "artifact_type": "evidence_disposition"}], "expect": {"kept": {"site-a-edge-01": ["disp-a0", "disp-a1"], "site-b-edge-02": []}, "outbound": {"site-a-edge-01": ["env-a1"], "site-b-edge-02": []}, "retrying": ["env-a1"]}},
         {"event": "ack", "device_id": "site-b-edge-02", "id": "rcpt-b1", "expect": {"stored": [2, 2000]}},
         {"event": "response", "device_id": "site-a-edge-01", "entry": "env-a1", "artifacts": [{"id": "disp-a1", "bytes": 1000, "artifact_type": "evidence_disposition"}, {"id": "disp-a2", "bytes": 1000, "artifact_type": "evidence_disposition"}], "expect": {"kept": {"site-a-edge-01": ["disp-a0", "disp-a1", "disp-a2"], "site-b-edge-02": []}, "outbound": {"site-a-edge-01": [], "site-b-edge-02": []}, "retrying": [], "stored": [3, 3000], "faults": ["return_path_incompatible"]}}
+      ]
+    },
+    {
+      "name": "a removed device's lane is kept and paused while another device keeps draining",
+      "devices": ["site-a-edge-01", "site-b-edge-02"],
+      "declared": {"site-a-edge-01": "gateway-evidence-carriage/v1", "site-b-edge-02": "gateway-evidence-carriage/v1"},
+      "steps": [
+        {"event": "stage", "device_id": "site-a-edge-01", "id": "rcpt-a1", "artifact_type": "delivery_receipt", "expect": {}},
+        {"event": "stage", "device_id": "site-a-edge-01", "id": "rcpt-a2", "artifact_type": "delivery_receipt", "expect": {}},
+        {"event": "stage", "device_id": "site-b-edge-02", "id": "rcpt-b1", "artifact_type": "delivery_receipt", "expect": {}},
+        {"event": "publish", "expect": {"published": ["rcpt-a1", "rcpt-b1"]}},
+        {"event": "remove", "device_id": "site-a-edge-01", "expect": {"lanes": {"site-a-edge-01": ["rcpt-a1", "rcpt-a2"], "site-b-edge-02": ["rcpt-b1"]}, "stored": [3, 3]}},
+        {"event": "ack", "device_id": "site-a-edge-01", "id": "rcpt-a1", "expect": {"lanes": {"site-a-edge-01": ["rcpt-a1", "rcpt-a2"], "site-b-edge-02": ["rcpt-b1"]}}},
+        {"event": "publish", "expect": {"published": ["rcpt-b1"]}},
+        {"event": "ack", "device_id": "site-b-edge-02", "id": "rcpt-b1", "expect": {"lanes": {"site-a-edge-01": ["rcpt-a1", "rcpt-a2"], "site-b-edge-02": []}, "stored": [2, 2]}},
+        {"event": "stage", "device_id": "site-b-edge-02", "id": "rcpt-b2", "artifact_type": "delivery_receipt", "expect": {}},
+        {"event": "publish", "expect": {"published": ["rcpt-b2"], "faults": []}}
+      ]
+    },
+    {
+      "name": "a restored device's lane resumes from its head in order",
+      "devices": ["site-a-edge-01", "site-b-edge-02"],
+      "declared": {"site-a-edge-01": "gateway-evidence-carriage/v1", "site-b-edge-02": "gateway-evidence-carriage/v1"},
+      "steps": [
+        {"event": "stage", "device_id": "site-a-edge-01", "id": "rcpt-a1", "artifact_type": "delivery_receipt", "expect": {}},
+        {"event": "stage", "device_id": "site-a-edge-01", "id": "rcpt-a2", "artifact_type": "delivery_receipt", "expect": {}},
+        {"event": "remove", "device_id": "site-a-edge-01", "expect": {}},
+        {"event": "publish", "expect": {"published": []}},
+        {"event": "declare", "device_id": "site-a-edge-01", "contract": "gateway-evidence-carriage/v1", "expect": {"lanes": {"site-a-edge-01": ["rcpt-a1", "rcpt-a2"], "site-b-edge-02": []}}},
+        {"event": "publish", "expect": {"published": ["rcpt-a1"]}},
+        {"event": "ack", "device_id": "site-a-edge-01", "id": "rcpt-a1", "expect": {"lanes": {"site-a-edge-01": ["rcpt-a2"], "site-b-edge-02": []}}},
+        {"event": "publish", "expect": {"published": ["rcpt-a2"]}}
+      ]
+    },
+    {
+      "name": "a device configured under another device_id never inherits a removed device's lane",
+      "devices": ["site-a-edge-01", "site-b-edge-02"],
+      "declared": {"site-a-edge-01": "gateway-evidence-carriage/v1"},
+      "unconfigured": ["site-b-edge-02"],
+      "steps": [
+        {"event": "stage", "device_id": "site-a-edge-01", "id": "rcpt-a1", "artifact_type": "delivery_receipt", "expect": {}},
+        {"event": "remove", "device_id": "site-a-edge-01", "expect": {}},
+        {"event": "declare", "device_id": "site-b-edge-02", "contract": "gateway-evidence-carriage/v1", "expect": {"lanes": {"site-a-edge-01": ["rcpt-a1"], "site-b-edge-02": []}}},
+        {"event": "stage", "device_id": "site-b-edge-02", "id": "rcpt-b1", "artifact_type": "delivery_receipt", "expect": {}},
+        {"event": "publish", "expect": {"published": ["rcpt-b1"], "lanes": {"site-a-edge-01": ["rcpt-a1"], "site-b-edge-02": ["rcpt-b1"]}}}
+      ]
+    },
+    {
+      "name": "an entry published before the removal is redelivered after the device is restored",
+      "devices": ["site-a-edge-01", "site-b-edge-02"],
+      "declared": {"site-a-edge-01": "gateway-evidence-carriage/v1", "site-b-edge-02": "gateway-evidence-carriage/v1"},
+      "steps": [
+        {"event": "stage", "device_id": "site-a-edge-01", "id": "rcpt-a1", "artifact_type": "delivery_receipt", "expect": {}},
+        {"event": "publish", "expect": {"published": ["rcpt-a1"]}},
+        {"event": "remove", "device_id": "site-a-edge-01", "expect": {}},
+        {"event": "ack", "device_id": "site-a-edge-01", "id": "rcpt-a1", "expect": {"lanes": {"site-a-edge-01": ["rcpt-a1"], "site-b-edge-02": []}}},
+        {"event": "declare", "device_id": "site-a-edge-01", "contract": "gateway-evidence-carriage/v1", "expect": {"lanes": {"site-a-edge-01": ["rcpt-a1"], "site-b-edge-02": []}}},
+        {"event": "publish", "expect": {"published": ["rcpt-a1"]}},
+        {"event": "ack", "device_id": "site-a-edge-01", "id": "rcpt-a1", "expect": {"lanes": {"site-a-edge-01": [], "site-b-edge-02": []}, "stored": [0, 0]}}
+      ]
+    },
+    {
+      "name": "an artifact staged for a removed device joins its paused lane or is kept, as its declaration at removal says",
+      "devices": ["site-a-edge-01", "site-b-edge-02"],
+      "declared": {"site-a-edge-01": "gateway-evidence-carriage/v1"},
+      "steps": [
+        {"event": "stage", "device_id": "site-a-edge-01", "id": "rcpt-a1", "artifact_type": "delivery_receipt", "expect": {}},
+        {"event": "stage", "device_id": "site-b-edge-02", "id": "rcpt-b1", "artifact_type": "delivery_receipt", "expect": {}},
+        {"event": "remove", "device_id": "site-a-edge-01", "expect": {}},
+        {"event": "remove", "device_id": "site-b-edge-02", "expect": {}},
+        {"event": "stage", "device_id": "site-a-edge-01", "id": "disp-a1", "artifact_type": "evidence_disposition", "expect": {"lanes": {"site-a-edge-01": ["rcpt-a1", "disp-a1"], "site-b-edge-02": ["rcpt-b1"]}, "kept": {"site-a-edge-01": [], "site-b-edge-02": []}, "faults": []}},
+        {"event": "stage", "device_id": "site-b-edge-02", "id": "disp-b1", "artifact_type": "evidence_disposition", "expect": {"lanes": {"site-a-edge-01": ["rcpt-a1", "disp-a1"], "site-b-edge-02": ["rcpt-b1"]}, "kept": {"site-a-edge-01": [], "site-b-edge-02": ["disp-b1"]}, "faults": ["return_path_incompatible"]}},
+        {"event": "publish", "expect": {"published": [], "stored": [4, 4]}},
+        {"event": "declare", "device_id": "site-a-edge-01", "contract": "gateway-evidence-carriage/v1", "expect": {}},
+        {"event": "declare", "device_id": "site-b-edge-02", "contract": "gateway-evidence-carriage/v1", "expect": {"lanes": {"site-a-edge-01": ["rcpt-a1", "disp-a1"], "site-b-edge-02": ["rcpt-b1", "disp-b1"]}, "kept": {"site-a-edge-01": [], "site-b-edge-02": []}, "faults": []}},
+        {"event": "publish", "expect": {"published": ["rcpt-a1", "rcpt-b1"]}}
       ]
     }
   ]
