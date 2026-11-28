@@ -670,11 +670,37 @@ class RemoteCommands(DevicePolicyRefresh, AlertDelivery):
             signature_verifier=signature_verifier,
             state_store=self._state_store,
             allowed_source_cidrs=list(webhook_cfg.get("allowed_source_cidrs") or []),
+            registry_text=self._registry_phone_text,
         )
         return asyncio.create_task(
             self._sms_webhook_server.serve_until(self._shutdown_event),
             name="sms-webhook",
         )
+
+    async def _registry_phone_text(
+        self, sender: str, text: str, authenticated: bool
+    ) -> None:
+        """One registry text from the SMS webhook.
+
+        Dropped, changing nothing, when this ingress did not authenticate it or
+        there is no registry. A failure to apply it is logged without the text,
+        which can carry a possession code.
+        """
+        registry = self._approver_registry
+        if not authenticated or registry is None:
+            logger.warning(
+                "[approvers] a registry text arrived %s; it changes nothing",
+                "unauthenticated" if not authenticated else "with no approver registry",
+            )
+            return
+        try:
+            await registry.phone_text("sms", sender, text, authenticated=True)
+        except Exception as exc:
+            logger.error(
+                "[approvers] a registry text could not be applied (%s); it changes "
+                "nothing",
+                type(exc).__name__,
+            )
 
     def _build_sms_webhook_signature_verifier(
         self, webhook_cfg: dict[str, Any]

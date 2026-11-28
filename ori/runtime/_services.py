@@ -147,6 +147,30 @@ class OperatorServices(HealthSnapshot):
         self._health_socket_path = bound_path
         logger.info("[runtime] health socket ready at %s", shown(bound_path))
 
+    async def _prepare_approver_registry(self) -> Any:
+        """The registry service, with `sms` as its authenticated phone channel
+        only when the SMS webhook that started signs every request."""
+        webhook = self._sms_webhook_server
+        channels = (
+            frozenset({"sms"})
+            if webhook is not None and webhook.authenticates_each_request
+            else frozenset()
+        )
+        self._approver_registry = await prepare_registry_service(
+            self._state_store,
+            self._config,
+            authenticated_phone_channels=channels,
+            send_possession=self._send_possession_code,
+        )
+        return self._approver_registry
+
+    async def _send_possession_code(self, channel: str, to: str, text: str) -> None:
+        """Send a possession code on its candidate's channel; `sms` only in v1."""
+        if channel != "sms" or self._sms_action is None:
+            raise RuntimeError(f"no {channel} sender for a possession code")
+        if not await self._sms_action.send(text, to):
+            raise RuntimeError("the possession code was not accepted for sending")
+
     async def _start_operator_socket(self, deployment_profile: str) -> None:
         """Bind the operator socket in the runtime directory systemd created.
 
@@ -172,7 +196,7 @@ class OperatorServices(HealthSnapshot):
             reconcile=self._reconcile_from_operator,
             commission=self._commission_from_operator,
             operator_uid=installed_operator_uid(sys.prefix),
-            registry=await prepare_registry_service(self._state_store, self._config),
+            registry=await self._prepare_approver_registry(),
             device_key=lambda: posture_key_readback(self),
         )
         try:

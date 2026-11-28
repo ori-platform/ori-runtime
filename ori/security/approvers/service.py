@@ -149,10 +149,15 @@ class RegistryService:
     async def phone_text(
         self, channel: str, sender: str, text: str, *, authenticated: bool
     ) -> Outcome:
-        """One text from a phone ingress; serialised with registry admission."""
-        return await self._store.run_approver_operation(
+        """One text from a phone ingress; serialised with registry admission.
+
+        A possession code it produces is sent after its transaction commits.
+        """
+        outcome = await self._store.run_approver_operation(
             self._registry, "phone_text", channel, sender, text, authenticated
         )
+        await self._deliver(outcome)
+        return outcome
 
     async def _deliver(self, outcome: Outcome) -> None:
         # After the commit, and never reported: the answer does not say whether

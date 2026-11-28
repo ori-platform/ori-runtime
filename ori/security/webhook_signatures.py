@@ -139,6 +139,15 @@ class WebhookSignatureVerifier:
         return self._mode
 
     @property
+    def authenticates_each_request(self) -> bool:
+        """Whether an accepted request was signed and cannot be replayed.
+
+        Only an HMAC mode with a mandatory nonce: `token_only` signs nothing,
+        and without a required nonce one signed request is accepted twice.
+        """
+        return self._mode != "token_only" and self._require_nonce
+
+    @property
     def header_names(self) -> frozenset[str]:
         """The headers this verifier reads, which a request may carry once."""
         return frozenset(

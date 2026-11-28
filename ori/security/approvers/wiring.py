@@ -14,8 +14,10 @@
   anchor (commissioning, current and previous, and the entitlement key, from
   `ORI_DEVICE_POLICY_PUBLIC_KEY_B64` or `device_policy.public_key_b64`) is of
   another class.
-- **Authenticated phone ingress.** None in this version: no phone text reaches
-  the registry yet, so a phone candidate is refused `channel_unauthenticated`.
+- **Authenticated phone ingress.** `sms` only, and only when the SMS webhook
+  that started signs every request with a mandatory nonce
+  (`SMSWebhookServer.authenticates_each_request`); otherwise none, and a phone
+  candidate is refused `channel_unauthenticated`. WhatsApp has none in v1.
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ from typing import TYPE_CHECKING, Final
 
 from ori.security.approvers.forms import is_device_id
 from ori.security.approvers.registry import Anchors, ApproverRegistry, RunContext
-from ori.security.approvers.service import RegistryService
+from ori.security.approvers.service import PossessionSender, RegistryService
 from ori.security.commissioning.anchors import (
     COMMISSIONING_ANCHOR_ENV,
     COMMISSIONING_ANCHOR_PREVIOUS_ENV,
@@ -106,19 +108,26 @@ def verified_site_for(config: Config) -> str | None:
 
 
 def run_context_for(
-    config: Config, environ: Mapping[str, str] | None = None
+    config: Config,
+    environ: Mapping[str, str] | None = None,
+    *,
+    authenticated_phone_channels: frozenset[str] = frozenset(),
 ) -> RunContext:
     return RunContext(
         device_id=config.device.id,
         verified_site_id=verified_site_for(config),
-        authenticated_phone_channels=frozenset(),
+        authenticated_phone_channels=authenticated_phone_channels,
         anchors=anchors_for(config, environ),
         run_id=secrets.token_hex(16),
     )
 
 
 async def prepare_registry_service(
-    store: StateStore | None, config: Config | None
+    store: StateStore | None,
+    config: Config | None,
+    *,
+    authenticated_phone_channels: frozenset[str] = frozenset(),
+    send_possession: PossessionSender | None = None,
 ) -> RegistryService | None:
     """The registry the operator socket serves, or None.
 
@@ -131,7 +140,9 @@ async def prepare_registry_service(
     """
     if store is None or config is None:
         return None
-    context = run_context_for(config)
+    context = run_context_for(
+        config, authenticated_phone_channels=authenticated_phone_channels
+    )
     try:
         await store.retire_approver_runs(context.run_id)
     except Exception:
@@ -150,4 +161,5 @@ async def prepare_registry_service(
     return RegistryService(
         store,
         ApproverRegistry(context, clock=lambda: int(time.monotonic() * 1000)),
+        send_possession=send_possession,
     )
