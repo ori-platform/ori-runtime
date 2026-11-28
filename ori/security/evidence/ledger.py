@@ -1009,23 +1009,30 @@ class EvidenceDeliveryLedger:
 
     def _project_held_confirmation(self) -> None:
         """Rewrite the projection from the sealing epoch's confirmation record."""
+        epoch = self._anchor_epoch_id
         held = self._connection.execute(
-            """
-            SELECT pubkey_hex, actor, confirmed_at_ms, key_id
-              FROM evidence_registration_confirmation
-             WHERE anchor_epoch_id = ? AND device_id = ?
-            """,
-            (self._anchor_epoch_id, self._device_id),
+            "SELECT device_id, pubkey_hex, actor, confirmed_at_ms, key_id"
+            " FROM evidence_registration_confirmation WHERE anchor_epoch_id = ?",
+            (epoch,),
         ).fetchone()
         if held is None:
             return
+        # Held to what its apply checked: this device, a registration sealed
+        # under that key, well-formed members. Anything else is damage.
+        pubkey = _stored_text(held["pubkey_hex"], "confirmation key")
+        if _stored_text(
+            held["device_id"], "confirmation device"
+        ) != self._device_id or not self.registration_sealed(epoch, pubkey):
+            raise EvidenceStoreFaultError(
+                "a recorded confirmation names another device or key"
+            )
         self._apply_verified_epoch(
             self._device_id,
-            anchor_epoch_id=self._anchor_epoch_id,
-            pubkey_hex=str(held["pubkey_hex"]),
-            actor=str(held["actor"]),
-            confirmed_at_ms=int(held["confirmed_at_ms"]),
-            key_id=str(held["key_id"]),
+            anchor_epoch_id=epoch,
+            pubkey_hex=pubkey,
+            actor=_stored_text(held["actor"], "confirmation actor"),
+            confirmed_at_ms=_stored_time(held["confirmed_at_ms"], "confirmation time"),
+            key_id=_stored_authority_key(held["key_id"], "confirmation key"),
         )
 
     def seal_registration(
