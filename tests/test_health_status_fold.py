@@ -415,6 +415,23 @@ def test_the_storage_fault_folds_at_runtime_health_v4s_severity() -> None:
     )
 
 
+def test_the_application_defect_is_not_adopted_before_the_gateway_accepts_it() -> None:
+    """runtime-health/v4 names `evidence_application_defect`; the runtime does
+    not emit it until gateways accept the token, so neither the heartbeat
+    vocabulary nor any runtime source names it. Adoption flips this test."""
+    from ori.gateway.node_heartbeat import DEGRADATION_REASONS
+
+    assert "evidence_application_defect" in HEALTH_V4["conditions"]
+    assert "evidence_application_defect" not in DEGRADATION_REASONS
+    root = pathlib.Path(__file__).resolve().parent.parent / "ori"
+    named = [
+        str(path.relative_to(root))
+        for path in root.rglob("*.py")
+        if "application_defect" in path.read_text(encoding="utf-8")
+    ]
+    assert named == []
+
+
 class _StorageFaultAttestor:
     available = True
     public_key_hex = ""
