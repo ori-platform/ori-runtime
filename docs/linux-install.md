@@ -555,6 +555,30 @@ The failure is reported as `post_install_health_failed`. If the rollback itself
 fails — which means the device may be running neither release — the code is
 `rollback_failed` and the device needs attention.
 
+### What a rollback or downgrade keeps
+
+The state store (`ori_state.db`) and the evidence store (`evidence.db_path`,
+`ori_evidence.db` by default) live in the data directory, outside every
+release. No install, rollback or `--allow-downgrade` snapshots, restores or
+reverts their contents; only `uninstall --remove-data` removes them. A
+system-scope install re-applies their ownership and modes. The provisioned
+`ori.yaml` is the one data file the installer writes: every install regenerates
+it, and a rollback restores the earlier one, or removes it after a failed first
+install.
+
+So a release always opens the stores as the last release to run left them:
+
+- A new release that started before failing its health check may already have
+  migrated them, and the release rolled back to opens them migrated.
+- No schema version is checked, and an older release is not guaranteed to read
+  a store a newer one changed. A store it cannot use fails its health check:
+  `rollback_failed` after an automatic rollback, or `post_install_health_failed`
+  for a downgrade, which then returns to the release that was running.
+- A downgrade across a release that changed the runtime's evidence anchor epoch
+  is allowed with `--allow-downgrade`. The older release seals under the epoch
+  it derives, and an epoch it registered and had confirmed before keeps that
+  confirmation, so nothing is re-registered.
+
 ---
 
 ## Uninstall

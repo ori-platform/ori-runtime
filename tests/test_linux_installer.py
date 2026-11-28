@@ -1370,6 +1370,87 @@ def test_same_version_is_idempotent_and_downgrade_requires_opt_in(
     assert layout.current.resolve() == layout.release("2.3.0")
 
 
+def test_a_rollback_and_a_downgrade_keep_the_data_stores_as_left(
+    tmp_path: Path,
+) -> None:
+    """No install, rollback or downgrade removes, restores or reverts the state
+    or evidence store, so an older release opens what a newer one wrote. The
+    provisioned ori.yaml is the one thing a rollback restores, through
+    activation, which this transaction does not run."""
+    layout = InstallLayout.resolve(tmp_path / "ori")
+    kwargs: dict[str, Any] = dict(
+        layout=layout,
+        prepare=_prepare,
+        validate=_validate,
+        stop_service=lambda: None,
+    )
+    install_release(
+        version="2.3.0",
+        restart_service=lambda: None,
+        check_health=lambda _path: None,
+        **kwargs,
+    )
+    stores = {name: layout.data / name for name in ("ori_state.db", "ori_evidence.db")}
+    for name, path in stores.items():
+        path.write_bytes(f"{name} as 2.3.0 left it\n".encode())
+
+    def migrating_restart() -> None:
+        # The release `current` names starts and writes its stores before its
+        # health is known, as a migration would.
+        if layout.current.resolve() == layout.release("2.4.0"):
+            with stores["ori_state.db"].open("ab") as store:
+                store.write(b"migrated by 2.4.0\n")
+
+    def health(path: Path) -> None:
+        if path.name == "2.4.0":
+            raise RuntimeError("critical health")
+
+    with pytest.raises(LinuxInstallError, match="post_install_health_failed"):
+        install_release(
+            version="2.4.0",
+            restart_service=migrating_restart,
+            check_health=health,
+            **kwargs,
+        )
+    assert layout.current.resolve() == layout.release("2.3.0")
+    after_rollback = {name: path.read_bytes() for name, path in stores.items()}
+    assert after_rollback["ori_state.db"].endswith(b"migrated by 2.4.0\n")
+    assert after_rollback["ori_evidence.db"] == b"ori_evidence.db as 2.3.0 left it\n"
+
+    install_release(
+        version="2.4.0",
+        restart_service=lambda: None,
+        check_health=lambda _path: None,
+        **kwargs,
+    )
+    install_release(
+        version="2.3.0",
+        allow_downgrade=True,
+        restart_service=lambda: None,
+        check_health=lambda _path: None,
+        **kwargs,
+    )
+    assert layout.current.resolve() == layout.release("2.3.0")
+    assert {name: path.read_bytes() for name, path in stores.items()} == after_rollback
+
+    def older_cannot_use_the_store(path: Path) -> None:
+        if path.name == "2.2.0":
+            raise RuntimeError("store unreadable")
+
+    # A downgrade whose release cannot use the store fails its health and
+    # rolls forward to the release that was running.
+    with pytest.raises(LinuxInstallError, match="post_install_health_failed"):
+        install_release(
+            version="2.2.0",
+            allow_downgrade=True,
+            restart_service=lambda: None,
+            check_health=older_cannot_use_the_store,
+            **kwargs,
+        )
+    assert layout.current.resolve() == layout.release("2.3.0")
+    assert {name: path.read_bytes() for name, path in stores.items()} == after_rollback
+
+
 def test_uninstall_retains_data_unless_explicitly_removed(tmp_path: Path) -> None:
     layout = InstallLayout.resolve(tmp_path / "ori")
     install_release(
