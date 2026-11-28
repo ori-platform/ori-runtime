@@ -107,7 +107,7 @@ RECONCILE_REASONS: Final[frozenset[str]] = frozenset(
 FEEDBACK_ENTRY_POINT: Final = "commissioned_feedback"
 
 # ── The proposal's lifetime ───────────────────────────────────────────────────
-# Held in `approval_bounds`, which config and the skill loader import at load.
+# Held in `approval_bounds`, which the skill loader imports at load.
 # ── The authority snapshot ────────────────────────────────────────────────────
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}\Z")
 SNAPSHOT_MEMBERS: Final[tuple[str, ...]] = (
