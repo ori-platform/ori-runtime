@@ -1592,7 +1592,16 @@ class TestTheInFlightSlots:
                 site._dispatch("current_clamp")
                 sender = threading.Thread(target=burst)
                 sender.start()
-                time.sleep(0.3)  # the loop is blocked; the burst keeps arriving
+                # The loop is held, as a blocking call would hold it, until the
+                # burst has passed the bound many times over: decided by what
+                # arrived, not by a window a loaded host may not fill.
+                refusals = subscriber._ingress.refusals
+                held_until = time.monotonic() + _PROMPT_S
+                while (
+                    refusals().get(REDELIVERY_DUE, 0) <= 1000
+                    and time.monotonic() < held_until
+                ):
+                    time.sleep(0.01)
                 unblocked = time.monotonic()
                 await wait_until(lambda: bool(ran), what="bool(ran)")
                 stop.set()
