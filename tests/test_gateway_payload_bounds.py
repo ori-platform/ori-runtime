@@ -1072,7 +1072,7 @@ def test_an_infinite_window_in_the_configuration_is_a_configuration_error():
 def test_the_ledger_finds_an_envelope_by_index(tmp_path):
     import sqlite3
 
-    from ori.security.evidence.ledger import _SCHEMA
+    from ori.security.evidence._ledger_schema import SCHEMA as _SCHEMA
 
     with sqlite3.connect(tmp_path / "ledger.db") as connection:
         connection.executescript(_SCHEMA)

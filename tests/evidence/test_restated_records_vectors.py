@@ -200,7 +200,16 @@ class FaultingConnection:
 class Receiver:
     """A ledger, ingest service and route holding one case's `held_before`."""
 
-    def __init__(self, tmp_path: pathlib.Path, held: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        tmp_path: pathlib.Path,
+        held: dict[str, Any],
+        *,
+        sealing_epoch: str = SEALING_EPOCH,
+        hold: bool = True,
+    ) -> None:
+        """*hold* writes `held` into a fresh store; without it the store at
+        *tmp_path* is reopened as it is, sealing under *sealing_epoch*."""
         self.executor = EvidenceExecutor()
         key = EvidenceDeviceKey.load_or_create(tmp_path / "device.key", "install")
         registry = _registry()
@@ -210,7 +219,7 @@ class Receiver:
                 tmp_path / "ledger.db",
                 key,
                 DEVICE,
-                anchor_epoch_id=SEALING_EPOCH,
+                anchor_epoch_id=sealing_epoch,
                 key_id="corpus-sealing-key",
             )
 
@@ -225,7 +234,8 @@ class Receiver:
         )
         self.ingest = BoundIngestService(self.executor, self.service)
         self.router = EvidenceInboundRouter(device_id=DEVICE, ingest=self.ingest)
-        self.executor.run(self._hold, held)
+        if hold:
+            self.executor.run(self._hold, held)
         self.service._application_storage_fault = bool(
             held["application_storage_fault"]
         )

@@ -493,7 +493,7 @@ async def test_a_failed_trigger_upgrade_leaves_the_previous_trigger(
     db = tmp_path / "evidence.db"
     _previous_release_store(db)
     monkeypatch.setattr(
-        "ori.security.evidence.ledger._CUSTODY_FINAL_TRIGGER",
+        "ori.security.evidence.ledger.CUSTODY_FINAL_TRIGGER",
         "CREATE TRIGGER broken SYNTAX",
     )
     attestor = FirstPartyEvidenceAttestor(

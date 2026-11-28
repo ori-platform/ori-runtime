@@ -27,6 +27,7 @@ from ori.network.events import ActionTier, OriEvent, ReasoningResult, SensorRead
 from ori.reasoning.action_dispatcher import ActionDispatcher
 from ori.reasoning.elevator import SkillContext
 from ori.reasoning.tier_c_admission import TierCAuthorityFacts
+from ori.security.evidence import _ledger_schema as ledger_schema
 from ori.security.evidence import first_party, ledger
 from ori.security.evidence.authority_keys import (
     PURPOSE_EPOCH,
@@ -336,7 +337,7 @@ _SQL = re.compile(
     r"|\bDELETE\s+FROM\b|\bWHERE\b"
 )
 _REGISTRATION_DDL = (
-    ledger._REGISTRATION_SCHEMA + state_store_module.EVIDENCE_REFERENCE_DDL
+    ledger_schema._REGISTRATION_SCHEMA + state_store_module.EVIDENCE_REFERENCE_DDL
 )
 
 
@@ -374,6 +375,7 @@ _REGISTRATION_MODULES = (
 #: Modules that define registration state beside other evidence state.
 _MIXED_MODULES = (
     "security/evidence/ledger.py",
+    "security/evidence/_ledger_schema.py",
     "security/evidence/first_party.py",
     "security/evidence/ingest_service.py",
     "security/evidence/bound.py",

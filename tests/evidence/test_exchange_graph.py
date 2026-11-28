@@ -618,6 +618,11 @@ VECTOR_CONSUMERS = {
         "evidence/test_restated_records_vectors.py"
         "::test_the_corpus_material_is_what_the_runtime_derives",
     ),
+    ("evidence_exchange_receiver_state", "epoch-return-v3"): (
+        "evidence/test_epoch_return_vectors.py::test_every_epoch_return_case",
+        "evidence/test_epoch_return_vectors.py"
+        "::test_the_corpus_shares_restated_records_material",
+    ),
     ("gateway_evidence_carriage", "inbound-retirement-v1"): (
         "evidence/test_inbound_restatements.py"
         "::test_the_runtime_refuses_with_exactly_the_carriage_vocabulary",
@@ -702,17 +707,6 @@ VECTOR_CONSUMERS = {
 #: tracked, because naming a repository says who is answerable rather than that
 #: the work is done.
 VECTOR_EXEMPTIONS = {
-    ("evidence_exchange_receiver_state", "epoch-return-v3"): {
-        "owner": "the runtime",
-        "status": "proof_pending",
-        "tracking": "ori-runtime#1096",
-        "reason": (
-            "The active-epoch projection follows the sealing epoch to a held "
-            "confirmation record (evidence-exchange/v3). The ledger writes the "
-            "projection only on a first confirmation, so no test drives these "
-            "cases yet."
-        ),
-    },
     ("gateway_api", "heartbeat-evidence-v2"): {
         "owner": "the runtime",
         "status": "proof_pending",
