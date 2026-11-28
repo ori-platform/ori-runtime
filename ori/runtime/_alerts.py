@@ -1011,7 +1011,7 @@ class AlertDelivery(RuntimeCore):
                                 accepted_at_ms=accepted_ts,
                                 delivered_at_ms=receipt.delivered_at_ms,
                             )
-                        except BaseException:
+                        except (Exception, asyncio.CancelledError):
                             # Accepted but not recorded, cancellation included:
                             # kept out of this process's retries, as a first
                             # attempt's is.
