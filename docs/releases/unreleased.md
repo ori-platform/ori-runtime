@@ -496,6 +496,15 @@ release is cut.
 
 ## Fixed
 
+- A staging or production start now refuses a configured sensor whose
+  adapter's library is not installed, naming the sensor and the library. It
+  had checked only GPIO, CoAP and local reasoning, so a v2.5.0 Pi install
+  accepted `protocol: mqtt` without `aiomqtt` and the sensor never connected.
+  `aiomqtt` is now in the runtime lock, so the Pi bundle carries it.
+  `aiocoap` is in no shipped lock, so a hardened start refuses a
+  `protocol: coap` sensor; `protocol: smart` is refused only where the
+  `smartctl` binary is missing. Development keeps every such sensor, as
+  before.
 - An alert whose first send a provider accepted, but whose acceptance could
   not be recorded, is no longer sent again by the outbox retry loop in the
   same process, nor is a retry whose recording was cancelled; after a restart

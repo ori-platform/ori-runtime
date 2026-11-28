@@ -15,6 +15,7 @@ from ori.actions.relay import (
     resolved_pin_factory_name,
 )
 from ori.config import Config, ConfigValidationError, requires_production_posture
+from ori.hal.protocol_registry import connect_config, protocol_library_check
 from ori.reasoning.local_llm import LocalLLM, local_llm_backend_available
 from ori.utils.bool_utils import is_truthy
 from ori.utils.path_utils import shown
@@ -85,13 +86,11 @@ def validate_required_runtime_capabilities(
                 f"({factory}) does not claim its lines through the kernel"
             )
 
-    coap_requested = is_truthy(config.actions.coap.get("enabled", False)) or any(
-        sensor.protocol == "coap" for sensor in config.sensors
-    )
-    if coap_requested and not coap_backend_available():
-        missing.append(
-            "aiocoap is unavailable but a CoAP action or sensor is configured"
-        )
+    if is_truthy(config.actions.coap.get("enabled", False)) and not (
+        coap_backend_available()
+    ):
+        missing.append("aiocoap is unavailable but a CoAP action is configured")
+    missing.extend(_sensor_libraries_missing(config))
 
     if local_llm_requested(config.reasoning):
         if not local_llm_backend_available():
@@ -118,6 +117,27 @@ def validate_required_runtime_capabilities(
             + ". Install the required signed runtime target/dependencies or disable "
             "the capability explicitly before startup."
         )
+
+
+def _sensor_libraries_missing(config: Config) -> list[str]:
+    """One line for each configured sensor whose adapter's library is absent."""
+    found = []
+    for sensor in config.sensors:
+        reason = protocol_library_check(sensor.protocol)(
+            connect_config(
+                sensor.metadata,
+                sensor_id=sensor.id,
+                sensor_type=sensor.type,
+                poll_interval_ms=sensor.poll_interval_ms,
+                calibration=sensor.calibration,
+            )
+        )
+        if reason is not None:
+            found.append(
+                f"sensor {sensor.id!r} (protocol {sensor.protocol}) is configured "
+                f"but {reason}"
+            )
+    return found
 
 
 def _resolve_local_model_file(

@@ -10,6 +10,9 @@ from ori.hal.mqtt_base import (
     load_json_payload,
     refuse_unusable_mqtt_connection,
 )
+from ori.hal.mqtt_base import (
+    missing_library as missing_library,
+)
 from ori.hal.producer_paths import ARRIVAL_CLOCK, producer_time_for
 from ori.network.events import SensorReading
 

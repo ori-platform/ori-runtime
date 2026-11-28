@@ -558,6 +558,12 @@ class _ConnectWatch:
         return self.AWAIT_SETTLED
 
 
+def missing_library(config: dict) -> str | None:
+    """The library this install lacks for *config*, or ``None``; a hardened start
+    refuses a sensor that names one."""
+    return None if _AIOMQTT_AVAILABLE else "'aiomqtt' is not installed"
+
+
 class MqttCachedAdapter(BaseAdapter):
     """Reusable base for MQTT adapters that subscribe and cache latest values."""
 

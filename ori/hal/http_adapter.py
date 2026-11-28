@@ -42,6 +42,12 @@ _DEFAULT_POLL_INTERVAL_MS = 10_000
 _DEFAULT_TIMEOUT_S = 5.0
 
 
+def missing_library(config: dict) -> str | None:
+    """The library this install lacks for *config*, or ``None``; a hardened start
+    refuses a sensor that names one."""
+    return None if _HTTPX_AVAILABLE else "'httpx' is not installed"
+
+
 def refuse_unusable_config(config: dict) -> None:
     """Refuse what connect would from the configuration alone; config load runs it."""
     for key in ("sensor_type", "url", "json_path"):

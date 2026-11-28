@@ -51,6 +51,11 @@ _SUPPORTED = frozenset(
 )
 
 
+def missing_library(config: dict) -> str | None:
+    """``psutil`` is imported at load, so nothing a sensor names can be missing."""
+    return None
+
+
 def refuse_unusable_config(config: dict) -> None:
     """Refuse a sensor type this adapter does not read; config load runs it too."""
     sensor_type = config.get("sensor_type", "")
