@@ -123,7 +123,9 @@ DEPENDENCIES = {
     ("ori.hal.usb_serial_adapter", "serial"): "usb_serial missing_library",
 }
 
-_IMPORT_FAILURES = {"ImportError", "ModuleNotFoundError"}
+# Every handler that catches a failed import: the import errors, their bases,
+# and a bare `except:` (a handler with no type).
+_IMPORT_FAILURES = {"ImportError", "ModuleNotFoundError", "Exception", "BaseException"}
 
 
 def _names(expr: ast.AST, aliases: dict[str, set[str]]) -> set[str]:
@@ -137,8 +139,9 @@ def _names(expr: ast.AST, aliases: dict[str, set[str]]) -> set[str]:
 
 
 def _guarded_imports(path: Path, module: str) -> set[tuple[str, str]]:
-    """(module, package) for each import inside a `try` that catches an import
-    failure, at any depth, by name or through a module-level tuple of them."""
+    """(module, package) for each import inside a `try` whose handler catches an
+    import failure, at any depth: an import error or a base of one, bare, by
+    name or through a module-level tuple of them."""
     tree = ast.parse(path.read_text())
     aliases = {
         target.id: _names(statement.value, {})
@@ -150,7 +153,7 @@ def _guarded_imports(path: Path, module: str) -> set[tuple[str, str]]:
     found: set[tuple[str, str]] = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Try) or not any(
-            h.type is not None and _names(h.type, aliases) & _IMPORT_FAILURES
+            h.type is None or _names(h.type, aliases) & _IMPORT_FAILURES
             for h in node.handlers
         ):
             continue
@@ -214,6 +217,40 @@ def test_a_missing_library_is_named(
     assert reason is not None and library in reason
     monkeypatch.setattr(importlib.import_module(module), flag, True)
     assert _check(_sensor(protocol)) is None
+
+
+@pytest.mark.parametrize(
+    "handler",
+    [
+        "except Exception:",
+        "except BaseException:",
+        "except:",
+        "except (OSError, Exception):",
+    ],
+)
+def test_the_guard_sees_an_import_under_a_broad_handler(
+    handler: str, tmp_path: Path
+) -> None:
+    (tmp_path / "hal").mkdir()
+    (tmp_path / "hal" / "http_adapter.py").write_text(
+        f"def connect():\n    try:\n        import absent_driver\n    {handler}\n        pass\n"
+    )
+    assert _hal_guarded_imports(tmp_path / "hal") == {
+        ("ori.hal.http_adapter", "absent_driver")
+    }
+
+
+@pytest.mark.parametrize(
+    "handler", ["except ValueError:", "except (OSError, KeyError):"]
+)
+def test_the_guard_ignores_a_handler_that_cannot_catch_an_import(
+    handler: str, tmp_path: Path
+) -> None:
+    (tmp_path / "hal").mkdir()
+    (tmp_path / "hal" / "http_adapter.py").write_text(
+        f"def connect():\n    try:\n        import present_driver\n    {handler}\n        pass\n"
+    )
+    assert _hal_guarded_imports(tmp_path / "hal") == set()
 
 
 @pytest.mark.parametrize(
